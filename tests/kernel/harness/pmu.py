@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""pmu.py - PMU fingerprint harness for DOD-ARCH-B002 - P1 nonce fix"""
+import json, subprocess, sys, pathlib, os, uuid, datetime, hashlib, shutil
+ROOT = pathlib.Path(__file__).resolve().parents[3]
+VMTEST = ROOT / "tests" / "harness" / "vmtest.py"
+GUEST = "/mnt/share/tests/kernel/guest/run_pmu.sh"
+RESULT = ROOT / ".dodresult" / "kernel_pmu.json"
+NONCE_FILE = ROOT / ".dodresult" / "run_id_pmu"
+
+def _freshness_ok() -> bool:
+    try:
+        import platform as _pf, pathlib as _pl
+        root = _pl.Path(__file__).resolve().parents[3]
+        fresh = root / "vm" / "freshness.sh"
+        if not fresh.exists():
+            return True
+        import subprocess as _sp
+        if _pf.system() == "Windows":
+            wsl_root = "/path/to/ntpers-research"
+            cmd = ["wsl", "-d", "Ubuntu", "--", "bash", f"{wsl_root}/vm/freshness.sh", "check"]
+            proc = _sp.run(cmd, capture_output=True, text=True, timeout=30)
+            if proc.returncode != 0:
+                print(proc.stdout, file=sys.stderr); print(proc.stderr, file=sys.stderr)
+                print("ERROR: STALE BUILD DETECTED - refusing to run VM", file=sys.stderr); print("Run: vm/kbuild.sh", file=sys.stderr)
+                return False
+            return True
+        else:
+            proc = _sp.run(["bash", str(fresh), "check"], capture_output=True, text=True, timeout=30)
+            if proc.returncode != 0:
+                print(proc.stdout, file=sys.stderr); print(proc.stderr, file=sys.stderr)
+                print("ERROR: STALE BUILD DETECTED - refusing to run VM", file=sys.stderr); print("Run: vm/kbuild.sh", file=sys.stderr)
+                return False
+            return True
+    except Exception as e:
+        print(f"freshness check failed: {e}", file=sys.stderr); return False
+
+def main():
+    if not _freshness_ok():
+        return 125
+    if sys.platform == "win32":
+        wsl_cmd = ["wsl", "-d", "Ubuntu", "--", "bash", "-c", "cd ~/winapi-native-os && python3 tests/kernel/harness/pmu.py"]
+        rc = subprocess.run(wsl_cmd).returncode
+        try:
+            subprocess.run(["wsl","-d","Ubuntu","--","bash","-c",
+                "cat ~/winapi-native-os/.dodresult/kernel_pmu.json 2>/dev/null | tr -d '\\r' > '/path/to/ntpers-research/.dodresult/kernel_pmu.json' || true"], timeout=5)
+            subprocess.run(["wsl","-d","Ubuntu","--","bash","-c",
+                "cat ~/winapi-native-os/.dodresult/perf_pe.log 2>/dev/null | tr -d '\\r' > '/path/to/ntpers-research/.dodresult/perf_pe.log' || true"], timeout=5)
+            subprocess.run(["wsl","-d","Ubuntu","--","bash","-c",
+                "cat ~/winapi-native-os/.dodresult/perf_elf.log 2>/dev/null | tr -d '\\r' > '/path/to/ntpers-research/.dodresult/perf_elf.log' || true"], timeout=5)
+        except Exception as _e: print(f"warn: {_e}", file=sys.stderr)
+        if RESULT.exists():
+            try:
+                data=json.loads(RESULT.read_text(encoding="utf-8"))
+                print(f"[WSL] PMU result: {data.get('status')} ratio {data.get('ratio_pe_over_elf')} perf {data.get('perf_available')} run_id {str(data.get('run_id',''))[:8]}")
+                if rc==124:
+                    return 124
+                if rc==125:
+                    return 125
+                return 0 if data.get("status")=="PASS" else 1
+            except Exception as _e: print(f"warn: {_e}", file=sys.stderr)
+        return rc
+    run_id = uuid.uuid4().hex
+    for stale in [RESULT, ROOT / ".dodresult" / "kernel_pmu.log", ROOT / ".dodresult" / "perf_pe.log", ROOT / ".dodresult" / "perf_elf.log", NONCE_FILE, ROOT / ".dodresult" / "result.exitcode"]:
+        try:
+            if stale.exists():
+                stale.unlink()
+        except Exception as _e: print(f"warn: {_e}", file=sys.stderr)
+    # Invalidate evidence bundle per-run
+    evid_dir_tmp = ROOT / "reports" / "evidence" / "DOD-ARCH-B002-PMU"
+    if evid_dir_tmp.exists():
+        for old in list(evid_dir_tmp.iterdir()):
+            try:
+                if old.is_file(): old.unlink()
+            except Exception: pass
+    try: NONCE_FILE.write_text(run_id, encoding="utf-8")
+    except Exception as e:
+        print(f"failed to write nonce: {e}", file=sys.stderr)
+        return 125
+    cmd=[sys.executable, str(VMTEST), "--test", GUEST, "--share", str(ROOT), "--timeout", "180"]
+    rc=subprocess.run(cmd).returncode
+    if rc in (124,137):
+        if RESULT.exists():
+            try:
+                data=json.loads(RESULT.read_text())
+                if data.get("run_id")!=run_id:
+                    print(f"TIMEOUT stale rejected expected {run_id[:8]} got {str(data.get('run_id',''))[:8]}", file=sys.stderr)
+                try: RESULT.unlink()
+                except Exception as _e: print(f"warn: {_e}", file=sys.stderr)
+            except:
+                try: RESULT.unlink()
+                except Exception as _e: print(f"warn: {_e}", file=sys.stderr)
+        timeout_data={"test":"pmu","status":"TIMEOUT","run_id":run_id,"note":f"VM timeout rc={rc}","timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z")}
+        try: RESULT.write_text(json.dumps(timeout_data, indent=2), encoding="utf-8")
+        except Exception as _e: print(f"warn: {_e}", file=sys.stderr)
+        print(f"PMU TIMEOUT after {rc}", file=sys.stderr)
+        return 124
+    if not RESULT.exists():
+        print(f"missing result {RESULT} rc={rc}", file=sys.stderr)
+        err_data={"test":"pmu","status":"ERROR","run_id":run_id,"note":"missing result file","timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z")}
+        try: RESULT.write_text(json.dumps(err_data, indent=2), encoding="utf-8")
+        except Exception as _e: print(f"warn: {_e}", file=sys.stderr)
+        return 125
+    try:
+        data=json.loads(RESULT.read_text())
+    except Exception as e:
+        print(f"parse fail {e}", file=sys.stderr)
+        return 125
+    if data.get("run_id") != run_id:
+        print(f"ERROR run_id mismatch expected {run_id[:8]} got {str(data.get('run_id',''))[:8]}", file=sys.stderr)
+        err_data={"test":"pmu","status":"ERROR","run_id":run_id,"expected_run_id":run_id,"found_run_id":data.get("run_id"),"note":"run_id mismatch","timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z")}
+        try: RESULT.write_text(json.dumps(err_data, indent=2), encoding="utf-8")
+        except Exception as _e: print(f"warn: {_e}", file=sys.stderr)
+        return 125
+    print(f"PMU result: {data.get('status')} ratio {data.get('ratio_pe_over_elf')} perf {data.get('perf_available')} hypervisor {data.get('hypervisor_pe')}")
+    try:
+        evid_dir = ROOT / "reports" / "evidence" / "DOD-ARCH-B002-PMU"
+        evid_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(RESULT, evid_dir / "kernel_pmu.json")
+        for pth in ["perf_pe.log","perf_elf.log","kernel_pmu.log"]:
+            src = ROOT / ".dodresult" / pth
+            if src.exists():
+                shutil.copy(src, evid_dir / pth)
+        # hardened: serial recency
+        serial_path = None
+        serials = sorted((ROOT / ".dodresult").glob("serial-*.log"), key=lambda p: p.stat().st_mtime)
+        if serials:
+            import time as _timepmu
+            latest = serials[-1]
+            if _timepmu.time() - latest.stat().st_mtime < 120:
+                serial_path = latest
+        if serial_path:
+            shutil.copy(serial_path, evid_dir / "serial.log")
+        else:
+            try: (evid_dir / "serial.log").unlink()
+            except Exception: pass
+        # hardened: hash covers all files + run_id
+        hasher = hashlib.sha256()
+        for fname in ["kernel_pmu.json", "perf_pe.log", "perf_elf.log", "kernel_pmu.log", "serial.log"]:
+            fpath = evid_dir / fname
+            if fpath.exists():
+                hasher.update(fpath.read_bytes())
+        hasher.update(run_id.encode())
+        h = hasher.hexdigest()
+        manifest = {}
+        for fname in ["kernel_pmu.json", "perf_pe.log", "perf_elf.log", "kernel_pmu.log", "serial.log"]:
+            fpath = evid_dir / fname
+            if fpath.exists():
+                manifest[fname] = hashlib.sha256(fpath.read_bytes()).hexdigest()
+        (evid_dir / "hash.txt").write_text(h)
+        (evid_dir / "run_id.txt").write_text(run_id)
+        (evid_dir / "evidence.json").write_text(json.dumps({"criterion":"DOD-ARCH-B002-PMU","result":data,"hash":h,"manifest":manifest,"run_id":run_id,"timestamp":datetime.datetime.utcnow().isoformat()+"Z"}, indent=2))
+        print(f"evidence bundle at {evid_dir} hash {h[:16]}")
+    except Exception as e:
+        print(f"evidence bundle fail: {e}", file=sys.stderr)
+    return 0 if data.get("status")=="PASS" else 1
+
+if __name__=="__main__":
+    sys.exit(main())

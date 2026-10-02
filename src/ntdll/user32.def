@@ -1,0 +1,9 @@
+LIBRARY user32
+EXPORTS
+    wsprintfW
+    wsprintfA
+    wvsprintfW
+    wvsprintfA
+    DllMain
+    _DllMainCRTStartup@12
+    DllMainCRTStartup

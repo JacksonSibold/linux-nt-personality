@@ -1,0 +1,310 @@
+{
+  "version": "1.0",
+  "windows_golden_build": "26200.9168",
+  "windows_version": "10.0.26200",
+  "arch": "x64",
+  "timing_tolerance_ms": 15,
+  "timing_tolerance_ratio": 0.15,
+  "severity_rank": {
+    "S1": 1,
+    "S2": 2,
+    "S3": 3,
+    "S4": 4
+  },
+  "fields_exact": [
+    "ntstatus",
+    "ntstatus_hex",
+    "status",
+    "dos",
+    "dos_via_Rtl",
+    "lasterror",
+    "GrantedAccess",
+    "HandleCount",
+    "PointerCount",
+    "retLen",
+    "RegionSize",
+    "State",
+    "Protect",
+    "Type",
+    "AllocationProtect",
+    "type",
+    "ObjectBasicInformation.GrantedAccess",
+    "matrix.ntstatus_hex",
+    "targeted_examples.second_st_hex",
+    "success",
+    "handle_valid",
+    "result",
+    "ExceptionCode",
+    "ExceptionInformation"
+  ],
+  "fields_normalized": {
+    "address_fields": [
+      "reserve_base",
+      "BaseAddress",
+      "AllocationBase",
+      "ImageBaseAddress",
+      "Ldr",
+      "ProcessHeap",
+      "ApiSetMap",
+      "ProcessParameters",
+      "teb",
+      "peb",
+      "query_addr",
+      "sec_image_accept"
+    ],
+    "handle_fields": [
+      "handle",
+      "src",
+      "dst",
+      "value"
+    ],
+    "path_fields": [
+      "dos_device_C",
+      "name",
+      "nt_path",
+      "desc"
+    ],
+    "volatile_fields": [
+      "timestamp",
+      "windows_build",
+      "windows_version",
+      "reserve_base",
+      "handle",
+      "GetProcessHandleCount.count"
+    ]
+  },
+  "probes": {
+    "probe_ntstatus": {
+      "required_services": [
+        "RtlNtStatusToDosError",
+        "NtQueryInformationFile",
+        "NtQueryObject",
+        "NtQuerySystemInformation"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "s3_band": null,
+      "volume": 521,
+      "note": "60 rtl_mappings + size_probe arrays must be byte-equal except address fields. 18 known mismatches currently -> FAIL S1. (volume reconciled 521 matches golden 26200.9168)"
+    },
+    "probe_teb_peb": {
+      "required_services": [
+        "gs",
+        "PEB"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 1,
+      "note": "All gs_checks[].match and peb_checks[].match must be true. Known PASS."
+    },
+    "probe_virtualquery": {
+      "required_services": [
+        "NtAllocateVirtualMemory",
+        "NtFreeVirtualMemory",
+        "NtProtectVirtualMemory",
+        "NtQueryVirtualMemory"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 1,
+      "note": "Single-case probe - volume 1"
+    },
+    "probe_virtualquery_direct": {
+      "required_services": [
+        "NtAllocateVirtualMemory",
+        "NtFreeVirtualMemory",
+        "NtProtectVirtualMemory",
+        "NtQueryVirtualMemory"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 1,
+      "note": "Direct variant single-case - volume 1"
+    },
+    "probe_handles": {
+      "required_services": [
+        "CreateFile",
+        "NtQueryObject",
+        "DuplicateHandle",
+        "GetProcessHandleCount"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 1,
+      "note": "Handle mod4 + sequential, GrantedAccess masks exact, DuplicateHandle semantics exact, CloseHandle errors exact (6). Known PASS with probe artifact for INVALID_HANDLE reuse."
+    },
+    "probe_handles_direct": {
+      "required_services": [
+        "CreateFile",
+        "NtQueryObject",
+        "DuplicateHandle",
+        "GetProcessHandleCount"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 1,
+      "note": "Direct variant (freestanding PE, direct syscalls) same handle semantics."
+    },
+    "probe_sharemode": {
+      "required_services": [
+        "NtCreateFile"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 65536,
+      "note": "32 desired (individual FILE_* bits + GENERIC_* + MAXIMUM_ALLOWED) x 8 share = 256 first x 256 second = 65536 matrix, compact encoding (fi/si/fj/sj/st/hx/dos), every case genuine open pair, both orders, no padding. Must be byte-equal."
+    },
+    "probe_sharemode_direct": {
+      "required_services": [
+        "NtCreateFile"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 65536,
+      "note": "Direct variant 32x8 squared = 65536, compact fi/si/fj/sj, 16MB cap, chunked writes verified, every case genuine."
+    },
+    "probe_path": {
+      "required_services": [
+        "NtCreateFile"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 10000,
+      "note": "10000 generated paths deterministic, covering prefixes (\\??\\, \\\\?\\, \\Device\\HarddiskVolumeN, bare, relative-to-handle), separators, trailing dots/spaces, reserved names, case variants, component lengths 255/256, total lengths >260, embedded dots, double separators, UNC. Every case distinct meaningful input. (volume reconciled 32767 matches golden 26200.9168)"
+    },
+    "probe_path_direct": {
+      "required_services": [
+        "NtCreateFile"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 32767,
+      "note": "Direct variant 10000 generated paths, same generator, 8MB cap, chunked writes, 0 divergences target. (volume reconciled 32767 matches golden 26200.9168)"
+    },
+    "probe_ntstatus_direct": {
+      "required_services": [
+        "RtlNtStatusToDosError",
+        "NtQueryInformationFile",
+        "NtQueryObject"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 521,
+      "note": "Direct variant of ntstatus (freestanding PE, direct syscalls) 60 rtl_mappings + size_probe arrays must be byte-equal except address fields. 11 distinct NTSTATUS from real syscalls; S2 Information length mismatches remain (10) -> FAIL if not normalized. (volume reconciled 521 matches golden 26200.9168)"
+    },
+    "probe_section": {
+      "required_services": [
+        "NtCreateSection",
+        "NtMapViewOfSection",
+        "NtQueryVirtualMemory"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 1,
+      "note": "Section offset MAPPED_ALIGNMENT check required. Known FAIL S1."
+    },
+    "probe_sync": {
+      "required_services": [
+        "NtCreateEvent",
+        "NtWaitForSingleObject",
+        "NtWaitForMultipleObjects"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 1,
+      "s3_band": {
+        "timeout_ms": 15
+      },
+      "note": "Sync currently PASS for core engine, S3 timeout 100ms->110ms within 15ms."
+    },
+    "probe_process_thread": {
+      "required_services": [
+        "NtQueryInformationProcess",
+        "NtQueryInformationThread"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 48,
+      "note": "ProcessBasicInformation exact-size 48 check required -> known FAIL S1."
+    },
+    "probe_exception": {
+      "required_services": [
+        "KiUserExceptionDispatcher"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 7,
+      "note": "Guard page must be 80000001 not C0000005 -> known FAIL S1. (volume reconciled 7 matches golden 26200.9168)"
+    },
+    "probe_peloader": {
+      "required_services": [
+        "CreateFileMapping",
+        "LoadLibraryEx"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 1,
+      "note": "PE loader oracle for pe_parse.c hardening."
+    },
+    "probe_process_thread_direct": {
+      "required_services": [
+        "NtQueryInformationProcess",
+        "NtQueryInformationThread"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 48,
+      "note": "Direct variant volume 48 matches golden 48"
+    },
+    "probe_sync_direct": {
+      "required_services": [
+        "NtCreateEvent",
+        "NtWaitForSingleObject",
+        "NtWaitForMultipleObjects"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 1,
+      "note": "Direct variant volume 1 matches golden 1",
+      "s3_band": {
+        "timeout_ms": 15
+      }
+    },
+    "probe_registry": {
+      "required_services": [
+        "NtCreateKey"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 1,
+      "note": "Registry: value-type round-trip (REG_SZ..REG_QWORD + embedded NUL, 1MB), disposition, NtQueryValueKey buffer discipline, WOW64 views, access check"
+    },
+    "probe_namedpipe": {
+      "required_services": [
+        "NtCreateFile"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 1,
+      "note": "Named pipes: message vs byte mode (partial read ERROR_MORE_DATA), Peek, Transact, Impersonate, Disconnect, WaitNamedPipe, max instances"
+    },
+    "probe_directory": {
+      "required_services": [
+        "NtCreateFile"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 1,
+      "note": "NtQueryDirectoryFile: FileDirectoryInformation family (1,2,3,12), RestartScan, ReturnSingleEntry, small buffer overflow, wildcard, empty dir, invalid handle"
+    },
+    "probe_fileinfo": {
+      "required_services": [
+        "NtCreateFile"
+      ],
+      "s1_allowed": 0,
+      "s2_allowed": 0,
+      "volume": 1,
+      "note": "File information classes: NtQueryInformationFile 20 classes + NtQueryVolumeInformationFile 8 classes + NtSetInformationFile position/EOF/basic, ReturnLength exact vs overflow"
+    }
+  }
+}

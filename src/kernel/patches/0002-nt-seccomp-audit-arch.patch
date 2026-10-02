@@ -1,0 +1,154 @@
+From: ntpers project <ntpers@localhost>
+Subject: [PATCH 2/N] x86: give the NT ABI a distinct audit arch (fail-closed seccomp)
+
+M0 blocker resolved.
+
+PROBLEM
+
+do_syscall_64() calls syscall_enter_from_user_mode(), which drives seccomp,
+audit and ptrace using the *Linux* syscall number and AUDIT_ARCH_X86_64.
+
+If NT tasks reuse that path, an SSN is fed into machinery that believes it is
+looking at a Linux syscall number. Concretely:
+
+  A container runtime installs the usual seccomp allowlist:
+      if (arch == AUDIT_ARCH_X86_64 && nr == __NR_read)  -> ALLOW      (nr 0)
+      ...
+      default -> KILL_PROCESS
+
+  An NT task issues SSN 0. On Server 2022 SSN 0 is NtAccessCheck, not read().
+  The filter sees arch=AUDIT_ARCH_X86_64, nr=0, and ALLOWS it.
+
+The filter author allowlisted read(). They got NtAccessCheck. Every SSN in the
+pinned table collides with some Linux number this way, so an NT binary can walk
+straight through a policy that was written to contain it. That is a sandbox
+escape, not a cosmetic mismatch -- and it is worse than an ordinary bypass
+because the filter *appears* to be in force.
+
+Audit has the same defect in a quieter form: audit records would attribute NT
+services to unrelated Linux syscall names, silently corrupting the audit trail.
+
+FIX
+
+Report a distinct architecture for NT tasks, so no filter written for
+AUDIT_ARCH_X86_64 can ever match an NT service.
+
+Existing filters do not know AUDIT_ARCH_NTX86_64. A correctly written filter
+ends in a default deny, so it now denies NT syscalls -- fail-closed, which is
+the required direction. A filter ending in a default ALLOW was already
+permissive by construction and is not made worse.
+
+We deliberately do NOT invent a fake EM_ value that could collide with a future
+upstream allocation. EM_NTX86_64 uses the 0x9000+ private range, and the
+selftest asserts it differs from every AUDIT_ARCH_* the kernel defines.
+
+---
+ arch/x86/include/asm/syscall.h    | 12 +++++++++++-
+ include/uapi/linux/audit.h        |  4 ++++
+ arch/x86/entry/nt/enter.c         | 48 +++++++++++++++++++++++++++++++++++
+ 3 files changed, 63 insertions(+), 1 deletion(-)
+
+diff --git a/include/uapi/linux/audit.h b/include/uapi/linux/audit.h
+--- a/include/uapi/linux/audit.h
++++ b/include/uapi/linux/audit.h
+@@
+ #define EM_X86_64	62
++/*
++ * Private-range machine id for the NT personality. Not an ELF machine type:
++ * NT tasks execute PE images. Placed in the 0x9000+ private range so it can
++ * never collide with an upstream EM_ allocation.
++ */
++#define EM_NTX86_64	0x9040
+ 
+ #define AUDIT_ARCH_X86_64	(EM_X86_64|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)
++#define AUDIT_ARCH_NTX86_64	(EM_NTX86_64|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)
+
+diff --git a/arch/x86/include/asm/syscall.h b/arch/x86/include/asm/syscall.h
+--- a/arch/x86/include/asm/syscall.h
++++ b/arch/x86/include/asm/syscall.h
+@@
+ static inline int syscall_get_arch(struct task_struct *task)
+ {
++#ifdef CONFIG_NT_PERSONALITY
++	/*
++	 * NT tasks must never be described to seccomp/audit as x86-64, or a
++	 * filter allowlisting Linux nr N will silently allow NT service N.
++	 */
++	if (unlikely(test_tsk_thread_flag(task, TIF_NTABI)))
++		return AUDIT_ARCH_NTX86_64;
++#endif
+ 	/* x32 tasks should be considered AUDIT_ARCH_X86_64. */
+ 	return (IS_ENABLED(CONFIG_IA32_EMULATION) &&
+ 		task->thread_info.status & TS_COMPAT)
+ 		? AUDIT_ARCH_I386 : AUDIT_ARCH_X86_64;
+ }
+
+--- /dev/null
++++ b/arch/x86/entry/nt/enter.c
+@@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * NT personality syscall entry work.
++ *
++ * Mirrors syscall_enter_from_user_mode() but keyed to the NT ABI. We reuse
++ * the generic entry helpers rather than reimplementing them, because the
++ * RCU/context-tracking/instrumentation ordering in that path is subtle and
++ * getting it wrong produces bugs that only appear under NO_HZ_FULL.
++ */
++
++#include <linux/entry-common.h>
++#include <linux/seccomp.h>
++#include <linux/audit.h>
++#include <linux/ptrace.h>
++
++#include "../../nt/nt_internal.h"
++
++long nt_syscall_enter(struct pt_regs *regs, unsigned int ssn)
++{
++	unsigned long work = READ_ONCE(current_thread_info()->syscall_work);
++	long ret = (long)ssn;
++
++	enter_from_user_mode(regs);
++	instrumentation_begin();
++
++	if (work & SYSCALL_WORK_ENTER) {
++		/*
++		 * syscall_get_arch() now reports AUDIT_ARCH_NTX86_64, so any
++		 * filter written against AUDIT_ARCH_X86_64 falls through to
++		 * its default action. For a well-formed filter that is a
++		 * deny, which is the behaviour we want.
++		 */
++		ret = syscall_trace_enter(regs, ret, work);
++		if (ret < 0)
++			ret = NT_SYSCALL_SKIP;
++	}
++
++	instrumentation_end();
++	return ret;
++}
++
++void nt_syscall_exit(struct pt_regs *regs)
++{
++	/*
++	 * NTSTATUS is not an errno. The generic exit path applies
++	 * syscall_exit_work()'s error mangling for Linux return values, which
++	 * would corrupt a status like 0xC0000005 into something a PE reads as
++	 * an unrelated failure. We take the audit/ptrace work but keep RAX.
++	 */
++	unsigned long saved_ax = regs->ax;
++
++	syscall_exit_to_user_mode(regs);
++	regs->ax = saved_ax;
++}
+
+---
+SELFTEST (tools/testing/selftests/ntpers/seccomp_arch.c), required to pass
+before M0 is declared green:
+
+  1. Install a filter: allow AUDIT_ARCH_X86_64 nr 0 (read), default KILL.
+     Run an NT task issuing SSN 0. It MUST be killed, not allowed.
+     Pre-patch this test fails, which is the proof the bug was real.
+  2. AUDIT_ARCH_NTX86_64 != every AUDIT_ARCH_* the kernel defines.
+  3. A Linux task under the same filter still runs read() normally
+     (no regression to DOD-LINUXR).
+  4. Audit records for NT tasks carry arch=NTX86_64 and the NT service name.

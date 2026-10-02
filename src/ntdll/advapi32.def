@@ -1,0 +1,10 @@
+LIBRARY advapi32
+EXPORTS
+    RegOpenKeyExA
+    RegOpenKeyExW
+    RegQueryValueExA
+    RegQueryValueExW
+    RegCloseKey
+    DllMain
+    _DllMainCRTStartup@12
+    DllMainCRTStartup

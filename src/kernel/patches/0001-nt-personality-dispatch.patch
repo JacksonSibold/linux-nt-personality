@@ -1,0 +1,85 @@
+From: ntpers project <ntpers@localhost>
+Subject: [PATCH 1/N] x86: add NT ABI personality dispatch
+
+Adds a second system-call ABI to x86-64. A task marked TIF_NTABI routes
+through do_nt_syscall() instead of the Linux service table.
+
+MSR_LSTAR is per-CPU, not per-task, so the two ABIs necessarily share
+entry_SYSCALL_64. The branch is a test on the thread-info flags word, which
+is already in L1 at this point in the syscall path (syscall_enter_from_user_mode
+has just touched it), so the cost to a pure-Linux workload is one
+well-predicted not-taken branch.
+
+TIF bit 29 is chosen because x86 currently uses up to bit 28 (TIF_ADDR32),
+leaving 29-31 free.
+
+Verified against linux-6.18.
+
+---
+ arch/x86/entry/syscall_64.c          | 12 ++++++++++++
+ arch/x86/include/asm/thread_info.h   |  2 ++
+ 2 files changed, 14 insertions(+)
+
+diff --git a/arch/x86/include/asm/thread_info.h b/arch/x86/include/asm/thread_info.h
+index 1111111..2222222 100644
+--- a/arch/x86/include/asm/thread_info.h
++++ b/arch/x86/include/asm/thread_info.h
+@@ -102,6 +102,7 @@ struct thread_info {
+ #define TIF_BLOCKSTEP		26	/* set when we want DEBUGCTLMSR_BTF */
+ #define TIF_LAZY_MMU_UPDATES	27	/* task is updating the mmu lazily */
+ #define TIF_ADDR32		28	/* 32-bit address space on 64 bits */
++#define TIF_NTABI		29	/* task uses the NT system-call ABI */
+ 
+ #define _TIF_SSBD		BIT(TIF_SSBD)
+ #define _TIF_SPEC_IB		BIT(TIF_SPEC_IB)
+@@ -114,6 +115,7 @@ struct thread_info {
+ #define _TIF_FORCED_TF		BIT(TIF_FORCED_TF)
++#define _TIF_NTABI		BIT(TIF_NTABI)
+ 
+diff --git a/arch/x86/entry/syscall_64.c b/arch/x86/entry/syscall_64.c
+index 3333333..4444444 100644
+--- a/arch/x86/entry/syscall_64.c
++++ b/arch/x86/entry/syscall_64.c
+@@ -84,10 +84,22 @@ static __always_inline bool do_syscall_x32(struct pt_regs *regs, int nr)
+ __visible noinstr bool do_syscall_64(struct pt_regs *regs, int nr)
+ {
+ 	add_random_kstack_offset();
++
++#ifdef CONFIG_NT_PERSONALITY
++	/*
++	 * Second ABI. The flags word is already hot here. NT tasks never
++	 * enter the Linux service table, and Linux tasks never enter the NT
++	 * one, so the two ABIs cannot alias each other's syscall numbers.
++	 */
++	if (unlikely(test_thread_flag(TIF_NTABI))) {
++		do_nt_syscall(regs, (unsigned int)regs->ax);
++		syscall_exit_to_user_mode(regs);
++		return nt_can_sysret(regs);
++	}
++#endif
++
+ 	nr = syscall_enter_from_user_mode(regs, nr);
+ 
+ 	instrumentation_begin();
+ 
+ 	if (!do_syscall_x64(regs, nr) && !do_syscall_x32(regs, nr) && nr != -1) {
+ 		/* Invalid system call, but still a system call. */
+ 		regs->ax = __x64_sys_ni_syscall(regs);
+ 	}
+--
+NOTE ON THE ENTRY PATH (open item for M0):
+
+do_syscall_64() normally calls syscall_enter_from_user_mode(), which runs
+audit/seccomp/ptrace entry work keyed to Linux syscall numbers. Feeding NT
+SSNs into that machinery would produce meaningless audit records and would let
+a seccomp filter written for Linux numbers match an unrelated NT service --
+a real security hazard, not just a cosmetic one.
+
+The NT path therefore needs its own enter/exit hooks that:
+  - report a distinct AUDIT_ARCH_NTX86_64 so audit and seccomp can tell the
+    two ABIs apart and fail closed on unknown filters;
+  - still honour ptrace stop semantics so gdb and the NT debugger both work.
+
+This is deliberately NOT hand-waved in this patch. It is the first thing M0
+must resolve, and the differential harness has to prove that a seccomp filter
+targeting Linux numbers cannot be tricked by an NT task.

@@ -1,0 +1,351 @@
+/* registry_test.c - shim test asserting golden behaviours */
+#include "registry.h"
+#include "object.h"
+#include "handle.h"
+#include "../../ntdll/nt_types.h"
+#include "../../ntdll/ntstatus.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <wchar.h>
+#include <assert.h>
+
+static int g_pass=0,g_fail=0;
+#define ASSERT(cond) do{ if(!(cond)){ fprintf(stderr,"FAIL %s:%d: %s\n",__FILE__,__LINE__,#cond); g_fail++; return; } }while(0)
+#define ASSERT_STATUS(expr,expect) do{ NTSTATUS _s=(expr); if(_s!=(expect)){ fprintf(stderr,"FAIL %s:%d: expect 0x%08lx got 0x%08lx for %s\n",__FILE__,__LINE__,(unsigned long)(expect),(unsigned long)_s,#expr); g_fail++; return; } }while(0)
+#define PASS() do{ g_pass++; printf("  PASS %s\n",__func__); }while(0)
+
+static WCHAR wbuf1[512];
+static WCHAR wbuf2[512] __attribute__((unused));
+
+static void make_us(UNICODE_STRING *us, const char *s, WCHAR *buf, size_t blen){
+    size_t len=strlen(s);
+    ASSERT(len*sizeof(WCHAR) < blen);
+    for(size_t i=0;i<len;i++) buf[i]=(WCHAR)(unsigned char)s[i];
+    us->Buffer=buf; us->Length=(USHORT)(len*sizeof(WCHAR)); us->MaximumLength=us->Length+2;
+    if(len) buf[len]=0;
+}
+__attribute__((unused)) static void make_us_w(UNICODE_STRING *us, const WCHAR *s, WCHAR *buf, size_t blen){
+    size_t len=0; while(s[len]) len++;
+    ASSERT(len*sizeof(WCHAR) < blen);
+    memcpy(buf,s,len*sizeof(WCHAR));
+    us->Buffer=buf; us->Length=(USHORT)(len*sizeof(WCHAR)); us->MaximumLength=us->Length+2;
+    buf[len]=0;
+}
+static OBJECT_ATTRIBUTES make_oa(UNICODE_STRING *us){
+    OBJECT_ATTRIBUTES oa={0}; oa.Length=sizeof(oa); oa.ObjectName=us; oa.Attributes=OBJ_CASE_INSENSITIVE; return oa;
+}
+static struct nt_eprocess *make_proc(ULONG pid,const char *name){
+    struct nt_eprocess *p=NULL; NTSTATUS st=ObCreateProcessObject(&p,pid,name);
+    if(st!=STATUS_SUCCESS||!p){ fprintf(stderr,"make_proc failed\n"); g_fail++; return NULL; }
+    kshim_set_current_process(p);
+    return p;
+}
+static struct nt_ethread *make_thread(struct nt_eprocess *proc, ULONG tid){
+    struct nt_ethread *t=NULL; NTSTATUS st=ObCreateThreadObject(&t,proc,tid);
+    if(st!=STATUS_SUCCESS||!t){ fprintf(stderr,"make_thread failed\n"); g_fail++; return NULL; }
+    kshim_set_current_thread(t); return t;
+}
+static void reset_state(void){
+    ntreg_cleanup();
+    ObCleanupObjectManager();
+    NTSTATUS st=ObInitObjectManager(); ASSERT(st==STATUS_SUCCESS);
+    ntreg_init();
+}
+
+/* Test 1: disposition NEW vs EXISTING */
+static void test_disposition(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1000,"regdisp");
+    struct nt_ethread *thr=make_thread(proc,1);
+    UNICODE_STRING us; make_us(&us,"\\Registry\\User\\Software\\ntpers_probe_999_1",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE h1=NULL, h2=NULL;
+    ULONG disp=0xDEAD;
+    NTSTATUS st=NtCreateKey(&h1, KEY_ALL_ACCESS, &oa, 0, NULL, 0, &disp);
+    ASSERT_STATUS(st, STATUS_SUCCESS); ASSERT(disp==REG_CREATED_NEW_KEY);
+    disp=0xDEAD;
+    NTSTATUS st2=NtCreateKey(&h2, KEY_ALL_ACCESS, &oa, 0, NULL, 0, &disp);
+    ASSERT_STATUS(st2, STATUS_SUCCESS); ASSERT(disp==REG_OPENED_EXISTING_KEY);
+    ObCloseHandle(proc,h1); ObCloseHandle(proc,h2);
+    // cleanup delete
+    HANDLE hopen=NULL; st=NtOpenKey(&hopen, KEY_ALL_ACCESS,&oa); ASSERT_STATUS(st,STATUS_SUCCESS);
+    NtDeleteKey(hopen); ObCloseHandle(proc,hopen);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
+/* Test 2: nine value types round trip */
+static void test_nine_types(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1001,"reg9");
+    struct nt_ethread *thr=make_thread(proc,2);
+    UNICODE_STRING us; make_us(&us,"\\Registry\\User\\Software\\ntpers_probe_9types",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE hk=NULL; ULONG disp; NTSTATUS st=NtCreateKey(&hk, KEY_ALL_ACCESS,&oa,0,NULL,0,&disp); ASSERT_STATUS(st,STATUS_SUCCESS);
+    static uint8_t exp_data[17]; for(int k=0;k<17;k++) exp_data[k]=(uint8_t)('A'+(k%26));
+    static uint8_t bin_data[4]={0x01,0x02,0x03,0x04};
+    static uint32_t dword_data=0x12345678;
+    static uint64_t qword_data=0x1122334455667788ULL;
+    static uint8_t multi_data[8]={'a',0,'b',0,'c',0,0,0};
+    static uint8_t none_data[7]={'r','a','w','n','o','n','e'};
+    static uint8_t sz_data[6]={'h','e','l','l','o',0};
+    static uint8_t empty_sz[1]={0};
+    struct { const char *name; ULONG type; const uint8_t *data; ULONG len; } vals[] = {
+        {"Val_SZ", REG_SZ, sz_data,6},
+        {"Val_EXPAND", REG_EXPAND_SZ, exp_data,17},
+        {"Val_BINARY", REG_BINARY, bin_data,4},
+        {"Val_DWORD", REG_DWORD, (uint8_t*)&dword_data,4},
+        {"Val_QWORD", REG_QWORD, (uint8_t*)&qword_data,8},
+        {"Val_MULTI", REG_MULTI_SZ, multi_data,8},
+        {"Val_NONE", REG_NONE, none_data,7},
+        {"Val_EMPTY_SZ", REG_SZ, empty_sz,1},
+        {"Val_EMPTY_BINARY", REG_BINARY, (uint8_t*)"",0},
+    };
+    for(size_t i=0;i<sizeof(vals)/sizeof(vals[0]);i++){
+        WCHAR wn[64]; UNICODE_STRING vus; make_us(&vus, vals[i].name, wn, sizeof(wn));
+        st=NtSetValueKey(hk,&vus,0,vals[i].type,(PVOID)vals[i].data,vals[i].len);
+        ASSERT_STATUS(st,STATUS_SUCCESS);
+    }
+    for(size_t i=0;i<sizeof(vals)/sizeof(vals[0]);i++){
+        WCHAR wn[64]; UNICODE_STRING vus; make_us(&vus, vals[i].name, wn, sizeof(wn));
+        char out[64]; ULONG rlen=0xDEAD;
+        st=NtQueryValueKey(hk,&vus,KeyValuePartialInformation,out,sizeof(out),&rlen);
+        ASSERT_STATUS(st,STATUS_SUCCESS);
+        PKEY_VALUE_PARTIAL_INFORMATION p=(PKEY_VALUE_PARTIAL_INFORMATION)out;
+        ASSERT(p->Type==vals[i].type);
+        ASSERT(p->DataLength==vals[i].len);
+        if(vals[i].len) ASSERT(memcmp(p->Data, vals[i].data, vals[i].len)==0);
+    }
+    ObCloseHandle(proc,hk);
+    HANDLE hd=NULL; make_us(&us,"\\Registry\\User\\Software\\ntpers_probe_9types",wbuf1,sizeof(wbuf1)); oa=make_oa(&us);
+    st=NtOpenKey(&hd,KEY_ALL_ACCESS,&oa); ASSERT_STATUS(st,STATUS_SUCCESS);
+    NtDeleteKey(hd); ObCloseHandle(proc,hd);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
+/* Test 3: embedded NUL 9 bytes */
+static void test_embed_nul(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1002,"regnul");
+    struct nt_ethread *thr=make_thread(proc,3);
+    UNICODE_STRING us; make_us(&us,"\\Registry\\User\\Software\\ntpers_probe_embed",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE hk=NULL; ULONG disp; NTSTATUS st=NtCreateKey(&hk,KEY_ALL_ACCESS,&oa,0,NULL,0,&disp); ASSERT_STATUS(st,STATUS_SUCCESS);
+    uint8_t embed[]={'h','i','\0','t','h','e','r','e','\0'}; // 9 bytes [104,105,0,116,...]
+    WCHAR wn[64]; UNICODE_STRING vus; make_us(&vus,"Val_EMBED_NUL",wn,sizeof(wn));
+    st=NtSetValueKey(hk,&vus,0,REG_SZ,embed,sizeof(embed)); ASSERT_STATUS(st,STATUS_SUCCESS);
+    char out[64]; ULONG rlen=0;
+    st=NtQueryValueKey(hk,&vus,KeyValuePartialInformation,out,sizeof(out),&rlen);
+    ASSERT_STATUS(st,STATUS_SUCCESS);
+    PKEY_VALUE_PARTIAL_INFORMATION p=(PKEY_VALUE_PARTIAL_INFORMATION)out;
+    ASSERT(p->Type==REG_SZ); ASSERT(p->DataLength==9);
+    ASSERT(p->Data[0]==104 && p->Data[1]==105 && p->Data[2]==0 && p->Data[3]==116);
+    ASSERT(memcmp(p->Data,embed,9)==0);
+    ObCloseHandle(proc,hk);
+    HANDLE hd; make_us(&us,"\\Registry\\User\\Software\\ntpers_probe_embed",wbuf1,sizeof(wbuf1)); oa=make_oa(&us);
+    st=NtOpenKey(&hd,KEY_ALL_ACCESS,&oa); ASSERT_STATUS(st,STATUS_SUCCESS); NtDeleteKey(hd); ObCloseHandle(proc,hd);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
+/* Test 4: 1 MB value 0xAB */
+static void test_1mb(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1003,"reg1mb");
+    struct nt_ethread *thr=make_thread(proc,4);
+    UNICODE_STRING us; make_us(&us,"\\Registry\\User\\Software\\ntpers_probe_1mb",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE hk=NULL; ULONG disp; NTSTATUS st=NtCreateKey(&hk,KEY_ALL_ACCESS,&oa,0,NULL,0,&disp); ASSERT_STATUS(st,STATUS_SUCCESS);
+    ULONG bigLen=1024*1024;
+    uint8_t *big=malloc(bigLen); ASSERT(big); memset(big,0xAB,bigLen);
+    WCHAR wn[64]; UNICODE_STRING vus; make_us(&vus,"Val_1MB",wn,sizeof(wn));
+    st=NtSetValueKey(hk,&vus,0,REG_BINARY,big,bigLen); ASSERT_STATUS(st,STATUS_SUCCESS);
+    // query with large buffer
+    uint8_t *out=malloc(sizeof(KEY_VALUE_PARTIAL_INFORMATION)+bigLen+16); ASSERT(out);
+    ULONG rlen=0;
+    st=NtQueryValueKey(hk,&vus,KeyValuePartialInformation,out,sizeof(KEY_VALUE_PARTIAL_INFORMATION)+bigLen+16,&rlen);
+    ASSERT_STATUS(st,STATUS_SUCCESS);
+    PKEY_VALUE_PARTIAL_INFORMATION p=(PKEY_VALUE_PARTIAL_INFORMATION)out;
+    ASSERT(p->DataLength==bigLen);
+    for(ULONG i=0;i<bigLen;i++) { if(p->Data[i]!=0xAB){ fprintf(stderr,"mismatch at %lu\n",(unsigned long)i); g_fail++; free(big); free(out); ObCloseHandle(proc,hk); return; } }
+    free(big); free(out);
+    ObCloseHandle(proc,hk);
+    HANDLE hd; make_us(&us,"\\Registry\\User\\Software\\ntpers_probe_1mb",wbuf1,sizeof(wbuf1)); oa=make_oa(&us);
+    st=NtOpenKey(&hd,KEY_ALL_ACCESS,&oa); ASSERT_STATUS(st,STATUS_SUCCESS); NtDeleteKey(hd); ObCloseHandle(proc,hd);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
+/* Test 5: missing key returns NOT_FOUND (win32 2) */
+static void test_missing_key(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1004,"regmiss");
+    struct nt_ethread *thr=make_thread(proc,5);
+    UNICODE_STRING us; make_us(&us,"\\Registry\\User\\Software\\NoSuchKey12345",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE h=NULL;
+    NTSTATUS st=NtOpenKey(&h,KEY_READ,&oa);
+    ASSERT(st==STATUS_OBJECT_NAME_NOT_FOUND);
+    // also query missing value
+    make_us(&us,"\\Registry\\User\\Software\\ntpers_probe_missval",wbuf1,sizeof(wbuf1)); oa=make_oa(&us);
+    HANDLE hk; ULONG disp; st=NtCreateKey(&hk,KEY_ALL_ACCESS,&oa,0,NULL,0,&disp); ASSERT_STATUS(st,STATUS_SUCCESS);
+    WCHAR wn[64]; UNICODE_STRING vus; make_us(&vus,"NoSuchValue",wn,sizeof(wn));
+    char out[64]; ULONG rlen=0;
+    st=NtQueryValueKey(hk,&vus,KeyValuePartialInformation,out,sizeof(out),&rlen);
+    ASSERT(st==STATUS_OBJECT_NAME_NOT_FOUND);
+    ObCloseHandle(proc,hk);
+    HANDLE hd; make_us(&us,"\\Registry\\User\\Software\\ntpers_probe_missval",wbuf1,sizeof(wbuf1)); oa=make_oa(&us);
+    st=NtOpenKey(&hd,KEY_ALL_ACCESS,&oa); ASSERT_STATUS(st,STATUS_SUCCESS); NtDeleteKey(hd); ObCloseHandle(proc,hd);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
+/* Test 6: NtQueryKey small buffer sets ReturnLength */
+static void test_querykey_small(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1005,"regqkey");
+    struct nt_ethread *thr=make_thread(proc,6);
+    UNICODE_STRING us; make_us(&us,"\\Registry\\User\\Software\\ntpers_probe_qkey",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE hk; ULONG disp; NTSTATUS st=NtCreateKey(&hk,KEY_ALL_ACCESS,&oa,0,NULL,0,&disp); ASSERT_STATUS(st,STATUS_SUCCESS);
+    for(ULONG cls=0;cls<4;cls++){
+        char buf[512]; ULONG rlen=0xDEADBEEF;
+        st=NtQueryKey(hk,cls,buf,sizeof(buf),&rlen);
+        ASSERT_STATUS(st,STATUS_SUCCESS); ASSERT(rlen!=0xDEADBEEF && rlen>0);
+        char small[4]; ULONG rlen2=0xDEADBEEF;
+        NTSTATUS stSmall=NtQueryKey(hk,cls,small,4,&rlen2);
+        if(cls==3) ASSERT_STATUS(stSmall, STATUS_BUFFER_OVERFLOW);
+        else ASSERT_STATUS(stSmall, STATUS_BUFFER_TOO_SMALL);
+        ASSERT(rlen2!=0xDEADBEEF && rlen2==rlen);
+    }
+    ObCloseHandle(proc,hk);
+    HANDLE hd; make_us(&us,"\\Registry\\User\\Software\\ntpers_probe_qkey",wbuf1,sizeof(wbuf1)); oa=make_oa(&us);
+    st=NtOpenKey(&hd,KEY_ALL_ACCESS,&oa); ASSERT_STATUS(st,STATUS_SUCCESS); NtDeleteKey(hd); ObCloseHandle(proc,hd);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
+/* Test 7: enumerate past end */
+static void test_enumerate_past(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1006,"regen");
+    struct nt_ethread *thr=make_thread(proc,7);
+    UNICODE_STRING us; make_us(&us,"\\Registry\\Machine\\Software",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE hm; NTSTATUS st=NtOpenKey(&hm,KEY_READ,&oa); ASSERT_STATUS(st,STATUS_SUCCESS);
+    char buf[512]; ULONG rlen=0;
+    st=NtEnumerateKey(hm, 9999, KeyBasicInformation, buf, sizeof(buf), &rlen);
+    ASSERT_STATUS(st, STATUS_NO_MORE_ENTRIES);
+    ObCloseHandle(proc,hm);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
+/* Test 8: HKLM write denied vs read allowed */
+static void test_access_denied(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1007,"regaccess");
+    struct nt_ethread *thr=make_thread(proc,8);
+    UNICODE_STRING us; make_us(&us,"\\Registry\\Machine\\Software",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE hro, hrw;
+    NTSTATUS st=NtOpenKey(&hro, KEY_READ, &oa);
+    ASSERT_STATUS(st,STATUS_SUCCESS); ObCloseHandle(proc,hro);
+    st=NtOpenKey(&hrw, KEY_WRITE, &oa);
+    ASSERT_STATUS(st,STATUS_ACCESS_DENIED);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
+/* Test 9: WOW64 flags both return 0 */
+static void test_wow64(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1008,"regwow");
+    struct nt_ethread *thr=make_thread(proc,9);
+    UNICODE_STRING us; make_us(&us,"\\Registry\\Machine\\Software",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE h32,h64;
+    NTSTATUS st=NtOpenKey(&h32, KEY_READ|KEY_WOW64_32KEY, &oa); ASSERT_STATUS(st,STATUS_SUCCESS); ObCloseHandle(proc,h32);
+    st=NtOpenKey(&h64, KEY_READ|KEY_WOW64_64KEY, &oa); ASSERT_STATUS(st,STATUS_SUCCESS); ObCloseHandle(proc,h64);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
+/* Test 10: delete verify + enumerate value + deletevalue + flush */
+static void test_delete_and_enum(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1009,"regdel");
+    struct nt_ethread *thr=make_thread(proc,10);
+    UNICODE_STRING us; make_us(&us,"\\Registry\\User\\Software\\ntpers_probe_del",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE hk; ULONG disp; NTSTATUS st=NtCreateKey(&hk,KEY_ALL_ACCESS,&oa,0,NULL,0,&disp); ASSERT_STATUS(st,STATUS_SUCCESS);
+    WCHAR wn[64]; UNICODE_STRING vus; make_us(&vus,"ToDelete",wn,sizeof(wn));
+    uint8_t data[]="todelete";
+    st=NtSetValueKey(hk,&vus,0,REG_SZ,data,sizeof(data)); ASSERT_STATUS(st,STATUS_SUCCESS);
+    st=NtDeleteValueKey(hk,&vus); ASSERT_STATUS(st,STATUS_SUCCESS);
+    char out[64]; ULONG rlen;
+    st=NtQueryValueKey(hk,&vus,KeyValuePartialInformation,out,sizeof(out),&rlen); ASSERT(st==STATUS_OBJECT_NAME_NOT_FOUND);
+    // enumerate value should be no more entries now
+    char ebuf[64]; ULONG elen;
+    st=NtEnumerateValueKey(hk,0,KeyValueBasicInformation,ebuf,sizeof(ebuf),&elen);
+    ASSERT(st==STATUS_NO_MORE_ENTRIES);
+    // set two values and enumerate
+    WCHAR wn1[64], wn2[64]; UNICODE_STRING v1,v2;
+    make_us(&v1,"A",wn1,sizeof(wn1)); make_us(&v2,"B",wn2,sizeof(wn2));
+    st=NtSetValueKey(hk,&v1,0,REG_SZ,(uint8_t*)"a",2); ASSERT_STATUS(st,STATUS_SUCCESS);
+    st=NtSetValueKey(hk,&v2,0,REG_SZ,(uint8_t*)"b",2); ASSERT_STATUS(st,STATUS_SUCCESS);
+    st=NtEnumerateValueKey(hk,0,KeyValueBasicInformation,ebuf,sizeof(ebuf),&elen); ASSERT_STATUS(st,STATUS_SUCCESS);
+    st=NtEnumerateValueKey(hk,1,KeyValueBasicInformation,ebuf,sizeof(ebuf),&elen); ASSERT_STATUS(st,STATUS_SUCCESS);
+    st=NtEnumerateValueKey(hk,2,KeyValueBasicInformation,ebuf,sizeof(ebuf),&elen); ASSERT_STATUS(st,STATUS_NO_MORE_ENTRIES);
+    st=NtFlushKey(hk); ASSERT_STATUS(st,STATUS_SUCCESS);
+    ObCloseHandle(proc,hk);
+    HANDLE hd; make_us(&us,"\\Registry\\User\\Software\\ntpers_probe_del",wbuf1,sizeof(wbuf1)); oa=make_oa(&us);
+    st=NtOpenKey(&hd,KEY_ALL_ACCESS,&oa); ASSERT_STATUS(st,STATUS_SUCCESS);
+    NtDeleteKey(hd); ObCloseHandle(proc,hd);
+    HANDLE hcheck; st=NtOpenKey(&hcheck,KEY_READ,&oa); ASSERT(st==STATUS_OBJECT_NAME_NOT_FOUND);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
+int main(void){
+    printf("registry shim tests starting\n");
+    ntreg_init();
+    struct { void (*fn)(void); const char *name; } tests[] = {
+        {test_disposition,"disposition"},
+        {test_nine_types,"nine_types"},
+        {test_embed_nul,"embed_nul"},
+        {test_1mb,"1mb"},
+        {test_missing_key,"missing_key"},
+        {test_querykey_small,"querykey_small"},
+        {test_enumerate_past,"enumerate_past"},
+        {test_access_denied,"access_denied"},
+        {test_wow64,"wow64"},
+        {test_delete_and_enum,"delete_and_enum"},
+    };
+    for(size_t i=0;i<sizeof(tests)/sizeof(tests[0]);i++){
+        printf(" RUN %s\n",tests[i].name);
+        tests[i].fn();
+    }
+    printf("registry tests: %d passed, %d failed\n",g_pass,g_fail);
+    if(g_fail) return 1;
+    long leaks=atomic_load(&kshim_alloc_count);
+    printf("alloc_count at exit: %ld\n",leaks);
+    ntreg_cleanup();
+    ObCleanupObjectManager();
+    long after=atomic_load(&kshim_alloc_count);
+    printf("alloc_count after cleanup: %ld\n",after);
+    if(after!=0){ fprintf(stderr,"LEAK %ld\n",after); return 1; }
+    return 0;
+}

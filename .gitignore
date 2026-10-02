@@ -1,0 +1,13 @@
+reports/
+evidence/
+logs/
+images/
+*.o
+*.a
+*.so
+*.exe
+*.dll
+*.pdb
+*.pyc
+__pycache__/
+.env*

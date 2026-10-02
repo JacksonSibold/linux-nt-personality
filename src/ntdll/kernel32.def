@@ -1,0 +1,24 @@
+LIBRARY kernel32
+EXPORTS
+    GetStdHandle
+    WriteFile
+    ReadFile
+    CreateFileW
+    CloseHandle
+    ExitProcess
+    GetLastError
+    SetLastError
+    VirtualAlloc
+    VirtualFree
+    VirtualProtect
+    GetProcAddress
+    LoadLibraryW
+    LoadLibraryA
+    HeapAlloc
+    HeapFree
+    GetProcessHeap
+    HeapReAlloc
+    HeapSize
+    DllMain
+    _DllMainCRTStartup@12
+    DllMainCRTStartup

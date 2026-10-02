@@ -1,0 +1,27 @@
+LIBRARY kernelbase
+EXPORTS
+    DllMain
+    _DllMainCRTStartup@12
+    DllMainCRTStartup
+    CloseHandle=kernel32.CloseHandle
+    CreateFileW=kernel32.CreateFileW
+    CreateFileA=kernel32.CreateFileA
+    VirtualAlloc=kernel32.VirtualAlloc
+    VirtualFree=kernel32.VirtualFree
+    VirtualProtect=kernel32.VirtualProtect
+    VirtualQuery=kernel32.VirtualQuery
+    GetLastError=kernel32.GetLastError
+    SetLastError=kernel32.SetLastError
+    GetProcAddress=kernel32.GetProcAddress
+    LoadLibraryA=kernel32.LoadLibraryA
+    LoadLibraryW=kernel32.LoadLibraryW
+    HeapAlloc=kernel32.HeapAlloc
+    HeapFree=kernel32.HeapFree
+    GetProcessHeap=kernel32.GetProcessHeap
+    GetStdHandle=kernel32.GetStdHandle
+    WriteFile=kernel32.WriteFile
+    ReadFile=kernel32.ReadFile
+    ExitProcess=kernel32.ExitProcess
+    Sleep=kernel32.Sleep
+    GetCurrentProcess=kernel32.GetCurrentProcess
+    GetCurrentThread=kernel32.GetCurrentThread

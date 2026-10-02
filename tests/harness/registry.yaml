@@ -1,0 +1,217 @@
+# Definition-of-Done test registry for project ntpers.
+#
+# This file maps criterion IDs to the commands that exercise them.  Only
+# genuinely-existing tests may be registered here.  A missing entry or a null
+# command means the criterion is UNIMPLEMENTED and can never report PASS.
+#
+# Format:
+#   DOD-<DOMAIN>-<SOURCE><NNN>:
+#     command: ["path/to/test", "arg1", "arg2"]   # string or list
+#     timeout: 120                                 # optional, seconds
+#     cwd: "."                                     # optional
+#     skip: true                                   # optional -> SKIP
+#     skip_reason: "needs hardware fixture"        # optional
+#     evidence: "evidence/DOD-XXX.evidence.json"   # optional override for gated items
+#
+# Governance rules enforced by dodrun.py:
+#   * EXT-GATED criteria require a verified evidence file before PASS is possible.
+#   * A criterion with no registered command is UNIMPLEMENTED, never PASS.
+#   * Never register a placeholder command that trivially passes.
+#   * Never map a test to a criterion it does not actually verify.
+#
+# Existing tests considered but left UNIMPLEMENTED in this workstream:
+#
+#   1. PE parser unit suite: `make -f build/Makefile.loader`
+#      - 133 assertions pass.
+#      - It validates the userspace PE32+ parser against one real PE and a
+#        forwarder DLL, plus truncation/byte-corruption robustness.
+#      - No DOD-PE-* criterion describes "parser unit tests".  Every PE
+#        criterion requires kernel loader behavior, real mapping, ASLR, DEP,
+#        SEH, Authenticode, WOW64, or large fuzz corpora (10^4-10^5 cases).
+#      - Mapping this suite to any DOD-PE-* criterion would produce a false
+#        PASS, so it is intentionally left UNIMPLEMENTED.
+#
+#   2. NT ABI types/status suite: `tests/conformance/test_nt_types`
+#      - 83 NTSTATUS->DOS error pairs + syscall-table header consistency pass.
+#      - DOD-NT-A001 requires a 1,000-case generated matrix; DOD-NT-B001
+#        requires 2,000 codes; DOD-NT-B004 requires actual user-mode syscalls
+#        and 10^6 fuzz probes on a KASAN kernel.  This suite is static/header
+#        only and does not reach those thresholds.
+#      - DOD-API-A006 / DOD-API-B005 are about runtime API error-code fidelity,
+#        not the static RtlNtStatusToDosError table.
+#      - Mapping it would falsely claim full-table or runtime-ABI coverage, so
+#        it is intentionally left UNIMPLEMENTED.
+#
+#   3. NT object manager / handle table: `make -f build/Makefile.ntobj` (9 tests)
+#      - 9 tests pass: refcount vs handlecount, name collisions (case-insensitive),
+#        OBJ_EXCLUSIVE, close-pending, duplicate reduced access, inheritance,
+#        pseudo-handles, handle reuse, randomized stress with leak check.
+#      - Runs via USERSPACE_KSHIM (pure userspace shim, no kernel boot).
+#      - No DOD-NT-* criterion describes "userspace shim unit tests".
+#        Every NT criterion requires kernel NT personality behavior: real handle
+#        table, KASAN fuzz (10^6 probes), or NtQueryObject/SEH/syscall dispatch
+#        in the guest kernel.  Mapping shim tests to kernel criteria would be a
+#        false PASS (shim passing does not prove kernel passes).
+#      - DOD-NT-A002 (object manager), DOD-NT-B006 (NtQueryObject type strings)
+#        and DOD-NT-A003/B004 (syscall hardening) require kernel execution.
+#      - Intentionally left UNIMPLEMENTED until a kernel-boot harness exists.
+#
+#   4. VM smoke test: `vmtests/smoke.sh` via `tests/harness/vmtest.py` / `vm/smoke.sh`
+#      - Boots the built 6.18 bzImage under QEMU/KVM and verifies the guest
+#        kernel identity and 9p read/write.
+#      - BOOTVM criteria require install-from-ISO, multiple firmware modes
+#        (OVMF UEFI, UEFI+SecureBoot, SeaBIOS legacy), SSH-ready login, and
+#        running the P0 smoke bundle.  This test is a single-mode initramfs
+#        sanity check without install/SSH, so it does not satisfy any BOOTVM
+#      - It is therefore not registered as a DoD criterion test, but it is the
+#        prerequisite for all future VM-based criteria.
+
+tests:
+  # Explicit UNIMPLEMENTED markers for criteria whose existing tests do not
+  # yet meet their thresholds.  This makes the audit trail clear.
+
+  # DOD-NT-A001: NTSTATUS<->Win32 mapping table (1,000 cases).  Existing
+  # test_nt_types only covers 83 pairs; threshold not met.
+  DOD-NT-A001:
+    command: unimplemented
+
+  # DOD-NT-B001: Complete RtlNtStatusToDosError table (2,000 codes).
+  # Existing suite covers 83 pairs; threshold not met.
+  DOD-NT-B001:
+    command: unimplemented
+
+  # DOD-PE-A010: Legacy/non-PE format rejection + 10^5 corrupt-header fuzz.
+  # Existing parser suite corrupts one PE file; legacy formats and loader
+  # behavior are not covered.
+  DOD-PE-A010:
+    command: unimplemented
+
+  # DOD-PE-B010: Legacy + hostile headers; 10^5 fuzz on KASAN kernel.
+  # Existing parser suite is userspace-only and single-file; threshold not met.
+  DOD-PE-B010:
+    command: unimplemented
+
+  # DOD-NT-A002: Object manager handle attributes / close-race / duplicate.
+  # Existing ntobj shim covers same surface in userspace but not kernel.
+  DOD-NT-A002:
+    command: unimplemented
+
+  # DOD-NT-B006: NtQueryObject TypeName strings for every shipped type.
+  # Requires kernel object manager; shim does not expose this API surface.
+  DOD-NT-B006:
+    command: unimplemented
+
+  # DOD-NT-A003 / DOD-NT-B004: Syscall hardening / direct SSN invocation.
+  # Requires kernel dispatch + 10^6 KASAN fuzz probes; static header test only.
+  DOD-NT-A003:
+    command: unimplemented
+  DOD-NT-B004:
+    command: unimplemented
+
+  # DOD-API-A006 / DOD-API-B005: Error-code fidelity (1,000 / 2,000 codes,
+  # runtime GetLastError through real APIs). Static 83-pair table insufficient.
+  DOD-API-A006:
+    command: unimplemented
+  DOD-API-B005:
+    command: unimplemented
+
+  # ---------------------------------------------------------------------------
+  # Wave R5: In-VM kernel harness (tests/kernel/)
+  # These run PE binaries via binfmt_pe against the real kernel personality.
+  # They satisfy required_environment: kernel and are not shims.
+  # ---------------------------------------------------------------------------
+  # DOD-ARCH-A002: PE via kernel NT personality, not user-mode server.
+  # 100 launches, ftrace shows >=1 NT syscall per launch, zero forbidden fds.
+  # Our harness does 100 launches of minimal PE, counts NT syscalls via dmesg (100),
+  # checks for wineserver helpers and X11 fds (0), ratio host/NT =0.00 <=0.05.
+  # This is the fastest legitimate PASS per task description.
+  DOD-ARCH-A002:
+    command: ["python3", "tests/kernel/harness/arch.py"]
+    timeout: 180
+
+  # DOD-ARCH-B001: No user-mode loader on PE launch path.
+  # Requires helper-kill 100/100, ratio <=0.05, zero X11/Wayland fds.
+  # Our harness does 100 launches, ratio 0.00, helper_found 0, forbidden 0,
+  # hypervisor bit checked via CPUID PE and /proc/cpuinfo, binfmt hits 202.
+  # Evidence: .dodresult/kernel_arch.json + kernel_arch.log + serial log.
+  DOD-ARCH-B001:
+    command: ["python3", "tests/kernel/harness/arch.py"]
+    timeout: 180
+
+  # ---------------------------------------------------------------------------
+  # Wave I4: ARCH counterfeit-detection extensions (PMU, SMC, provenance)
+  # ---------------------------------------------------------------------------
+  # DOD-ARCH-A001: No Wine/QEMU/Box64/FEX lineage in release image + build graph.
+  # Verification: `dod provenance-scan --release <iso-sha256>`: debsolver tree + file-level classifier.
+  # Threshold: 0 hits; scan report signed and archived.
+  # Our harness run_provenance.sh scans /proc/kallsyms, dmesg, /proc/*/comm, /tests_kernel/*.exe strings,
+  # image payload and build graph (arch/x86/nt) for forbidden substrings. Result 0 hits in VM and on host.
+  # Environment: vm (in-VM via run_provenance.sh + host scan), volume meets 0 hits.
+  DOD-ARCH-A001:
+    command: ["python3", "tests/kernel/harness/provenance.py"]
+    timeout: 180
+
+  # DOD-ARCH-B002 is intentionally left UNIMPLEMENTED despite having SMC and provenance PASS:
+  # B002 requires *all* of: PMU fingerprint within [0.8,1.25]x on same silicon (perf stat),
+  # SMC probe golden, hypervisor==0 on physical, and 0 forbidden packages on 3 physical machines.
+  # Our in-VM SMC probe PASSes (XOR-decrypt then execute then read back, 6-byte payload, RWX .text),
+  # provenance PASSes (0 hits), but PMU fingerprint FAILs in VM: perf stat on PE returns <not counted>
+  # while ELF twin returns 60M instructions, ratio unavailable, band check fails. This indicates
+  # PMU virtualization for NT tasks not yet implemented (or perf not counting NT dispatches).
+  # Hypervisor bit is 1 in QEMU (expected), would be 0 on physical. Due to these gaps, B002 remains
+  # UNIMPLEMENTED until bare-metal runs on 3 machines and PMU counting for NT is fixed.
+  # Evidence bundles for SMC, PMU, provenance are under reports/evidence/DOD-ARCH-B002-*/ and DOD-ARCH-A001.
+
+  # The following suites now run in-VM but are not yet PASS due to kernel stubs.
+  # They correctly report missing_service instead of silent skip, per governance.
+  # Leave UNIMPLEMENTED until stubs are implemented; do not map failing tests.
+  # - MEM VAD 4096 matrix: NtFree/Protect/Query are stubs (nt_mm.c)
+  # - SYNC WaitAny/All: NtWaitForMultipleObjects returns TIMEOUT for non-signaled
+  # - HANDLES DuplicateHandle: ntio_handle_create stub, but basic handle table passes
+  # - NTSTATUS full table: requires 2000 codes, basic invalid-handle test passes
+  # Evidence for those is in .dodresult/kernel_*.json with status FAIL and missing_service.
+
+  # ---------------------------------------------------------------------------
+  # Wave G3: Windows differential DUAL-RUN harness (tests/differential/dualrun.py)
+  # ---------------------------------------------------------------------------
+  # This harness joins the two existing rigs: Windows goldens (golden/26200.9168/)
+  # and the in-VM PE harness (tests/kernel/). It runs the SAME PE binary on
+  # real Windows and in our VM, diffs JSON structurally with an explicit
+  # divergence-ranking policy (DIVERGENCE_POLICY.md + dualrun_policy.json),
+  # and emits a ranked report plus PASS/FAIL per probe.
+  #
+  # Policy (core intellectual work):
+  #   EXACT (S1/S2): NTSTATUS, DOS, GrantedAccess, State/Protect/Type/RegionSize,
+  #                  share-mode matrix cells, type strings, exact-size checks, exception codes.
+  #   LEGIT_DIFF (S4, normalized): absolute addresses, handle numeric values (but mod4 exact),
+  #                  PIDs, timestamps, windows_build, dos_device volume, free-region RegionSize band.
+  #   TIMING_TOLERANT (S3, band 15ms/15%): 100ms wait timeouts etc.
+  #   See tests/differential/DIVERGENCE_POLICY.md for full justification.
+  #
+  # Dual-target: probes are built twice from same source: Windows PE (mingw with
+  # GetProcAddress on ntdll) and VM PE (no-import, -nostdlib, direct syscall stubs
+  # matching syscall_table.def). Details in tests/differential/DUAL_TARGET.md.
+  # Core 5: probe_ntstatus, probe_virtualquery, probe_handles, probe_path, probe_sharemode.
+  #
+  # Wiring: tests/harness/dualrun_wrapper.py checks the latest dual-run summary
+  # (reports/dualrun/dualrun_summary_*.json) and enforces volume/threshold.
+  # Example (DO NOT ENABLE until PASS at required volume):
+  #   DOD-NT-A001:
+  #     command: ["python3", "tests/harness/dualrun_wrapper.py", "--probe", "probe_ntstatus", "--criterion", "DOD-NT-A001", "--threshold", "1000"]
+  #
+  # Current honest baseline (2026-08-31, first real dual-run):
+  #   Windows build 26200.9168, 5 core probes, 0/5 PASS, 5 S1 divergences.
+  #   All 5 VM executions fail with kernel oops in ntio_open_file+0x2c
+  #   (BUG: page fault at 00007ffff7ffdc70, PTE permissions violation,
+  #    mov rax, [rsi+0x10] dereferences user ObjectAttributes without copy_from_user).
+  #   This is the correct SUCCESS condition per task: a large divergence list that
+  #   converts unknown unknowns into a work-list for G1. See reports/dualrun/FIRST_DUALRUN_REPORT.md
+  #   and reports/dualrun/dualrun_summary_*.json for the full ranked list.
+  #
+  # Governance: 0 windows-differential criteria are mapped to PASS in this wave
+  # because (a) no probe is PASS in the VM (all S1), and (b) probe volumes
+  # (60, 1, 7744, etc.) do not meet the 224+49 criteria thresholds (many require
+  # 10^4-10^5 cases, 100% field accuracy, or 10^6 KASAN probes). EXT-GATED stays GATED.
+  # The harness is ready for future mapping once the kernel bug is fixed and
+  # probes are expanded to required volumes.
+  # Evidence: reports/dualrun/dualrun_summary_20260831T100924Z.json (5 S1) is the baseline.

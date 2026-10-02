@@ -1,0 +1,3 @@
+EXPORTS
+    RealExport
+    ForwardedExport = KERNEL32.WriteFile
