@@ -1,26 +1,20 @@
 """Unit tests for build/validate_criteria.py.
 
-The script has no functions and no __main__ guard, and it hard-codes an
-absolute path to criteria.json at module level. Tests therefore:
-
-  1. write a small criteria.json fixture to a temp directory,
-  2. copy the script into the same temp directory with ONLY that hard-coded
-     path rewritten to the fixture, and
-  3. run the copy as a subprocess and check its printed summary.
-
-The validation logic itself is not modified by this process.
+The script has no functions and no __main__ guard. It reads
+<root>/tests/conformance/criteria.json, where <root> is the NTPERS_ROOT
+environment variable when set, and the parent of build/ otherwise. Tests write
+a small criteria.json fixture into a temporary root, set NTPERS_ROOT to it, and
+run the real script as a subprocess. The script file is never copied or edited.
 """
 import json
+import os
 import pathlib
-import re
 import subprocess
 import sys
 import tempfile
 import unittest
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[2] / "build" / "validate_criteria.py"
-
-PATH_PATTERN = re.compile(r'^P = \(\s*"[^"]*"\s*"[^"]*"\s*\)', re.MULTILINE)
 
 
 def entry(**overrides):
@@ -42,24 +36,30 @@ def entry(**overrides):
 def run_validator(entries):
     """Run the validator on a fixture. Returns (returncode, stdout, stderr)."""
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = pathlib.Path(tmp)
-        criteria = tmp_path / "criteria.json"
-        criteria.write_text(json.dumps(entries), encoding="utf-8")
+        root = pathlib.Path(tmp)
+        conf = root / "tests" / "conformance"
+        conf.mkdir(parents=True)
+        (conf / "criteria.json").write_text(json.dumps(entries), encoding="utf-8")
 
-        src = SCRIPT.read_text(encoding="utf-8")
-        patched, n = PATH_PATTERN.subn(lambda m: "P = " + json.dumps(str(criteria)), src)
-        if n != 1:
-            raise AssertionError("could not locate the hard-coded P path in the script")
-        copy = tmp_path / "validate_criteria_copy.py"
-        copy.write_text(patched, encoding="utf-8")
-
+        env = dict(os.environ, NTPERS_ROOT=str(root))
         proc = subprocess.run(
-            [sys.executable, str(copy)], capture_output=True, text=True, encoding="utf-8",
+            [sys.executable, str(SCRIPT)], capture_output=True, text=True,
+            encoding="utf-8", env=env, stdin=subprocess.DEVNULL,
         )
         return proc.returncode, proc.stdout, proc.stderr
 
 
 class ValidateCriteriaTests(unittest.TestCase):
+
+    def test_default_root_is_the_repository_containing_the_script(self):
+        env = {k: v for k, v in os.environ.items() if k != "NTPERS_ROOT"}
+        env["PYTHONIOENCODING"] = "utf-8"  # real criteria text contains non-ASCII
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT)], capture_output=True, text=True,
+            encoding="utf-8", env=env, stdin=subprocess.DEVNULL,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("valid JSON. entries:", proc.stdout)
 
     def test_clean_fixture_reports_no_problems(self):
         rc, stdout, _ = run_validator([
