@@ -81,6 +81,12 @@ static void u32_hex(char *out, ULONG v){ const char *h="0123456789abcdef"; out[0
 static void u64_dec(char *out, ULONGLONG v){ char tmp[32]; int p=0; if(v==0){out[0]='0';out[1]=0;return;} while(v>0){tmp[p++]='0'+(v%10);v/=10;} for(int i=0;i<p;i++) out[i]=tmp[p-1-i]; out[p]=0; }
 static int s_len(const char *s){int n=0; while(s[n]) n++; return n;}
 
+/* Extra NT-path copies of the JSON output (the Windows build captures stdout).
+   Override at build time with -DNTPERS_STAGE_NT=... */
+#ifndef NTPERS_STAGE_NT
+#define NTPERS_STAGE_NT "\\??\\mnt\\share\\.dodresult"
+#endif
+
 static void write_file_nt(const char *path, const char *buf, int len){
     WCHAR wpath[1024]; int i=0; while(path[i]&&i<1023){wpath[i]=(WCHAR)path[i]; i++;} wpath[i]=0;
     for(int j=0;j<i;j++) if(wpath[j]=='/') wpath[j]='\\';
@@ -296,8 +302,8 @@ void _start(void){
     write_file_nt("\\??\\mnt\\share\\.dodresult\\probe_sharemode.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_sharemode.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_sharemode_direct.json", json, jpos);
-    write_file_nt("\\??\\C:\\Users\\Jackson\\AppData\\Local\\Temp\\opencode\\probe_sharemode_direct.json", json, jpos);
-    write_file_nt("\\??\\C:\\Users\\Jackson\\AppData\\Local\\Temp\\opencode\\probe_sharemode.json", json, jpos);
+    write_file_nt(NTPERS_STAGE_NT "\\probe_sharemode_direct.json", json, jpos);
+    write_file_nt(NTPERS_STAGE_NT "\\probe_sharemode.json", json, jpos);
     NtTerminateProcess(NtCurrentProcess(),0);
     __asm__ volatile("mov $60, %%eax; mov $0, %%edi; syscall" ::: "rax","rdi");
     while(1){}

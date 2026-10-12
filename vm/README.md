@@ -2,6 +2,8 @@
 
 This directory contains the VM and kernel build infrastructure for the NT personality.
 
+Commands below use `$NTPERS_ROOT`, the repository root as a WSL path (for example `/mnt/c/<your-checkout>`). Export it before running them.
+
 ## Quick Start for Agents
 
 **You must run these two scripts - no exceptions.**
@@ -11,7 +13,7 @@ This directory contains the VM and kernel build infrastructure for the NT person
    ```bash
    wsl -d Ubuntu -- bash -c "~/ntpers/linux-6.18/vm/preflight.sh"
    # or from project root via WSL:
-   wsl -d Ubuntu -- bash -c "'/path/to/ntpers-research/vm/preflight.sh'"
+   wsl -d Ubuntu -- bash -c "'$NTPERS_ROOT/vm/preflight.sh'"
    ```
 
    `preflight.sh` verifies:
@@ -25,7 +27,7 @@ This directory contains the VM and kernel build infrastructure for the NT person
 2. **To build the kernel**, use ONLY `kbuild.sh`:
 
    ```bash
-   wsl -d Ubuntu -- bash -c "'/path/to/ntpers-research/vm/kbuild.sh'"
+   wsl -d Ubuntu -- bash -c "'$NTPERS_ROOT/vm/kbuild.sh'"
    # or
    ~/ntpers/linux-6.18/vm/kbuild.sh  # if linked
    ```

@@ -12,12 +12,15 @@
 # Under MSYS2 make does not see the OS variable, so also check uname.
 UNAME_S := $(shell uname -s 2>/dev/null)
 ifneq (,$(filter Windows_NT,$(OS))$(filter MINGW% MSYS% CYGWIN%,$(UNAME_S)))
-# Same exports as C:/Users/Jackson/repos/TOOLCHAIN.md. Without TMP the link
-# step fails with "Cannot create temporary file in C:\WINDOWS\". The recipe
-# shell does not reliably inherit them, hence the exports here.
-export TMP    := C:/Users/Jackson/AppData/Local/Temp
-export TEMP   := C:/Users/Jackson/AppData/Local/Temp
-export TMPDIR := /c/Users/Jackson/AppData/Local/Temp
+# Same exports as the toolchain notes (TOOLCHAIN.md, kept outside the repo).
+# Without TMP the link step fails with "Cannot create temporary file in
+# C:\WINDOWS\". The recipe shell does not reliably inherit them, hence the
+# exports here. TEMP_DIR defaults to the per-user temp directory; override it
+# in the environment if needed.
+TEMP_DIR ?= $(if $(LOCALAPPDATA),$(shell cygpath -m "$(LOCALAPPDATA)/Temp"),C:/Temp)
+export TMP    := $(TEMP_DIR)
+export TEMP   := $(TEMP_DIR)
+export TMPDIR := $(shell cygpath -u "$(TEMP_DIR)")
 EXE_SUFFIX := .exe
 else
 EXE_SUFFIX :=

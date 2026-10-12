@@ -137,14 +137,11 @@ int main(int argc, char *argv[]) {
         // No args: test good corpus automatically
         printf("  \"results\": [\n");
         const char *defaults[] = {
-            "C:\\Users\\Jackson\\Desktop\\02 - Personal\\winapi-native-os\\tmp_test_dummy",
             NULL
         };
-        // Try to probe default corpus if exists via /tmp/pecorpus mapped to C:\Users\...\AppData\Local\Temp\opencode?
         // We'll probe the actual files if they exist
         const char *candidates[] = {
             "C:\\tmp\\pecorpus\\pe_smoke.exe",
-            "C:\\Users\\Jackson\\AppData\\Local\\Temp\\opencode\\pe_smoke.exe",
             NULL
         };
         // Just emit placeholder - caller should pass explicit path

@@ -29,14 +29,15 @@ function Build-Probes {
     $null = New-Item -ItemType Directory -Force -Path $BuildDir
     $staging = Join-Path $env:LOCALAPPDATA "Temp\opencode"
     $null = New-Item -ItemType Directory -Force -Path $staging
+    $stageWsl = (wsl wslpath -u $staging | Out-String).Trim()
      $probes = @("probe_ntstatus","probe_teb_peb","probe_virtualquery","probe_handles","probe_sharemode","probe_peloader","probe_sync","probe_process_thread","probe_section","probe_path","probe_exception","probe_registry","probe_namedpipe","probe_directory","probe_fileinfo")
      if ($Probe -ne "all") { $probes = @($Probe) }
      foreach ($p in $probes) {
         $srcWin = Join-Path $ProbeDir "$p.c"
         Copy-Item -LiteralPath $srcWin -Destination (Join-Path $staging "$p.c") -Force
         Write-Host "  CC $p.c -> $p.exe" -ForegroundColor Gray
-        wsl bash -c "cp /mnt/c/Users/Jackson/AppData/Local/Temp/opencode/$p.c /tmp/$p.c && x86_64-w64-mingw32-gcc -Wall -Wextra -O2 -std=c11 -m64 -o /tmp/$p.exe /tmp/$p.c 2>&1; echo EXIT:`$?" | Write-Host
-        wsl bash -c "cp /tmp/$p.exe /mnt/c/Users/Jackson/AppData/Local/Temp/opencode/$p.exe 2>&1; ls -lh /tmp/$p.exe 2>&1" | Write-Host
+        wsl bash -c "cp $stageWsl/$p.c /tmp/$p.c && x86_64-w64-mingw32-gcc -Wall -Wextra -O2 -std=c11 -m64 -o /tmp/$p.exe /tmp/$p.c 2>&1; echo EXIT:`$?" | Write-Host
+        wsl bash -c "cp /tmp/$p.exe $stageWsl/$p.exe 2>&1; ls -lh /tmp/$p.exe 2>&1" | Write-Host
         Copy-Item -LiteralPath (Join-Path $staging "$p.exe") -Destination (Join-Path $BuildDir "$p.exe") -Force
         $exePath = Join-Path $BuildDir "$p.exe"
         if (-not (Test-Path $exePath)) {

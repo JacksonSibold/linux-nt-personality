@@ -167,6 +167,12 @@ static long linux_close(int fd){ return -1; }
 #define PAGE_READWRITE 0x04
 
 static int s_len(const char *s){int n=0;while(s[n])n++;return n;}
+/* Extra NT-path copies of the JSON output (the Windows build captures stdout).
+   Override at build time with -DNTPERS_STAGE_NT=... */
+#ifndef NTPERS_STAGE_NT
+#define NTPERS_STAGE_NT "\\??\\mnt\\share\\.dodresult"
+#endif
+
 static void write_file_nt(const char *path, const char *buf, int len){
     WCHAR wpath[1024]; int i=0; while(path[i]&&i<1023){wpath[i]=(WCHAR)path[i]; i++;} wpath[i]=0;
     for(int j=0;j<i;j++) if(wpath[j]=='/') wpath[j]='\\';
@@ -524,8 +530,8 @@ static void do_probe(void){
     write_file_nt("\\??\\mnt\\share\\.dodresult\\probe_sync.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_sync.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_sync_direct.json", json, jpos);
-    write_file_nt("\\??\\C:\\Users\\Jackson\\Desktop\\02 - Personal\\winapi-native-os\\.dodresult\\probe_sync_direct_win.json", json, jpos);
-    write_file_nt("\\??\\C:\\Users\\Jackson\\Desktop\\02 - Personal\\winapi-native-os\\.dodresult\\dualrun_win_probe_sync_direct.json", json, jpos);
+    write_file_nt(NTPERS_STAGE_NT "\\probe_sync_direct_win.json", json, jpos);
+    write_file_nt(NTPERS_STAGE_NT "\\dualrun_win_probe_sync_direct.json", json, jpos);
     NtTerminateProcess(NtCurrentProcess(),0);
 #ifdef NTPERS_VM
     __asm__ volatile("mov $60, %%eax; mov $0, %%edi; syscall" ::: "rax","rdi");

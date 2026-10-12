@@ -169,7 +169,7 @@ int main(int argc, char **argv) {
         path = "../../tests/differential/golden/latest/probe_ntstatus.json";
         test = fopen(path, "rb");
         if (!test) {
-            path = "C:/Users/Jackson/Desktop/02 - Personal/winapi-native-os/tests/differential/golden/latest/probe_ntstatus.json";
+            if(getenv("NTPERS_ROOT")){ static char alt[1024]; snprintf(alt,sizeof alt,"%s/tests/differential/golden/latest/probe_ntstatus.json",getenv("NTPERS_ROOT")); path=alt; }
             test = fopen(path, "rb");
         }
     }

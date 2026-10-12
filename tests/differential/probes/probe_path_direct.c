@@ -123,6 +123,12 @@ static ULONG RtlNtStatusToDosError(NTSTATUS Status){
 static void u32_hex(char *out, ULONG v){ const char *h="0123456789abcdef"; out[0]='0'; out[1]='x'; for(int i=0;i<8;i++) out[2+i]=h[(v>> (28-i*4))&0xF]; out[10]=0; }
 static void s_hex32(char *out, long v){ const char *h="0123456789abcdef"; unsigned long uv=(unsigned long)v; out[0]='0'; out[1]='x'; for(int i=0;i<8;i++) out[2+i]=h[(uv>> (28-i*4))&0xF]; out[10]=0; }
 static int s_len(const char *s){int n=0; while(s[n]) n++; return n;}
+/* Extra NT-path copies of the JSON output (the Windows build captures stdout).
+   Override at build time with -DNTPERS_STAGE_NT=... */
+#ifndef NTPERS_STAGE_NT
+#define NTPERS_STAGE_NT "\\??\\mnt\\share\\.dodresult"
+#endif
+
 static void write_file_nt(const char *path, const char *buf, int len){
     WCHAR wpath[1024]; int i=0; while(path[i]&&i<1023){wpath[i]=(WCHAR)path[i]; i++;} wpath[i]=0;
     for(int j=0;j<i;j++) if(wpath[j]=='/') wpath[j]='\\';
@@ -432,9 +438,9 @@ static void do_probe(void){
     write_file_nt("\\??\\mnt\\share\\.dodresult\\probe_path.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_path.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_path_direct.json", json, jpos);
-    write_file_nt("\\??\\C:\\Users\\Jackson\\Desktop\\probe_direct_win.json", json, jpos);
-    write_file_nt("\\??\\C:\\Users\\Jackson\\AppData\\Local\\Temp\\opencode\\probe_path_direct.json", json, jpos);
-    write_file_nt("\\??\\C:\\Users\\Jackson\\AppData\\Local\\Temp\\opencode\\probe_path.json", json, jpos);
+    write_file_nt(NTPERS_STAGE_NT "\\probe_direct_win.json", json, jpos);
+    write_file_nt(NTPERS_STAGE_NT "\\probe_path_direct.json", json, jpos);
+    write_file_nt(NTPERS_STAGE_NT "\\probe_path.json", json, jpos);
     if(hSubdir) NtClose(hSubdir);
     NtTerminateProcess(NtCurrentProcess(),0);
 #ifdef NTPERS_VM
