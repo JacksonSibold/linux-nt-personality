@@ -187,13 +187,14 @@ The code is careful about `copy_from_user` at most service entry points, and the
 
 Fixed in this branch: H-1 (68fe25b), R-1 (0254b09; all eight user-output buffers in registry.c), S-1 (6f58d04), O-1 (30b200a), IO-1 read half (1d160e8). Already correct here, no change: D-1, M-2.
 
-Fixed on branch haiku/adr: IO-1 write half (80b6fea; any-of lookup, `ntio_handle_lookup_any_of`) and IOCP-2 (0b7921b; `NTIO_IOCP_MAX_QUEUED` = 65536). Neither commit has been compiled or run; no C compiler was available on the machine.
+Fixed on branch haiku/adr: IO-1 write half (80b6fea; any-of lookup, `ntio_handle_lookup_any_of`) and IOCP-2 (0b7921b; `NTIO_IOCP_MAX_QUEUED` = 65536). Neither commit has been built in the kernel tree or run.
 
-Not fixed. Each has a design record in `docs/decisions/`:
+Partly fixed: H-2 in d7adc94 (FIFO quarantine of closed slots, record 0003 option 1). The generation counter (option 2) is not implemented, so a stale handle can still alias a reused slot.
+
+Not fixed. Each has a design record in `docs/decisions/` (index: [docs/decisions/INDEX.md](../decisions/INDEX.md)):
 
 - M-1: NtCreateSection returns a kernel address as the handle. Needs a real object-table handle and a type-checked lookup in NtMapViewOfSection. Record 0001 (object-model change).
 - P-1: NtOpenProcess and NtOpenThread have no access or owner check and use the registry result unreferenced. Needs a policy for who may open which process. Record 0002.
-- H-2: closed handle slots are never reused. Recommended: FIFO quarantine now, generation counter later (ABI). Record 0003.
 - M-3: section objects are never freed. Needs an object type with a delete callback; depends on M-1. Record 0004.
 - M-4: VAD rollback on failed commit or decommit. Recommended: validate, preallocate, then mutate. Record 0005.
 - IO-2: file handle table is global. Interim owner field, long-term per-process table. Record 0007 (owner rule for duplicates needs a decision).
