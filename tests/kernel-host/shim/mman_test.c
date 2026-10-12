@@ -47,11 +47,21 @@ static void test_noreplace_refuses_live(void)
 }
 
 /* A range that mixes a hole with never-mapped space is valid for NOREPLACE. */
+/* The range must mix a hole with space that was never mapped. The second half
+ * is not ours to pick: a 64K mapping at NULL can sit right below another
+ * committed allocation (heap growth, loader), and then the 32K past it is not
+ * free. So reserve 128K, release it, and map the first 64K back at that base.
+ * The rest of the 128K is then known to be free, and nothing else runs between
+ * the steps. */
 static void test_hole_plus_free(void)
 {
-    char *a = mmap(NULL, 0x10000, RW, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    CHECK(a != MAP_FAILED, "reserve 64K (mixed)");
-    if (a == MAP_FAILED) return;
+    char *f = mmap(NULL, 0x20000, RW, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(f != MAP_FAILED, "reserve 128K (mixed)");
+    if (f == MAP_FAILED) return;
+    CHECK(munmap(f, 0x20000) == 0, "release 128K (mixed)");
+    char *a = mmap(f, 0x10000, RW, NOREPLACE, -1, 0);
+    CHECK(a == f, "map 64K at freed base (errno %d)", errno);
+    if (a != f) return;
     CHECK(munmap(a + 0x8000, 0x8000) == 0, "partial munmap (mixed)");
     char *m = mmap(a + 0x8000, 0x10000, RW, NOREPLACE, -1, 0);
     CHECK(m == a + 0x8000, "NOREPLACE over hole + free (errno %d)", errno);

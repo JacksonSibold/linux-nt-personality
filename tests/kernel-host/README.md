@@ -75,10 +75,24 @@ Counts from a clean rebuild and run, 2026-10-12:
 | `mman_test` | shim self-test (`shim/mman_test.c`), 3/3 pass |
 | `proc_thread_test` | 12/12 pass, 10 of 10 consecutive runs, no leak at exit |
 
-`mman_test` is intermittent on this machine: 2 of 14 runs failed. In one, the
-`NOREPLACE over hole + free` check failed (`shim/mman_test.c:57`, EEXIST) and the
-process then segfaulted. In the other, the process segfaulted (rc 139) with no
-check failure printed. The other 12 runs passed. The cause is not investigated.
+`mman_test` passes 100 of 100 runs after the fix below (before it: 79 of 100).
+
+### mman_test flake: test bug, fixed in the test
+
+- **Cause: the test assumed the 32K past its own 64K mapping was free.**
+  `test_hole_plus_free` mapped 64K at NULL, then asked for a 64K range starting
+  32K into it, so the last 32K was never reserved by the test. Where Windows
+  placed the 64K block decided what sat next to it. In the failing runs a
+  committed block (0x22000 bytes) sat right after it, so
+  `NOREPLACE over hole + free` correctly returned EEXIST (`shim/mman_test.c:57`).
+  The cleanup `munmap(a, 0x18000)` then decommitted that foreign block, which
+  caused the segfault at exit (rc 139). The shim was not wrong: its
+  `map_fixed_range` and `munmap` behaved as designed in every run. 21 of 100
+  runs failed this way.
+- **Fix.** The test now reserves 128K, releases it, and maps the first 64K back
+  at that base. The rest of the 128K is known to be free, and nothing runs
+  between the steps, so the mixed hole-plus-free range is deterministic.
+  `shim/mman_win.c` is unchanged.
 
 ## Results of the 2026-10-12 investigation
 
@@ -146,7 +160,7 @@ separate `BUILD=build-o2` directory (`build-*/` is git-ignored).
   `khost_rmdir`, `khost_rename` and `khost_raw_mkdir` call the CRT directly,
   not through the `\\?\` path. A name ending in `.` can therefore be stripped
   to the wrong file. No test exercises that yet.
-- **mman_test intermittent failure.** See the status table above.
+- **mman_test intermittent failure: fixed** (test bug, see "mman_test flake" above).
 - **sync_test** (slow). `wait_on_address_extended` runs 20000 iterations, each
   with a `pthread_create` and `usleep(2000)`. On Windows it took about 5 minutes
   on the 2026-10-12 clean run. `TIMEOUT` (default 3000 s) bounds each program
