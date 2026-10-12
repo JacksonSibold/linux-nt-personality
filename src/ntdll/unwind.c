@@ -22,6 +22,7 @@
 #undef DUMMYSTRUCTNAME
 #endif
 #include "unwind.h"
+#include "unwind_pure.h"
 #include "nt_types.h"
 #include "../loader/pe_format.h"
 #include <string.h>
@@ -124,20 +125,10 @@ static uint8_t *rva_to_ptr(unwind_module_t *mod, ULONG rva) {
  */
 static IMAGE_RUNTIME_FUNCTION_ENTRY *lookup_in_module(unwind_module_t *mod, ULONG64 pc) {
     /* sizeOfImage == 0 means unknown (RtlAddFunctionTable): the table bounds the match. */
-    if (pc < mod->imageBase) return NULL;
-    if (pc - mod->imageBase > 0xFFFFFFFFULL) return NULL;
-    if (mod->sizeOfImage != 0 && pc - mod->imageBase >= mod->sizeOfImage) return NULL;
-    ULONG rva = (ULONG)(pc - mod->imageBase);
-    ULONG lo = 0, hi = mod->funcCount;
-    while (lo < hi) {
-        ULONG mid = lo + (hi - lo) / 2;
-        ULONG begin = mod->funcTable[mid].BeginAddress;
-        ULONG end = mod->funcTable[mid].EndAddress;
-        if (rva < begin) hi = mid;
-        else if (rva >= end) lo = mid + 1;
-        else return &mod->funcTable[mid];
-    }
-    return NULL;
+    ULONG rva = 0;
+    if (!uwp_module_rva(mod->imageBase, mod->sizeOfImage, pc, &rva)) return NULL;
+    long idx = uwp_find_function(mod->funcTable, mod->funcCount, rva);
+    return idx < 0 ? NULL : &mod->funcTable[idx];
 }
 
 IMAGE_RUNTIME_FUNCTION_ENTRY *RtlLookupFunctionEntry(ULONG64 ControlPc, PULONG64 ImageBase, PVOID HistoryTable) {
@@ -210,8 +201,7 @@ static int build_chain(unwind_module_t *mod, IMAGE_RUNTIME_FUNCTION_ENTRY *entry
         depth++;
         if (!(info->Flags & UNW_FLAG_CHAININFO)) break;
         /* Chained entry follows codes */
-        unsigned count = info->CountOfCodes;
-        unsigned aligned = (count + 1) & ~1U;
+        unsigned aligned = uwp_chain_slots(info->CountOfCodes);
         /* After codes, there is RUNTIME_FUNCTION */
         IMAGE_RUNTIME_FUNCTION_ENTRY *chained = (IMAGE_RUNTIME_FUNCTION_ENTRY *)&info->UnwindCode[aligned];
         /* chained unwind info address is in chained->UnwindInfoAddress; Begin/End in chained */
@@ -377,31 +367,14 @@ simple:
         UNWIND_INFO *info = infos[ci];
         IMAGE_RUNTIME_FUNCTION_ENTRY *curEntry = entries[ci];
         ULONG64 funcBegin = imageBase + curEntry->BeginAddress;
-        ULONG64 ripOffset = 0;
-        int inProlog = 0;
-        if (controlPc >= funcBegin) {
-            ripOffset = controlPc - funcBegin;
-            if (ripOffset < info->SizeOfProlog) inProlog = 1;
-        }
+        ULONG64 ripOffset = controlPc >= funcBegin ? controlPc - funcBegin : 0;
+        int inProlog = uwp_in_prolog(controlPc, funcBegin, info->SizeOfProlog);
 
         /* Find start index for prolog case */
         int startIdx = 0;
         if (inProlog) {
-            /* Find first code with CodeOffset <= ripOffset */
-            int found = -1;
-            for (unsigned i = 0; i < info->CountOfCodes; ) {
-                UNWIND_CODE uc = info->UnwindCode[i];
-                unsigned op = uc.DUMMYSTRUCTNAME.UnwindOp;
-                (void)op;
-                if (uc.DUMMYSTRUCTNAME.CodeOffset <= ripOffset) { found = (int)i; break; }
-                /* Advance by slots for this op */
-                if (op == UWOP_ALLOC_LARGE) {
-                    if (uc.DUMMYSTRUCTNAME.OpInfo == 0) i += 2;
-                    else i += 3;
-                } else if (op == UWOP_SAVE_NONVOL || op == UWOP_SAVE_XMM128) i += 2;
-                else if (op == UWOP_SAVE_NONVOL_FAR || op == UWOP_SAVE_XMM128_FAR) i += 3;
-                else i += 1;
-            }
+            /* First code with CodeOffset <= ripOffset */
+            int found = uwp_prolog_start(info->UnwindCode, info->CountOfCodes, ripOffset);
             if (found == -1) {
                 /* No codes have executed yet, skip this info entirely */
                 continue;
@@ -428,8 +401,7 @@ simple:
                     break;
                 }
                 case UWOP_ALLOC_SMALL: {
-                    unsigned size = infoOp * 8 + 8;
-                    rsp += size;
+                    rsp += uwp_alloc_small_size(infoOp);
                     break;
                 }
                 case UWOP_ALLOC_LARGE: {
@@ -437,18 +409,13 @@ simple:
                         /* next slot holds size/8 */
                         if (nextIdx >= info->CountOfCodes) break;
                         UNWIND_CODE nxt = info->UnwindCode[nextIdx];
-                        unsigned sizeDiv8 = nxt.FrameOffset; /* Actually combined? spec says next slot's FrameOffset holds low 16? But union: next slot's FrameOffset is USHORT value */
-                        /* Our UNWIND_CODE union: FrameOffset is USHORT. For this case, the whole USHORT is size/8 */
-                        unsigned size = sizeDiv8 * 8;
-                        rsp += size;
+                        rsp += uwp_alloc_large_size8(nxt.FrameOffset);
                         nextIdx++;
                     } else if (infoOp == 1) {
                         if (nextIdx + 1 >= info->CountOfCodes) break;
                         UNWIND_CODE n1 = info->UnwindCode[nextIdx];
                         UNWIND_CODE n2 = info->UnwindCode[nextIdx+1];
-                        /* Little-endian 32-bit: n1.FrameOffset low 16, n2 low 16 high? Actually they store as two USHORT slots */
-                        ULONG size = (ULONG)n1.FrameOffset | ((ULONG)n2.FrameOffset << 16);
-                        rsp += size;
+                        rsp += uwp_far_operand(n1.FrameOffset, n2.FrameOffset);
                         nextIdx += 2;
                     } else {
                         /* reserved */
@@ -459,21 +426,19 @@ simple:
                     /* RSP = FrameReg - FrameOffset*16 */
                     if (useFrame) {
                         ULONG64 *fpReg = ctx_gpr_ptr(ctx, frameReg);
-                        if (fpReg) rsp = *fpReg - (ULONG64)frameOffsetScaled * 16;
+                        if (fpReg) rsp = uwp_fp_base(*fpReg, frameOffsetScaled);
                     }
                     break;
                 }
                 case UWOP_SAVE_NONVOL: {
                     if (nextIdx >= info->CountOfCodes) break;
                     UNWIND_CODE nxt = info->UnwindCode[nextIdx];
-                    unsigned offsetScaled = nxt.FrameOffset; /* scaled by 8 -> offset = FrameOffset*8 */
-                    ULONG64 offset = (ULONG64)offsetScaled * 8;
+                    ULONG64 offset = uwp_save_nonvol_offset(nxt.FrameOffset);
                     ULONG64 addr;
                     if (useFrame) {
                         ULONG64 *fpReg = ctx_gpr_ptr(ctx, frameReg);
                         ULONG64 fp = fpReg ? *fpReg : 0;
-                        ULONG64 base = fp - (ULONG64)frameOffsetScaled * 16;
-                        addr = base + offset;
+                        addr = uwp_fp_base(fp, frameOffsetScaled) + offset;
                     } else {
                         addr = rsp + offset;
                     }
@@ -488,13 +453,12 @@ simple:
                     if (nextIdx + 1 >= info->CountOfCodes) break;
                     UNWIND_CODE n1 = info->UnwindCode[nextIdx];
                     UNWIND_CODE n2 = info->UnwindCode[nextIdx+1];
-                    ULONG offset = (ULONG)n1.FrameOffset | ((ULONG)n2.FrameOffset << 16);
+                    ULONG64 offset = uwp_far_operand(n1.FrameOffset, n2.FrameOffset);
                     ULONG64 addr;
                     if (useFrame) {
                         ULONG64 *fpReg = ctx_gpr_ptr(ctx, frameReg);
                         ULONG64 fp = fpReg ? *fpReg : 0;
-                        ULONG64 base = fp - (ULONG64)frameOffsetScaled * 16;
-                        addr = base + offset;
+                        addr = uwp_fp_base(fp, frameOffsetScaled) + offset;
                     } else {
                         addr = rsp + offset;
                     }
@@ -508,14 +472,12 @@ simple:
                 case UWOP_SAVE_XMM128: {
                     if (nextIdx >= info->CountOfCodes) break;
                     UNWIND_CODE nxt = info->UnwindCode[nextIdx];
-                    unsigned offsetScaled = nxt.FrameOffset;
-                    ULONG64 offset = (ULONG64)offsetScaled * 16;
+                    ULONG64 offset = uwp_save_xmm_offset(nxt.FrameOffset);
                     ULONG64 addr;
                     if (useFrame) {
                         ULONG64 *fpReg = ctx_gpr_ptr(ctx, frameReg);
                         ULONG64 fp = fpReg ? *fpReg : 0;
-                        ULONG64 base = fp - (ULONG64)frameOffsetScaled * 16;
-                        addr = base + offset;
+                        addr = uwp_fp_base(fp, frameOffsetScaled) + offset;
                     } else {
                         addr = rsp + offset;
                     }
@@ -530,13 +492,12 @@ simple:
                     if (nextIdx + 1 >= info->CountOfCodes) break;
                     UNWIND_CODE n1 = info->UnwindCode[nextIdx];
                     UNWIND_CODE n2 = info->UnwindCode[nextIdx+1];
-                    ULONG offset = (ULONG)n1.FrameOffset | ((ULONG)n2.FrameOffset << 16);
+                    ULONG64 offset = uwp_far_operand(n1.FrameOffset, n2.FrameOffset);
                     ULONG64 addr;
                     if (useFrame) {
                         ULONG64 *fpReg = ctx_gpr_ptr(ctx, frameReg);
                         ULONG64 fp = fpReg ? *fpReg : 0;
-                        ULONG64 base = fp - (ULONG64)frameOffsetScaled * 16;
-                        addr = base + offset;
+                        addr = uwp_fp_base(fp, frameOffsetScaled) + offset;
                     } else {
                         addr = rsp + offset;
                     }
@@ -551,16 +512,9 @@ simple:
                     int hasError = infoOp;
                     ULONG64 newRip;
                     ULONG64 newRsp;
-                    if (hasError) {
-                        newRip = *(ULONG64 *)(uintptr_t)(rsp + 8);
-                        newRsp = *(ULONG64 *)(uintptr_t)(rsp + 32);
-                        /* Also restore? stack has error code at rsp+0 */
-                        rsp += 48;
-                    } else {
-                        newRip = *(ULONG64 *)(uintptr_t)(rsp + 0);
-                        newRsp = *(ULONG64 *)(uintptr_t)(rsp + 24);
-                        rsp += 40;
-                    }
+                    newRip = *(ULONG64 *)(uintptr_t)(rsp + uwp_machframe_rip_offset(hasError));
+                    newRsp = *(ULONG64 *)(uintptr_t)(rsp + uwp_machframe_rsp_offset(hasError));
+                    rsp += uwp_machframe_size(hasError);
                     ctx->Rip = newRip;
                     /* For machframe, RSP is restored to saved old RSP, not just incremented?
                      * Spec says push is simulated, so unwinding should set RSP to oldRSP
@@ -589,18 +543,7 @@ simple:
     /* Detect if last chain had MACHFRAME - we already handled RIP. Otherwise pop. */
     int hadMachFrame = 0;
     for (int i = 0; i < infoCount; i++) {
-        UNWIND_INFO *inf = infos[i];
-        for (unsigned k = 0; k < inf->CountOfCodes; ) {
-            UNWIND_CODE cc = inf->UnwindCode[k];
-            if (cc.DUMMYSTRUCTNAME.UnwindOp == UWOP_PUSH_MACHFRAME) { hadMachFrame = 1; break; }
-            unsigned op = cc.DUMMYSTRUCTNAME.UnwindOp;
-            if (op == UWOP_ALLOC_LARGE) {
-                if (cc.DUMMYSTRUCTNAME.OpInfo == 0) k += 2; else k += 3;
-            } else if (op == UWOP_SAVE_NONVOL || op == UWOP_SAVE_XMM128) k += 2;
-            else if (op == UWOP_SAVE_NONVOL_FAR || op == UWOP_SAVE_XMM128_FAR) k += 3;
-            else k += 1;
-        }
-        if (hadMachFrame) break;
+        if (uwp_has_machframe(infos[i]->UnwindCode, infos[i]->CountOfCodes)) { hadMachFrame = 1; break; }
     }
     if (!hadMachFrame) {
         ULONG64 ret = *(ULONG64 *)(uintptr_t)rsp;
@@ -665,8 +608,7 @@ PVOID RtlVirtualUnwind(ULONG HandlerType, ULONG64 ImageBase, ULONG64 ControlPc,
     /* Determine handler */
     if (info && (info->Flags & HandlerType)) {
         /* Handler RVA after codes */
-        unsigned count = info->CountOfCodes;
-        unsigned aligned = (count + 1) & ~1U;
+        unsigned aligned = uwp_chain_slots(info->CountOfCodes);
         ULONG handlerRVA = *(ULONG *)&info->UnwindCode[aligned];
         if (handlerRVA) {
             if (mod) handler = rva_to_ptr(mod, handlerRVA);
