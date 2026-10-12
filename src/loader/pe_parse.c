@@ -811,7 +811,7 @@ pe_status_t pe_imports_walk(const pe_context_t *ctx,
 
     pe_data_directory_t imp_dir;
     pe_status_t s = pe_directory_get(ctx, IMAGE_DIRECTORY_ENTRY_IMPORT, &imp_dir);
-    if (s != PE_OK) return PE_OK; /* no import directory is fine */
+    if (s != PE_OK) return s; /* empty directory: pe_directory_get already gave PE_OK */
     if (imp_dir.rva == 0 || imp_dir.size == 0) return PE_OK;
 
     u32 imp_off;
@@ -918,7 +918,7 @@ pe_status_t pe_exports_walk(const pe_context_t *ctx,
 
     pe_data_directory_t exp_dir;
     pe_status_t s = pe_directory_get(ctx, IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_dir);
-    if (s != PE_OK) return PE_OK;
+    if (s != PE_OK) return s;
     if (exp_dir.rva == 0 || exp_dir.size == 0) return PE_OK;
     if (exp_dir.size < sizeof(IMAGE_EXPORT_DIRECTORY))
         return PE_ERR_CORRUPT;
@@ -1018,7 +1018,7 @@ pe_status_t pe_relocs_walk(const pe_context_t *ctx,
 
     pe_data_directory_t reloc_dir;
     pe_status_t s = pe_directory_get(ctx, IMAGE_DIRECTORY_ENTRY_BASERELOC, &reloc_dir);
-    if (s != PE_OK) return PE_OK;
+    if (s != PE_OK) return s;
     if (reloc_dir.rva == 0 || reloc_dir.size == 0) return PE_OK;
 
     u32 reloc_off;
@@ -1084,7 +1084,7 @@ pe_status_t pe_exception_walk(const pe_context_t *ctx,
 
     pe_data_directory_t exc_dir;
     pe_status_t s = pe_directory_get(ctx, IMAGE_DIRECTORY_ENTRY_EXCEPTION, &exc_dir);
-    if (s != PE_OK) return PE_OK;
+    if (s != PE_OK) return s;
     if (exc_dir.rva == 0 || exc_dir.size == 0) return PE_OK;
     if ((exc_dir.size % sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY)) != 0)
         return PE_ERR_CORRUPT;
