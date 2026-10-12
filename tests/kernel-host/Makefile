@@ -5,9 +5,18 @@
 # Toolchain: C:/Users/Jackson/repos/TOOLCHAIN.md. Run make from a shell that
 # already has /c/msys64/ucrt64/bin on PATH.
 
-export TMP    := C:/Users/Jackson/AppData/Local/Temp
-export TEMP   := C:/Users/Jackson/AppData/Local/Temp
-export TMPDIR := /c/Users/Jackson/AppData/Local/Temp
+# Under MSYS2 make does not see the OS variable, so also check uname.
+UNAME_S := $(shell uname -s 2>/dev/null)
+ifneq (,$(filter Windows_NT,$(OS))$(filter MINGW% MSYS% CYGWIN%,$(UNAME_S)))
+# TEMP_DIR is taken from the environment if set, else TEMP, TMP,
+# LOCALAPPDATA/Temp, and finally MSYS /tmp (which maps to the Windows temp
+# directory). Override it on the command line if needed. The recipe shell
+# does not reliably inherit TMP/TEMP, hence the exports here.
+TEMP_DIR ?= $(if $(TEMP),$(TEMP),$(if $(TMP),$(TMP),$(if $(LOCALAPPDATA),$(shell cygpath -m "$(LOCALAPPDATA)/Temp"),$(shell cygpath -m /tmp))))
+export TMP    := $(TEMP_DIR)
+export TEMP   := $(TEMP_DIR)
+export TMPDIR := $(shell cygpath -u "$(TEMP_DIR)")
+endif
 
 CC      := gcc
 NT      := ../../src/kernel/nt
