@@ -1081,7 +1081,11 @@ static struct linux_binfmt pe_format = {
 
 static int __init init_pe_binfmt(void)
 {
-    register_binfmt(&pe_format);
+    int ret = register_binfmt(&pe_format);
+    if (ret) {
+        pr_err("binfmt_pe: register_binfmt failed: %d\n", ret);
+        return ret;
+    }
     pr_info("binfmt_pe: registered\n");
     return 0;
 }
