@@ -301,6 +301,7 @@ void nt_exit_personality(struct task_struct *tsk)
 		struct nt_thread *thr = nt_current_thread();
 		if (thr)
 			nt_abandon_owned_mutants(thr);
+		nt_set_current_thread(NULL);
 	}
 	clear_tsk_thread_flag(tsk, TIF_NTABI);
 }
