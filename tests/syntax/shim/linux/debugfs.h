@@ -13,5 +13,6 @@ struct dentry *debugfs_create_file(const char *name, umode_t mode,
 				   struct dentry *parent, void *data,
 				   const struct file_operations *fops);
 struct dentry *debugfs_lookup(const char *name, struct dentry *parent);
+void dput(struct dentry *dentry);
 
 #endif

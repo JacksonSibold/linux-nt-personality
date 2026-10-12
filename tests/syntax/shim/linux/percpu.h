@@ -13,6 +13,7 @@
 #define per_cpu(var, cpu) ((void)(cpu), (var))
 #define this_cpu_inc(pcp) ((pcp)++)
 #define __this_cpu_add(pcp, val) ((pcp) += (val))
+#define this_cpu_add(pcp, val) ((pcp) += (val))
 #define for_each_possible_cpu(cpu) for ((cpu) = 0; (cpu) < 1; (cpu)++)
 
 #endif

@@ -24,6 +24,7 @@ int printk(const char *fmt, ...);
 #define pr_notice(fmt, ...) printk(KERN_NOTICE fmt, ##__VA_ARGS__)
 #define pr_info(fmt, ...) printk(KERN_INFO fmt, ##__VA_ARGS__)
 #define pr_debug(fmt, ...) printk(KERN_DEBUG fmt, ##__VA_ARGS__)
+#define pr_info_ratelimited(fmt, ...) printk(KERN_INFO fmt, ##__VA_ARGS__)
 #endif /* KSHIM_H */
 
 #endif

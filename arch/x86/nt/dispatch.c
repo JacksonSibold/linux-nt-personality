@@ -110,13 +110,12 @@ __visible noinstr void do_nt_syscall(struct pt_regs *regs, unsigned int ssn)
 	unsigned long args[NT_MAX_ARGS] = { };
 	u32 status;
 	instrumentation_begin();
-	if (ssn == 0x53 || ssn == 0x1c8 || ssn == 0xc5 || ssn == 0x1c4 || ssn == 0x52 || ssn == 0x34) {
-		pr_info("do_nt_syscall: ssn=0x%x TIF_NTABI=%d pid=%d comm=%s\n", ssn, test_thread_flag(TIF_NTABI), current->pid, current->comm);
-	}
-	/* Exact per-CPU count - cheap, no printk, no sampling */
+	/* Per-CPU count, cheap, no printk. this_cpu_* is used because the syscall
+	 * path is preemptible: __this_cpu_* could lose or misplace counts when the
+	 * task migrates (D-2). */
 	this_cpu_inc(nt_dispatch_count);
 	if (ssn < NT_NR_SERVICES)
-		__this_cpu_add(nt_dispatch_per_ssn[ssn], 1);
+		this_cpu_add(nt_dispatch_per_ssn[ssn], 1);
 	if (unlikely(ssn >= NT_NR_SERVICES)) {
 		regs->ax = STATUS_INVALID_SYSTEM_SERVICE;
 		goto out;
@@ -308,7 +307,8 @@ void nt_exit_personality(struct task_struct *tsk)
 
 void nt_report_missing_service(unsigned int ssn)
 {
-	pr_info("nt: missing service %u\n", ssn);
+	/* Any process can reach this in a loop; rate-limit the log (D-3). */
+	pr_info_ratelimited("nt: missing service %u\n", ssn);
 }
 
 bool nt_can_sysret(struct pt_regs *regs)
@@ -379,7 +379,10 @@ static const struct file_operations nt_per_ssn_fops = {
 static int __init nt_counters_debugfs_init(void)
 {
 	struct dentry *dir;
+	bool looked_up;
+
 	dir = debugfs_lookup("ntpers", NULL);
+	looked_up = dir != NULL;
 	if (!dir)
 		dir = debugfs_create_dir("ntpers", NULL);
 	if (!dir)
@@ -388,6 +391,9 @@ static int __init nt_counters_debugfs_init(void)
 	debugfs_create_file("dispatch_count", 0444, dir, NULL, &nt_dispatch_count_fops);
 	debugfs_create_file("host_count", 0444, dir, NULL, &nt_host_count_fops);
 	debugfs_create_file("dispatch_per_ssn", 0444, dir, NULL, &nt_per_ssn_fops);
+	/* debugfs_lookup() returns a referenced dentry; drop it (D-6). */
+	if (looked_up)
+		dput(dir);
 	return 0;
 }
 late_initcall(nt_counters_debugfs_init);

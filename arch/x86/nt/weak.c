@@ -13,5 +13,3 @@ void __weak nt_abandon_owned_mutants(struct nt_thread *thr)
 {
     (void)thr;
 }
-
-char RtlUserThreadStart = 0;

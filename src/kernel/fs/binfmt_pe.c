@@ -52,6 +52,8 @@ static inline void nt_enter_personality(struct task_struct *tsk) { (void)tsk; }
 #define PE_DEFAULT_STACK_RES 0x100000ULL
 #define PE_DEFAULT_STACK_COM 0x1000ULL
 #define PE_TLS_SLOT_COUNT 64
+/* Upper bound on the base-relocation directory read into kernel memory (K-11). */
+#define PE_MAX_RELOC_BYTES (16u << 20)
 
 /* Helpers to load little endian */
 static inline u16 pe_load_u16(const u8 *p) { return (u16)p[0] | ((u16)p[1] << 8); }
@@ -494,6 +496,7 @@ static int pe_apply_relocs(struct pe_load_state *st)
     u32 reloc_rva = pe_load_u32((u8*)st->headers_buf + oh_off + 112 + IMAGE_DIRECTORY_ENTRY_BASERELOC*8);
     u32 reloc_size = pe_load_u32((u8*)st->headers_buf + oh_off + 112 + IMAGE_DIRECTORY_ENTRY_BASERELOC*8 + 4);
     if (reloc_rva == 0 || reloc_size == 0) return 0;
+    if (reloc_size > PE_MAX_RELOC_BYTES) return -ENOEXEC;
     // Translate RVA to file offset by scanning sections
     u32 reloc_off = 0;
     bool found = false;
@@ -665,11 +668,16 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
     if (n < 64) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     if (pe_load_u16(hdr) != 0x5A4D) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u32 nt_off = pe_load_u32((u8*)hdr + 60);
-    if (nt_off > (u32)n || (u32)n - nt_off < 6) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
+    /* The file header runs through Characteristics at nt_off+22, so 24 bytes
+     * from nt_off must be inside the read (K-2). */
+    if (nt_off > (u32)n || (u32)n - nt_off < 24) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u32 sig = pe_load_u32((u8*)hdr + nt_off);
     if (sig != 0x4550) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u16 num_sections = pe_load_u16((u8*)hdr + nt_off + 6);
     u16 size_opt = pe_load_u16((u8*)hdr + nt_off + 20);
+    /* Every optional-header field read below (up to oh_off+88) must lie in
+     * the PE32+ optional header; a short one is not a valid image (K-2). */
+    if (size_opt < 112 || size_opt > 240) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     if (num_sections == 0 || num_sections > 96) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u32 oh_off = nt_off + 4 + 20;
     if (oh_off + size_opt > (u32)n) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
@@ -697,8 +705,10 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
         u32 sec_end = section_table_off + (u32)num_sections * 40;
         if (sec_end > (u32)n || size_headers > (u32)n) {
             size_t need = sec_end > size_headers ? sec_end : size_headers;
-            need = PAGE_ALIGN(need);
-            void *nb = kzalloc(need, GFP_KERNEL);
+            /* Allocate a whole page multiple, but require only the bytes the
+             * headers need: a valid short file must not fail the page-aligned
+             * read (K-15). */
+            void *nb = kzalloc(PAGE_ALIGN(need), GFP_KERNEL);
             if (!nb) { kfree(hdr); filp_close(f, NULL); return -ENOMEM; }
             ssize_t nn = pe_kernel_read(f, 0, nb, need);
             if (nn < (ssize_t)need) { kfree(nb); kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
@@ -801,7 +811,8 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                     }
                 }
                 if (!found && reloc_rva < size_headers) { reloc_off = reloc_rva; found = true; }
-                if (found && (u64)reloc_off + reloc_size <= (u64)fsize) {
+                if (found && reloc_size <= PE_MAX_RELOC_BYTES &&
+                    (u64)reloc_off + reloc_size <= (u64)fsize) {
                     void *buf = kmalloc(reloc_size, GFP_KERNEL);
                     if (buf) {
                         ssize_t nn = pe_kernel_read(f, reloc_off, buf, reloc_size);
@@ -862,6 +873,8 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                 u32 ords_rva = ed.AddressOfNameOrdinals;
                 u32 funcs_rva = ed.AddressOfFunctions;
                 u32 num_names = ed.NumberOfNames;
+                /* Bound the scan: a larger name table is not a real ntdll (K-14). */
+                if (num_names > 65536u) num_names = 65536u;
                 for (u32 i=0; i<num_names; ++i) {
                     u32 name_rva = 0;
                     if (copy_from_user(&name_rva, (void __user *)(actual_base + names_rva + i*4), 4))
@@ -884,6 +897,26 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                         u32 func_rva = 0;
                         if (copy_from_user(&func_rva, (void __user *)(actual_base + funcs_rva + ord*4), 4))
                             break;
+                        /* The thunk must be a non-zero RVA inside an executable
+                         * section; func_rva == 0 would point at the PE header (K-14). */
+                        if (func_rva == 0 || func_rva >= size_image) break;
+                        {
+                            bool in_exec = false;
+                            for (u16 si = 0; si < num_sections; ++si) {
+                                u32 soff = section_table_off + si*40;
+                                u32 svaddr = pe_load_u32((u8*)hdr + soff + 12);
+                                u32 svsize = pe_load_u32((u8*)hdr + soff + 8);
+                                u32 srawsize = pe_load_u32((u8*)hdr + soff + 16);
+                                u32 schars = pe_load_u32((u8*)hdr + soff + 36);
+                                u32 slen = svsize ? svsize : srawsize;
+                                if (func_rva >= svaddr && func_rva - svaddr < slen &&
+                                    (schars & 0x20000000u)) {
+                                    in_exec = true;
+                                    break;
+                                }
+                            }
+                            if (!in_exec) break;
+                        }
                         thunk = actual_base + func_rva;
                         break;
                     }

@@ -1223,6 +1223,9 @@ pe_status_t pe_relocs_walk(const pe_context_t *ctx,
             u16 entry = pe_file_u16(ctx, entry_off);
             u16 type   = (entry >> 12) & 0xF;
             u16 offset = entry & 0xFFF;
+            /* Type 6 and 11-15 are reserved in the PE/COFF specification. */
+            if (type == 6 || type > 10)
+                return PE_ERR_CORRUPT;
 
             pe_reloc_entry_t re = {
                 .page_rva = block.VirtualAddress,

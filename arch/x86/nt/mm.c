@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #else
+#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
@@ -48,18 +49,8 @@ static inline int kshim_mmap_commit(void *a,size_t s,int p){
 static inline int kshim_munmap(void *a,size_t s){ return vm_munmap((unsigned long)a, s); }
 static inline int kshim_mprotect(void *a,size_t s,int p){
     unsigned long start = (unsigned long)a;
-    unsigned long len = s;
-    // Try kallsyms lookup for do_mprotect_pkey if available
-    extern unsigned long kallsyms_lookup_name(const char *name);
-    typedef int (*do_mprotect_fn)(unsigned long, size_t, unsigned long, int);
-    unsigned long addr = kallsyms_lookup_name("do_mprotect_pkey");
-    if (addr) {
-        do_mprotect_fn fn = (do_mprotect_fn)addr;
-        int ret = fn(start, len, p, -1);
-        if (ret == 0) return 0;
-        // fallback to mprotect_fixup
-    }
-    // Fallback: use mprotect_fixup path
+    /* Always the supported mprotect_fixup path. The kallsyms lookup of the
+     * internal do_mprotect_pkey() was removed (M-8). */
     unsigned long end;
     unsigned long nstart, tmp;
     struct mm_struct *mm = current->mm;
@@ -166,6 +157,18 @@ static inline void *kshim_section_map(struct kshim_section_backing *b, void *add
 
 struct nt_mm g_nt_mm;
 int          g_nt_mm_initialized = 0;
+
+#ifdef __KERNEL__
+/* Initialise the global VAD table once, at boot. The lazy checks in the
+ * service entry points then never race a first use on two CPUs (M-6). */
+static int __init ntmm_kernel_init(void)
+{
+    ntmm_init(&g_nt_mm);
+    g_nt_mm_initialized = 1;
+    return 0;
+}
+core_initcall(ntmm_kernel_init);
+#endif
 
 #ifndef __KERNEL__
 #define ntmm_lock(mm)   spin_lock(&(mm)->lock)
@@ -873,6 +876,9 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     ULONG_PTR orig_base = (ULONG_PTR)*BaseAddress;
     SIZE_T orig_size = *RegionSize;
     if (orig_size == 0) return STATUS_INVALID_PARAMETER;
+    /* Rounding adds at most two granules; reject sizes that would wrap (M-12). */
+    if (orig_size > (SIZE_T)-1 - 2 * NTMM_ALLOC_GRANULARITY)
+        return STATUS_INVALID_PARAMETER;
     if (reserve) {
         if (orig_base != 0) {
             ULONG_PTR rounded = ntmm_round_down(orig_base, NTMM_ALLOC_GRANULARITY);
@@ -960,8 +966,12 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
         vad->guard = (Protect & PAGE_GUARD) ? 1 : 0;
         nt_list_insert(mm, vad);
         ntmm_unlock(mm);
-        if (kshim_mmap_reserve((void *)actual_base, (size_t)req_size) == NULL ||
+        void *rsv = kshim_mmap_reserve((void *)actual_base, (size_t)req_size);
+        if (rsv == NULL ||
             kshim_mmap_commit((void *)actual_base, (size_t)req_size, ntmm_prot_to_linux(Protect)) != 0) {
+            /* Release the reservation if the commit failed (M-10). */
+            if (rsv)
+                kshim_munmap((void *)actual_base, (size_t)req_size);
             ntmm_lock(mm);
             nt_list_remove(mm, vad);
             ntmm_unlock(mm);
@@ -1284,6 +1294,9 @@ NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     base = (ULONG_PTR)*BaseAddress;
     size = *RegionSize;
     base = ntmm_round_down(base, NTMM_PAGE_SIZE);
+    /* Reject a range whose rounded end wraps the address space (M-12). */
+    if (size > (SIZE_T)(~(ULONG_PTR)0) - NTMM_PAGE_SIZE - base)
+        return STATUS_INVALID_PARAMETER;
     size = (SIZE_T)ntmm_round_up(size, NTMM_PAGE_SIZE);
     ULONG_PTR end = base + size;
     ntmm_lock(mm);
@@ -1613,6 +1626,10 @@ NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
     struct nt_vad *vad = nt_vad_find(mm, base);
     if (!vad) { ntmm_unlock(mm); return STATUS_NOT_MAPPED_VIEW; }
     if (vad->alloc_base != base) { ntmm_unlock(mm); return STATUS_INVALID_PARAMETER; }
+    /* Only section views may be unmapped here; private allocations are
+     * released with NtFreeVirtualMemory (M-13). Split pieces of a view keep
+     * their type, so test the type rather than the section pointer. */
+    if (vad->type == MEM_PRIVATE) { ntmm_unlock(mm); return STATUS_NOT_MAPPED_VIEW; }
     ULONG_PTR unmap_start = vad->start;
     ULONG_PTR unmap_end = vad->end;
     struct nt_vad *left = nt_vad_left_neighbor(mm, vad);

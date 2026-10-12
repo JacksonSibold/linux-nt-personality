@@ -156,6 +156,18 @@ NTSTATUS nt_svc_NtQuerySemaphore(unsigned long a0, unsigned long a1, unsigned lo
 
 #else /* __KERNEL__ */
 
+/* True if the user LONG at p can be read and written. The value is written
+ * back unchanged, so the probe has no visible effect (N-1). */
+static bool nt_probe_user_long(PLONG p)
+{
+    LONG v;
+    if (!access_ok(p, sizeof(LONG)))
+        return false;
+    if (get_user(v, p))
+        return false;
+    return put_user(v, p) == 0;
+}
+
 NTSTATUS nt_svc_NtSetEvent(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {
     HANDLE EventHandle = (HANDLE)a0; PLONG PreviousState = (PLONG)a1;
@@ -167,6 +179,7 @@ NTSTATUS nt_svc_NtSetEvent(unsigned long a0, unsigned long a1, unsigned long a2,
     if (!NT_SUCCESS(st)) return st;
     struct nt_event *ev = (struct nt_event*)nt_object_body(hdr);
     LONG kprev=0;
+    if (PreviousState && !nt_probe_user_long(PreviousState)) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
     st = nt_set_event(ev, PreviousState ? &kprev : NULL);
     if (NT_SUCCESS(st) && PreviousState) {
         if (!access_ok(PreviousState, sizeof(LONG))) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
@@ -186,6 +199,7 @@ NTSTATUS nt_svc_NtResetEvent(unsigned long a0, unsigned long a1, unsigned long a
     if (!NT_SUCCESS(st)) return st;
     struct nt_event *ev = (struct nt_event*)nt_object_body(hdr);
     LONG kprev=0;
+    if (PreviousState && !nt_probe_user_long(PreviousState)) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
     st = nt_reset_event(ev, PreviousState ? &kprev : NULL);
     if (NT_SUCCESS(st) && PreviousState) {
         if (!access_ok(PreviousState, sizeof(LONG))) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
@@ -205,6 +219,7 @@ NTSTATUS nt_svc_NtPulseEvent(unsigned long a0, unsigned long a1, unsigned long a
     if (!NT_SUCCESS(st)) return st;
     struct nt_event *ev = (struct nt_event*)nt_object_body(hdr);
     LONG kprev=0;
+    if (PreviousState && !nt_probe_user_long(PreviousState)) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
     st = nt_pulse_event(ev, PreviousState ? &kprev : NULL);
     if (NT_SUCCESS(st) && PreviousState) {
         if (!access_ok(PreviousState, sizeof(LONG))) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
@@ -224,6 +239,7 @@ NTSTATUS nt_svc_NtReleaseMutant(unsigned long a0, unsigned long a1, unsigned lon
     if (!NT_SUCCESS(st)) return st;
     struct nt_mutant *m = (struct nt_mutant*)nt_object_body(hdr);
     LONG kprev=0;
+    if (PreviousCount && !nt_probe_user_long(PreviousCount)) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
     st = nt_release_mutant(m, PreviousCount ? &kprev : NULL);
     if (NT_SUCCESS(st) && PreviousCount) {
         if (!access_ok(PreviousCount, sizeof(LONG))) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
@@ -244,6 +260,7 @@ NTSTATUS nt_svc_NtReleaseSemaphore(unsigned long a0, unsigned long a1, unsigned 
     if (!NT_SUCCESS(st)) return st;
     struct nt_semaphore *s = (struct nt_semaphore*)nt_object_body(hdr);
     LONG kprev=0;
+    if (PreviousCount && !nt_probe_user_long(PreviousCount)) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
     st = nt_release_semaphore(s, ReleaseCount, PreviousCount ? &kprev : NULL);
     if (NT_SUCCESS(st) && PreviousCount) {
         if (!access_ok(PreviousCount, sizeof(LONG))) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
@@ -322,12 +339,14 @@ NTSTATUS nt_svc_NtQueryMutant(unsigned long a0, unsigned long a1, unsigned long 
     NTSTATUS st = ObReferenceObjectByHandle(proc, MutantHandle, &nt_mutant_type, UserMode, 0, &hdr, NULL);
     if (!NT_SUCCESS(st)) return st;
     struct nt_mutant *m = (struct nt_mutant*)nt_object_body(hdr);
-    struct { ULONG CurrentCount; BOOLEAN Owned; BOOLEAN Abandoned; UCHAR R[2]; ULONG OwnerTid; ULONG Reserved[2]; } kinfo;
+    /* 24 bytes, the length reported above; the whole buffer is copied and
+     * zeroed first so no byte is left unset (N-2, N-3). */
+    struct { ULONG CurrentCount; BOOLEAN Owned; BOOLEAN Abandoned; UCHAR R[2]; ULONG OwnerTid; ULONG Reserved[3]; } kinfo;
+    memset(&kinfo, 0, sizeof(kinfo));
     kinfo.CurrentCount = m->header.signal_state ? 1 : 0;
     kinfo.Owned = m->owner ? 1 : 0;
     kinfo.Abandoned = m->abandoned ? 1 : 0;
     kinfo.OwnerTid = m->owner ? m->owner->tid : 0;
-    kinfo.Reserved[0]=0; kinfo.Reserved[1]=0;
     if (copy_to_user(MutantInformation, &kinfo, sizeof(kinfo))) st = STATUS_ACCESS_VIOLATION;
     ObDereferenceObject(hdr);
     return st;

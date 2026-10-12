@@ -59,6 +59,7 @@ The parser in this directory is careful about bounds for most reads (`pe_check_r
 - Fix: delete the dead check, or write it as `vsize > UINT32_MAX - sec.VirtualAddress`.
 
 ### L-7 [Low] Unused IAT offset computation
+- **Status:** no change: the call is the FirstThunk validation (an unmapped nonzero FirstThunk is an error); only the unused variable is dead.
 - `src/loader/pe_parse.c:869-871`: `iat_off` is computed and never used. The error is returned only when `FirstThunk != 0`, which is misleading.
 - Fix: delete the lines.
 
@@ -84,11 +85,13 @@ The parser in this directory is careful about bounds for most reads (`pe_check_r
 - Fix: validate `SizeOfOptionalHeader == 240` before reading, or read only `min(size, 240)`.
 
 ### L-12 [Low] Protection mapping has no W^X policy
+- **Status:** needs owner: a W^X and READ-implies-WRITE policy is a protection decision for every loaded section.
 - `src/loader/pe_prot.c:44-46` returns READ|WRITE|EXEC unchanged when a section requests all three. The comment at `pe_prot.c:5` mentions "the rare write+execute combination" but nothing enforces or flags it.
 - `pe_prot.c:25-32` derives protections from the content class only when no MEM bits are set. A section with only `IMAGE_SCN_MEM_WRITE` gets `PROT_WRITE` without `READ`.
 - Fix: decide policy explicitly. Reject or flag W+X, and set READ whenever WRITE is set.
 
 ### L-13 [Low] Relocation type not validated in the walker
+- **Status:** fixed in c3647ea: reserved types 6 and 11-15 are rejected in pe_relocs_walk; DIR64 and HIGHLOW still pass the walker, the kernel consumer filters them.
 - `src/loader/pe_parse.c:1053-1059` passes through any 4-bit type, including reserved values 6 and 11-15. The kernel consumer rejects non-DIR64 types (`binfmt_pe.c:526`), but the library contract does not say so.
 - Fix: validate in `pe_relocs_walk` (accept ABSOLUTE and DIR64 for x64, reject others) or document it in `pe_parse.h`.
 

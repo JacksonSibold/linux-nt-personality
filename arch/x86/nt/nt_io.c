@@ -33,6 +33,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #else
+#include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/namei.h>
@@ -370,8 +371,15 @@ NTSTATUS ntio_handle_create(void *obj, ACCESS_MASK granted, HANDLE __user *out)
 	if (!out)
 		return STATUS_INVALID_PARAMETER;
 #ifdef __KERNEL__
-	if (!access_ok(out, sizeof(HANDLE)))
-		return STATUS_ACCESS_VIOLATION;
+	/* Probe the output before a slot is reserved: a bad pointer must not
+	 * consume a handle that no process can then close (IO-6). The value
+	 * written back is the one just read, so the probe has no visible effect. */
+	{
+		HANDLE probe;
+		if (!access_ok(out, sizeof(HANDLE)) || get_user(probe, out) ||
+		    put_user(probe, out))
+			return STATUS_ACCESS_VIOLATION;
+	}
 #endif
 
 	spin_lock(&ntio_handle_lock);
@@ -538,6 +546,10 @@ static void ntio_file_release(struct kref *ref)
 	if (file->filp)
 		kshim_filp_close(file->filp);
 	ntio_unregister_share(file);
+	/* Delete-on-close: unlink when the last handle or reference is gone, not
+	 * when the first handle is closed (IO-7). */
+	if ((file->delete_on_close || file->delete_pending) && file->linux_path)
+		kshim_vfs_unlink(file->linux_path);
 	kfree(file->linux_path);
 	kfree(file);
 }
@@ -1514,6 +1526,19 @@ static NTSTATUS ntio_open_file(PHANDLE __user FileHandle, POBJECT_ATTRIBUTES __u
 		return STATUS_FILE_IS_A_DIRECTORY;
 	}
 
+#ifdef __KERNEL__
+	/* Probe the IOSB before the handle exists: if it fails afterwards the
+	 * caller would never learn of a live handle (IO-14). */
+	{
+		IO_STATUS_BLOCK probe;
+		if (copy_from_user(&probe, IoStatusBlock, sizeof(probe)) ||
+		    copy_to_user(IoStatusBlock, &probe, sizeof(probe))) {
+			ntio_file_put(file);
+			return STATUS_ACCESS_VIOLATION;
+		}
+	}
+#endif
+
 	granted = file->granted_access;
 	status = ntio_handle_create(file, granted, FileHandle);
 	if (!NT_SUCCESS(status)) {
@@ -1632,10 +1657,16 @@ static NTSTATUS ntio_do_read(struct nt_file_object *file, PVOID __user Buffer,
 			if (got > 0) {
 				if (copy_to_user((char __user *)Buffer + total, kbuf, got)) {
 					kfree(kbuf);
+					/* The read advanced pos but the chunk was not delivered:
+					 * rewind so the position matches the bytes reported (IO-17). */
+					pos -= got;
 					if (total == 0) return STATUS_ACCESS_VIOLATION;
 					break;
 				}
 			}
+					/* The read advanced pos but the chunk was not delivered:
+					 * rewind so the position matches the bytes reported (IO-17). */
+					pos -= got;
 			kfree(kbuf);
 			total += got;
 			if (got == 0 || (size_t)got < chunk) break;
@@ -2234,6 +2265,8 @@ static NTSTATUS ntio_set_eof(struct nt_file_object *file,
 	if (len < sizeof(*ei))
 		return STATUS_INFO_LENGTH_MISMATCH;
 	ei = (PFILE_END_OF_FILE_INFORMATION)buf;
+	if (ei->EndOfFile.QuadPart < 0)
+		return STATUS_INVALID_PARAMETER;
 	if (kshim_vfs_truncate(file->filp, ei->EndOfFile.QuadPart) != 0)
 		return STATUS_DISK_FULL;
 	return STATUS_SUCCESS;
@@ -2468,10 +2501,7 @@ __attribute__((weak)) NTSTATUS nt_svc_NtClose(unsigned long a0, unsigned long a1
 		ntio_iocp_put(iocp);
 	} else if (m == 0x46494C45) {
 		struct nt_file_object *file = (struct nt_file_object *)obj;
-		if (file->delete_on_close || file->delete_pending) {
-			if (file->linux_path)
-				kshim_vfs_unlink(file->linux_path);
-		}
+		/* Delete-on-close runs when the last reference goes (IO-7). */
 		ntio_file_put(file);
 	} else {
 		/* Unknown object, nothing to do */
@@ -2499,10 +2529,7 @@ NTSTATUS nt_svc_NtClose(HANDLE Handle)
 		ntio_iocp_put(iocp);
 	} else if (m == 0x46494C45) {
 		struct nt_file_object *file = (struct nt_file_object *)obj;
-		if (file->delete_on_close || file->delete_pending) {
-			if (file->linux_path)
-				kshim_vfs_unlink(file->linux_path);
-		}
+		/* Delete-on-close runs when the last reference goes (IO-7). */
 		ntio_file_put(file);
 	}
 	return STATUS_SUCCESS;
@@ -2519,6 +2546,16 @@ static void __attribute__((constructor)) ntio_init(void)
 	ntio_share_init();
 	ntio_handle_table_init();
 }
+#else
+/* Kernel build: initialise the spinlocks properly rather than relying on
+ * zero-filled statics (IO-10). */
+static int __init ntio_kernel_init(void)
+{
+	ntio_share_init();
+	ntio_handle_table_init();
+	return 0;
+}
+core_initcall(ntio_kernel_init);
 #endif
 
 #ifdef __cplusplus
