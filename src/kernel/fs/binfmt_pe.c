@@ -1039,7 +1039,7 @@ static int load_pe_binary(struct linux_binprm *bprm)
                  * a bad GS base is an escalation primitive, not a cosmetic
                  * error, and the value derives from untrusted image layout.
                  */
-                pr_err("binfmt_pe: refusing out-of-range TEB %px\n", state.teb);
+                pr_err("binfmt_pe: refusing out-of-range TEB %p\n", state.teb);
                 ret = -EINVAL;
                 goto out;
         }
