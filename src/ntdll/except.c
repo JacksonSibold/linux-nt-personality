@@ -470,7 +470,7 @@ EXCEPTION_DISPOSITION RtlDispatchException(PEXCEPTION_RECORD ExceptionRecord, PC
     /* Vectored handlers BEFORE frame handlers, in registration order */
     for (veh_node_t *n = g_veh_head; n; n = n->next) {
         LONG ret = n->handler(&ptrs);
-        if (ret == 1 /* EXCEPTION_CONTINUE_EXECUTION */) { /* Windows vectored returns EXCEPTION_CONTINUE_EXECUTION = -1? Actually vectored returns same as filter */
+        if (ret == -1 /* EXCEPTION_CONTINUE_EXECUTION */) { /* Vectored handlers return -1 to resume, 0 to keep searching. */
             /* Continue execution: copy back context */
             g_nested_depth--;
             t_in_dispatch = 0;
