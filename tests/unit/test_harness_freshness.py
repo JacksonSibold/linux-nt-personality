@@ -34,7 +34,7 @@ class WindowsToWslPath(unittest.TestCase):
 
     def test_no_placeholder_remains(self):
         # The former hardcoded placeholder must never be produced for a real root.
-        self.assertNotIn("/path/to/", freshness.windows_to_wsl_path(r"C:\x\y"))
+        self.assertEqual(freshness.windows_to_wsl_path(r"C:\x\y"), "/mnt/c/x/y")
 
 
 class CheckFreshnessWindowsBranch(unittest.TestCase):
