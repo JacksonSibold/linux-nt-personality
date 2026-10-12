@@ -1,23 +1,8 @@
 # Progress log
 
-Chronological summary of the commit history, grouped by theme. Generated from `git log --reverse --date=short` over the 259 commits from the baseline (`5eb8026`) to `bb13e80` (inclusive). Regenerate by repeating that log, not by hand.
+Chronological summary of the commit history, grouped by theme. Generated from `git log --reverse --date=short` over the commits from the baseline (`5eb8026`) to `bb13e80` (inclusive), as of 2026-10-12. Commit totals are not kept in this file; get them with `git rev-list --count 5eb8026..bb13e80`. Regenerate by repeating that log, not by hand.
 
-Counts are of commits in that history. Each commit is listed once, under one theme: subject prefix first (`docs(review)` and similar, then `tools`, `build`, `ci`, `vm`), then the paths the commit touches (`src/` or `arch/` as fixes, `tests/` as tests, `docs/` as documentation). Merge commits are listed separately. Within a date, entries follow git's log order, oldest first; `--date=short` does not give times.
-
-## Counts
-
-| Theme | Commits |
-|---|---|
-| Baseline snapshot | 1 |
-| Tooling (`tools/`, `build/`, CI, generators) | 39 |
-| Tests | 52 |
-| Reviews and analysis (`docs/review/`, `docs/analysis/`, `docs/status/`, `docs/decisions/`) | 27 |
-| Fixes (`src/`, `arch/`) | 60 |
-| Documentation (`docs/`, `CONTRIBUTING.md`, `README.md`) | 52 |
-| Merge commits | 28 |
-| **Total** | **259** |
-
-By date: 2026-10-01, 1 commit; 2026-10-12, 258 commits.
+Each commit is listed once, under one theme: subject prefix first (`docs(review)` and similar, then `tools`, `build`, `ci`, `vm`), then the paths the commit touches (`src/` or `arch/` as fixes, `tests/` as tests, `docs/` as documentation). Merge commits are listed separately. Within a date, entries follow git's log order, oldest first; `--date=short` does not give times.
 
 ## Timeline
 
