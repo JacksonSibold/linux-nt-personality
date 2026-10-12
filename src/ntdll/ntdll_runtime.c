@@ -143,6 +143,8 @@ static void heap_init(void) {
 
 void *malloc(size_t sz) {
     if (sz==0) sz=1;
+    /* Reject before rounding: sz + 15 must not wrap. */
+    if (sz > HEAP_SIZE) return NULL;
     sz = (sz + 15) & ~ (size_t)15; /* 16-byte align */
     heap_init();
     if (g_heap_off + sz > HEAP_SIZE) return NULL;
@@ -152,6 +154,8 @@ void *malloc(size_t sz) {
 }
 void free(void *p) { (void)p; /* bump allocator: no free */ }
 void *calloc(size_t n, size_t sz) {
+    /* n * sz must fit in size_t; otherwise return NULL instead of a short block. */
+    if (sz != 0 && n > (size_t)-1 / sz) return NULL;
     size_t tot = n*sz;
     void *p = malloc(tot);
     if (p) memset(p,0,tot);
