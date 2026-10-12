@@ -223,6 +223,8 @@ Each open Medium and Low finding was re-read against the code on this branch. St
 - D-2: fixed. The per-call trace for the six SSNs in `dispatch.c` is `pr_debug` instead of `pr_info`, so it is off in normal builds. `dispatch.c` already fails the syntax check (pre-existing errors, same count before and after).
 - R-3: fixed. `build_full_path` adds the separator when the root path is empty instead of reading `buf[-1]`, so the result starts with `\`. Latent; syntax check only.
 
+- H-2 (Medium): needs owner. The generation counter is the ABI change that decision 0003 left open; the free-list restore is not a local change.
+
 ## Not verified / out of scope
 
 - Nothing was compiled, linked, sanitized, fuzzed, or executed. Overflow and wrap claims come from the arithmetic at the cited lines.
