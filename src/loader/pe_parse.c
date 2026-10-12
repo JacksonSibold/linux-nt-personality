@@ -494,9 +494,7 @@ pe_status_t pe_validate(pe_context_t *ctx)
         u32 vsize = sec.Misc.VirtualSize;
         if (vsize == 0) vsize = sec.SizeOfRawData;
 
-        /* Detect VA + vsize overflow */
-        if ((u64)sec.VirtualAddress + vsize < sec.VirtualAddress)
-            PE_FAIL(PE_ERR_SECTIONS, "section %u VA+vsize overflow VA 0x%x vsize 0x%x", i, sec.VirtualAddress, vsize);
+        /* VA + vsize is computed in u64 here, so this also catches overflow */
         if ((u64)sec.VirtualAddress + vsize > opt.SizeOfImage)
             PE_FAIL(PE_ERR_SECTIONS, "section %u VA 0x%x + vsize 0x%x = 0x%x > SizeOfImage 0x%x", i, sec.VirtualAddress, vsize, (u32)((u64)sec.VirtualAddress+vsize), opt.SizeOfImage);
 
@@ -885,6 +883,9 @@ pe_status_t pe_imports_walk(const pe_context_t *ctx,
                 sym.ordinal_flag = IMAGE_ORDINAL_FLAG64;
                 sym.ordinal = (u16)(thunk.u1.Ordinal & 0xFFFFULL);
             } else {
+                /* Hint/name RVA is 32 bits; reject instead of truncating */
+                if (thunk.u1.Ordinal > 0xFFFFFFFFULL)
+                    return PE_ERR_CORRUPT;
                 u32 ibn_off;
                 s = pe_rva_to_offset(ctx, (u32)thunk.u1.Ordinal, &ibn_off);
                 if (s != PE_OK) return s;
@@ -1023,6 +1024,10 @@ pe_status_t pe_relocs_walk(const pe_context_t *ctx,
     u32 reloc_off;
     s = pe_rva_to_offset(ctx, reloc_dir.rva, &reloc_off);
     if (s != PE_OK) return s;
+    /* Require the whole directory inside the file so that the u32 sums
+     * reloc_off + cursor (and + entry offsets) below cannot wrap. */
+    if ((u64)reloc_off + reloc_dir.size > (u64)ctx->size)
+        return PE_ERR_BOUNDS;
 
     u32 cursor = 0;
     while (cursor < reloc_dir.size) {

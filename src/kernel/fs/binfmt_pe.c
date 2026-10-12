@@ -23,12 +23,8 @@
 /* Forward from arch/x86/nt */
 static struct linux_binfmt pe_format;
 #ifdef CONFIG_NT_PERSONALITY
-#ifdef CONFIG_NT_PERSONALITY
 #include "../../arch/x86/nt/nt_internal.h"
 extern int ntmm_add_region(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long);
-#else
-static inline void nt_enter_personality(struct task_struct *tsk) { (void)tsk; }
-#endif
 #else
 static inline void nt_enter_personality(struct task_struct *tsk) { (void)tsk; }
 #endif
@@ -178,8 +174,13 @@ static int pe_read_file_headers(struct linux_binprm *bprm, struct pe_load_state 
         return -ENOEXEC;
     }
     nt_off = pe_load_u32((u8*)st->headers_buf + 60);
-    if (nt_off + 6 > (u32)n) {
+    if (nt_off > (u32)n || (u32)n - nt_off < 6) {
         pr_info("binfmt_pe: reject: e_lfanew %u+6 > read %zd for %s\n", nt_off, n, bprm->filename);
+        return -ENOEXEC;
+    }
+    /* Characteristics (nt_off+22) is the last file-header field read below */
+    if ((u32)n - nt_off < 24) {
+        pr_info("binfmt_pe: reject: file header at %u+24 > read %zd for %s\n", nt_off, n, bprm->filename);
         return -ENOEXEC;
     }
     st->nt_off = nt_off;
@@ -200,8 +201,10 @@ static int pe_read_file_headers(struct linux_binprm *bprm, struct pe_load_state 
         return -ENOEXEC;
     }
     size_opt = pe_load_u16((u8*)st->headers_buf + nt_off + 20);
-    if (size_opt < 2 || size_opt > 240) {
-        pr_info("binfmt_pe: reject: SizeOfOptionalHeader %u out of [2,240] for %s\n", size_opt, bprm->filename);
+    /* 112 bytes is the PE32+ fixed part through NumberOfRvaAndSizes; every
+     * optional-header field read below (up to oh_off+88) lies inside it. */
+    if (size_opt < 112 || size_opt > 240) {
+        pr_info("binfmt_pe: reject: SizeOfOptionalHeader %u out of [112,240] for %s\n", size_opt, bprm->filename);
         return -ENOEXEC;
     }
     st->num_sections = num_sections;
@@ -245,6 +248,10 @@ static int pe_read_file_headers(struct linux_binprm *bprm, struct pe_load_state 
     }
     if (size_image == 0 || (size_image % sec_align) != 0) {
         pr_info("binfmt_pe: reject: SizeOfImage 0x%x invalid (zero or not aligned to sec_align 0x%x) for %s\n", size_image, sec_align, bprm->filename);
+        return -ENOEXEC;
+    }
+    if (size_headers > size_image) {
+        pr_info("binfmt_pe: reject: SizeOfHeaders 0x%x > SizeOfImage 0x%x for %s\n", size_headers, size_image, bprm->filename);
         return -ENOEXEC;
     }
 
@@ -505,7 +512,7 @@ static int pe_apply_relocs(struct pe_load_state *st)
         }
     }
     if (!found) return -ENOEXEC;
-    if (reloc_off + reloc_size > (u32)st->file_size) return -ENOEXEC;
+    if ((u64)reloc_off + reloc_size > (u64)st->file_size) return -ENOEXEC;
     void *buf = kmalloc(reloc_size, GFP_KERNEL);
     if (!buf) return -ENOMEM;
     ssize_t n = pe_kernel_read(st->file, reloc_off, buf, reloc_size);
@@ -528,6 +535,7 @@ static int pe_apply_relocs(struct pe_load_state *st)
                 kfree(buf);
                 return -ENOEXEC;
             }
+            if ((u64)page_rva + offset + sizeof(u64) > st->size_of_image) { kfree(buf); return -ENOEXEC; }
             unsigned long target = (unsigned long)st->actual_base + page_rva + offset;
             u64 val;
             if (copy_from_user(&val, (void __user *)target, sizeof(val))) { kfree(buf); return -EFAULT; }
@@ -636,7 +644,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
     if (n < 64) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     if (pe_load_u16(hdr) != 0x5A4D) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u32 nt_off = pe_load_u32((u8*)hdr + 60);
-    if (nt_off + 6 > (u32)n) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
+    if (nt_off > (u32)n || (u32)n - nt_off < 6) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u32 sig = pe_load_u32((u8*)hdr + nt_off);
     if (sig != 0x4550) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u16 num_sections = pe_load_u16((u8*)hdr + nt_off + 6);
@@ -649,6 +657,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
     u64 image_base = pe_load_u64((u8*)hdr + oh_off + 24);
     u32 size_image = pe_load_u32((u8*)hdr + oh_off + 56);
     u32 size_headers = pe_load_u32((u8*)hdr + oh_off + 60);
+    if (size_headers > size_image) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u16 dllchars = pe_load_u16((u8*)hdr + oh_off + 70);
     int dynamic_base = (dllchars & 0x40) != 0;
     u32 section_table_off = oh_off + size_opt;
@@ -707,6 +716,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
         u32 chars = pe_load_u32((u8*)hdr + off + 36);
         u32 vs = vsize ? vsize : rawsize;
         if (vs == 0) continue;
+        if (vaddr >= size_image || (u64)vaddr + vs > size_image) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
         unsigned long maddr = base + vaddr;
         unsigned long mlen = PAGE_ALIGN(vs);
         unsigned long prot = pe_prot_from_chars(chars);
@@ -758,7 +768,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                     }
                 }
                 if (!found && reloc_rva < size_headers) { reloc_off = reloc_rva; found = true; }
-                if (found && reloc_off + reloc_size <= (u32)fsize) {
+                if (found && (u64)reloc_off + reloc_size <= (u64)fsize) {
                     void *buf = kmalloc(reloc_size, GFP_KERNEL);
                     if (buf) {
                         ssize_t nn = pe_kernel_read(f, reloc_off, buf, reloc_size);
@@ -777,6 +787,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                                     u16 off2 = entry & 0xFFF;
                                     if (type==0) continue;
                                     if (type!=10) { kfree(buf); kfree(hdr); filp_close(f,NULL); return -ENOEXEC; }
+                                    if ((u64)page_rva + off2 + sizeof(u64) > size_image) { kfree(buf); kfree(hdr); filp_close(f,NULL); return -ENOEXEC; }
                                     unsigned long target = (unsigned long)actual_base + page_rva + off2;
                                     u64 val;
                                     if (copy_from_user(&val, (void __user *)target, sizeof(val))) { kfree(buf); kfree(hdr); filp_close(f,NULL); return -EFAULT; }
@@ -836,6 +847,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                         u16 ord = 0;
                         if (copy_from_user(&ord, (void __user *)(actual_base + ords_rva + i*2), 2))
                             break;
+                        if (ord >= ed.NumberOfFunctions) break;
                         u32 func_rva = 0;
                         if (copy_from_user(&func_rva, (void __user *)(actual_base + funcs_rva + ord*4), 4))
                             break;
@@ -1024,14 +1036,25 @@ static int load_pe_binary(struct linux_binprm *bprm)
                  * a bad GS base is an escalation primitive, not a cosmetic
                  * error, and the value derives from untrusted image layout.
                  */
-                pr_err("binfmt_pe: refusing out-of-range TEB %px\n", state.teb);
+                pr_err("binfmt_pe: refusing out-of-range TEB %p\n", state.teb);
                 ret = -EINVAL;
                 goto out;
         }
     }
 
-    /* MMF_PE_IMAGE not defined in vanilla; NT state tracked via TIF_NTABI */
-    state.mappings = NULL;
+    /* MMF_PE_IMAGE not defined in vanilla; NT state tracked via TIF_NTABI.
+     * Success keeps the mappings in place, so free only the bookkeeping
+     * nodes (not via pe_unmap_all) and the headers buffer. */
+    {
+        struct pe_mapping *m = state.mappings;
+        while (m) {
+            struct pe_mapping *next = m->next;
+            kfree(m);
+            m = next;
+        }
+        state.mappings = NULL;
+    }
+    kfree(state.headers_buf);
     state.headers_buf = NULL;
     ret = 0;
 out:
@@ -1066,7 +1089,11 @@ static struct linux_binfmt pe_format = {
 
 static int __init init_pe_binfmt(void)
 {
-    register_binfmt(&pe_format);
+    int ret = register_binfmt(&pe_format);
+    if (ret) {
+        pr_err("binfmt_pe: register_binfmt failed: %d\n", ret);
+        return ret;
+    }
     pr_info("binfmt_pe: registered\n");
     return 0;
 }
