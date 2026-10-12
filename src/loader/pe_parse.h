@@ -33,6 +33,14 @@ typedef enum pe_status {
 } pe_status_t;
 
 /* -------------------------------------------------------------------------- */
+/* Input limits (docs/review/loader.md, L-1 and L-2)                          */
+/* -------------------------------------------------------------------------- */
+/* Import and export names and forwarder strings may be at most this many
+ * bytes, not counting the terminating NUL.  Longer names, and names with no NUL
+ * before end of file, fail with PE_ERR_CORRUPT. */
+#define PE_MAX_SYMBOL_NAME 4096
+
+/* -------------------------------------------------------------------------- */
 /* Context                                                                    */
 /* -------------------------------------------------------------------------- */
 typedef struct pe_context {

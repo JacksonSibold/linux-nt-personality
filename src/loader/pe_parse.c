@@ -337,11 +337,18 @@ pe_status_t pe_read_asciiz(const pe_context_t *ctx,
     *out = NULL;
     *len = 0;
     if (off >= ctx->size) return PE_ERR_BOUNDS;
-    size_t end = off;
-    while (end < ctx->size && ctx->data[end] != '\0') ++end;
-    if (end >= ctx->size) return PE_ERR_CORRUPT;
+
+    /* Scan at most PE_MAX_SYMBOL_NAME bytes plus the NUL.  Hitting the limit
+     * means either no NUL before EOF or a name longer than the cap. */
+    size_t limit = ctx->size - off;
+    if (limit > (size_t)PE_MAX_SYMBOL_NAME + 1)
+        limit = (size_t)PE_MAX_SYMBOL_NAME + 1;
+    size_t n = 0;
+    while (n < limit && ctx->data[off + n] != '\0') ++n;
+    if (n == limit) return PE_ERR_CORRUPT;
+
     *out = (const char *)(ctx->data + off);
-    *len = end - off;
+    *len = n;
     return PE_OK;
 }
 
@@ -996,8 +1003,8 @@ pe_status_t pe_exports_walk(const pe_context_t *ctx,
             u32 name_rva = pe_file_u32(ctx, name_rva_ptr);
             u32 name_off;
             if (pe_rva_to_offset(ctx, name_rva, &name_off) != PE_OK) continue;
-            if (pe_read_asciiz(ctx, name_off, &ent.name, &ent.name_len) != PE_OK)
-                continue;
+            s2 = pe_read_asciiz(ctx, name_off, &ent.name, &ent.name_len);
+            if (s2 != PE_OK) return s2;
             break;
         }
 
