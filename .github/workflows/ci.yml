@@ -21,6 +21,9 @@ jobs:
       - name: Unit tests
         run: python -m unittest discover tests/unit
 
+      - name: Coverage report (informational)
+        run: python tools/coverage_report.py
+
       - name: host-test
         run: make -C tests/host CC=gcc test
 

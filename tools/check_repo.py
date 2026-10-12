@@ -79,8 +79,9 @@ def check_file(root, rel, failures):
         try:
             compile(data, rel, "exec", dont_inherit=True)
         except SyntaxError as exc:
-            failures.append(("py-compile", rel,
-                             f"line {exc.lineno}: {exc.msg}"))
+            # Some compile errors (for example a NUL byte) carry no line number.
+            where = f"line {exc.lineno}: " if exc.lineno else ""
+            failures.append(("py-compile", rel, f"{where}{exc.msg}"))
 
     crlf = data.count(b"\r\n")
     bare_lf = data.count(b"\n") - crlf

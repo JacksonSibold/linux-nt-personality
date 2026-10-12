@@ -35,7 +35,8 @@ TABLE_RE = re.compile(
     r"static\s+const\s+NTSTATUS_TO_DOS\s+NtStatusToDosErrorTable\[\]\s*=\s*\{(.*?)\};",
     re.DOTALL,
 )
-ENTRY_RE = re.compile(r"\{\s*([^,{}]+?)\s*,\s*(\d+)L?\s*\}")
+ENTRY_RE = re.compile(r"\{\s*([^,{}]+?)\s*,\s*(\d+)[uUlL]*\s*\}")
+CAST_RE = re.compile(r"^\(NTSTATUS\)\s*")
 SEVERITY = {0: "SUCCESS", 1: "INFORMATIONAL", 2: "WARNING", 3: "ERROR"}
 
 
@@ -56,7 +57,10 @@ def read_text(path):
 
 
 def parse_literal(text):
-    return int(text, 16) if text.lower().startswith("0x") else int(text, 10)
+    """Parse a hex or decimal literal, with the spellings the C table uses:
+    an optional (NTSTATUS) cast and optional U/L suffixes, e.g. (NTSTATUS)0xC0000005L."""
+    body = CAST_RE.sub("", text.strip()).rstrip("uUlL")
+    return int(body, 16) if body.lower().startswith("0x") else int(body, 10)
 
 
 def load_defines(header_path):

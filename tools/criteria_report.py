@@ -218,7 +218,11 @@ def main(argv=None):
     if args.selftest:
         return 1 if selftest() else 0
 
-    criteria = load_criteria(CRITERIA_PATH)
+    try:
+        criteria = load_criteria(CRITERIA_PATH)
+    except (OSError, ValueError) as exc:  # bad JSON, wrong shape, duplicate id, unreadable
+        print(f"criteria_report: error: cannot load {CRITERIA_PATH}: {exc}", file=sys.stderr)
+        return 1
     rows = build_rows(criteria)
     summary = summarize(rows, read_readme_count(README_PATH))
 
@@ -230,7 +234,12 @@ def main(argv=None):
         text = render_text(rows, summary)
 
     if args.out:
-        Path(args.out).write_text(text, encoding="utf-8", newline="\n")
+        try:
+            Path(args.out).write_text(text, encoding="utf-8", newline="\n")
+        except OSError as exc:
+            print(f"criteria_report: error: cannot write {args.out}: {exc.strerror}",
+                  file=sys.stderr)
+            return 1
     else:
         # Bytes, not text: the Windows console codepage cannot encode every
         # criterion character, and the report must not depend on it.
