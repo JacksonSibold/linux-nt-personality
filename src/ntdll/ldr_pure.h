@@ -43,4 +43,54 @@ static inline int ldr_iat_write(unsigned char *image, unsigned long long image_s
     return 1;
 }
 
+/* TLS callback table (LDR-4, decision 0032). AddressOfCallBacks in the TLS
+ * directory is a VA on the preferred base. The table itself lives in the
+ * image, at VA - OriginalBase. */
+typedef enum {
+    LDR_TLS_CB_NONE = 0,  /* no table: AddressOfCallBacks is 0 */
+    LDR_TLS_CB_OK = 1,    /* table head lies in the image; *out_rva is set */
+    LDR_TLS_CB_BAD = 2    /* table is outside the image: do not read it */
+} ldr_tls_cb_status_t;
+
+static inline ldr_tls_cb_status_t ldr_tls_cb_table_rva(unsigned long long table_va,
+                                                       unsigned long long original_base,
+                                                       unsigned long long image_size,
+                                                       unsigned int *out_rva)
+{
+    unsigned long long rva;
+
+    if (table_va == 0) return LDR_TLS_CB_NONE;
+    if (table_va < original_base) return LDR_TLS_CB_BAD;
+
+    rva = table_va - original_base;
+    if (rva > 0xFFFFFFFFULL) return LDR_TLS_CB_BAD;
+    if (!pe_range_fits(rva, sizeof(unsigned long long), image_size)) return LDR_TLS_CB_BAD;
+
+    *out_rva = (unsigned int)rva;
+    return LDR_TLS_CB_OK;
+}
+
+/* Callback entry `index` of the table at table_rva. Returns 1 with *out set
+ * to a non-zero callback VA. Returns 0 at the zero terminator, and also when
+ * the entry would lie past the image, so a table with no terminator stops at
+ * the image end. *out is written whenever the entry is inside the image, zero
+ * included, and left alone otherwise. */
+static inline int ldr_tls_cb_entry(const unsigned char *image, unsigned long long image_size,
+                                   unsigned long long table_rva, unsigned long long index,
+                                   unsigned long long *out)
+{
+    const unsigned long long width = sizeof(*out);
+    unsigned long long slot, value;
+
+    if (table_rva > image_size) return 0;
+    if (index > (image_size - table_rva) / width) return 0;
+
+    slot = table_rva + index * width;
+    if (!pe_range_fits(slot, width, image_size)) return 0;
+
+    memcpy(&value, image + slot, sizeof(value));
+    *out = value;
+    return value != 0;
+}
+
 #endif /* NTDLL_LDR_PURE_H */

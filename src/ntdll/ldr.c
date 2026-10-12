@@ -1488,19 +1488,24 @@ static void ldr_run_tls_callbacks(winldr_ctx_t *ctx, ldr_module_t *mod, ULONG re
 {
     if (!mod->has_tls || mod->datafile) return;
 
-    /* AddressOfCallBacks is a VA in the image pointing to null-terminated array. */
-    u8 *base = mod->image;
+    /* AddressOfCallBacks is a VA on the preferred base (the directory is read
+     * from the file, before relocation).  The table is read from mod->image at
+     * VA - OriginalBase, bounded by the image (LDR-4, decision 0032).  A table
+     * outside the image is not read. */
+    unsigned int table_rva = 0;
     ULONG_PTR cb_table_va = (ULONG_PTR)mod->tls.AddressOfCallBacks;
-    if (cb_table_va == 0) return;
+    if (ldr_tls_cb_table_rva((unsigned long long)cb_table_va,
+                             (unsigned long long)(ULONG_PTR)mod->entry.OriginalBase,
+                             mod->image_size, &table_rva) != LDR_TLS_CB_OK)
+        return;
 
-    /* The table is at base + (cb_table_va - image_base), but after relocation
-     * the stored value is already the actual VA.  Convert to file offset via
-     * the preferred base delta so we can read through pe parser. */
-    (void)base;
-    /* Simpler: cb_table_va is a VA; array is in image.  Read from image. */
-    ULONG_PTR *table = (ULONG_PTR *)cb_table_va;
-    for (size_t i = 0; table[i] != 0; ++i) {
-        PIMAGE_TLS_CALLBACK cb = (PIMAGE_TLS_CALLBACK)table[i];
+    /* Entries are relocated VAs in the image.  The loop stops at the zero
+     * terminator or at the image end. */
+    for (unsigned long long i = 0; ; ++i) {
+        unsigned long long cb_va = 0;
+        if (!ldr_tls_cb_entry(mod->image, mod->image_size, table_rva, i, &cb_va))
+            break;
+        PIMAGE_TLS_CALLBACK cb = (PIMAGE_TLS_CALLBACK)(ULONG_PTR)cb_va;
         ldr_log_call(ctx, mod, reason, 1, (ULONG_PTR)cb);
         if (ctx->tls_callback_hook)
             ctx->tls_callback_hook(ctx, &mod->entry, reason, NULL, cb,
