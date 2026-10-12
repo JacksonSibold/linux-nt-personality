@@ -1107,38 +1107,8 @@ static unsigned long nt_alloc_user_trampoline(void)
     return addr;
 }
 
-/* Probe for real ntdll!RtlUserThreadStart - if ntdll is mapped, use it instead of synthetic page.
- * Mirrors pe_map_ntdll's export walk but lightweight: check 0x180000000 probe via vm_mmap lookup.
- * Returns 0 if not found (fallback to synthetic).
- */
-static unsigned long nt_get_ntdll_RtlUserThreadStart(void)
-{
-    /* ntdll is mapped at 0x180000000 (+ASLR) by binfmt_pe; probe via access_ok + copy_from_user */
-    const unsigned long base_candidates[] = { 0x180000000UL, 0x7ffff7c00000UL, 0 };
-    for (int i = 0; base_candidates[i]; i++) {
-        unsigned long base = base_candidates[i];
-        /* Quick header probe: MZ + PE signature */
-        unsigned char hdr[64];
-        if (copy_from_user(hdr, (void __user *)base, sizeof(hdr)))
-            continue;
-        if (hdr[0] != 0x4D || hdr[1] != 0x5A) /* 'MZ' */
-            continue;
-        u32 nt_off = hdr[0x3C] | (hdr[0x3D]<<8) | (hdr[0x3E]<<16) | (hdr[0x3F]<<24);
-        if (nt_off >= 0x1000)
-            continue;
-        unsigned char pe_sig[4];
-        if (copy_from_user(pe_sig, (void __user *)(base + nt_off), 4))
-            continue;
-        if (pe_sig[0] != 0x50 || pe_sig[1] != 0x45 || pe_sig[2] != 0x00 || pe_sig[3] != 0x00)
-            continue;
-        /* Minimal export lookup for RtlUserThreadStart would go here;
-         * for U2 we keep the synthetic stub as authoritative and only use this
-         * probe as a future fast-path. Returning 0 forces synthetic.
-         */
-        (void)base;
-    }
-    return 0;
-}
+/* The ntdll fast-path probe that used to live here always returned 0, so the
+ * synthetic trampoline below is the only entry path (P-12). */
 
 static void nt_setup_child_regs(struct task_struct *child,
                                  struct nt_ethread *thr,
@@ -1155,17 +1125,6 @@ static void nt_setup_child_regs(struct task_struct *child,
     regs->sp = sp;
     pr_debug("nt_setup_child_regs: thr=%p tid=%lu stack_base=0x%lx sp=0x%lx start=%p arg=%p\n",
              thr, thr->tid, stack_base, sp, StartRoutine, Argument);
-    /* Prefer real ntdll export if present */
-    unsigned long ntdll_entry = nt_get_ntdll_RtlUserThreadStart();
-    if (ntdll_entry) {
-        regs->ip = ntdll_entry;
-        regs->cx = (unsigned long)StartRoutine;
-        regs->dx = (unsigned long)Argument;
-        regs->r8 = 0;
-        regs->r9 = 0;
-        pr_debug("nt_setup_child_regs: using ntdll RtlUserThreadStart 0x%lx\n", ntdll_entry);
-        return;
-    }
     /* Synthetic trampoline - this may sleep, so don't keep thr in register across it */
     barrier();
     unsigned long tramp = nt_alloc_user_trampoline();
