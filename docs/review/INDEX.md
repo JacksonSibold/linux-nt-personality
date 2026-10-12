@@ -1,4 +1,4 @@
-# Review index: src/loader, src/kernel/fs, arch/x86/nt
+# Review index: src/loader, src/kernel/fs, arch/x86/nt, src/kernel/nt
 
 Date: 2026-10-12. Branch: `haiku/review` (worktree `ntpers-review`, base `5eb8026`).
 Type: read-only static review. No source file was modified. No build, sanitizer, or runtime test was run. Every finding was checked against the cited lines.
@@ -10,7 +10,8 @@ Type: read-only static review. No source file was modified. No build, sanitizer,
 | PE parser and protection mapping | [loader.md](loader.md) | 2 | 3 | 9 | 1 |
 | PE exec loader and test shim | [kernel-fs.md](kernel-fs.md) | 5 | 7 | 9 | 3 |
 | NT personality (dispatch, VM, I/O, processes, services) | [arch-x86-nt.md](arch-x86-nt.md) | 14 | 24 | 24 | 1 |
-| **Total** | | **21** | **34** | **42** | **5** |
+| NT kernel objects, handles, registry, sync, security, VM, I/O, IOCP, processes, dispatch (`src/kernel/nt`) | [kernel-nt.md](kernel-nt.md) | 7 | 9 | 18 | 1 |
+| **Total** | | **28** | **43** | **60** | **6** |
 
 ## Top findings
 
