@@ -12,6 +12,7 @@
 struct module;
 struct inode {
 	loff_t i_size;
+	umode_t i_mode;
 };
 
 #ifndef KSHIM_H
@@ -29,6 +30,7 @@ struct file_operations {
 };
 
 loff_t i_size_read(const struct inode *inode);
+unsigned int i_uid_read(const struct inode *inode);
 struct inode *file_inode(const struct file *f);
 ssize_t kernel_read(struct file *file, void *buf, size_t count, loff_t *pos);
 struct file *filp_open(const char *filename, int flags, umode_t mode);
