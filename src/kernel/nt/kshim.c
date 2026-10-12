@@ -26,6 +26,77 @@ struct _UNICODE_STRING { uint16_t Length; uint16_t MaximumLength; uint16_t *Buff
 #include <stdlib.h>
 
 _Atomic long kshim_alloc_count = 0;
+
+/* Live-allocation table for allocation-site tagging (see kshim.h). Hashed on
+ * the pointer; nodes come from plain malloc so they are not self-counted. */
+#define KSHIM_TAG_BUCKETS 4096
+struct kshim_tag {
+    const void *p;
+    size_t size;
+    const char *file;
+    int line;
+    struct kshim_tag *next;
+};
+static struct kshim_tag *kshim_tag_tab[KSHIM_TAG_BUCKETS];
+static pthread_mutex_t kshim_tag_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static unsigned kshim_tag_hash(const void *p) {
+    return (unsigned)(((uintptr_t)p >> 4) & (KSHIM_TAG_BUCKETS - 1));
+}
+
+void *kshim_alloc_tagged(size_t size, int zero, const char *file, int line) {
+    void *p = zero ? calloc(1, size) : malloc(size);
+    if (!p) return NULL;
+    atomic_fetch_add(&kshim_alloc_count, 1);
+    struct kshim_tag *t = malloc(sizeof *t);
+    if (t) {
+        t->p = p; t->size = size; t->file = file; t->line = line;
+        pthread_mutex_lock(&kshim_tag_lock);
+        unsigned b = kshim_tag_hash(p);
+        t->next = kshim_tag_tab[b];
+        kshim_tag_tab[b] = t;
+        pthread_mutex_unlock(&kshim_tag_lock);
+    }
+    return p;
+}
+
+void kshim_free_tagged(const void *p) {
+    if (!p) return;
+    atomic_fetch_sub(&kshim_alloc_count, 1);
+    pthread_mutex_lock(&kshim_tag_lock);
+    struct kshim_tag **pp = &kshim_tag_tab[kshim_tag_hash(p)];
+    while (*pp && (*pp)->p != p) pp = &(*pp)->next;
+    if (*pp) {
+        struct kshim_tag *t = *pp;
+        *pp = t->next;
+        free(t);
+    }
+    pthread_mutex_unlock(&kshim_tag_lock);
+    free((void *)p);
+}
+
+long kshim_live_site_count(const char *file_suffix) {
+    size_t n = strlen(file_suffix);
+    long count = 0;
+    pthread_mutex_lock(&kshim_tag_lock);
+    for (unsigned b = 0; b < KSHIM_TAG_BUCKETS; b++)
+        for (struct kshim_tag *t = kshim_tag_tab[b]; t; t = t->next) {
+            size_t len = strlen(t->file);
+            if (len >= n && strcmp(t->file + len - n, file_suffix) == 0) count++;
+        }
+    pthread_mutex_unlock(&kshim_tag_lock);
+    return count;
+}
+
+void kshim_leak_report(void) {
+    pthread_mutex_lock(&kshim_tag_lock);
+    for (unsigned b = 0; b < KSHIM_TAG_BUCKETS; b++)
+        for (struct kshim_tag *t = kshim_tag_tab[b]; t; t = t->next)
+            fprintf(stderr, "LEAK SITE %s:%d size=%zu ptr=%p\n",
+                    t->file, t->line, t->size, t->p);
+    pthread_mutex_unlock(&kshim_tag_lock);
+}
+
 __thread struct nt_eprocess *kshim_current_proc_ptr = NULL;
 __thread struct nt_ethread *kshim_current_thread_ptr = NULL;
 
@@ -396,7 +467,9 @@ void kshim_filp_close(struct file *f) {
 /* Stat timestamps. glibc (Linux) has st_atim/st_mtim/st_ctim as struct
  * timespec with nanoseconds. MinGW only has st_atime/st_mtime/st_ctime
  * (time_t, whole seconds), so the MinGW branch builds a timespec with tv_nsec 0. */
-#if defined(__linux__)
+/* The host build (tests/kernel-host) puts its Linux-layout sys/stat.h on the
+ * include path under USERSPACE_KSHIM, so it takes the st_atim branch too. */
+#if defined(__linux__) || defined(USERSPACE_KSHIM)
 #define KSHIM_STAT_ATIM(s) ((s).st_atim)
 #define KSHIM_STAT_MTIM(s) ((s).st_mtim)
 #define KSHIM_STAT_CTIM(s) ((s).st_ctim)

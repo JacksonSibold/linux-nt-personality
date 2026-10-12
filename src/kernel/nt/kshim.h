@@ -257,15 +257,17 @@ static inline int _kshim_printk(const char *fmt, ...) {
 
 #ifdef USERSPACE_KSHIM
 extern _Atomic long kshim_alloc_count;
-static inline void *kmalloc(size_t size, int flags) {
-    (void)flags; void *p = malloc(size); if (p) atomic_fetch_add(&kshim_alloc_count, 1); return p;
-}
-static inline void *kzalloc(size_t size, int flags) {
-    (void)flags; void *p = calloc(1, size); if (p) atomic_fetch_add(&kshim_alloc_count, 1); return p;
-}
-static inline void kfree(const void *p) {
-    if (p) { atomic_fetch_sub(&kshim_alloc_count, 1); free((void*)p); }
-}
+/* Allocation-site tagging: every kmalloc/kzalloc records __FILE__/__LINE__ in
+ * a table in kshim.c, and kfree removes it. kshim_leak_report() prints the
+ * sites of whatever is still live. */
+void *kshim_alloc_tagged(size_t size, int zero, const char *file, int line);
+void kshim_free_tagged(const void *p);
+void kshim_leak_report(void);
+/* Live tagged allocations whose __FILE__ ends with file_suffix (e.g. "sync.c"). */
+long kshim_live_site_count(const char *file_suffix);
+#define kmalloc(size, flags) kshim_alloc_tagged((size), 0, __FILE__, __LINE__)
+#define kzalloc(size, flags) kshim_alloc_tagged((size), 1, __FILE__, __LINE__)
+#define kfree(p)             kshim_free_tagged((p))
 #else
 static inline void *kmalloc(size_t size, int flags) { (void)flags; return malloc(size); }
 static inline void *kzalloc(size_t size, int flags) { (void)flags; return calloc(1, size); }

@@ -28,10 +28,10 @@ LDFLAGS := -fno-use-linker-plugin
 SHIM_OBJS := $(BUILD)/mman_win.o $(BUILD)/posix_host.o $(BUILD)/posix_raw.o
 
 # Test programs and the module objects each one links against.
-TESTS := object_test security_test registry_test i2_test io_test mm_test sync_test
+TESTS := object_test security_test registry_test i2_test io_test mm_test sync_test proc_thread_test
 
-# Built but not run by "check": exits 0 before printing its summary (see README).
-BUILD_ONLY := proc_thread_test
+# Built but not run by "check" (none at present).
+BUILD_ONLY :=
 ALL_PROGS := $(TESTS) $(BUILD_ONLY)
 
 object_test_OBJS      := object handle kshim

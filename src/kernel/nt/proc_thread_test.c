@@ -89,9 +89,18 @@ static void test_create_suspended(void){
     PASS();
 }
 
+/* Waits until the sync.c allocations are back to baseline, i.e. the threads
+ * created since the baseline have run their exit path (see thread_trampoline).
+ * Waiting on the thread handle is not enough: it is signalled before the
+ * thread's trampoline has finished. */
+static void wait_sync_released(long baseline){
+    for(int i=0; i<300 && kshim_live_site_count("sync.c")>baseline; i++) usleep(10000);
+}
+
 static void test_suspend_counts(void){
     setup_proc();
     struct nt_eprocess *proc=kshim_current_process();
+    long before = kshim_live_site_count("sync.c");
     HANDLE th;
     NTSTATUS st=nt_svc_NtCreateThreadEx(&th,0,NULL,NtCurrentProcess(),thr_sleeper,NULL,0,0,0,0,NULL);
     ASSERT(st==STATUS_SUCCESS);
@@ -107,6 +116,7 @@ static void test_suspend_counts(void){
     ASSERT(r1s==STATUS_SUCCESS && r1==2);
     ASSERT(r2s==STATUS_SUCCESS && r2==1);
     nt_svc_NtTerminateThread(th,0);
+    wait_sync_released(before);
     ObCloseHandle(proc,th);
     PASS();
 }
@@ -291,6 +301,25 @@ static void test_mutant_abandon_process_exit(void){
     PASS();
 }
 
+/* ---- Thread exit releases its sync thread (tracked allocation check) ----
+ * Each thread_trampoline allocates an nt_thread (sync.c nt_thread_create) and
+ * frees it on return. Self-termination (pthread_exit) skips that return path,
+ * so the nt_thread must be released by a cleanup handler instead. */
+static ULONG thr_self_term(PVOID a){ (void)a; nt_svc_NtTerminateThread(NtCurrentThread(), 0); return 0; }
+static void test_thread_exit_frees_sync_thread(void){
+    setup_proc();
+    long before = kshim_live_site_count("sync.c");
+    HANDLE th;
+    NTSTATUS st = nt_svc_NtCreateThreadEx(&th,0,NULL,NtCurrentProcess(),thr_self_term,NULL,0,0,0,0,NULL);
+    ASSERT(st==STATUS_SUCCESS);
+    nt_svc_NtWaitForSingleObject(th,0,NULL);
+    long now = kshim_live_site_count("sync.c");
+    for(int i=0; i<200 && now!=before; i++){ usleep(10000); now = kshim_live_site_count("sync.c"); }
+    ObCloseHandle(kshim_current_process(), th);
+    if(now!=before){ fprintf(stderr,"FAIL thread_exit: sync.c live allocations %ld after exit, expected %ld\n", now, before); g_fail++; return; }
+    PASS();
+}
+
 /* ---- Gap 5: ReturnLength discipline (Windows table) ---- */
 static void test_query_returnlength_discipline(void){
     setup_proc();
@@ -345,12 +374,13 @@ int main(void){
     RUN(test_mutant_abandon_self_terminate);
     RUN(test_mutant_abandon_peer_terminate);
     RUN(test_mutant_abandon_process_exit);
+    RUN(test_thread_exit_frees_sync_thread);
     RUN(test_query_returnlength_discipline);
     printf("proc_thread tests: %d passed, %d failed\n", g_pass, g_fail);
     long leaks=atomic_load(&kshim_alloc_count);
     printf("leaks %ld\n", leaks);
     ObCleanupObjectManager();
     long after=atomic_load(&kshim_alloc_count);
-    if(after!=0) { fprintf(stderr,"LEAK %ld\n",after); return 1; }
+    if(after!=0) { fprintf(stderr,"LEAK %ld\n",after); kshim_leak_report(); return 1; }
     return g_fail?1:0;
 }

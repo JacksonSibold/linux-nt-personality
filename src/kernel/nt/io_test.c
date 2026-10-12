@@ -429,6 +429,58 @@ TEST(byte_round_trip)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Access rights on a valid handle                                              */
+/* -------------------------------------------------------------------------- */
+
+/* NT: a valid handle that lacks the right for the call fails with
+ * STATUS_ACCESS_DENIED (the object manager does the same in handle.c).
+ * STATUS_INVALID_HANDLE is for a handle that is not open. */
+TEST(access_denied_on_valid_handle)
+{
+	HANDLE h;
+	IO_STATUS_BLOCK iosb;
+	OBJECT_ATTRIBUTES oa;
+	LARGE_INTEGER alloc = { 0 };
+	char buf[8] = { 0 };
+
+	reset_state();
+
+	oa = make_obj_attr("access_rights.bin");
+	ASSERT_STATUS(nt_svc_NtCreateFile(&h, FILE_GENERIC_WRITE, &oa, &iosb,
+					  &alloc, 0,
+					  FILE_SHARE_READ | FILE_SHARE_WRITE,
+					  FILE_OVERWRITE_IF,
+					  FILE_SYNCHRONOUS_IO_NONALERT |
+					  FILE_NON_DIRECTORY_FILE,
+					  NULL, 0),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtReadFile(h, NULL, NULL, NULL, &iosb,
+				        buf, sizeof(buf), NULL, NULL),
+		      STATUS_ACCESS_DENIED);
+	nt_svc_NtClose(h);
+
+	oa = make_obj_attr("access_rights.bin");
+	ASSERT_STATUS(nt_svc_NtCreateFile(&h, FILE_GENERIC_READ, &oa, &iosb,
+					  &alloc, 0,
+					  FILE_SHARE_READ | FILE_SHARE_WRITE,
+					  FILE_OPEN,
+					  FILE_SYNCHRONOUS_IO_NONALERT |
+					  FILE_NON_DIRECTORY_FILE,
+					  NULL, 0),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtWriteFile(h, NULL, NULL, NULL, &iosb,
+				         buf, sizeof(buf), NULL, NULL),
+		      STATUS_ACCESS_DENIED);
+	nt_svc_NtClose(h);
+
+	/* Closed handle: not open at all. */
+	ASSERT_STATUS(nt_svc_NtReadFile(h, NULL, NULL, NULL, &iosb,
+				        buf, sizeof(buf), NULL, NULL),
+		      STATUS_INVALID_HANDLE);
+	PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* NT path parsing                                                              */
 /* -------------------------------------------------------------------------- */
 
@@ -787,6 +839,7 @@ int main(void)
 	RUN(create_disposition_nonexistent);
 	RUN(share_mode_matrix);
 	RUN(byte_round_trip);
+	RUN(access_denied_on_valid_handle);
 	RUN(path_parsing);
 	RUN(iocp_ordering);
 	RUN(iocp_concurrency);
