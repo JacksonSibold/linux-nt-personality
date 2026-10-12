@@ -52,11 +52,53 @@ static void create_disposition_maps_win32_values(void)
     MT_EXPECT_EQ(win32_create_disposition_to_nt(5), 4); /* TRUNCATE_EXISTING -> FILE_OVERWRITE */
 }
 
+/* K32-2: TlsAlloc must hand out distinct indexes, reuse freed ones, and fail
+ * when all 64 are in use. */
+static void tls_alloc_hands_out_distinct_indexes(void)
+{
+    ULONG bits[2] = { 0, 0 };
+    MT_EXPECT_EQ(win32_tls_alloc(bits), 0);
+    MT_EXPECT_EQ(win32_tls_alloc(bits), 1);
+    MT_EXPECT_EQ(win32_tls_alloc(bits), 2);
+}
+
+static void tls_free_makes_index_reusable(void)
+{
+    ULONG bits[2] = { 0, 0 };
+    MT_EXPECT_EQ(win32_tls_alloc(bits), 0);
+    MT_EXPECT_EQ(win32_tls_alloc(bits), 1);
+    MT_ASSERT(win32_tls_free(bits, 0));
+    MT_EXPECT_EQ(win32_tls_alloc(bits), 0);
+}
+
+static void tls_alloc_fails_when_exhausted(void)
+{
+    ULONG bits[2] = { 0, 0 };
+    for (DWORD i = 0; i < WIN32_TLS_MINIMUM_AVAILABLE; ++i)
+        MT_ASSERT(win32_tls_alloc(bits) == i);
+    MT_EXPECT_EQ(win32_tls_alloc(bits), WIN32_TLS_OUT_OF_INDEXES);
+    /* Bit 63 is the last slot; the high word must be fully used. */
+    MT_EXPECT_EQ(bits[0], 0xFFFFFFFFu);
+    MT_EXPECT_EQ(bits[1], 0xFFFFFFFFu);
+}
+
+static void tls_free_rejects_unallocated_index(void)
+{
+    ULONG bits[2] = { 0, 0 };
+    MT_EXPECT(!win32_tls_free(bits, 0));
+    MT_EXPECT(!win32_tls_free(bits, 64));
+    MT_EXPECT(!win32_tls_free(bits, 0xFFFFFFFFu));
+}
+
 static const mt_case_t cases[] = {
     MT_CASE(protect_maps_each_base_value),
     MT_CASE(protect_ignores_modifier_bits),
     MT_CASE(protect_rejects_invalid_values),
     MT_CASE(create_disposition_maps_win32_values),
+    MT_CASE(tls_alloc_hands_out_distinct_indexes),
+    MT_CASE(tls_free_makes_index_reusable),
+    MT_CASE(tls_alloc_fails_when_exhausted),
+    MT_CASE(tls_free_rejects_unallocated_index),
 };
 
 int main(void)

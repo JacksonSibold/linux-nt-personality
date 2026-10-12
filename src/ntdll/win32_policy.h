@@ -54,4 +54,32 @@ static inline ULONG win32_create_disposition_to_nt(DWORD creation)
     }
 }
 
+/* TLS index allocation over the process-wide bitmap (PEB.TlsBitmapBits, 64
+ * bits). Returns the lowest free index, or 0xFFFFFFFF (TLS_OUT_OF_INDEXES)
+ * when all are in use. */
+#define WIN32_TLS_OUT_OF_INDEXES 0xFFFFFFFFu
+#define WIN32_TLS_MINIMUM_AVAILABLE 64u
+
+static inline DWORD win32_tls_alloc(ULONG bits[2])
+{
+    for (DWORD i = 0; i < WIN32_TLS_MINIMUM_AVAILABLE; ++i) {
+        ULONG mask = (ULONG)1 << (i % 32);
+        if (!(bits[i / 32] & mask)) {
+            bits[i / 32] |= mask;
+            return i;
+        }
+    }
+    return WIN32_TLS_OUT_OF_INDEXES;
+}
+
+/* Clears index idx. Returns 0 if idx is out of range or not allocated. */
+static inline BOOL win32_tls_free(ULONG bits[2], DWORD idx)
+{
+    if (idx >= WIN32_TLS_MINIMUM_AVAILABLE) return 0;
+    ULONG mask = (ULONG)1 << (idx % 32);
+    if (!(bits[idx / 32] & mask)) return 0;
+    bits[idx / 32] &= ~mask;
+    return 1;
+}
+
 #endif /* NTDLL_WIN32_POLICY_H */

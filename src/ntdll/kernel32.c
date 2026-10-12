@@ -305,8 +305,22 @@ void WINAPI DeleteCriticalSection(CRITICAL_SECTION *cs) { (void)cs; }
 BOOL WINAPI TryEnterCriticalSection(CRITICAL_SECTION *cs) { (void)cs; return 1; }
 
 /* TLS */
-DWORD WINAPI TlsAlloc(void) { return 0; }
-BOOL WINAPI TlsFree(DWORD idx) { (void)idx; return 1; }
+/* The index bitmap is process-wide, so it lives in the PEB. */
+DWORD WINAPI TlsAlloc(void) {
+    PTEB teb = NtCurrentTebMingw();
+    PEB *peb = teb ? teb->ProcessEnvironmentBlock : NULL;
+    if (!peb) { SetLastError(8); return WIN32_TLS_OUT_OF_INDEXES; }
+    DWORD idx = win32_tls_alloc(peb->TlsBitmapBits);
+    SetLastError(idx == WIN32_TLS_OUT_OF_INDEXES ? 1087 /* ERROR_NO_MORE_ITEMS */ : 0);
+    return idx;
+}
+BOOL WINAPI TlsFree(DWORD idx) {
+    PTEB teb = NtCurrentTebMingw();
+    PEB *peb = teb ? teb->ProcessEnvironmentBlock : NULL;
+    if (!peb || !win32_tls_free(peb->TlsBitmapBits, idx)) { SetLastError(87); return 0; }
+    SetLastError(0);
+    return 1;
+}
 LPVOID WINAPI TlsGetValue(DWORD idx) {
     PTEB teb = NtCurrentTebMingw();
     if (!teb || idx>=64) return NULL;
