@@ -1591,7 +1591,10 @@ NTSTATUS nt_svc_NtOpenProcess(PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess,
     proc = nt_current_eprocess();
     st = ObCreateHandle(proc, p->obj, DesiredAccess ? DesiredAccess : 0x1FFFFF, 0, &h);
     if (!NT_SUCCESS(st)) return st;
-    if (copy_to_user(ProcessHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+    if (copy_to_user(ProcessHandle, &h, sizeof(h))) {
+        ObCloseHandle(proc, h);
+        return STATUS_ACCESS_VIOLATION;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -1613,7 +1616,10 @@ NTSTATUS nt_svc_NtOpenThread(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
     proc = nt_current_eprocess();
     st = ObCreateHandle(proc, t->obj, DesiredAccess ? DesiredAccess : 0x1FFFFF, 0, &h);
     if (!NT_SUCCESS(st)) return st;
-    if (copy_to_user(ThreadHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+    if (copy_to_user(ThreadHandle, &h, sizeof(h))) {
+        ObCloseHandle(proc, h);
+        return STATUS_ACCESS_VIOLATION;
+    }
     return STATUS_SUCCESS;
 }
 
