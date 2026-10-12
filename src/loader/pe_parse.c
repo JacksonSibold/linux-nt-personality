@@ -883,6 +883,9 @@ pe_status_t pe_imports_walk(const pe_context_t *ctx,
                 sym.ordinal_flag = IMAGE_ORDINAL_FLAG64;
                 sym.ordinal = (u16)(thunk.u1.Ordinal & 0xFFFFULL);
             } else {
+                /* Hint/name RVA is 32 bits; reject instead of truncating */
+                if (thunk.u1.Ordinal > 0xFFFFFFFFULL)
+                    return PE_ERR_CORRUPT;
                 u32 ibn_off;
                 s = pe_rva_to_offset(ctx, (u32)thunk.u1.Ordinal, &ibn_off);
                 if (s != PE_OK) return s;
