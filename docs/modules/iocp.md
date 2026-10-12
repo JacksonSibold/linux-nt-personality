@@ -40,16 +40,17 @@ Service entry points (native-style signatures):
 ## Invariants and locking (as implemented)
 
 - Port lifetime: the port is kref-counted. `ntio_iocp_release` (`iocp.c` near the top) drains and frees the queue under `iocp->lock`, then frees the port.
-- The queue is FIFO. Dequeue returns NULL when empty. The helper comment says the caller must hold the port's lock (`iocp.c:106`).
-- Concurrency: when `concurrency` is non-zero, a packet is returned only if `active < concurrency` (`iocp.c:117`, and the same test at `iocp.c:266` and `iocp.c:482`).
+- The queue is FIFO. Dequeue returns NULL when empty. The helper comment says the caller must hold the port's lock (`iocp.c:110-111`).
+- Concurrency: when `concurrency` is non-zero, a packet is returned only if `active < concurrency` (`iocp.c:122`, and the same test at `iocp.c:271` and `iocp.c:487`).
+- Queue quota: a port holds at most `NTIO_IOCP_MAX_QUEUED` (65536, `iocp.h:38`) queued packets. A post beyond that frees the new packet and fails (`iocp.c:98`; commit `0b7921b`, record 0010).
 - Blocking removal waits on the port's wait queue. In the kernel build this uses `wait_event_interruptible` and `wait_event_interruptible_timeout`. In the shim it uses `pthread_cond_timedwait`.
 - APCs are delivered by `ntio_apc_deliver_all`, which is called from `nt_svc_NtTestAlert` (`iocp.c:705-708`) and from the alertable branch of the Ex removal path, before the thread blocks (`iocp.c:455-462`).
-- `ntio_apc_lock` is a spinlock, initialised with `spin_lock_init` at `iocp.c:640` and taken at `iocp.c:648` for APC list access.
+- `ntio_apc_lock` is a spinlock, initialised with `spin_lock_init` in `ntio_apc_init` (`iocp.c:645`) and taken in the APC functions for list access.
 
 ## Known gaps (evident in code)
 
-- `nt_svc_NtQueryIoCompletion` returns `STATUS_NOT_IMPLEMENTED` after validating the handle (`iocp.c:620-628`). It does not fill the information buffers.
-- `ntio_iocp_release_concurrency` is defined with `__attribute__((unused))` (`iocp.c:130`). Nothing calls it, so the active count is not decremented through that helper.
+- `nt_svc_NtQueryIoCompletion` returns `STATUS_NOT_IMPLEMENTED` after validating the handle (`iocp.c:616-628`). It does not fill the information buffers.
+- `ntio_iocp_release_concurrency` is defined with `__attribute__((unused))` (`iocp.c:135`). Nothing calls it, so the active count is not decremented through that helper.
 - The shim's APC list is a single global list (`ntio_current_apc_list`). The header comment says "userspace shim: single current task". Per-thread APC queues exist only in the kernel plan described in the comment ("real kernel integration attaches the list to struct nt_thread"); this file does not do that.
 - `nt_svc_NtRemoveIoCompletion` and `nt_svc_NtRemoveIoCompletionEx` each appear twice in the source, once per build branch. I did not trace the guards.
 - Test coverage: `io_test.c` references the completion-port services. No separate `iocp_test.c` exists.
