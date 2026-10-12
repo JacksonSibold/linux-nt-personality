@@ -11,6 +11,12 @@ make check          # build and run the programs listed in TESTS
 make                # build only (includes BUILD_ONLY, currently empty)
 ```
 
+`TEMP_DIR` is taken from the environment if set, else `TEMP`, `TMP`,
+`LOCALAPPDATA/Temp`, and finally MSYS `/tmp`. The Makefile exports `TMP`,
+`TEMP` and `TMPDIR` from it for the recipes. Under make on this machine the
+environment is sometimes not inherited, so the MSYS `/tmp` fallback is the
+one that resolves (to `C:/msys64/tmp` there), and it is writable.
+
 Outputs go to `build/` (ignored by git). Test programs run with `build/` as
 their working directory, so the scratch files they create stay there.
 
@@ -47,15 +53,17 @@ their working directory, so the scratch files they create stay there.
 
 ## Status
 
-**Current state (2026-10-12): the build fails.** `make` stops at `build/kshim.o`.
-`src/kernel/nt/kshim.c:410-412` reads `st_atime`, `st_mtime` and `st_ctime`, because
-the non-`__linux__` branch of the `KSHIM_STAT_*` macros uses the MinGW names. The host
-`shim/sys/stat.h` declares only the Linux-layout `st_atim`, `st_mtim` and `st_ctim`.
-Commit `6efb8b7` made this change after the results below were recorded. The other
-module objects compile, but no test program links. The results below were recorded
-before `6efb8b7` and were not re-run.
+**Current state (2026-10-12): the build succeeds.** `make clean`, then each target
+built on its own, links with no errors. Commit `213d333` restored the
+`USERSPACE_KSHIM` branch of the `KSHIM_STAT_*` macros, so `kshim.c` builds
+against the shim's `st_atim` layout.
 
-| Program | Result (recorded before `6efb8b7`) |
+`TESTS` lists nine programs: the eight kernel module tests and `proc_thread_test`
+(added to `TESTS` in `a3278a3`). `SHIM_TESTS` is `mman_test`. `make check` runs both.
+
+Counts from a clean rebuild and run, 2026-10-12:
+
+| Program | Result |
 |---|---|
 | `object_test` | builds, 9/9 pass |
 | `security_test` | builds, 41/41 ntsec and 609/609 negative pass |
@@ -67,7 +75,10 @@ before `6efb8b7` and were not re-run.
 | `mman_test` | shim self-test (`shim/mman_test.c`), 3/3 pass |
 | `proc_thread_test` | 12/12 pass, 10 of 10 consecutive runs, no leak at exit |
 
-`check` runs `TESTS` and `SHIM_TESTS`.
+`mman_test` is intermittent on this machine: 2 of 14 runs failed. In one, the
+`NOREPLACE over hole + free` check failed (`shim/mman_test.c:57`, EEXIST) and the
+process then segfaulted. In the other, the process segfaulted (rc 139) with no
+check failure printed. The other 12 runs passed. The cause is not investigated.
 
 ## Results of the 2026-10-12 investigation
 
@@ -135,6 +146,11 @@ separate `BUILD=build-o2` directory (`build-*/` is git-ignored).
   `khost_rmdir`, `khost_rename` and `khost_raw_mkdir` call the CRT directly,
   not through the `\\?\` path. A name ending in `.` can therefore be stripped
   to the wrong file. No test exercises that yet.
+- **mman_test intermittent failure.** See the status table above.
+- **sync_test** (slow). `wait_on_address_extended` runs 20000 iterations, each
+  with a `pthread_create` and `usleep(2000)`. On Windows it took about 5 minutes
+  on the 2026-10-12 clean run. `TIMEOUT` (default 3000 s) bounds each program
+  in `check`.
 
 ## Modules that cannot be built here
 
