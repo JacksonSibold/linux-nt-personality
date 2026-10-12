@@ -1353,6 +1353,27 @@ NTSTATUS nt_svc_NtCreateUserProcess(PHANDLE a, PHANDLE b, ACCESS_MASK c, ACCESS_
 /* Suspend / Resume - exact previous-count semantics (golden)       */
 /* NtSuspendThread returns prev count: 0 then 1, NtResume 2 then 1  */
 /* --------------------------------------------------------------- */
+/* True if the user ULONG at p can be read and written; the value is written
+ * back unchanged, so the probe has no visible effect. */
+static bool nt_probe_user_ulong(PULONG p)
+{
+    ULONG v;
+    if (!access_ok(p, sizeof(ULONG)))
+        return false;
+    if (get_user(v, p))
+        return false;
+    return put_user(v, p) == 0;
+}
+
+/* Copies the previous suspend count out when the caller asked for it. Called
+ * after the thread lock is released (P-9). */
+static NTSTATUS nt_put_prev_count(PULONG out, ULONG prev)
+{
+    if (out && copy_to_user(out, &prev, sizeof(prev)))
+        return STATUS_ACCESS_VIOLATION;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS nt_svc_NtSuspendThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount)
 {
     struct nt_eprocess *proc;
@@ -1376,15 +1397,15 @@ NTSTATUS nt_svc_NtSuspendThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount
         pr_debug("W1_INSTR: NtSuspendThread handle=%p thr not found\n", ThreadHandle);
         return STATUS_INVALID_HANDLE;
     }
+    /* Probe the output before suspending; it is written after the lock is
+     * released because copy_to_user() may fault (P-9). */
+    if (PreviousSuspendCount && !nt_probe_user_ulong(PreviousSuspendCount))
+        return STATUS_ACCESS_VIOLATION;
     pr_debug("W1_INSTR: NtSuspendThread handle=%p tid=%lu terminated=%d suspend_count=%d\n", ThreadHandle, (unsigned long)thr->tid, thr->terminated, atomic_read(&thr->suspend_count));
     spin_lock(&thr->lock);
     if (thr->terminated) { pr_debug("W1_INSTR: NtSuspendThread tid=%lu terminated true, returning THREAD_IS_TERMINATING\n", (unsigned long)thr->tid); spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
     prev = (ULONG)atomic_read(&thr->suspend_count);
     if (prev >= NT_MAX_SUSPEND_COUNT) { spin_unlock(&thr->lock); return STATUS_SUSPEND_COUNT_EXCEEDED; }
-    if (PreviousSuspendCount) {
-        if (!access_ok(PreviousSuspendCount, sizeof(*PreviousSuspendCount))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
-        if (copy_to_user(PreviousSuspendCount, &prev, sizeof(prev))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
-    }
     pr_debug("NtSuspendThread: tid=%lu prev=%lu new=%lu\n", thr->tid, prev, prev+1);
     atomic_inc(&thr->suspend_count);
     if (prev == 0) {
@@ -1395,7 +1416,7 @@ NTSTATUS nt_svc_NtSuspendThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount
         rcu_read_unlock();
     }
     spin_unlock(&thr->lock);
-    return STATUS_SUCCESS;
+    return nt_put_prev_count(PreviousSuspendCount, prev);
 }
 
 NTSTATUS nt_svc_NtResumeThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount)
@@ -1421,15 +1442,14 @@ NTSTATUS nt_svc_NtResumeThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount)
         pr_debug("W1_INSTR: NtResumeThread handle=%p thr not found\n", ThreadHandle);
         return STATUS_INVALID_HANDLE;
     }
+    /* Probe before changing the count; copy out after the lock (P-9). */
+    if (PreviousSuspendCount && !nt_probe_user_ulong(PreviousSuspendCount))
+        return STATUS_ACCESS_VIOLATION;
     pr_debug("W1_INSTR: NtResumeThread handle=%p tid=%lu terminated=%d suspend_count=%d\n", ThreadHandle, (unsigned long)thr->tid, thr->terminated, atomic_read(&thr->suspend_count));
     spin_lock(&thr->lock);
     if (thr->terminated) { pr_debug("W1_INSTR: NtResumeThread tid=%lu terminated true, returning THREAD_IS_TERMINATING\n", (unsigned long)thr->tid); spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
     prev = (ULONG)atomic_read(&thr->suspend_count);
-    if (PreviousSuspendCount) {
-        if (!access_ok(PreviousSuspendCount, sizeof(*PreviousSuspendCount))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
-        if (copy_to_user(PreviousSuspendCount, &prev, sizeof(prev))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
-    }
-    if (prev == 0) { spin_unlock(&thr->lock); return STATUS_SUCCESS; }
+    if (prev == 0) { spin_unlock(&thr->lock); return nt_put_prev_count(PreviousSuspendCount, prev); }
     pr_debug("NtResumeThread: tid=%lu prev=%lu new=%lu\n", thr->tid, prev, prev-1);
     atomic_dec(&thr->suspend_count);
     cur = prev - 1;
@@ -1441,7 +1461,7 @@ NTSTATUS nt_svc_NtResumeThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount)
         wake_up(&thr->suspend_wq);
     }
     spin_unlock(&thr->lock);
-    return STATUS_SUCCESS;
+    return nt_put_prev_count(PreviousSuspendCount, prev);
 }
 
 NTSTATUS nt_svc_NtSuspendProcess(HANDLE ProcessHandle)
