@@ -17,7 +17,7 @@ Status: findings marked `Fixed in <sha>` were fixed in this branch, with a faili
 | Info | 7 |
 | **Total** | **71** |
 
-Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium). Win32 shim pass (branch `haiku/ntdllfix`): K32-1, K32-2, K32-3 and K32-5 (High) fixed. CRT-1 needs owner. Bounds pass (branch `haiku/bounds`): MAIN-1 (74b4a14), MAIN-2 (e7f8b2b), LDR-5 (5045b9c) and LDR-6 (d6007f6) fixed with `src/ntdll/pe_bounds.h`; K32-7 (d2d36fe) fixed. Loader pass (branch `haiku/ldrfix`): LDR-2 (a18c03e) and LDR-4 (bef4d79) are fixed, with the address logic in `src/ntdll/ldr_pure.h` and host tests in `test_ldr_pure`. LDR-1 and LDR-3 (High) have design records 0029 and 0031 and are not implemented; each records why (needs VM). Records 0030 and 0032 are marked implemented. `docs/decisions/INDEX.md` lists 0029 to 0032. The MAIN-2 test binary `test_pe_bounds` is build-only on this host (see MAIN-1), so its test cases have not been run here.
+Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium). Win32 shim pass (branch `haiku/ntdllfix`): K32-1, K32-2, K32-3 and K32-5 (High) fixed. CRT-1 (High) partly fixed (1f334ce), and CRT-3 (High) fixed (1224d00); the CRT-1 export removal needs owner. Bounds pass (branch `haiku/bounds`): MAIN-1 (74b4a14), MAIN-2 (e7f8b2b), LDR-5 (5045b9c) and LDR-6 (d6007f6) fixed with `src/ntdll/pe_bounds.h`; K32-7 (d2d36fe) fixed. Loader pass (branch `haiku/ldrfix`): LDR-2 (a18c03e) and LDR-4 (bef4d79) are fixed, with the address logic in `src/ntdll/ldr_pure.h` and host tests in `test_ldr_pure`. LDR-1 and LDR-3 (High) have design records 0029 and 0031 and are not implemented; each records why (needs VM). Records 0030 and 0032 are marked implemented. `docs/decisions/INDEX.md` lists 0029 to 0032. The MAIN-2 test binary `test_pe_bounds` is build-only on this host (see MAIN-1), so its test cases have not been run here.
 
 The most important point is LDR-1. The real ntdll (MinGW) build compiles only stubs for `LdrLoadDll`, `LdrGetDllHandle` and `LdrGetProcedureAddress`, so every Win32 `LoadLibrary`, `GetModuleHandle` and `GetProcAddress` call fails. The loader code that would do the work is excluded by a preprocessor branch and is never built for the MinGW target. The findings in the loader are therefore mainly about code that runs in the Linux test build, or that would run once LDR-1 is fixed.
 
@@ -40,6 +40,8 @@ Each fix is its own commit named by its ID. Host-testable logic has a test that 
 | RT-4 | Needs owner | Dropping `errno` changes the CRT ABI; the test Makefile already relaxes `-Wattributes`. |
 | RT-6 | Needs owner | `NtTerminateProcess` would be an undefined symbol in `test_runtime`; needs a stub or weak-symbol decision. |
 | CRT-2 | Partly fixed | cdcc7ce guards the NUL. The return value still counts bytes written, not the length required. |
+| CRT-1 | Partly fixed | 1f334ce bounds `sprintf` and `vsprintf` to `MS_SPRINTF_LIMIT` (1024). A caller with a smaller buffer still overflows; removing the exports is the owner decision. |
+| CRT-3 | Fixed | 1224d00 (`calloc` returns NULL when `n * s` wraps) |
 | CRT-4 | Fixed | 2a499a7 |
 | CRT-5 | Needs owner | Implementing float formatting or refusing the conversion is a product choice. |
 | CRT-6 | Fixed | 39e6015 |
@@ -70,7 +72,7 @@ Each fix is its own commit named by its ID. Host-testable logic has a test that 
 | MAIN-8 | Partly fixed | 2913b8c uses RegionSize 0. The error-path frees are not done: 13 early returns need one cleanup label. |
 | DEF-1 | Fixed | 27030e1. The generated `out/ntdll.def` was not regenerated, because Python is not installed here. |
 
-Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt.c`) is still open. The overflow check was left out of the CRT-4 commit because it is a High finding.
+Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt.c`) is fixed in 1224d00. CRT-1 is partly fixed in 1f334ce.
 
 ## Findings
 
@@ -260,7 +262,7 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 
 ### C runtime (`msvcrt.c`)
 
-### CRT-1 [High] sprintf and vsprintf write without a size (needs owner)
+### CRT-1 [High] sprintf and vsprintf write without a size (Partly fixed in 1f334ce: bounded to MS_SPRINTF_LIMIT; host test `test_msvcrt_policy`; removing the exports needs owner)
 - Not changed in this pass. The write is unbounded by contract, like C sprintf. The 8192 cap is a truncation, not an overflow guard: short output writes only its own length. The defect is the export, so the fix is an API decision: remove `sprintf`/`vsprintf` from `msvcrt.def` and `msvcrt.c`, or require `snprintf`. `msvcrt.c` is MinGW-only and cannot be host-tested.
 - `msvcrt.c:273-279`: `sprintf` and `vsprintf` format into the caller's buffer with a size of 8192 (`my_vsprintf(s, 8192, ...)`), whatever the buffer really is. Any caller with a smaller buffer overflows it.
 - Fix: remove these, or require callers to use `snprintf`.
@@ -269,7 +271,7 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 - `msvcrt.c:206`: `out[pos]='\0';` runs after the loop, so `snprintf(NULL, 0, fmt)` (the standard size query) writes to address 0. The function also returns the number written, not the length it would need.
 - Fix: write the NUL only when `outsz > 0`, and return the required length.
 
-### CRT-3 [High] calloc multiplies without an overflow check
+### CRT-3 [High] calloc multiplies without an overflow check (Fixed in 1224d00; host test `test_msvcrt_policy` passes on the final build. Application Control blocked the first fresh exe, so that run was not seen)
 - `msvcrt.c:85-86`: `SIZE_T tot=n*s;`. The same defect as RT-1, in the msvcrt copy. Not fixed in this pass, because `msvcrt.c` is a separate DLL.
 - Fix: as RT-1.
 
@@ -430,7 +432,7 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 
 1. Make the loader real for MinGW: LDR-1, then LDR-2 to LDR-6, with the IAT and relocation bounds. Those are the prerequisites for any Win32 process to start.
 2. Stop out-of-bounds writes in the startup mapper: MAIN-1 and MAIN-2, and the image checks in LDR-5 and LDR-6.
-3. Fix the allocator and C runtime overflows: CRT-1 to CRT-4 (RT-1 is fixed; RT-2 applies to both copies).
+3. Fix the allocator and C runtime overflows: CRT-1 (partly fixed, export removal open) and CRT-2 to CRT-4 (RT-1 and CRT-3 are fixed; RT-2 applies to both copies).
 4. Fix the exception path: UNW-2, UNW-3, EXC-2, EXC-3 (EXC-1 and UNW-1 are fixed).
 5. Fix the Win32 surface that reports false results: K32-1 to K32-6, then K32-7 to K32-14.
 6. Work through the remaining Medium and Low items, and refresh the differential report (NTS-2).
