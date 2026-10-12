@@ -9,7 +9,7 @@
 #
 # Exit codes: 0 names match, 1 mismatch, 2 usage or missing tool/file.
 # The comparison is exact: no allow-list. Known findings in the .def itself
-# (for example the x86 decorated name _DllMainCRTStartup@12, DEF-1) are
+# (none are known now; the x86 decorated _DllMainCRTStartup@12 was DEF-1, fixed) are
 # reported in docs/modules/ntdll-syscalls.md, not hidden here.
 
 set -u

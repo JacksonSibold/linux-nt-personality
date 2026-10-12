@@ -952,6 +952,7 @@ static NTSTATUS ldr_map_and_load(winldr_ctx_t *ctx,
     mod->image_size = (mod->pe.size_of_image + align - 1) & ~(align - 1);
     mod->image = ldr_alloc_image(mod->image_size, align);
     if (!mod->image) {
+        free(mod->file_data); /* LDR-10: the file buffer is owned here too */
         free(mod);
         return STATUS_NO_MEMORY;
     }
@@ -993,7 +994,7 @@ static NTSTATUS ldr_map_and_load(winldr_ctx_t *ctx,
 
     size_t base_len = strlen(mod->base_name_ansi);
     WCHAR *wbase = (WCHAR*)malloc((base_len + 1) * sizeof(WCHAR));
-    if (!wbase) { free(wname); goto fail; }
+    if (!wbase) goto fail; /* fail frees FullDllName.Buffer, which is wname (LDR-9) */
     ldr_ascii_to_wcs(mod->base_name_ansi, wbase, base_len + 1);
     ldr_set_unicode_string(&mod->entry.BaseDllName, wbase,
                            (USHORT)(base_len * sizeof(WCHAR)));
@@ -1209,7 +1210,7 @@ static NTSTATUS ldr_resolve_export_in_module(winldr_ctx_t *ctx,
                 continue;
             if (pe_read_asciiz(&mod->pe, name_file_off, &sym, &sym_len) != PE_OK)
                 continue;
-            if (ldr_strcasecmp(sym, name) == 0) {
+            if (strcmp(sym, name) == 0) { /* case-sensitive, as Windows (LDR-7) */
                 u16 ord = pe_file_u16(&mod->pe, ords_off + i * 2);
                 func_index = ord;
                 break;
@@ -1531,6 +1532,9 @@ static NTSTATUS ldr_process_attach(winldr_ctx_t *ctx, ldr_module_t *mod)
         if (ctx->init_stack[i] == mod) return STATUS_SUCCESS;
     }
 
+    /* LDR-11: the stack is a fixed array; refuse rather than write past it. */
+    if (ctx->init_stack_depth >= sizeof(ctx->init_stack) / sizeof(ctx->init_stack[0]))
+        return STATUS_INSUFFICIENT_RESOURCES;
     ctx->init_stack[ctx->init_stack_depth++] = mod;
 
     ldr_run_tls_callbacks(ctx, mod, DLL_PROCESS_ATTACH);
@@ -1797,13 +1801,25 @@ NTSTATUS LdrGetProcedureAddress(winldr_ctx_t *ctx,
 
     ldr_module_t *mod = (ldr_module_t *)((char *)module - offsetof(ldr_module_t, entry));
     int by_ord = (name == NULL || name->Buffer == NULL);
-    const char *n = by_ord ? NULL : name->Buffer;
+
+    /* LDR-8: ANSI_STRING is not NUL-terminated and Length is authoritative.
+     * Copy exactly Length bytes into a terminated buffer. */
+    char *n = NULL;
+    if (!by_ord) {
+        size_t len = name->Length;
+        n = (char *)malloc(len + 1);
+        if (!n) return STATUS_NO_MEMORY;
+        memcpy(n, name->Buffer, len);
+        n[len] = '\0';
+        if (strlen(n) != len) { free(n); return STATUS_PROCEDURE_NOT_FOUND; } /* embedded NUL */
+    }
 
     ldr_lock_acquire(ctx);
     ULONG_PTR addr;
     NTSTATUS s = ldr_resolve_export(ctx, mod, n, ordinal, by_ord, &addr, NULL, 0, 0);
     if (NT_SUCCESS(s)) *out = (FARPROC)addr;
     ldr_lock_release(ctx);
+    free(n);
     return s;
 }
 #else

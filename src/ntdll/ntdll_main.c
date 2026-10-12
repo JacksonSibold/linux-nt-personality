@@ -328,7 +328,7 @@ static NTSTATUS ldr_nt_map_dll(const char *path, void **out_base, size_t *out_si
     }
     NtClose(h);
     PVOID tmp = hdr;
-    SIZE_T tmp_sz = hdr_size;
+    SIZE_T tmp_sz = 0; /* MEM_RELEASE requires RegionSize 0 (MAIN-8) */
     NtFreeVirtualMemory((HANDLE)-1, &tmp, &tmp_sz, 0x8000);
     *out_base = img_base;
     *out_size = img_size;
@@ -343,7 +343,7 @@ static int is_already_loaded_ntdll(const char *name);
 static void* get_ntdll_base(void);
 static NTSTATUS ldr_nt_map_dll(const char *path, void **out_base, size_t *out_size);
 
-static void* ldr_resolve_forwarder(const char *fwd_str) {
+static void* ldr_resolve_forwarder_body(const char *fwd_str) {
     if (!fwd_str || !*fwd_str) return NULL;
     const char *p = fwd_str;
     if (*p == '!') p++;
@@ -373,7 +373,8 @@ static void* ldr_resolve_forwarder(const char *fwd_str) {
     if (!host) {
         // Try to map dependency on demand (handles kernelbase -> kernel32 forwarder before kernel32 mapped)
         size_t sz=0; void *b=NULL;
-        const char *cands[] = {"/tmp/", "/windows/system32/", "/", NULL};
+        /* MAIN-5: only the system directory; no root, /tmp or bare-name fallback. */
+        const char *cands[] = {"/windows/system32/", NULL};
         for (int c=0; cands[c]; c++) {
             char full[512]; size_t n=0;
             const char *pre=cands[c];
@@ -382,9 +383,6 @@ static void* ldr_resolve_forwarder(const char *fwd_str) {
             while (*pp && n<500) full[n++]=*pp++;
             full[n]='\0';
             if (ldr_nt_map_dll(full,&b,&sz)==STATUS_SUCCESS) { host=b; break; }
-        }
-        if (!host) {
-            if (ldr_nt_map_dll(dllname,&b,&sz)==STATUS_SUCCESS) host=b;
         }
         // Host found but not in loaded list – transient mapping is enough for forwarder; do not cache here to avoid needing add_loaded (static).
         (void)sz;
@@ -399,6 +397,18 @@ static void* ldr_resolve_forwarder(const char *fwd_str) {
     } else {
         return ldr_find_export(host, target);
     }
+}
+
+/* MAIN-4: forwarder chains can loop (A -> B -> A). Each resolution goes through
+ * here, so a depth cap stops the mutual recursion with ldr_find_export. */
+#define LDR_FORWARDER_MAX_DEPTH 16
+static int g_forwarder_depth = 0;
+static void* ldr_resolve_forwarder(const char *fwd_str) {
+    if (g_forwarder_depth >= LDR_FORWARDER_MAX_DEPTH) return NULL;
+    g_forwarder_depth++;
+    void *resolved = ldr_resolve_forwarder_body(fwd_str);
+    g_forwarder_depth--;
+    return resolved;
 }
 
 /* Helper to find export by name (case-insensitive) with forwarder support */
@@ -608,15 +618,15 @@ void NTAPI LdrInitializeThunk(void) {
                     dll_base = ntdll;
                     if (!dll_base) {
                         // Try to map ntdll from disk as fallback
-                        if (ldr_nt_map_dll("ntdll.dll", &dll_base, &dll_size)!=STATUS_SUCCESS &&
-                            ldr_nt_map_dll("/ntdll.dll", &dll_base, &dll_size)!=STATUS_SUCCESS) {
+                        /* MAIN-5: system directory only. */
+                        if (ldr_nt_map_dll("/windows/system32/ntdll.dll", &dll_base, &dll_size)!=STATUS_SUCCESS) {
                             continue;
                         }
                         add_loaded(dll_name, dll_base, dll_size);
                     }
                 } else {
-                    // Try candidates: /tmp/, /windows/system32/, /, direct
-                    const char *candidates[] = { "/tmp/", "/windows/system32/", "/", NULL };
+                    // MAIN-5: load from the system directory only (no bare name or root).
+                    const char *candidates[] = { "/windows/system32/", NULL };
                     int found=0;
                     for (int c=0; candidates[c]; c++) {
                         char full[512];
@@ -628,9 +638,7 @@ void NTAPI LdrInitializeThunk(void) {
                         full[n]=0;
                         if (ldr_nt_map_dll(full, &dll_base, &dll_size)==STATUS_SUCCESS) { found=1; break; }
                     }
-                    if (!found) {
-                        if (ldr_nt_map_dll(dll_name, &dll_base, &dll_size)!=STATUS_SUCCESS) continue;
-                    }
+                    if (!found) continue;
                     add_loaded(dll_name, dll_base, dll_size);
                     dbg_print("Ldr: mapped ");
                     dbg_print(dll_name);
@@ -659,13 +667,13 @@ void NTAPI LdrInitializeThunk(void) {
                                 if (!dep_base) {
                                     // Try to map dependency
                                     size_t dep_size=0;
-                                    const char *cands[] = { "/tmp/", "/windows/system32/", "/", NULL };
+                                    const char *cands[] = { "/windows/system32/", NULL }; /* MAIN-5 */
                                     int dfound=0;
                                     for (int cc=0;cands[cc];cc++){
                                         char full[512]; size_t nn=0; const char *pre=cands[cc]; while(*pre&&nn<500) full[nn++]=*pre++; const char *p=d_dll_name; while(*p&&nn<500) full[nn++]=*p++; full[nn]=0;
                                         if (ldr_nt_map_dll(full,&dep_base,&dep_size)==STATUS_SUCCESS){dfound=1;break;}
                                     }
-                                    if (!dfound) ldr_nt_map_dll(d_dll_name,&dep_base,&dep_size);
+                                    (void)dfound;
                                     if (dep_base) add_loaded(d_dll_name, dep_base, dep_size);
                                 }
                                 // Resolve IAT for this dependency import
@@ -812,7 +820,7 @@ BOOLEAN NTAPI RtlAddFunctionTable(IMAGE_RUNTIME_FUNCTION_ENTRY *tbl, ULONG count
     return unwind_register_module(base, 0, tbl, count, (uint8_t*)(uintptr_t)base) == 0 ? 1 : 0;
 }
 BOOLEAN NTAPI RtlDeleteFunctionTable(IMAGE_RUNTIME_FUNCTION_ENTRY *tbl) {
-    (void)tbl;
-    return 1;
+    /* Unregister so the table is no longer searched (MAIN-7). */
+    return unwind_unregister_table(tbl) == 0 ? 1 : 0;
 }
 #endif /* __MINGW32__ */

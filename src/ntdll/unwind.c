@@ -91,6 +91,17 @@ int unwind_register_module(ULONG64 imageBase, ULONG sizeOfImage,
     return 0;
 }
 
+int unwind_unregister_table(IMAGE_RUNTIME_FUNCTION_ENTRY *funcTable) {
+    for (int i = 0; i < g_module_count; i++) {
+        if (g_modules[i].funcTable != funcTable) continue;
+        for (int j = i; j + 1 < g_module_count; j++) g_modules[j] = g_modules[j + 1];
+        g_module_count--;
+        memset(&g_modules[g_module_count], 0, sizeof(g_modules[0]));
+        return 0;
+    }
+    return -1;
+}
+
 void unwind_clear_modules(void) {
     g_module_count = 0;
     memset(g_modules, 0, sizeof(g_modules));
@@ -108,8 +119,8 @@ static uint8_t *rva_to_ptr(unwind_module_t *mod, ULONG rva) {
 }
 
 /* Binary search within a single module's table.
- * Table is sorted by BeginAddress. EndAddress low 2 bits are ignored.
- * Returns entry where Begin <= pc < (End & ~3), or NULL.
+ * Table is sorted by BeginAddress. x64 EndAddress has no flag bits (UNW-4).
+ * Returns entry where Begin <= pc < End, or NULL.
  */
 static IMAGE_RUNTIME_FUNCTION_ENTRY *lookup_in_module(unwind_module_t *mod, ULONG64 pc) {
     /* sizeOfImage == 0 means unknown (RtlAddFunctionTable): the table bounds the match. */
@@ -121,7 +132,7 @@ static IMAGE_RUNTIME_FUNCTION_ENTRY *lookup_in_module(unwind_module_t *mod, ULON
     while (lo < hi) {
         ULONG mid = lo + (hi - lo) / 2;
         ULONG begin = mod->funcTable[mid].BeginAddress;
-        ULONG end = mod->funcTable[mid].EndAddress & ~0x3U;
+        ULONG end = mod->funcTable[mid].EndAddress;
         if (rva < begin) hi = mid;
         else if (rva >= end) lo = mid + 1;
         else return &mod->funcTable[mid];
@@ -236,6 +247,17 @@ static int build_chain(unwind_module_t *mod, IMAGE_RUNTIME_FUNCTION_ENTRY *entry
  */
 int unwind_one_frame(PCONTEXT ctx, ULONG64 imageBase, IMAGE_RUNTIME_FUNCTION_ENTRY *entry,
                      uint8_t *image, ULONG64 *establisherFrame) {
+    /* Leaf: no RUNTIME_FUNCTION, so pop the return address from RSP. This must
+     * not depend on a registered module: an unknown PC is still a leaf (EXC-2). */
+    if (!entry) {
+        ULONG64 rsp = ctx->Rsp;
+        ULONG64 ret = *(ULONG64 *)(uintptr_t)rsp;
+        ctx->Rip = ret;
+        ctx->Rsp = rsp + 8;
+        if (establisherFrame) *establisherFrame = rsp;
+        return 0;
+    }
+
     /* Find module */
     unwind_module_t *mod = find_module_by_base(imageBase);
     if (!mod) {
@@ -258,16 +280,6 @@ simple:
     if (!mod) return -1;
 
     ULONG64 controlPc = ctx->Rip;
-    /* Handle leaf: entry == NULL */
-    if (!entry) {
-        /* Leaf: pop return address from stack */
-        ULONG64 rsp = ctx->Rsp;
-        ULONG64 ret = *(ULONG64 *)(uintptr_t)rsp;
-        ctx->Rip = ret;
-        ctx->Rsp = rsp + 8;
-        if (establisherFrame) *establisherFrame = rsp;
-        return 0;
-    }
 
     /* Build chain */
     chain_elem_t chain[MAX_CHAIN];
@@ -615,7 +627,7 @@ PVOID RtlVirtualUnwind(ULONG HandlerType, ULONG64 ImageBase, ULONG64 ControlPc,
                        PCONTEXT ContextRecord, PVOID *HandlerData,
                        PULONG64 EstablisherFrame,
                        PKNONVOLATILE_CONTEXT_POINTERS ContextPointers) {
-    (void)HandlerType;
+    // HandlerType selects which handler kind is returned (UNW-3).
     (void)ControlPc;
     if (!ContextRecord) return NULL;
     unwind_module_t *mod = find_module_by_base(ImageBase);
@@ -651,7 +663,7 @@ PVOID RtlVirtualUnwind(ULONG HandlerType, ULONG64 ImageBase, ULONG64 ControlPc,
     }
 
     /* Determine handler */
-    if (info && (info->Flags & (UNW_FLAG_EHANDLER|UNW_FLAG_UHANDLER))) {
+    if (info && (info->Flags & HandlerType)) {
         /* Handler RVA after codes */
         unsigned count = info->CountOfCodes;
         unsigned aligned = (count + 1) & ~1U;

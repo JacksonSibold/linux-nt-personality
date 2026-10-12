@@ -42,6 +42,7 @@ __declspec(dllimport) extern NTSTATUS NtFreeVirtualMemory(HANDLE, PVOID*, PSIZE_
 __declspec(dllimport) extern NTSTATUS NtProtectVirtualMemory(HANDLE, PVOID*, PSIZE_T, ULONG, PULONG);
 __declspec(dllimport) extern NTSTATUS NtQueryVirtualMemory(HANDLE, PVOID, ULONG, PVOID, SIZE_T, PSIZE_T);
 __declspec(dllimport) extern NTSTATUS NtTerminateProcess(HANDLE, NTSTATUS);
+__declspec(dllimport) extern NTSTATUS NtQueryPerformanceCounter(PLARGE_INTEGER, PLARGE_INTEGER);
 __declspec(dllimport) extern NTSTATUS NtDelayExecution(BOOLEAN, PLARGE_INTEGER);
 __declspec(dllimport) extern NTSTATUS NtQueryInformationProcess(HANDLE, ULONG, PVOID, ULONG, PULONG);
 __declspec(dllimport) extern NTSTATUS NtWaitForSingleObject(HANDLE, BOOLEAN, PLARGE_INTEGER);
@@ -137,6 +138,8 @@ HANDLE WINAPI CreateFileW(const WCHAR *lpFileName, DWORD desiredAccess, DWORD sh
     if (!lpFileName) { SetLastError(87); return (HANDLE)(intptr_t)-1; }
     UNICODE_STRING us;
     size_t len=0; while(lpFileName[len]) len++;
+    /* K32-15: Length and MaximumLength (Length + 2) are USHORT; reject names that do not fit. */
+    if (len >= 0x7FFF) { SetLastError(206); return (HANDLE)(intptr_t)-1; } /* ERROR_FILENAME_EXCED_RANGE */
     us.Length = (USHORT)(len*sizeof(WCHAR));
     us.MaximumLength = us.Length + sizeof(WCHAR);
     us.Buffer = (PWSTR)lpFileName;
@@ -189,7 +192,10 @@ LPVOID WINAPI VirtualAlloc(LPVOID addr, SIZE_T size, DWORD type, DWORD prot) {
         case 0x10: ntProt=16; break;/* PAGE_EXECUTE */
         case 0x20: ntProt=32; break;/* PAGE_EXECUTE_READ */
         case 0x40: ntProt=64; break;/* PAGE_EXECUTE_READWRITE */
-        default: ntProt=4; break;
+        default:
+            /* K32-16: an unsupported protection fails; it is not silently PAGE_READWRITE. */
+            SetLastError(87); /* ERROR_INVALID_PARAMETER */
+            return NULL;
     }
     NTSTATUS s = NtAllocateVirtualMemory((HANDLE)(intptr_t)-1, &base, 0, &sz, type, ntProt);
     if (s==STATUS_SUCCESS) { SetLastError(0); return base; }
@@ -464,7 +470,40 @@ LPVOID WINAPI MapViewOfFile(HANDLE m, DWORD access, DWORD offHi, DWORD offLo, SI
 }
 BOOL WINAPI UnmapViewOfFile(const void *p) { (void)p; SetLastError(0); return 1; }
 BOOL WINAPI SetEndOfFile(HANDLE h) { (void)h; SetLastError(0); return 1; }
-DWORD WINAPI SetFilePointer(HANDLE h, LONG lo, LONG *hi, DWORD method) { (void)h;(void)lo;(void)hi;(void)method; return 0; }
+__declspec(dllimport) extern NTSTATUS NtQueryInformationFile(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, ULONG);
+__declspec(dllimport) extern NTSTATUS NtSetInformationFile(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, ULONG);
+/* K32-11: moves the file pointer. FilePositionInformation is class 14,
+ * FileStandardInformation is class 5. NtReadFile with a NULL offset reads from
+ * this position. */
+#define K32_INVALID_SET_FILE_POINTER 0xFFFFFFFFUL
+DWORD WINAPI SetFilePointer(HANDLE h, LONG lo, LONG *hi, DWORD method) {
+    LONGLONG dist = hi ? (LONGLONG)*hi * 4294967296LL + (LONGLONG)(DWORD)lo : (LONGLONG)lo;
+    LONGLONG base = 0;
+    IO_STATUS_BLOCK ios;
+    if (method == 1 /* FILE_CURRENT */) {
+        LARGE_INTEGER cur;
+        NTSTATUS s = NtQueryInformationFile(h, &ios, &cur, sizeof(cur), 14);
+        if (!NT_SUCCESS(s)) { SetLastErrorFromStatus(s); return K32_INVALID_SET_FILE_POINTER; }
+        base = cur.QuadPart;
+    } else if (method == 2 /* FILE_END */) {
+        struct { LARGE_INTEGER AllocationSize; LARGE_INTEGER EndOfFile; ULONG NumberOfLinks; BOOLEAN DeletePending; BOOLEAN Directory; } std;
+        NTSTATUS s = NtQueryInformationFile(h, &ios, &std, sizeof(std), 5);
+        if (!NT_SUCCESS(s)) { SetLastErrorFromStatus(s); return K32_INVALID_SET_FILE_POINTER; }
+        base = std.EndOfFile.QuadPart;
+    } else if (method != 0 /* FILE_BEGIN */) {
+        SetLastError(87); /* ERROR_INVALID_PARAMETER */
+        return K32_INVALID_SET_FILE_POINTER;
+    }
+    LONGLONG target = base + dist;
+    if (target < 0) { SetLastError(87); return K32_INVALID_SET_FILE_POINTER; }
+    LARGE_INTEGER np;
+    np.QuadPart = target;
+    NTSTATUS s = NtSetInformationFile(h, &ios, &np, sizeof(np), 14);
+    if (!NT_SUCCESS(s)) { SetLastErrorFromStatus(s); return K32_INVALID_SET_FILE_POINTER; }
+    if (hi) *hi = (LONG)(target >> 32);
+    SetLastError(0);
+    return (DWORD)(target & 0xFFFFFFFFLL);
+}
 
 /* Sync */
 /* K32-7: these create real NT objects and return their handles. Named objects
@@ -544,15 +583,37 @@ DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms){
     return r;
 }
 DWORD WINAPI WaitForMultipleObjects(DWORD n, const HANDLE *hs, BOOL waitAll, DWORD ms){ (void)n;(void)hs;(void)waitAll;(void)ms; return 0; }
+__declspec(dllimport) extern NTSTATUS NtDuplicateObject(HANDLE, HANDLE, HANDLE, PHANDLE, ACCESS_MASK, ULONG, ULONG);
+/* K32-13: the target gets a handle to the same object, from NtDuplicateObject.
+ * OBJ_INHERIT is 0x2; DUPLICATE_CLOSE_SOURCE and DUPLICATE_SAME_ACCESS keep
+ * the Win32 values. */
 BOOL WINAPI DuplicateHandle(HANDLE srcP, HANDLE src, HANDLE dstP, HANDLE *dst, DWORD access, BOOL inh, DWORD opts){
-    (void)srcP;(void)src;(void)dstP;(void)dst;(void)access;(void)inh;(void)opts; SetLastError(0); if(dst) *dst=src; return 1;
+    HANDLE out = NULL;
+    NTSTATUS s = NtDuplicateObject(srcP, src, dstP, &out, access, inh ? 0x2 : 0, opts);
+    if (s != STATUS_SUCCESS) { SetLastErrorFromStatus(s); return 0; }
+    if (dst) *dst = out;
+    SetLastError(0);
+    return 1;
 }
 BOOL WINAPI GetHandleInformation(HANDLE h, DWORD *flags){ (void)h; if(flags) *flags=0; return 1; }
 DWORD WINAPI GetProcessHandleCount(HANDLE p, DWORD *cnt){ (void)p; if(cnt) *cnt=5; return 1; }
 
 /* Perf */
-BOOL WINAPI QueryPerformanceCounter(LARGE_INTEGER *c){ if(c) c->QuadPart=123456; return 1; }
-BOOL WINAPI QueryPerformanceFrequency(LARGE_INTEGER *c){ if(c) c->QuadPart=1000000; return 1; }
+/* K32-10: the counter and its frequency come from the kernel, not constants. */
+BOOL WINAPI QueryPerformanceCounter(LARGE_INTEGER *c){
+    LARGE_INTEGER count, freq;
+    if(!c) return 0;
+    if(!NT_SUCCESS(NtQueryPerformanceCounter(&count, &freq))) return 0;
+    c->QuadPart = count.QuadPart;
+    return 1;
+}
+BOOL WINAPI QueryPerformanceFrequency(LARGE_INTEGER *c){
+    LARGE_INTEGER count, freq;
+    if(!c) return 0;
+    if(!NT_SUCCESS(NtQueryPerformanceCounter(&count, &freq))) return 0;
+    c->QuadPart = freq.QuadPart;
+    return 1;
+}
 void WINAPI Sleep(DWORD ms){
     LARGE_INTEGER d; d.QuadPart = -(LONGLONG)ms*10000LL;
     NtDelayExecution(0, &d);

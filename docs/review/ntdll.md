@@ -21,6 +21,57 @@ Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium). Win
 
 The most important point is LDR-1. The real ntdll (MinGW) build compiles only stubs for `LdrLoadDll`, `LdrGetDllHandle` and `LdrGetProcedureAddress`, so every Win32 `LoadLibrary`, `GetModuleHandle` and `GetProcAddress` call fails. The loader code that would do the work is excluded by a preprocessor branch and is never built for the MinGW target. The findings in the loader are therefore mainly about code that runs in the Linux test build, or that would run once LDR-1 is fixed.
 
+## Medium and Low status (branch `haiku/lows-ntdll`)
+
+Each fix is its own commit named by its ID. Host-testable logic has a test that failed before the change (`make -C tests/ntdll-host test` passes; `test_pe_bounds` is still build-only). Changes to MinGW-only files (`msvcrt.c`, `user32.c`, `kernel32.c`, `ntdll_main.c`) and to the Linux branch of `ldr.c` were checked with `gcc -fsyntax-only` only; the Linux branch used stub POSIX headers kept outside the repo. Nothing was linked or run. Every open item was re-read against the code and none was stale. Info items are out of scope.
+
+| ID | Status | Commit or reason |
+|---|---|---|
+| UNW-3 | Fixed | 7e1a710 |
+| UNW-4 | Fixed | 0fe2af8 |
+| UNW-5 | Needs owner | Bounds checks need a NULL path through `build_chain` and `get_unwind_info`; only trusted images are unwound today. |
+| EXC-2 | Fixed | 360c366 |
+| EXC-3 | Needs owner | The second pass is one design, shared with UNW-2 (High). |
+| EXC-4 | Needs owner | Per-thread dispatch state needs a TEB decision and a lock primitive. |
+| EXC-5 | Needs owner | Needs a deferred free or a lock, the same design as EXC-4. |
+| EXC-6 | Fixed | 6ae7bb7 (dead function removed) |
+| RT-2 | Fixed | 92c14f5 |
+| RT-3 | Needs owner | Implementing the printf family or failing at link time is a product choice. |
+| RT-4 | Needs owner | Dropping `errno` changes the CRT ABI; the test Makefile already relaxes `-Wattributes`. |
+| RT-6 | Needs owner | `NtTerminateProcess` would be an undefined symbol in `test_runtime`; needs a stub or weak-symbol decision. |
+| CRT-2 | Partly fixed | cdcc7ce guards the NUL. The return value still counts bytes written, not the length required. |
+| CRT-4 | Fixed | 2a499a7 |
+| CRT-5 | Needs owner | Implementing float formatting or refusing the conversion is a product choice. |
+| CRT-6 | Fixed | 39e6015 |
+| CRT-7 | Partly fixed | 90b9bc6 runs `atexit` handlers from `exit`. `signal` is still a stub. |
+| K32-8 | Needs owner | File operations need the Win32-to-NT path conversion first (see K32-15). |
+| K32-9 | Needs owner | `GetTempFileNameA` takes no buffer size, so the bound needs a MAX_PATH contract, and uniqueness needs file creation. |
+| K32-10 | Fixed | 862d261 |
+| K32-11 | Fixed | 235067a |
+| K32-12 | Needs owner | File mappings need a section lifetime design (handles, view unmapping). |
+| K32-13 | Fixed | 8dec432 |
+| K32-14 | Needs owner | Needs a lock primitive (keyed event or futex) chosen for the shim. |
+| K32-15 | Partly fixed | a0e9450 rejects names that overflow the USHORT length. The Win32-to-NT path conversion is not changed. |
+| K32-16 | Fixed | fd86cb3 |
+| U32-1 | Fixed | 5afcedb |
+| U32-2 | Fixed | 03f0653 |
+| U32-3 | Fixed | 4001a61 |
+| ADV-1 | Needs owner | The registry back end is a design choice. |
+| LDR-7 | Fixed | 04c679a |
+| LDR-8 | Fixed | e5f85a7 |
+| LDR-9 | Fixed | a141aea |
+| LDR-10 | Fixed | b40d234 |
+| LDR-11 | Fixed | ded5f9f |
+| MAIN-3 | Needs owner | `LdrInitializeThunk` is void, so "fail the load" needs a termination behaviour chosen first (same as MAIN-6). |
+| MAIN-4 | Fixed | 9010421 |
+| MAIN-5 | Fixed | 3a0db32 |
+| MAIN-6 | Needs owner | Process start on a missing import needs a termination behaviour decision (see MAIN-3). |
+| MAIN-7 | Fixed | 366715b |
+| MAIN-8 | Partly fixed | 2913b8c uses RegionSize 0. The error-path frees are not done: 13 early returns need one cleanup label. |
+| DEF-1 | Fixed | 27030e1. The generated `out/ntdll.def` was not regenerated, because Python is not installed here. |
+
+Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt.c`) is still open. The overflow check was left out of the CRT-4 commit because it is a High finding.
+
 ## Findings
 
 ### Loader (`ldr.c`, `ldr.h`)

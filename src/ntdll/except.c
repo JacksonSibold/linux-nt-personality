@@ -499,7 +499,7 @@ EXCEPTION_DISPOSITION RtlDispatchException(PEXCEPTION_RECORD ExceptionRecord, PC
         CONTEXT tmp = ctx;
         ULONG64 establisher = 0;
         PVOID handlerData = NULL;
-        PVOID handler = RtlVirtualUnwind(0, imgBase, ctx.Rip, entry, &tmp, &handlerData, &establisher, NULL);
+        PVOID handler = RtlVirtualUnwind(UNW_FLAG_EHANDLER, imgBase, ctx.Rip, entry, &tmp, &handlerData, &establisher, NULL);
         if (handler) {
             DISPATCHER_CONTEXT dc;
             dc.ControlPc = ctx.Rip;
@@ -587,72 +587,6 @@ NTSTATUS NtRaiseException(PEXCEPTION_RECORD rec, PCONTEXT ctx, ULONG FirstChance
     return STATUS_SUCCESS;
 }
 #endif
-
-/* RtlUnwindEx wrapper for termination handlers.
- * Walks from current ContextRecord until TargetFrame, calling handlers with UNWIND flags.
- */
-void RtlUnwindExWrapper(PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord) {
-    if (!ContextRecord) return;
-    CONTEXT ctx = *ContextRecord;
-    EXCEPTION_RECORD rec;
-    if (!ExceptionRecord) {
-        memset(&rec, 0, sizeof(rec));
-        rec.ExceptionCode = STATUS_UNWIND;
-        rec.ExceptionFlags = EXCEPTION_UNWINDING;
-    } else {
-        rec = *ExceptionRecord;
-        rec.ExceptionFlags |= EXCEPTION_UNWINDING;
-        if (TargetFrame) rec.ExceptionFlags |= EXCEPTION_TARGET_UNWIND;
-        if (TargetIp) rec.ExceptionFlags |= EXCEPTION_EXIT_UNWIND;
-    }
-
-    int depth = 0;
-    while (depth < 128) {
-        ULONG64 imgBase = 0;
-        IMAGE_RUNTIME_FUNCTION_ENTRY *entry = RtlLookupFunctionEntry(ctx.Rip, &imgBase, NULL);
-        ULONG64 establisher = 0;
-        PVOID handlerData = NULL;
-        CONTEXT tmp = ctx;
-        PVOID handler = RtlVirtualUnwind(1 /* UNW_FLAG_UHANDLER */, imgBase, ctx.Rip, entry, &tmp, &handlerData, &establisher, NULL);
-        /* Call termination handler if present with unwind flags */
-        if (handler && entry) {
-            /* Determine if we have reached target */
-            int atTarget = (TargetFrame && establisher == (ULONG64)TargetFrame);
-            if (atTarget && TargetIp) tmp.Rip = (ULONG64)TargetIp;
-            DISPATCHER_CONTEXT dc;
-            dc.ControlPc = ctx.Rip;
-            dc.ImageBase = imgBase;
-            dc.FunctionEntry = entry;
-            dc.EstablisherFrame = establisher;
-            dc.TargetIp = (ULONG64)TargetIp;
-            dc.ContextRecord = &ctx;
-            dc.LanguageHandler = handler;
-            dc.HandlerData = handlerData;
-            dc.HistoryTable = NULL;
-            PEXCEPTION_HANDLER h = (PEXCEPTION_HANDLER)handler;
-            EXCEPTION_DISPOSITION disp = h(&rec, (PVOID)establisher, &ctx, &dc);
-            (void)disp;
-            if (atTarget) break;
-        }
-        /* Unwind one frame */
-        ULONG64 nextEst = 0;
-        PVOID hd = NULL;
-        if (entry) RtlVirtualUnwind(1, imgBase, ctx.Rip, entry, &ctx, &hd, &nextEst, NULL);
-        else {
-            CONTEXT n = ctx;
-            RtlVirtualUnwind(1, imgBase, ctx.Rip, NULL, &n, &hd, &nextEst, NULL);
-            ctx = n;
-        }
-        if (TargetFrame && nextEst == (ULONG64)TargetFrame) {
-            if (TargetIp) ctx.Rip = (ULONG64)TargetIp;
-            break;
-        }
-        if (ctx.Rip == 0 || ctx.Rsp == 0) break;
-        depth++;
-        if (!TargetFrame && depth > 64) break;
-    }
-    *ContextRecord = ctx;
-}
 
 /* ---------------- Signal handler installation ---------------- */
 

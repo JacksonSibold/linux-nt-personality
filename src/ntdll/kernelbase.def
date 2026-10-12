@@ -1,7 +1,7 @@
 LIBRARY kernelbase
 EXPORTS
     DllMain
-    _DllMainCRTStartup@12
+    _DllMainCRTStartup
     DllMainCRTStartup
     CloseHandle=kernel32.CloseHandle
     CreateFileW=kernel32.CreateFileW

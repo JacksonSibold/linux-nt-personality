@@ -75,13 +75,32 @@ int _initterm(void (**start)(void), void (**end)(void)){
     return 0;
 }
 void abort(void){ NtTerminateProcess((HANDLE)(intptr_t)-1, 3); while(1){} }
-int atexit(void (*f)(void)){ (void)f; return 0; }
+/* CRT-7: atexit handlers are kept in a table and run, last registered first, by exit(). */
+#define MS_ATEXIT_MAX 32
+static void (*g_atexit_fns[MS_ATEXIT_MAX])(void);
+static int g_atexit_count = 0;
+int atexit(void (*f)(void)){
+    if(!f || g_atexit_count >= MS_ATEXIT_MAX) return -1;
+    g_atexit_fns[g_atexit_count++] = f;
+    return 0;
+}
 typedef void (*_onexit_t)(void);
 _onexit_t _onexit(_onexit_t f){ (void)f; return NULL; }
 
 /* Heap wrappers - use kernel32 Heap */
-void* malloc(SIZE_T s){ HANDLE h=GetProcessHeap(); return h?HeapAlloc(h,0,s):NULL; }
-void free(void *p){ if(p){ HANDLE h=GetProcessHeap(); HeapFree(h,0,p);} }
+/* Each block has a 16-byte header holding the requested size, so realloc
+ * copies only the valid part of the old block (CRT-4). HeapSize is a stub in
+ * the kernel32 shim, so the size cannot come from the heap. */
+#define MS_BLOCK_HDR 16
+void* malloc(SIZE_T s){
+    HANDLE h=GetProcessHeap();
+    if(!h || s > ((SIZE_T)-1) - MS_BLOCK_HDR) return NULL;
+    unsigned char *base=HeapAlloc(h,0,s+MS_BLOCK_HDR);
+    if(!base) return NULL;
+    *(SIZE_T*)base=s;
+    return base+MS_BLOCK_HDR;
+}
+void free(void *p){ if(p){ HANDLE h=GetProcessHeap(); HeapFree(h,0,(unsigned char*)p-MS_BLOCK_HDR);} }
 void* calloc(SIZE_T n, SIZE_T s){
     SIZE_T tot=n*s;
     void *p=malloc(tot);
@@ -91,8 +110,11 @@ void* calloc(SIZE_T n, SIZE_T s){
 void* realloc(void *p, SIZE_T s){
     if(!p) return malloc(s);
     if(s==0){ free(p); return NULL; }
+    SIZE_T old=*(SIZE_T*)((unsigned char*)p-MS_BLOCK_HDR);
     void *np=malloc(s);
-    if(np && p) memcpy(np,p,s);
+    /* On failure the original block is left valid and is not freed. */
+    if(!np) return NULL;
+    memcpy(np,p,old<s?old:s);
     free(p);
     return np;
 }
@@ -203,7 +225,8 @@ static int my_vsprintf(char *out, size_t outsz, const char *fmt, va_list ap){
             if(pos+1<outsz) out[pos++]=spec;
         }
     }
-    out[pos]='\0';
+    /* CRT-2: size 0 means no buffer, so write the NUL only when there is room. */
+    if(outsz) out[pos]='\0';
     return (int)pos;
 }
 
@@ -292,12 +315,23 @@ int _snprintf(char *s, SIZE_T n, const char *fmt, ...){
 }
 int _vsnprintf(char *s, SIZE_T n, const char *fmt, va_list ap){ return my_vsprintf(s,n,fmt,ap); }
 
-void exit(int code){ NtTerminateProcess((HANDLE)(intptr_t)-1, code); while(1){} }
-int _exit(int c){ exit(c); return 0; }
-void _Exit(int c){ exit(c); }
+void exit(int code){
+    while(g_atexit_count > 0){
+        void (*f)(void) = g_atexit_fns[--g_atexit_count];
+        f();
+    }
+    NtTerminateProcess((HANDLE)(intptr_t)-1, code);
+    while(1){}
+}
+/* _exit and _Exit do not run atexit handlers (CRT-7). */
+int _exit(int c){ NtTerminateProcess((HANDLE)(intptr_t)-1, c); while(1){} return 0; }
+void _Exit(int c){ NtTerminateProcess((HANDLE)(intptr_t)-1, c); while(1){} }
 
 /* Exception handler */
-int __C_specific_handler(void *a, void *b, void *c, void *d){ (void)a;(void)b;(void)c;(void)d; return 0; }
+/* No scope table is searched here, so no handler matches. Return
+ * ExceptionContinueSearch (1); 0 is ExceptionContinueExecution and would
+ * resume at the faulting instruction (CRT-6). */
+int __C_specific_handler(void *a, void *b, void *c, void *d){ (void)a;(void)b;(void)c;(void)d; return 1; }
 void* __C_specific_handler_wrapper = __C_specific_handler;
 
 /* Startup helpers */

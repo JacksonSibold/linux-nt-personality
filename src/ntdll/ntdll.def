@@ -369,5 +369,5 @@ EXPORTS
     KiUserApcDispatcher
     NtCurrentTeb
     DllMain
-    _DllMainCRTStartup@12
+    _DllMainCRTStartup
     DllMainCRTStartup

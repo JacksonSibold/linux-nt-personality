@@ -20,5 +20,5 @@ EXPORTS
     HeapReAlloc
     HeapSize
     DllMain
-    _DllMainCRTStartup@12
+    _DllMainCRTStartup
     DllMainCRTStartup
