@@ -190,7 +190,10 @@ LPVOID WINAPI VirtualAlloc(LPVOID addr, SIZE_T size, DWORD type, DWORD prot) {
         case 0x10: ntProt=16; break;/* PAGE_EXECUTE */
         case 0x20: ntProt=32; break;/* PAGE_EXECUTE_READ */
         case 0x40: ntProt=64; break;/* PAGE_EXECUTE_READWRITE */
-        default: ntProt=4; break;
+        default:
+            /* K32-16: an unsupported protection fails; it is not silently PAGE_READWRITE. */
+            SetLastError(87); /* ERROR_INVALID_PARAMETER */
+            return NULL;
     }
     NTSTATUS s = NtAllocateVirtualMemory((HANDLE)(intptr_t)-1, &base, 0, &sz, type, ntProt);
     if (s==STATUS_SUCCESS) { SetLastError(0); return base; }
