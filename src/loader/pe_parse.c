@@ -1024,6 +1024,10 @@ pe_status_t pe_relocs_walk(const pe_context_t *ctx,
     u32 reloc_off;
     s = pe_rva_to_offset(ctx, reloc_dir.rva, &reloc_off);
     if (s != PE_OK) return s;
+    /* Require the whole directory inside the file so that the u32 sums
+     * reloc_off + cursor (and + entry offsets) below cannot wrap. */
+    if ((u64)reloc_off + reloc_dir.size > (u64)ctx->size)
+        return PE_ERR_BOUNDS;
 
     u32 cursor = 0;
     while (cursor < reloc_dir.size) {
