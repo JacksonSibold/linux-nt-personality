@@ -51,6 +51,25 @@ python tools/check_doc_links.py
 
 See [tools/README.md](../tools/README.md) for the full options and exit codes.
 
+## Building ntdll.dll (MinGW, build only)
+
+```
+make -C src/ntdll          # builds src/ntdll/out/ntdll.dll and out/ntdll.def
+make -C src/ntdll check    # also compares the DLL's exports with the .def
+```
+
+- Needs Python 3 (for `build/gen_ntdll_def.py`) and the MSYS2 UCRT64 gcc
+  (`x86_64-w64-mingw32-gcc`). The flags are listed in the header of
+  `src/ntdll/Makefile`.
+- The `check` target runs `tests/ntdll-host/check_exports.sh`. It uses
+  `objdump` and does not load the DLL. It is not run by CI.
+- Do not run the DLL or any exe built here. Windows Application Control blocks
+  freshly built binaries on the development machine.
+- `make` does not import `TMP` from the MSYS2 shell here. If the link fails with
+  "Cannot create temporary file", pass `TMP=<dir>` on the command line.
+- The loader's MinGW build still links stubs (`LDR-1`, see
+  `docs/decisions/0029-loader-mingw-build-selection.md`).
+
 ## Paths and environment
 
 Scripts find the repository from their own location, so a checkout can live
