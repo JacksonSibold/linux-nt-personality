@@ -607,7 +607,7 @@ static NTSTATUS build_full_path(POBJECT_ATTRIBUTES oa, PUNICODE_STRING out, WCHA
         if (rlen + 1 + nlen + 1 > bufchars) { ObDereferenceObject(rhdr); return STATUS_NAME_TOO_LONG; }
         size_t p=0;
         for (size_t i=0;i<rlen;i++) buf[p++]=rk->full_path.Buffer[i];
-        if (buf[p-1]!='\\') buf[p++]='\\';
+        if (p == 0 || buf[p-1]!='\\') buf[p++]='\\';
         /* skip leading slash in us */
         size_t off=0; if (nlen>0 && us->Buffer[0]=='\\') off=1;
         for (size_t i=off;i<nlen;i++) buf[p++]=us->Buffer[i];
