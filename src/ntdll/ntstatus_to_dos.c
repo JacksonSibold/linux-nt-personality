@@ -864,11 +864,11 @@ static const NTSTATUS_TO_DOS NtStatusToDosErrorTable[] = {
     { (NTSTATUS)0xc0000200L, 317L },
     { (NTSTATUS)0xc0000225L, 1168LL },
     { STATUS_NO_UNICODE_TRANSLATION, 1279L },
-    { (NTSTATUS)0xC0000228L, 599L }, /* value kept from the golden column; header name unverified */
+    { (NTSTATUS)0xC0000228L, 599L }, /* value-keyed (oracle 599); not STATUS_DLL_NOT_FOUND, which is 0xC0000135 -> 126 */
     { STATUS_OPEN_FAILED, 87L },
     { STATUS_IO_PRIVILEGE_FAILED, 5010L },
     { STATUS_ORDINAL_NOT_FOUND, 604L },
-    { (NTSTATUS)0xC0000233L, 1908L }, /* value kept as before; header name unverified */
+    { (NTSTATUS)0xC0000233L, 1908L }, /* value-keyed (oracle 1908); not STATUS_ENTRYPOINT_NOT_FOUND, which is 0xC0000139 -> 127 */
     { STATUS_LOCAL_DISCONNECT, 1230L },
     { STATUS_REMOTE_DISCONNECT, 1231L },
     { STATUS_REMOTE_RESOURCES, 1232L },
