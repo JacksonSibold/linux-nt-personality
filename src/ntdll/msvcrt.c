@@ -6,6 +6,7 @@
 #ifdef __MINGW32__
 #include "nt_types.h"
 #include "ntstatus.h"
+#include "msvcrt_policy.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdarg.h>
@@ -101,8 +102,10 @@ void* malloc(SIZE_T s){
     return base+MS_BLOCK_HDR;
 }
 void free(void *p){ if(p){ HANDLE h=GetProcessHeap(); HeapFree(h,0,(unsigned char*)p-MS_BLOCK_HDR);} }
+/* CRT-3: a product that wraps must not become a short block. */
 void* calloc(SIZE_T n, SIZE_T s){
-    SIZE_T tot=n*s;
+    SIZE_T tot;
+    if(!ms_mul_size(n,s,&tot)) return NULL;
     void *p=malloc(tot);
     if(p) memset(p,0,tot);
     return p;
