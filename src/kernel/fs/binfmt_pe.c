@@ -412,7 +412,8 @@ static int pe_map_sections(struct pe_load_state *st)
     }
     pe_state_add_mapping(st, map_addr, map_len);
 #ifdef CONFIG_NT_PERSONALITY
-    ntmm_add_region(map_addr, map_len, 0x02, 0x01000000, base);
+    if (ntmm_add_region(map_addr, map_len, 0x02, 0x01000000, base))
+        return -EADDRNOTAVAIL;
 #endif
     {
 
@@ -452,7 +453,8 @@ static int pe_map_sections(struct pe_load_state *st)
 #ifdef CONFIG_NT_PERSONALITY
         {
             unsigned long nt_prot = pe_nt_prot_from_chars(chars);
-            ntmm_add_region(map_addr, map_len, nt_prot, 0x01000000, base);
+            if (ntmm_add_region(map_addr, map_len, nt_prot, 0x01000000, base))
+                return -EADDRNOTAVAIL;
         }
 #endif
         if (rawsize) {
@@ -558,7 +560,8 @@ static int pe_build_process_parameters(struct pe_load_state *st)
     if (IS_ERR_VALUE(p)) return -ENOMEM;
     pe_state_add_mapping(st, p, PAGE_SIZE);
 #ifdef CONFIG_NT_PERSONALITY
-    ntmm_add_region(p, PAGE_SIZE, 0x04, 0x00020000, p);
+    if (ntmm_add_region(p, PAGE_SIZE, 0x04, 0x00020000, p))
+        return -EADDRNOTAVAIL;
 #endif
     // Zeroed already; set minimal fields at known offsets for debugging: just store pointers zero
     // Real layout is 0x470 size but we allocate 4k
@@ -576,7 +579,8 @@ static int pe_init_peb(struct pe_load_state *st)
     if (IS_ERR_VALUE(p)) return -ENOMEM;
     pe_state_add_mapping(st, p, PAGE_SIZE);
 #ifdef CONFIG_NT_PERSONALITY
-    ntmm_add_region(p, PAGE_SIZE, 0x04, 0x00020000, p);
+    if (ntmm_add_region(p, PAGE_SIZE, 0x04, 0x00020000, p))
+        return -EADDRNOTAVAIL;
 #endif
     // PEB layout: ImageBase at 0x10, ProcessParameters at 0x20
     // Use copy_to_user to set fields
@@ -600,7 +604,8 @@ static int pe_init_teb(struct pe_load_state *st)
     if (IS_ERR_VALUE(p)) return -ENOMEM;
     pe_state_add_mapping(st, p, 2*PAGE_SIZE);
 #ifdef CONFIG_NT_PERSONALITY
-    ntmm_add_region(p, 2*PAGE_SIZE, 0x04, 0x00020000, p);
+    if (ntmm_add_region(p, 2*PAGE_SIZE, 0x04, 0x00020000, p))
+        return -EADDRNOTAVAIL;
 #endif
     // TEB offsets: Self at 0x30, StackBase at 0x08, StackLimit at 0x10, TLS pointer 0x58, PEB at 0x60, LastError 0x68, TlsSlots at 0x1480
     // Clear already zeroed
@@ -704,7 +709,10 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
         if (IS_ERR_VALUE(haddr)) { kfree(hdr); filp_close(f, NULL); return -ENOMEM; }
         pe_state_add_mapping(st, haddr, hlen);
 #ifdef CONFIG_NT_PERSONALITY
-        ntmm_add_region(haddr, hlen, 0x02, 0x01000000, actual_base);
+        if (ntmm_add_region(haddr, hlen, 0x02, 0x01000000, actual_base)) {
+            kfree(hdr); filp_close(f, NULL);
+            return -EADDRNOTAVAIL;
+        }
 #endif
         size_t to_copy = size_headers;
         if (to_copy > (size_t)fsize) to_copy = (size_t)fsize;
@@ -738,7 +746,10 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
 #ifdef CONFIG_NT_PERSONALITY
         {
             unsigned long nt_prot = pe_nt_prot_from_chars(chars);
-            ntmm_add_region(m, mlen, nt_prot, 0x01000000, actual_base);
+            if (ntmm_add_region(m, mlen, nt_prot, 0x01000000, actual_base)) {
+                kfree(hdr); filp_close(f, NULL);
+                return -EADDRNOTAVAIL;
+            }
         }
 #endif
         if (rawsize) {
@@ -897,7 +908,8 @@ static int pe_setup_stack(struct pe_load_state *st)
     st->stack_size = size;
     pe_state_add_mapping(st, stack, size);
 #ifdef CONFIG_NT_PERSONALITY
-    ntmm_add_region(stack, size, 0x04, 0x00020000, stack);
+    if (ntmm_add_region(stack, size, 0x04, 0x00020000, stack))
+        return -EADDRNOTAVAIL;
 #endif
     return 0;
 }
@@ -985,7 +997,17 @@ static int load_pe_binary(struct linux_binprm *bprm)
 
     u64 ntdll_base = 0, ntdll_thunk = 0;
     int has_ntdll = 0;
-    has_ntdll = (pe_map_ntdll(&state, &ntdll_base, &ntdll_thunk) == 0);
+    {
+        /* A region conflict leaves the NT VAD and the mappings disagreeing,
+         * so it is fatal here; other ntdll failures still fall back to the
+         * exe entry. */
+        int ntdll_rc = pe_map_ntdll(&state, &ntdll_base, &ntdll_thunk);
+        if (ntdll_rc == -EADDRNOTAVAIL) {
+            ret = pe_post_commit_fail("ntdll region", ntdll_rc);
+            goto out;
+        }
+        has_ntdll = (ntdll_rc == 0);
+    }
     if (has_ntdll)
         pr_err("binfmt_pe: mapped ntdll at 0x%llx LdrInitializeThunk 0x%llx\n", (unsigned long long)ntdll_base, (unsigned long long)ntdll_thunk);
     else
