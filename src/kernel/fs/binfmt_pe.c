@@ -873,6 +873,8 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                 u32 ords_rva = ed.AddressOfNameOrdinals;
                 u32 funcs_rva = ed.AddressOfFunctions;
                 u32 num_names = ed.NumberOfNames;
+                /* Bound the scan: a larger name table is not a real ntdll (K-14). */
+                if (num_names > 65536u) num_names = 65536u;
                 for (u32 i=0; i<num_names; ++i) {
                     u32 name_rva = 0;
                     if (copy_from_user(&name_rva, (void __user *)(actual_base + names_rva + i*4), 4))
@@ -895,6 +897,26 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                         u32 func_rva = 0;
                         if (copy_from_user(&func_rva, (void __user *)(actual_base + funcs_rva + ord*4), 4))
                             break;
+                        /* The thunk must be a non-zero RVA inside an executable
+                         * section; func_rva == 0 would point at the PE header (K-14). */
+                        if (func_rva == 0 || func_rva >= size_image) break;
+                        {
+                            bool in_exec = false;
+                            for (u16 si = 0; si < num_sections; ++si) {
+                                u32 soff = section_table_off + si*40;
+                                u32 svaddr = pe_load_u32((u8*)hdr + soff + 12);
+                                u32 svsize = pe_load_u32((u8*)hdr + soff + 8);
+                                u32 srawsize = pe_load_u32((u8*)hdr + soff + 16);
+                                u32 schars = pe_load_u32((u8*)hdr + soff + 36);
+                                u32 slen = svsize ? svsize : srawsize;
+                                if (func_rva >= svaddr && func_rva - svaddr < slen &&
+                                    (schars & 0x20000000u)) {
+                                    in_exec = true;
+                                    break;
+                                }
+                            }
+                            if (!in_exec) break;
+                        }
                         thunk = actual_base + func_rva;
                         break;
                     }
