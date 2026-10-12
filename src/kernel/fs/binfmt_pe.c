@@ -627,16 +627,27 @@ static int pe_init_teb(struct pe_load_state *st)
 
 static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
 {
-    const char *candidates[] = { "/ntdll.dll", "/windows/system32/ntdll.dll", "/tmp/ntdll.dll", NULL };
+    /* No world-writable fallback: /tmp/ntdll.dll would let any local user supply
+     * the LdrInitializeThunk that runs in every PE process (K-5). */
+    const char *candidates[] = { "/ntdll.dll", "/windows/system32/ntdll.dll", NULL };
     struct file *f = NULL;
+    struct inode *inode;
     for (int i=0; candidates[i]; i++) {
-        f = filp_open(candidates[i], O_RDONLY, 0);
+        /* O_NONBLOCK: a FIFO at the candidate path must not block exec.
+         * O_NOFOLLOW: do not follow a symlink planted at the candidate path. */
+        f = filp_open(candidates[i], O_RDONLY | O_NOFOLLOW | O_NONBLOCK, 0);
         if (!IS_ERR(f))
             break;
         f = NULL;
     }
     if (!f || IS_ERR(f))
         return -ENOENT;
+    inode = file_inode(f);
+    if (!S_ISREG(inode->i_mode) || i_uid_read(inode) != 0 ||
+        (inode->i_mode & (S_IWGRP | S_IWOTH))) {
+        filp_close(f, NULL);
+        return -EACCES;
+    }
     void *hdr = kzalloc(PAGE_SIZE, GFP_KERNEL);
     if (!hdr) { filp_close(f, NULL); return -ENOMEM; }
     loff_t fsize = i_size_read(file_inode(f));
