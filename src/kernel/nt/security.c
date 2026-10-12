@@ -870,6 +870,14 @@ NTSTATUS sd_from_self_relative(const void *sr_buffer, ULONG sr_length, SECURITY_
     }
     if (sr->Dacl) {
         const UCHAR *p = (const UCHAR *)sr_buffer + sr->Dacl;
+        /* The ACL header must lie inside the buffer before AclSize is read. */
+        if (sr->Dacl + sizeof(ACL) > sr_length) {
+            if (sd->Owner) sid_free(sd->Owner);
+            if (sd->Group) sid_free(sd->Group);
+            if (sd->Sacl) acl_free(sd->Sacl);
+            sd_free(sd);
+            return STATUS_INVALID_SECURITY_DESCR;
+        }
         const ACL *a = (const ACL *)p;
         if (a->AclSize < sizeof(ACL) || sr->Dacl + a->AclSize > sr_length) {
             if (sd->Owner) sid_free(sd->Owner);
