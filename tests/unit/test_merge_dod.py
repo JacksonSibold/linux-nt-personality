@@ -9,7 +9,10 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -24,6 +27,36 @@ def quiet(fn, *args):
     """Call fn while swallowing its stdout. Returns fn's result."""
     with contextlib.redirect_stdout(io.StringIO()):
         return fn(*args)
+
+
+class RootPathTests(unittest.TestCase):
+    """PROJ comes from NTPERS_ROOT, or from the script location by default."""
+
+    def _proj_in_fresh_interpreter(self, env_root):
+        env = {k: v for k, v in os.environ.items() if k != "NTPERS_ROOT"}
+        if env_root is not None:
+            env["NTPERS_ROOT"] = env_root
+        code = ("import importlib.util, sys; "
+                "s = importlib.util.spec_from_file_location('m', sys.argv[1]); "
+                "m = importlib.util.module_from_spec(s); s.loader.exec_module(m); "
+                "print(m.PROJ); print(m.OUT)")
+        proc = subprocess.run([sys.executable, "-c", code, str(SCRIPT)],
+                              capture_output=True, text=True, env=env,
+                              stdin=subprocess.DEVNULL, check=True)
+        return proc.stdout.splitlines()
+
+    def test_default_root_is_repository_containing_script(self):
+        proj, out = self._proj_in_fresh_interpreter(None)
+        self.assertEqual(pathlib.Path(proj), SCRIPT.parents[1])
+        self.assertEqual(pathlib.Path(out),
+                         SCRIPT.parents[1] / "tests" / "conformance" / "criteria.json")
+
+    def test_ntpers_root_overrides_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proj, out = self._proj_in_fresh_interpreter(tmp)
+        self.assertEqual(pathlib.Path(proj), pathlib.Path(tmp))
+        self.assertEqual(pathlib.Path(out),
+                         pathlib.Path(tmp) / "tests" / "conformance" / "criteria.json")
 
 
 class SplitRowTests(unittest.TestCase):

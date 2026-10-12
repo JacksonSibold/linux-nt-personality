@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Validate criteria.json and print the authoritative DoD summary."""
 import json
+import os
 from collections import Counter
+from pathlib import Path
 
-P = ("/path/to/ntpers-research"
-     "/tests/conformance/criteria.json")
+# Repository root: NTPERS_ROOT if set, otherwise the parent of build/.
+ROOT = Path(os.environ.get("NTPERS_ROOT")
+            or Path(__file__).resolve().parents[1])
+P = ROOT / "tests" / "conformance" / "criteria.json"
 
 d = json.load(open(P, encoding="utf-8"))
 print("valid JSON. entries:", len(d))
