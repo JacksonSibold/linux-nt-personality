@@ -9,6 +9,7 @@
  */
 
 #include "except.h"
+#include "except_pure.h"
 #include "unwind.h"
 #include "nt_types.h"
 #include "ntstatus.h"
@@ -31,90 +32,43 @@
 
 /* ---------------- Vectored handlers ---------------- */
 
-typedef struct veh_node {
-    struct veh_node *next;
-    struct veh_node *prev;
-    PVECTORED_EXCEPTION_HANDLER handler;
-    PVOID handle; /* unique */
-} veh_node_t;
+typedef exc_veh_node_t veh_node_t;
 
 static veh_node_t *g_veh_head = NULL;
 static veh_node_t *g_vch_head = NULL; /* continue handlers */
 static int g_veh_seq = 1;
 
-PVOID AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler) {
+static PVOID veh_add(veh_node_t **head, ULONG First, PVECTORED_EXCEPTION_HANDLER Handler) {
     if (!Handler) return NULL;
     veh_node_t *n = (veh_node_t *)calloc(1, sizeof(*n));
     if (!n) return NULL;
     n->handler = Handler;
     n->handle = (PVOID)(uintptr_t)++g_veh_seq;
-    if (First) {
-        n->next = g_veh_head;
-        if (g_veh_head) g_veh_head->prev = n;
-        g_veh_head = n;
-    } else {
-        /* append */
-        if (!g_veh_head) g_veh_head = n;
-        else {
-            veh_node_t *cur = g_veh_head;
-            while (cur->next) cur = cur->next;
-            cur->next = n;
-            n->prev = cur;
-        }
-    }
+    exc_list_insert(head, n, First);
     return n->handle;
+}
+
+static ULONG veh_remove(veh_node_t **head, PVOID Handle) {
+    veh_node_t *n = exc_list_remove(head, Handle);
+    if (!n) return 0;
+    free(n);
+    return 1;
+}
+
+PVOID AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler) {
+    return veh_add(&g_veh_head, First, Handler);
 }
 
 ULONG RemoveVectoredExceptionHandler(PVOID Handle) {
-    veh_node_t *cur = g_veh_head;
-    while (cur) {
-        if (cur->handle == Handle) {
-            if (cur->prev) cur->prev->next = cur->next;
-            else g_veh_head = cur->next;
-            if (cur->next) cur->next->prev = cur->prev;
-            free(cur);
-            return 1;
-        }
-        cur = cur->next;
-    }
-    return 0;
+    return veh_remove(&g_veh_head, Handle);
 }
 
 PVOID AddVectoredContinueHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler) {
-    if (!Handler) return NULL;
-    veh_node_t *n = (veh_node_t *)calloc(1, sizeof(*n));
-    if (!n) return NULL;
-    n->handler = Handler;
-    n->handle = (PVOID)(uintptr_t)++g_veh_seq;
-    if (First) {
-        n->next = g_vch_head;
-        if (g_vch_head) g_vch_head->prev = n;
-        g_vch_head = n;
-    } else {
-        if (!g_vch_head) g_vch_head = n;
-        else {
-            veh_node_t *cur = g_vch_head;
-            while (cur->next) cur = cur->next;
-            cur->next = n;
-            n->prev = cur;
-        }
-    }
-    return n->handle;
+    return veh_add(&g_vch_head, First, Handler);
 }
 
 ULONG RemoveVectoredContinueHandler(PVOID Handle) {
-    veh_node_t *cur = g_vch_head;
-    while (cur) {
-        if (cur->handle == Handle) {
-            if (cur->prev) cur->prev->next = cur->next;
-            else g_vch_head = cur->next;
-            if (cur->next) cur->next->prev = cur->prev;
-            free(cur);
-            return 1;
-        }
-        cur = cur->next;
-    }
-    return 0;
+    return veh_remove(&g_vch_head, Handle);
 }
 
 /* ---------------- Unhandled filter ---------------- */
@@ -455,11 +409,20 @@ void except_set_in_dispatch(int v) { t_in_dispatch = v; }
 
 static int g_nested_depth = 0;
 
+/* Vectored continue handlers, in list order. Called whenever dispatch resumes
+ * execution, from a vectored handler or from a frame handler. */
+static void run_continue_handlers(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord) {
+    for (veh_node_t *n = g_vch_head; n; n = n->next) {
+        EXCEPTION_POINTERS cp = { ExceptionRecord, ContextRecord };
+        n->handler(&cp);
+    }
+}
+
 EXCEPTION_DISPOSITION RtlDispatchException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord) {
     if (!ExceptionRecord || !ContextRecord) return ExceptionContinueSearch;
 
     /* Prevent infinite recursion */
-    if (g_nested_depth > 16) return ExceptionContinueSearch;
+    if (exc_depth_exceeded(g_nested_depth)) return ExceptionContinueSearch;
     g_nested_depth++;
     t_in_dispatch = 1;
 
@@ -470,8 +433,9 @@ EXCEPTION_DISPOSITION RtlDispatchException(PEXCEPTION_RECORD ExceptionRecord, PC
     /* Vectored handlers BEFORE frame handlers, in registration order */
     for (veh_node_t *n = g_veh_head; n; n = n->next) {
         LONG ret = n->handler(&ptrs);
-        if (ret == -1 /* EXCEPTION_CONTINUE_EXECUTION */) { /* Vectored handlers return -1 to resume, 0 to keep searching. */
-            /* Continue execution: copy back context */
+        if (exc_veh_resumes(ret)) { /* Vectored handlers return -1 to resume, 0 to keep searching. */
+            /* Continue execution: vectored continue handlers run on this path too (EXC-8). */
+            run_continue_handlers(ExceptionRecord, ContextRecord);
             g_nested_depth--;
             t_in_dispatch = 0;
             return ExceptionContinueExecution;
@@ -491,7 +455,7 @@ EXCEPTION_DISPOSITION RtlDispatchException(PEXCEPTION_RECORD ExceptionRecord, PC
             ULONG64 establisher = 0;
             RtlVirtualUnwind(0, imgBase, ctx.Rip, NULL, &next, NULL, &establisher, NULL);
             /* No handler to call for leaf */
-            if (next.Rip == 0 || next.Rsp == 0) break;
+            if (exc_walk_ended(next.Rip, next.Rsp)) break;
             ctx = next;
             continue;
         }
@@ -513,13 +477,9 @@ EXCEPTION_DISPOSITION RtlDispatchException(PEXCEPTION_RECORD ExceptionRecord, PC
             dc.HistoryTable = NULL;
             PEXCEPTION_HANDLER h = (PEXCEPTION_HANDLER)handler;
             EXCEPTION_DISPOSITION disp = h(ExceptionRecord, (PVOID)establisher, &ctx, &dc);
-            if (disp == ExceptionContinueExecution) {
+            if (exc_frame_resumes(disp)) {
                 *ContextRecord = ctx;
-                /* Call vectored continue handlers */
-                for (veh_node_t *n = g_vch_head; n; n = n->next) {
-                    EXCEPTION_POINTERS cp = { ExceptionRecord, ContextRecord };
-                    n->handler(&cp);
-                }
+                run_continue_handlers(ExceptionRecord, ContextRecord);
                 g_nested_depth--;
                 t_in_dispatch = 0;
                 return ExceptionContinueExecution;
@@ -536,7 +496,7 @@ EXCEPTION_DISPOSITION RtlDispatchException(PEXCEPTION_RECORD ExceptionRecord, PC
         ULONG64 nextEst = 0;
         PVOID hd = NULL;
         RtlVirtualUnwind(0, imgBase, ctx.Rip, entry, &ctx, &hd, &nextEst, NULL);
-        if (ctx.Rip == 0 || ctx.Rsp == 0) break;
+        if (exc_walk_ended(ctx.Rip, ctx.Rsp)) break;
         /* Check TargetIp / establisher for RtlUnwindEx target? For dispatch we keep going */
     }
 

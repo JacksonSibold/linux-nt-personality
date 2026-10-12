@@ -7,7 +7,9 @@
 # Coverage:
 #   test_ntstatus_to_dos  RtlNtStatusToDosError table invariants and golden values
 #   test_unwind           RUNTIME_FUNCTION lookup for registered modules
+#   test_unwind_pure      UWOP_* decoding, prolog and chained info (unwind_pure.h)
 #   test_except           vectored exception handler return codes
+#   test_except_pure      list order, resume decisions, vectored continue handlers (except_pure.h)
 #   test_runtime          freestanding malloc/calloc from ntdll_runtime.c
 #   test_win32_policy     kernel32 shim argument mapping (win32_policy.h)
 #   test_msvcrt_policy    msvcrt calloc size overflow check (msvcrt_policy.h)
@@ -74,7 +76,7 @@ endif
 CPPFLAGS := -I$(SRC) -I$(LOADER)
 CFLAGS   := -std=c11 -g $(OPT_LEVEL) -Wall -Wextra -Werror $(COV_FLAGS) $(SAN_FLAGS)
 
-TESTS    := test_ntstatus_to_dos test_unwind test_except test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure
+TESTS    := test_ntstatus_to_dos test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure
 TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 
 # test_pe_bounds is build-only on this host: Windows Application Control blocks
@@ -126,7 +128,13 @@ $(OUT)/test_ldr_pure$(EXE_SUFFIX): test_ldr_pure.c minitest.h $(SRC)/ldr_pure.h 
 $(OUT)/test_unwind$(EXE_SUFFIX): $(OUT)/unwind.o $(OUT)/except.o $(OUT)/test_unwind.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--allow-multiple-definition $^ -o $@
 
+$(OUT)/test_unwind_pure$(EXE_SUFFIX): $(OUT)/unwind.o $(OUT)/except.o $(OUT)/test_unwind_pure.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--allow-multiple-definition $^ -o $@
+
 $(OUT)/test_except$(EXE_SUFFIX): $(OUT)/except.o $(OUT)/unwind.o $(OUT)/test_except.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--allow-multiple-definition $^ -o $@
+
+$(OUT)/test_except_pure$(EXE_SUFFIX): $(OUT)/except.o $(OUT)/unwind.o $(OUT)/test_except_pure.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--allow-multiple-definition $^ -o $@
 
 # Coverage links (libgcov) pull in a CRT _errno that clashes with ntdll_runtime.o;

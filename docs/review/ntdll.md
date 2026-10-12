@@ -12,10 +12,10 @@ Status: findings marked `Fixed in <sha>` were fixed in this branch, with a faili
 | Severity | Count |
 |---|---|
 | High | 20 |
-| Medium | 23 |
+| Medium | 24 |
 | Low | 21 |
 | Info | 7 |
-| **Total** | **71** |
+| **Total** | **72** |
 
 Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium). Win32 shim pass (branch `haiku/ntdllfix`): K32-1, K32-2, K32-3 and K32-5 (High) fixed. CRT-1 (High) partly fixed (1f334ce), and CRT-3 (High) fixed (1224d00); the CRT-1 export removal needs owner. Bounds pass (branch `haiku/bounds`): MAIN-1 (74b4a14), MAIN-2 (e7f8b2b), LDR-5 (5045b9c) and LDR-6 (d6007f6) fixed with `src/ntdll/pe_bounds.h`; K32-7 (d2d36fe) fixed. Loader pass (branch `haiku/ldrfix`): LDR-2 (a18c03e) and LDR-4 (bef4d79) are fixed, with the address logic in `src/ntdll/ldr_pure.h` and host tests in `test_ldr_pure`. LDR-1 and LDR-3 (High) have design records 0029 and 0031 and are not implemented; each records why (needs VM). Records 0030 and 0032 are marked implemented. `docs/decisions/INDEX.md` lists 0029 to 0032. The MAIN-2 test binary `test_pe_bounds` is build-only on this host (see MAIN-1), so its test cases have not been run here.
 
@@ -35,6 +35,7 @@ Each fix is its own commit named by its ID. Host-testable logic has a test that 
 | EXC-4 | Needs owner | Per-thread dispatch state needs a TEB decision and a lock primitive. |
 | EXC-5 | Needs owner | Needs a deferred free or a lock, the same design as EXC-4. |
 | EXC-6 | Fixed | 6ae7bb7 (dead function removed) |
+| EXC-8 | Fixed | 6560e0d (test in 35c6a9c) |
 | RT-2 | Fixed | 92c14f5 |
 | RT-3 | Needs owner | Implementing the printf family or failing at link time is a product choice. |
 | RT-4 | Needs owner | Dropping `errno` changes the CRT ABI; the test Makefile already relaxes `-Wattributes`. |
@@ -232,6 +233,11 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 
 ### EXC-7 [Info] Exit status from exception code
 - `except.c:568` (`_NtRaiseException`) exits with `128 + (ExceptionCode & 0xFF)`, not the NTSTATUS. Not a defect in isolation, but it loses information.
+
+### EXC-8 [Medium] Vectored continue handlers skipped when a vectored handler resumes (reproduced; Fixed in 6560e0d)
+- `except.c` (`RtlDispatchException`, vectored stage): on `EXCEPTION_CONTINUE_EXECUTION` the function returned without calling the vectored continue handlers. Only the frame-handler path called them. A continue handler therefore never saw an exception that a vectored handler resolved.
+- Test: `tests/ntdll-host/test_except_pure.c`, `vch_runs_when_veh_resumes` (failed at 35c6a9c, before the fix).
+- Fix applied: both resume paths call `run_continue_handlers`. The test was committed before the fix, so the failing run is in history.
 
 ### Runtime and allocator (`ntdll_runtime.c`)
 
