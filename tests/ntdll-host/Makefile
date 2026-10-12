@@ -97,7 +97,11 @@ $(OUT)/%.o: $(SRC)/%.c | $(OUT)
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(CPPFLAGS) -c $< -o $@
 
 $(OUT)/test_%.o: test_%.c minitest.h | $(OUT)
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+# The runtime test calls calloc and malloc by name. Without -fno-builtin gcc
+# treats them as built-ins and the overflow checks are not exercised.
+$(OUT)/test_runtime.o: EXTRA_CFLAGS := -fno-builtin
 
 $(OUT):
 	mkdir -p $(OUT)
