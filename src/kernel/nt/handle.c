@@ -94,7 +94,14 @@ struct nt_ethread *nt_current_ethread(void);
 
 static inline u32 handle_to_index(HANDLE handle)
 {
-    return (u32)((ULONG_PTR)handle >> 2);
+    ULONG_PTR v = (ULONG_PTR)handle >> 2;
+    /* Out-of-range values map to 0, which every caller rejects as invalid.
+     * Without this, ht_entry() asserts on i1 >= HANDLE_L1_SIZE (BUG_ON in
+     * kernel builds), and the u32 truncation aliases high-bit values onto
+     * valid slots. */
+    if (v > HANDLE_MAX_INDEX)
+        return 0;
+    return (u32)v;
 }
 
 static inline HANDLE index_to_handle(u32 idx, ULONG attr)
