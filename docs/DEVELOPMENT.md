@@ -172,6 +172,7 @@ locations, not host checkout paths, and are not configurable.
 | `build/` | Top-level Makefile and build and generator helpers |
 | `vm/` | VM and kernel build scripts |
 | `docs/` | Architecture, research notes, module reference (`docs/modules/`), review reports (`docs/review/`) |
+| `docs/architecture/` | Mermaid diagrams of the components, the startup path, syscall dispatch, objects, memory, the loader, and the test layers. [build-and-test.md](architecture/build-and-test.md) shows how the test layers relate. |
 
 ## Generated file: `ntstatus_table.inc`
 

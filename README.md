@@ -66,6 +66,12 @@ Other suites (`tests/harness`, `tests/kernel`, `tests/conformance`, `tests/diffe
 | [docs/phase1/](docs/phase1/) | Research reports 1 to 4. |
 | [docs/phase2/ARCHITECTURE.md](docs/phase2/ARCHITECTURE.md) | Master architecture. |
 | [docs/phase2/ARCHITECTURE-STATUS.md](docs/phase2/ARCHITECTURE-STATUS.md) | Each architecture component mapped to its implementation file(s) and status. |
+| [docs/architecture/overview.md](docs/architecture/overview.md) | Mermaid diagrams: components, and how a PE executable starts. |
+| [docs/architecture/syscall-dispatch.md](docs/architecture/syscall-dispatch.md) | From the `syscall` stub to the NT handler, with the status return mapping and table coverage. |
+| [docs/architecture/object-model.md](docs/architecture/object-model.md) | Object and handle lifecycle, handle table layout, and the process and thread registry. |
+| [docs/architecture/memory.md](docs/architecture/memory.md) | VAD structures, section objects, and the allocate, free, protect and map flows. |
+| [docs/architecture/loading.md](docs/architecture/loading.md) | The userspace loader in ntdll: imports, relocations, TLS and `DllMain`, with stub status. |
+| [docs/architecture/build-and-test.md](docs/architecture/build-and-test.md) | How the build and test layers relate, and which ones CI runs. |
 | [tools/README.md](tools/README.md) | Options and exit codes for the standalone tools. |
 
 ## Engineering lesson
