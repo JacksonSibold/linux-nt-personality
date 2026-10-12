@@ -15,9 +15,10 @@ ifneq (,$(filter Windows_NT,$(OS))$(filter MINGW% MSYS% CYGWIN%,$(UNAME_S)))
 # Same exports as the toolchain notes (TOOLCHAIN.md, kept outside the repo).
 # Without TMP the link step fails with "Cannot create temporary file in
 # C:\WINDOWS\". The recipe shell does not reliably inherit them, hence the
-# exports here. TEMP_DIR defaults to the per-user temp directory; override it
-# in the environment if needed.
-TEMP_DIR ?= $(if $(LOCALAPPDATA),$(shell cygpath -m "$(LOCALAPPDATA)/Temp"),C:/Temp)
+# exports here. TEMP_DIR is taken from the environment if set, else TEMP, TMP,
+# LOCALAPPDATA/Temp, and finally MSYS /tmp (which maps to the Windows temp
+# directory). Override it on the command line if needed.
+TEMP_DIR ?= $(if $(TEMP),$(TEMP),$(if $(TMP),$(TMP),$(if $(LOCALAPPDATA),$(shell cygpath -m "$(LOCALAPPDATA)/Temp"),$(shell cygpath -m /tmp))))
 export TMP    := $(TEMP_DIR)
 export TEMP   := $(TEMP_DIR)
 export TMPDIR := $(shell cygpath -u "$(TEMP_DIR)")
