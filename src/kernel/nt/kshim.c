@@ -396,7 +396,7 @@ void kshim_filp_close(struct file *f) {
 /* Stat timestamps. glibc (Linux) has st_atim/st_mtim/st_ctim as struct
  * timespec with nanoseconds. MinGW only has st_atime/st_mtime/st_ctime
  * (time_t, whole seconds), so the MinGW branch builds a timespec with tv_nsec 0. */
-#if defined(__linux__)
+#if defined(__linux__) || defined(KHOST_LINUX_STAT)
 #define KSHIM_STAT_ATIM(s) ((s).st_atim)
 #define KSHIM_STAT_MTIM(s) ((s).st_mtim)
 #define KSHIM_STAT_CTIM(s) ((s).st_ctim)
