@@ -76,6 +76,18 @@ static void golden_values_match(void)
     }
 }
 
+/* The loader returns these symbols; a wrong header value misreports LoadLibrary
+ * and GetProcAddress failures. */
+static void loader_symbols_map_to_win32_errors(void)
+{
+    ULONG dll = RtlNtStatusToDosError(STATUS_DLL_NOT_FOUND);
+    if (dll != 126)
+        mt_fail_eq(__FILE__, __LINE__, "STATUS_DLL_NOT_FOUND", (long)dll, 126);
+    ULONG entry = RtlNtStatusToDosError(STATUS_ENTRYPOINT_NOT_FOUND);
+    if (entry != 127)
+        mt_fail_eq(__FILE__, __LINE__, "STATUS_ENTRYPOINT_NOT_FOUND", (long)entry, 127);
+}
+
 static void unmapped_status_falls_back_to_317(void)
 {
     /* Not in the table; the golden column gives ERROR_MR_MID_NOT_FOUND. */
@@ -88,6 +100,7 @@ static const mt_case_t cases[] = {
     { "table_is_strictly_ascending", table_is_strictly_ascending },
     { "every_entry_round_trips", every_entry_round_trips },
     { "golden_values_match", golden_values_match },
+    { "loader_symbols_map_to_win32_errors", loader_symbols_map_to_win32_errors },
     { "unmapped_status_falls_back_to_317", unmapped_status_falls_back_to_317 },
 };
 
