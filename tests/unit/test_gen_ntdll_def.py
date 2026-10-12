@@ -60,7 +60,7 @@ class GenNtdllDefTests(unittest.TestCase):
         _, _, lines = run_script("")
         exports = export_lines(lines)
         for name in ("LdrLoadDll", "RtlUnwindEx", "KiUserExceptionDispatcher",
-                     "NtCurrentTeb", "DllMain", "_DllMainCRTStartup@12",
+                     "NtCurrentTeb", "DllMain", "_DllMainCRTStartup",
                      "DllMainCRTStartup", "_NtRaiseException"):
             self.assertIn(name, exports)
 
