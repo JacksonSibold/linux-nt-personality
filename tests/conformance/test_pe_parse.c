@@ -799,37 +799,47 @@ static void test_good_corpus_extra(const uint8_t *orig, size_t orig_size)
     }
 }
 
+/* Resolve a repo-relative probe path under NTPERS_ROOT. Absolute paths and an
+ * unset NTPERS_ROOT are returned unchanged, so a missing probe is skipped. */
+static const char *repo_path(char *buf, size_t n, const char *rel)
+{
+    const char *root = getenv("NTPERS_ROOT");
+    if (rel[0] == '/' || !root || !*root) return rel;
+    snprintf(buf, n, "%s/%s", root, rel);
+    return buf;
+}
+
 static void test_probe_corpus(const uint8_t *orig, size_t orig_size)
 {
     (void)orig; (void)orig_size;
     /* Every probe .exe we build must be accepted — false rejection is a bug.
      * Enumerate all known probes from both build dirs. */
     const char *probe_paths[] = {
-        "/path/to/ntpers-research/build/probes/probe_sharemode_direct.exe",
-        "/path/to/ntpers-research/build/probes/probe_virtualquery_direct.exe",
-        "/path/to/ntpers-research/build/probes/probe_handles_direct.exe",
-        "/path/to/ntpers-research/build/probes/probe_ntstatus_direct.exe",
-        "/path/to/ntpers-research/build/probes/probe_virtualquery.exe",
-        "/path/to/ntpers-research/build/probes/probe_handles.exe",
-        "/path/to/ntpers-research/build/probes/r3_minimal.exe",
-        "/path/to/ntpers-research/build/probes/simple_direct.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_sharemode_direct.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_virtualquery_direct.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_handles_direct.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_ntstatus_direct.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_exception.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_handles.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_ntstatus.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_path.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_peloader.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_process_thread.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_section.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_sharemode.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_sync.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_teb_peb.exe",
-        "/path/to/ntpers-research/tests/differential/build/probe_virtualquery.exe",
-        "/path/to/ntpers-research/tests/differential/build/diag_test.exe",
-        "/path/to/ntpers-research/tests/differential/build/large_test.exe",
+        "build/probes/probe_sharemode_direct.exe",
+        "build/probes/probe_virtualquery_direct.exe",
+        "build/probes/probe_handles_direct.exe",
+        "build/probes/probe_ntstatus_direct.exe",
+        "build/probes/probe_virtualquery.exe",
+        "build/probes/probe_handles.exe",
+        "build/probes/r3_minimal.exe",
+        "build/probes/simple_direct.exe",
+        "tests/differential/build/probe_sharemode_direct.exe",
+        "tests/differential/build/probe_virtualquery_direct.exe",
+        "tests/differential/build/probe_handles_direct.exe",
+        "tests/differential/build/probe_ntstatus_direct.exe",
+        "tests/differential/build/probe_exception.exe",
+        "tests/differential/build/probe_handles.exe",
+        "tests/differential/build/probe_ntstatus.exe",
+        "tests/differential/build/probe_path.exe",
+        "tests/differential/build/probe_peloader.exe",
+        "tests/differential/build/probe_process_thread.exe",
+        "tests/differential/build/probe_section.exe",
+        "tests/differential/build/probe_sharemode.exe",
+        "tests/differential/build/probe_sync.exe",
+        "tests/differential/build/probe_teb_peb.exe",
+        "tests/differential/build/probe_virtualquery.exe",
+        "tests/differential/build/diag_test.exe",
+        "tests/differential/build/large_test.exe",
         "/tmp/pecorpus/pe_smoke.exe",
         "/tmp/pecorpus/pe_smoke_static.exe",
         "/tmp/pecorpus/pe_fwd.dll",
@@ -837,16 +847,18 @@ static void test_probe_corpus(const uint8_t *orig, size_t orig_size)
     };
     int found=0, failed=0;
     for(int i=0;probe_paths[i];++i){
-        size_t sz; uint8_t *d = read_file(probe_paths[i], &sz);
-        if(!d){ printf("  skip probe %s (not found)\n", probe_paths[i]); continue; }
+        char full[1024];
+        const char *pth = repo_path(full, sizeof full, probe_paths[i]);
+        size_t sz; uint8_t *d = read_file(pth, &sz);
+        if(!d){ printf("  skip probe %s (not found)\n", pth); continue; }
         ++found;
         pe_context_t ctx; pe_context_init(&ctx,d,sz);
         pe_status_t s=pe_validate(&ctx);
         if(s!=PE_OK){
-            printf("  diagnostics probe %s: status %d diag: %s\n", probe_paths[i], s, pe_validate_diag());
+            printf("  diagnostics probe %s: status %d diag: %s\n", pth, s, pe_validate_diag());
             ++failed;
         }
-        char msg[512]; snprintf(msg,sizeof(msg),"probe corpus %s", probe_paths[i]);
+        char msg[512]; snprintf(msg,sizeof(msg),"probe corpus %s", pth);
         TEST_ASSERT(s==PE_OK, msg);
         free(d);
     }
