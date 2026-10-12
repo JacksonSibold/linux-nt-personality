@@ -399,7 +399,12 @@ NTSTATUS ntio_handle_create(void *obj, ACCESS_MASK granted, HANDLE __user *out)
 	return STATUS_TOO_MANY_OPENED_FILES;
 }
 
-void *ntio_handle_lookup(HANDLE h, ACCESS_MASK required)
+/*
+ * Look up a file handle and take a reference on it.  When mask is zero no
+ * access test is made.  When any_of is false every bit in mask must be
+ * granted; when true at least one bit must be granted.
+ */
+static void *ntio_handle_lookup_mode(HANDLE h, ACCESS_MASK mask, bool any_of)
 {
 	ULONG_PTR idx = (ULONG_PTR)h >> 2;
 	void *obj = NULL;
@@ -409,7 +414,10 @@ void *ntio_handle_lookup(HANDLE h, ACCESS_MASK required)
 
 	spin_lock(&ntio_handle_lock);
 	if (ntio_handles[idx].used) {
-		if (required && (ntio_handles[idx].granted_access & required) != required) {
+		ACCESS_MASK granted = ntio_handles[idx].granted_access;
+		bool denied = any_of ? ((granted & mask) == 0)
+				     : ((granted & mask) != mask);
+		if (mask && denied) {
 			spin_unlock(&ntio_handle_lock);
 			return NULL;
 		}
@@ -425,6 +433,16 @@ void *ntio_handle_lookup(HANDLE h, ACCESS_MASK required)
 	}
 	spin_unlock(&ntio_handle_lock);
 	return obj;
+}
+
+void *ntio_handle_lookup(HANDLE h, ACCESS_MASK required)
+{
+	return ntio_handle_lookup_mode(h, required, false);
+}
+
+void *ntio_handle_lookup_any_of(HANDLE h, ACCESS_MASK mask)
+{
+	return ntio_handle_lookup_mode(h, mask, true);
 }
 
 static void *ntio_handle_lookup_any(HANDLE h) __attribute__((unused));
@@ -1958,7 +1976,8 @@ NTSTATUS nt_svc_NtWriteFile(HANDLE FileHandle, HANDLE Event,
 		return status;
 	}
 
-	file = ntio_handle_lookup(FileHandle, 0);
+	file = ntio_handle_lookup_any_of(FileHandle,
+					 FILE_WRITE_DATA | FILE_APPEND_DATA);
 	if (!file)
 		return STATUS_INVALID_HANDLE;
 

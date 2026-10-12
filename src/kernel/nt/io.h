@@ -392,6 +392,7 @@ void ntio_unregister_share(struct nt_file_object *file);
 /* Handle table used by this workstream (minimal in-process implementation). */
 NTSTATUS ntio_handle_create(void *obj, ACCESS_MASK granted, HANDLE *out);
 void *ntio_handle_lookup(HANDLE h, ACCESS_MASK required);
+void *ntio_handle_lookup_any_of(HANDLE h, ACCESS_MASK mask);
 NTSTATUS ntio_handle_close(HANDLE h);
 NTSTATUS ntio_duplicate_file_handle(struct nt_file_object *f, ACCESS_MASK new_access, HANDLE *out_handle);
 ACCESS_MASK ntio_handle_granted(HANDLE h);
