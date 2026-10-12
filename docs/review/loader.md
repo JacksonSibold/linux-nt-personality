@@ -37,6 +37,7 @@ The parser in this directory is careful about bounds for most reads (`pe_check_r
 - Fix: cap name length (for example 512 bytes for imports, 1024 for exports) inside `pe_read_asciiz` or at the call sites, and return `PE_ERR_CORRUPT` when the cap is hit.
 
 ### L-3 [Medium] Walkers treat a bad directory as "absent"
+- **Status:** fixed in 65ca268 (tests in 312c882). The walkers return the directory error.
 - `src/loader/pe_parse.c:816` (imports), `920` (exports), `1020` (relocations), `1082` (exception): `if (s != PE_OK) return PE_OK;` after `pe_directory_get`. A directory that fails validation (`PE_ERR_DIRECTORY`, `PE_ERR_BOUNDS`) is reported as an empty directory with success.
 - Callers that skip `pe_validate()` (for example a future loader path) silently get an empty import table, which is a correctness and security hazard.
 - Fix: return `s` for any error except the explicit "no directory" case (`rva == 0 || size == 0`, already handled inside the walkers).
@@ -62,6 +63,7 @@ The parser in this directory is careful about bounds for most reads (`pe_check_r
 - Fix: delete the lines.
 
 ### L-8 [Low] Unexplained mask on RUNTIME_FUNCTION.EndAddress
+- **Status:** fixed in 904b5d1 (tests in d89de50). The mask is removed.
 - `src/loader/pe_parse.c:1100`: `.end = rf.EndAddress & ~0x3U`. No comment explains the mask. For a function whose end is not 4-byte aligned, the stored end moves down by up to 3 bytes, which can make the last bytes of the function fail a range lookup.
 - Confirm against the PE/COFF specification whether x64 `EndAddress` has reserved low bits. If not, remove the mask. If yes, add a comment citing the spec.
 
@@ -76,6 +78,7 @@ The parser in this directory is careful about bounds for most reads (`pe_check_r
 - Fix: pass a caller-owned diag buffer into `pe_validate`, and use `pr_info_ratelimited` (or drop the log) in the kernel path.
 
 ### L-11 [Low] Optional header read before size check
+- **Status:** fixed in 04ed6a9 (tests in 24278ca). The size is checked before the read.
 - `src/loader/pe_parse.c:408-409` reads the full 240-byte optional header with `pe_check_read(oh_off, 240)`. The check that `SizeOfOptionalHeader == 240` happens later at `pe_parse.c:415`.
 - For a short `SizeOfOptionalHeader` the reader consumes bytes beyond the declared header, and a truncated file produces `PE_ERR_TRUNCATED` where `PE_ERR_CORRUPT` would be correct. No memory safety issue.
 - Fix: validate `SizeOfOptionalHeader == 240` before reading, or read only `min(size, 240)`.
