@@ -1064,22 +1064,23 @@ out:
 
 
 extern u32 nt_svc_NtTerminateProcess(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long);
-/* Strong override for NtTerminateProcess - needed for M0 test.
- * Weak stub in arch/x86/nt/stubs.c returns NOT_IMPLEMENTED; this strong
- * definition makes the PE exit with the requested code via do_exit().
- * The test PE issues NtTerminateProcess(-1, 0x2A) and expects exit 42.
- */
+/* Weak fallback for nt_svc_NtTerminateProcess. The real implementation is the
+ * non-weak definition in src/kernel/nt/proc_thread.c, which honours the handle.
+ * This fallback does not look at the handle, so it must not terminate the
+ * caller for a foreign handle. It reports STATUS_NOT_IMPLEMENTED instead
+ * (docs/decisions/0015, kernel-fs K-12). */
 #include <linux/sched/signal.h>
+#ifndef STATUS_NOT_IMPLEMENTED
+#define STATUS_NOT_IMPLEMENTED ((u32)0xC0000002UL)
+#endif
 __attribute__((weak)) u32 nt_svc_NtTerminateProcess(unsigned long a0, unsigned long a1, unsigned long a2,
                               unsigned long a3, unsigned long a4, unsigned long a5,
                               unsigned long a6, unsigned long a7, unsigned long a8,
                               unsigned long a9, unsigned long a10, unsigned long a11)
 {
-    long code = (long)(a1 & 0xFF);
-    pr_info("binfmt_pe: NtTerminateProcess called handle=0x%lx status=0x%lx code=%ld pid=%d\n", a0, a1, code, current->pid);
-    do_group_exit((code & 0xff) << 8);
-    pr_info("binfmt_pe: NtTerminateProcess after do_group_exit (should not reach)\n");
-    return 0;
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    return STATUS_NOT_IMPLEMENTED;
 }
 
 static struct linux_binfmt pe_format = {
