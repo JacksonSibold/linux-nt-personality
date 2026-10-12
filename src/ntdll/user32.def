@@ -5,5 +5,5 @@ EXPORTS
     wvsprintfW
     wvsprintfA
     DllMain
-    _DllMainCRTStartup@12
+    _DllMainCRTStartup
     DllMainCRTStartup

@@ -44,4 +44,4 @@ The SSN is always a 32-bit immediate, so the stub layout is fixed. The header no
 - The SSN values, and the argument types in the table, were not checked against any reference in this review (see the "Not verified" section of `docs/review/ntdll.md`).
 - `ntdll.def` was checked for names with a source definition. The `Nt*` and `Zw*` names come from the generated stub macro, and were not checked one by one against the table.
 - `KiUserApcDispatcher` is empty, so the APC-related stubs (`NtQueueApcThread`, `NtTestAlert`) deliver no user APCs in this build (see `ntdll-startup.md`).
-- `ntdll.def` line 372 exports `_DllMainCRTStartup@12`, an x86 decoration that x64 builds do not produce (DEF-1).
+- `ntdll.def` exported `_DllMainCRTStartup@12`, an x86 decoration that x64 builds do not produce. Fixed: the export is now undecorated (DEF-1).

@@ -62,5 +62,5 @@ EXPORTS
     _fileno
     _isatty
     DllMain
-    _DllMainCRTStartup@12
+    _DllMainCRTStartup
     DllMainCRTStartup

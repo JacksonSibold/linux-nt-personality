@@ -35,7 +35,7 @@ with open(out_def, 'w') as out:
         out.write(f"    {exp}\n")
     # Misc required for mingw
     out.write(f"    DllMain\n")
-    out.write(f"    _DllMainCRTStartup@12\n")
+    out.write(f"    _DllMainCRTStartup\n")
     out.write(f"    DllMainCRTStartup\n")
 
 print(f"Generated {out_def} with {len(entries)*2 + 31} exports")

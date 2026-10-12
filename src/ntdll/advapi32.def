@@ -6,5 +6,5 @@ EXPORTS
     RegQueryValueExW
     RegCloseKey
     DllMain
-    _DllMainCRTStartup@12
+    _DllMainCRTStartup
     DllMainCRTStartup
