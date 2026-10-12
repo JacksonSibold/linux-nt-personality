@@ -34,6 +34,9 @@ struct nt_iocp_packet {
 	struct list_head entry;
 };
 
+/* Upper bound on packets queued on one port (see docs/decisions/0010). */
+#define NTIO_IOCP_MAX_QUEUED 65536
+
 struct nt_iocp {
 	ULONG magic;
 	struct kref ref;

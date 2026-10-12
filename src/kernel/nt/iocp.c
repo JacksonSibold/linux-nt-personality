@@ -95,6 +95,11 @@ NTSTATUS ntio_iocp_post(struct nt_iocp *iocp, ULONG key, void *overlapped,
 	pkt->information = information;
 
 	spin_lock(&iocp->lock);
+	if (iocp->queued >= NTIO_IOCP_MAX_QUEUED) {
+		spin_unlock(&iocp->lock);
+		kfree(pkt);
+		return STATUS_INSUFFICIENT_RESOURCES;
+	}
 	list_add_tail(&pkt->entry, &iocp->queue);
 	iocp->queued++;
 	spin_unlock(&iocp->lock);
