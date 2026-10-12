@@ -1211,6 +1211,13 @@ NTSTATUS nt_svc_NtCreateThreadEx(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess
     if (!ThreadHandle) return STATUS_INVALID_PARAMETER;
     if (!StartRoutine) return STATUS_INVALID_PARAMETER;
     if (!access_ok(ThreadHandle, sizeof(*ThreadHandle))) return STATUS_ACCESS_VIOLATION;
+    /* Probe the output before creating the thread: a failed write after
+     * wake_up_new_task would leave a running thread with no handle. */
+    {
+        HANDLE zero = NULL;
+        if (copy_to_user(ThreadHandle, &zero, sizeof(zero)))
+            return STATUS_ACCESS_VIOLATION;
+    }
 
     cur_proc = nt_current_eprocess();
     if (!cur_proc) return STATUS_INVALID_PARAMETER;
