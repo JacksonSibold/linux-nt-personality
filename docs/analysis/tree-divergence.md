@@ -134,4 +134,4 @@ Each commit message names its arch origin. `git log --oneline -- src/kernel/nt` 
 - `nt_io.c` fixes `39de0fb`, `79d1de2`, `6da43d2`. `nt_io.c` exists only in arch, so they need the home decision from step 2. Not ported.
 - `arch/x86/nt/kernel_stubs.c` (broken, section 4) is unchanged.
 - Arch duplicates are still present. Deletion waits for step 4 and for the mm.c coalescing decision.
-- Syntax check not run. No C compiler on PATH (`gcc` not found), and `C:/Users/Jackson/repos/TOOLCHAIN.md` does not exist. The changes are small and mirror arch text that was already in the tree, but none of it has been compiled.
+- Syntax check not run. No C compiler on PATH (`gcc` not found), and the toolchain notes (TOOLCHAIN.md, kept outside the repo) were not present at the time. The changes are small and mirror arch text that was already in the tree, but none of it has been compiled.
