@@ -16,6 +16,7 @@
 #include <linux/random.h>
 #include <linux/string.h>
 #include <linux/sched/task_stack.h>
+#include <linux/sched/signal.h>
 #include <asm/processor.h>
 #include <asm/fsgsbase.h>
 #include <asm/cpufeature.h>
@@ -901,6 +902,19 @@ static int pe_setup_stack(struct pe_load_state *st)
     return 0;
 }
 
+/*
+ * Failure after begin_new_exec() has committed the new mm cannot be rolled
+ * back, so the task is killed instead of being handed an error return
+ * (docs/decisions/0012). Returns 0 so the caller goes to its cleanup label
+ * and then returns 0 to exec, as load_elf_binary() does after commit.
+ */
+static int pe_post_commit_fail(const char *what, int err)
+{
+    pr_err("binfmt_pe: %s failed after exec commit (err %d), sending SIGSEGV\n", what, err);
+    force_sigsegv(SIGSEGV);
+    return 0;
+}
+
 static int load_pe_binary(struct linux_binprm *bprm)
 {
     struct pe_load_state state = {0};
@@ -932,10 +946,15 @@ static int load_pe_binary(struct linux_binprm *bprm)
 
     setup_new_exec(bprm);
 
+    /* From here on begin_new_exec has committed: the old mm is gone and an
+     * error return would leave a torn address space. Every failure below goes
+     * through pe_post_commit_fail (K-4, docs/decisions/0012). */
     ret = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP),
                   EXSTACK_DEFAULT);
-    if (ret)
+    if (ret) {
+        ret = pe_post_commit_fail("setup_arg_pages", ret);
         goto out;
+    }
 
     /* begin_new_exec consumed bprm->mm (exec_mmap); update state to new mm */
     state.mm = current->mm;
@@ -944,25 +963,25 @@ static int load_pe_binary(struct linux_binprm *bprm)
      */
 
     ret = pe_pick_base(&state);
-    if (ret) goto out;
+    if (ret) { ret = pe_post_commit_fail("pe_pick_base", ret); goto out; }
 
     ret = pe_map_sections(&state);
-    if (ret) goto out;
+    if (ret) { ret = pe_post_commit_fail("pe_map_sections", ret); goto out; }
 
     ret = pe_apply_relocs(&state);
-    if (ret) goto out;
+    if (ret) { ret = pe_post_commit_fail("pe_apply_relocs", ret); goto out; }
 
     ret = pe_setup_stack(&state);
-    if (ret) goto out;
+    if (ret) { ret = pe_post_commit_fail("pe_setup_stack", ret); goto out; }
 
     ret = pe_build_process_parameters(&state);
-    if (ret) goto out;
+    if (ret) { ret = pe_post_commit_fail("pe_build_process_parameters", ret); goto out; }
 
     ret = pe_init_peb(&state);
-    if (ret) goto out;
+    if (ret) { ret = pe_post_commit_fail("pe_init_peb", ret); goto out; }
 
     ret = pe_init_teb(&state);
-    if (ret) goto out;
+    if (ret) { ret = pe_post_commit_fail("pe_init_teb", ret); goto out; }
 
     u64 ntdll_base = 0, ntdll_thunk = 0;
     int has_ntdll = 0;
@@ -1048,7 +1067,7 @@ static int load_pe_binary(struct linux_binprm *bprm)
                  * error, and the value derives from untrusted image layout.
                  */
                 pr_err("binfmt_pe: refusing out-of-range TEB %p\n", state.teb);
-                ret = -EINVAL;
+                ret = pe_post_commit_fail("out-of-range TEB", -EINVAL);
                 goto out;
         }
     }
