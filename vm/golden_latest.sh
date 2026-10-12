@@ -2,7 +2,7 @@
 # golden_latest.sh - idempotent creation of tests/differential/golden/latest symlink
 # Creates symlink latest -> 26200.9168 in WSL if missing, does nothing if present.
 # Must not copy 27 MB and must not touch golden contents.
-set -e
+set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 GOLDEN_ROOT="$PROJECT_ROOT/tests/differential/golden"
