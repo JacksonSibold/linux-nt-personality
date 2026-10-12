@@ -61,6 +61,10 @@ exit status (0) would look like a pass.
 
 ## Known failures and limits
 
+Machine-readable list used by `tools/run_all_checks.sh` (reported as KNOWN-FAIL):
+
+known-fail: mm_test io_test
+
 - **mm_test** (2 of 14). `test_vad_split_coalesce_invariants` (mm_test.c:756)
   and `test_probe_direct_windows_rule` (mm_test.c:863) fail on
   `NtAllocateVirtualMemory(MEM_RESERVE)` with `STATUS_NO_MEMORY`. Cause is
@@ -70,7 +74,9 @@ exit status (0) would look like a pass.
   released. Not fixed.
 - **io_test** (intermittent). `io_test.c:505` expects `OBJECT_NAME_NOT_FOUND`
   for `trail.txt.` when only `trail.txt` exists. One run returned success, and
-  the next run passed. Not investigated further.
+  the next run passed. Not investigated further. A later run failed at
+  `io_test.c:420` instead (`nt_svc_NtReadFile` returned `STATUS_INVALID_HANDLE`,
+  10 passed and 1 failed). Not investigated.
 - **proc_thread_test** (build only). The program returns 0 after
   `RUN test_mutant_abandon_peer_terminate` and never prints its summary. The
   peer `NtTerminateThread` path calls `pthread_cancel` (`proc_thread.c:573`).

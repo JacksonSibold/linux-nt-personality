@@ -40,6 +40,28 @@ python tools/check_doc_links.py
   `--quiet` for the summary only. It does not run the credential pattern scan
   described in `PUBLICATION_CHECKS.md`.
 
+## Running every local check at once
+
+`tools/run_all_checks.sh` runs the CI checks above plus the local C and shell
+suites, in this order: unit tests, `check_repo.py`, `check_doc_links.py`,
+`provenance_scan.py --check`, `vm/lint.sh`, `tests/syntax/check.sh`,
+`make -C tests/host test`, and `make -C tests/kernel-host check`. It ends with a
+PASS / FAIL / KNOWN-FAIL / SKIP matrix.
+
+- Python is taken from `$PYTHON` if set and working, then from the WinPython
+  path in the script, then from `python3` or `python`. A candidate counts only
+  if it runs, so the Windows Store stub is skipped.
+- The MSYS2 toolchain directories (`/c/msys64/ucrt64/bin`,
+  `/c/msys64/usr/bin`) are added to `PATH` only when they exist. A section whose
+  tool is missing prints `SKIP` and does not fail the run.
+- Each section has a 10-minute limit. The kernel-host limit applies per module
+  (`TIMEOUT=600`).
+- Kernel-host modules listed on the `known-fail:` line of
+  `tests/kernel-host/README.md` are reported as `KNOWN-FAIL`.
+- The exit status is 1 only when a section reports `FAIL`.
+
+The latest recorded run is in [status/TEST-MATRIX.md](status/TEST-MATRIX.md).
+
 ## Other tools
 
 - `tools/ntstatus_lookup.py` looks up NTSTATUS values by name or number, using
