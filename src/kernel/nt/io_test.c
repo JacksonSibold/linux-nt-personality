@@ -393,7 +393,8 @@ TEST(byte_round_trip)
 	reset_state();
 
 	oa = make_obj_attr("roundtrip.bin");
-	ASSERT_STATUS(nt_svc_NtCreateFile(&h, FILE_GENERIC_WRITE, &oa, &iosb,
+	/* Read-write handle: NtReadFile requires FILE_READ_DATA (see 1d160e8). */
+	ASSERT_STATUS(nt_svc_NtCreateFile(&h, FILE_GENERIC_READ | FILE_GENERIC_WRITE, &oa, &iosb,
 					  &alloc, 0,
 					  FILE_SHARE_READ | FILE_SHARE_WRITE,
 					  FILE_OVERWRITE_IF,
