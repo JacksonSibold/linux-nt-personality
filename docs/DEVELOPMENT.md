@@ -43,6 +43,18 @@ python tools/check_repo.py
 
 See [tools/README.md](../tools/README.md) for the full options and exit codes.
 
+## Paths and environment
+
+Scripts find the repository from their own location, so a checkout can live
+anywhere. There is no absolute path to edit.
+
+| Variable | Default | Used by |
+|---|---|---|
+| `NTPERS_ROOT` | the parent of `build/` (the repository root) | `build/validate_criteria.py` (reads `tests/conformance/criteria.json`), `build/merge_dod.py` (reads `docs/phase0/dod-agent-*.md` and writes `tests/conformance/criteria.json`) |
+
+Set `NTPERS_ROOT` to an absolute path only to run a script against a different
+tree, for example a copy or a fixture directory. Leave it unset otherwise.
+
 ## Other test suites (not run by CI)
 
 | Path | What it does | What it needs |
