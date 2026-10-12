@@ -1133,7 +1133,8 @@ NTSTATUS ObCreateProcessObject(struct nt_eprocess **out, ULONG pid, const char *
     init_waitqueue_head(&p->exit_wq);
     atomic_set(&p->ref_ext, 1);
 #endif
-    ob_register_proc(p);
+    st = ob_register_proc(p);
+    if (!NT_SUCCESS(st)) { ObDestroyProcessObject(p); return st; }
     *out = p;
     return STATUS_SUCCESS;
 }
@@ -1183,8 +1184,9 @@ NTSTATUS ObCreateThreadObject(struct nt_ethread **out, struct nt_eprocess *proc,
     atomic_set(&t->suspend_count, 0);
     t->tif_flags = 0;
 #endif
+    st = ObRegisterThread(t);
+    if (!NT_SUCCESS(st)) { ObDestroyThreadObject(t); return st; }
     *out = t;
-    ObRegisterThread(t);
     return STATUS_SUCCESS;
 }
 
