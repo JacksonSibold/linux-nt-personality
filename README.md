@@ -12,19 +12,21 @@ Each statement links to the file it comes from. These are recorded results; they
 
 - **Conformance.** The original development handoff records **3 of 423** criteria passing (historical, not reproduced in this publication). [docs/status/CRITERIA.md](docs/status/CRITERIA.md) lists all 423 criteria as `unknown`, because no per-criterion results are recorded in the repository.
 - **Architecture.** [docs/phase2/ARCHITECTURE-STATUS.md](docs/phase2/ARCHITECTURE-STATUS.md) rates 21 components named in the architecture document: 0 implemented, 14 partial, 1 stub, 6 missing.
-- **Static review.** [docs/review/INDEX.md](docs/review/INDEX.md) (read-only, 2026-10-12, nothing compiled or run) lists **137 findings** in four reports: 28 high, 43 medium, 60 low, 6 info. [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) uses the same totals. Of the 137, 36 are recorded as fixed, 5 partly fixed, 1 blocked, 4 need no change and 91 are open ([fix status](docs/review/INDEX.md#fix-status)). Decision records are indexed in [docs/decisions/INDEX.md](docs/decisions/INDEX.md).
+- **Static review.** [docs/review/INDEX.md](docs/review/INDEX.md) (read-only, 2026-10-12, nothing compiled or run) lists **<!-- counts:review_findings:begin -->208<!-- counts:review_findings:end --> findings** in <!-- counts:review_reports:begin -->5<!-- counts:review_reports:end --> reports: <!-- counts:review_high:begin -->48<!-- counts:review_high:end --> high, <!-- counts:review_medium:begin -->66<!-- counts:review_medium:end --> medium, <!-- counts:review_low:begin -->81<!-- counts:review_low:end --> low, <!-- counts:review_info:begin -->13<!-- counts:review_info:end --> info. Fix status is recorded for <!-- counts:fix_findings:begin -->137<!-- counts:fix_findings:end --> of them, in <!-- counts:fix_reports:begin -->4<!-- counts:fix_reports:end --> reports: <!-- counts:fix_fixed:begin -->36<!-- counts:fix_fixed:end --> fixed, <!-- counts:fix_partly:begin -->5<!-- counts:fix_partly:end --> partly fixed, <!-- counts:fix_blocked:begin -->1<!-- counts:fix_blocked:end --> blocked, <!-- counts:fix_no_change:begin -->4<!-- counts:fix_no_change:end --> need no change and <!-- counts:fix_open:begin -->91<!-- counts:fix_open:end --> open ([fix status](docs/review/INDEX.md#fix-status)). [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) summarises the highest-priority findings. Decision records are indexed in [docs/decisions/INDEX.md](docs/decisions/INDEX.md): <!-- counts:adr_total:begin -->32<!-- counts:adr_total:end --> records, <!-- counts:adr_fixed:begin -->10<!-- counts:adr_fixed:end --> fixed, <!-- counts:adr_open:begin -->16<!-- counts:adr_open:end --> open, <!-- counts:adr_blocked:begin -->5<!-- counts:adr_blocked:end --> blocked and <!-- counts:adr_no_change:begin -->1<!-- counts:adr_no_change:end --> no-change.
 - **Modules.** Eleven module reference pages cover `src/kernel/nt/` ([docs/modules/INDEX.md](docs/modules/INDEX.md)). Known gaps per module are listed in [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md).
 - **Syntax check.** [tests/syntax/README.md](tests/syntax/README.md) records 32 of 37 kernel-facing files passing `gcc -fsyntax-only` against the userspace shims with MinGW gcc 16.2 (re-run 2026-10-12, same result). The five failures are two copies of `dispatch.c`, `binfmt_pe.c`, `binfmt_pe_test.c` and `kernel_stubs.c`, which is not C.
 - **Build and boot.** No kernel build, VM boot or conformance run is recorded in this repository.
 
 ## Repository map
 
+The snapshot tracks <!-- counts:tracked_files:begin -->474<!-- counts:tracked_files:end --> files (`git ls-files`).
+
 - `src/`: kernel-personality components, loader, ntdll and Win32 experiments.
 - `arch/`: architecture-specific integration.
 - `build/`: top-level Makefile and generator scripts.
 - `docs/`: architecture, research notes and definition of done.
 - `tests/`: conformance harness, differential probes and regression source.
-- `tools/`: standalone Python tools (repository checks, NTSTATUS lookup, PE summary, criteria report).
+- `tools/`: standalone Python tools (repository checks, doc counts, NTSTATUS lookup, PE summary, criteria report).
 - `vm/`: experimental build/run and artifact-freshness tooling.
 
 The original development handoff records a minimal PE reaching exit code 42 and only **3 of 423** full conformance criteria passing. These are historical project records, not results reproduced during this publication. Large generated evidence bundles, Windows binaries, VM images, build products and local Git history are excluded from this source snapshot. Some evidence-dependent commands will therefore lack their inputs.
@@ -37,10 +39,11 @@ Run these from the repository root. The Python scripts use only the standard lib
 python -m unittest discover tests/unit
 python tools/check_repo.py
 python tools/check_doc_links.py
+python tools/update_doc_counts.py --check
 sh tests/syntax/check.sh
 ```
 
-- **`tests/unit`** holds 16 test modules (303 tests, all passing on 2026-10-12). They cover the scripts in `build/`, `src/kernel/nt/gen_ntstatus_table.py` and `tools/`. The tests use temporary fixtures and do not modify the tree. CI runs them.
+- **`tests/unit`** holds <!-- counts:unit_modules:begin -->22<!-- counts:unit_modules:end --> test modules with <!-- counts:unit_tests:begin -->401<!-- counts:unit_tests:end --> `test_` functions, counted from the source. The suite passed on 2026-10-12. They cover the scripts in `build/`, `src/kernel/nt/gen_ntstatus_table.py` and `tools/`. The tests use temporary fixtures and do not modify the tree. CI runs them.
 - **`tools/check_repo.py`** checks the files listed by `git ls-files`: no binary over 1 MiB, every `.py` compiles, every `.c` with a same-named `.h` has an include guard, and no text file mixes CRLF and bare LF. It exits 1 on any failure. `--quiet` prints only the summary. It does not run the credential scan in `PUBLICATION_CHECKS.md`. CI runs it.
 - **`tests/syntax/check.sh`** runs `gcc -fsyntax-only -Wall -Wextra -std=c11` over every `src/kernel/nt/*.c`, `src/loader/*.c`, `src/kernel/fs/*.c` and `arch/x86/nt/*.c` file, with the shims in `tests/syntax/shim/`. It prints PASS or FAIL per file and exits with the number of failing files. Set `CC=` to choose the compiler. It is not run by CI.
 
