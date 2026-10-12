@@ -1660,6 +1660,9 @@ static NTSTATUS ntio_do_read(struct nt_file_object *file, PVOID __user Buffer,
 					break;
 				}
 			}
+					/* The read advanced pos but the chunk was not delivered:
+					 * rewind so the position matches the bytes reported (IO-17). */
+					pos -= got;
 			kfree(kbuf);
 			total += got;
 			if (got == 0 || (size_t)got < chunk) break;
