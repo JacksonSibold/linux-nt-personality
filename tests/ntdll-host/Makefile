@@ -73,11 +73,16 @@ test: $(TEST_BINS)
 $(OUT)/test_ntstatus_to_dos$(EXE_SUFFIX): test_ntstatus_to_dos.c minitest.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
 
-$(OUT)/test_unwind$(EXE_SUFFIX): $(OUT)/unwind.o $(OUT)/test_unwind.o
-	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+# unwind.c calls _NtRaiseException from except.c (RtlRaiseException).
+# except.c also defines SetUnhandledExceptionFilter and UnhandledExceptionFilter,
+# which the MinGW libkernel32 import library exports too. The objects come
+# before the libraries on the link line, so the first (ntdll) definition wins;
+# --allow-multiple-definition only silences the duplicate from the library.
+$(OUT)/test_unwind$(EXE_SUFFIX): $(OUT)/unwind.o $(OUT)/except.o $(OUT)/test_unwind.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--allow-multiple-definition $^ -o $@
 
 $(OUT)/test_except$(EXE_SUFFIX): $(OUT)/except.o $(OUT)/unwind.o $(OUT)/test_except.o
-	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--allow-multiple-definition $^ -o $@
 
 # ntdll_runtime.c replaces libc string and allocator functions. Keep gcc from
 # turning its loops back into calls to memcpy/memset.
