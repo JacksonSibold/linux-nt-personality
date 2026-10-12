@@ -203,6 +203,12 @@ Not fixed. Each has a design record in `docs/decisions/` (index: [docs/decisions
 
 Low findings are not addressed in this pass (M-5 and M-6 are still present, as are the others).
 
+## Case-insensitive lookup component overflow (branch haiku/resolveci)
+
+- IO-12 (new in this pass, not in the list above): `ntio_resolve_ci` in `src/kernel/nt/io.c` copied each path component into a `char component[NAME_MAX]` with no bound. The NT-layer check (`kshim_ntpath_to_linux`) allows 255 characters, so a 255-character component wrote its NUL one byte past the buffer. Fixed in 949cf00: components of 255 or more characters are rejected with `STATUS_OBJECT_NAME_INVALID` before the copy, and the function returns `NTSTATUS`. Tests: 4a5e4c3 (first, mis-targeted) and 667d788 (reproduces the overflow; the 255-character lookup fails before the fix with `0xC000003A` and passes after). Verified on the host (`tests/kernel-host`, io_test 14/14). This is the same defect as IO-12 in `arch-x86-nt.md`.
+- On this host `PATH_MAX` is 260. A 255-character name fits the converter's buffer only under a root of at most three characters, so the 255-character create case is skipped when the path does not fit. The lookup case uses an empty root and does a `stat` only.
+- No other fixed-size buffer in `src/kernel/nt` is filled from a user-controlled length without a bound (`kbuf[4096]` in the console write, `registry.c` `vname[256]` capped at 200, `rel`/`parent`/`newpath` `PATH_MAX` buffers bounded by `snprintf` or `sizeof`).
+
 ## Medium and Low pass (branch haiku/lows-nt)
 
 Each open Medium and Low finding was re-read against the code on this branch. Status values: fixed (commit named by the finding ID), no change, stale, needs owner.
