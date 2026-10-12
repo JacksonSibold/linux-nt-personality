@@ -843,6 +843,47 @@ TEST(query_set_info)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Case-insensitive resolution: component length limit                          */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * ntio_resolve_ci copies each path component into a NAME_MAX-byte buffer.
+ * A component of NAME_MAX (255) characters wrote its NUL one byte past the
+ * end, and nothing bounded longer ones. Lookup and create must both reject
+ * such a component with STATUS_OBJECT_NAME_INVALID before the copy.
+ */
+TEST(ci_component_length_limit)
+{
+	static const size_t lens[] = { 255, 300 };
+	static const ULONG disps[] = { FILE_OPEN, FILE_CREATE };
+	char name[301];
+	HANDLE h;
+	IO_STATUS_BLOCK iosb;
+	OBJECT_ATTRIBUTES oa;
+	LARGE_INTEGER alloc = { 0 };
+	size_t li, di;
+
+	reset_state();
+
+	for (li = 0; li < sizeof(lens) / sizeof(lens[0]); li++) {
+		for (di = 0; di < sizeof(disps) / sizeof(disps[0]); di++) {
+			memset(name, 'a', lens[li]);
+			name[lens[li]] = '\0';
+			oa = make_obj_attr(name);
+			iosb.Information = 0;
+			ASSERT_STATUS(nt_svc_NtCreateFile(&h, FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+							  &oa, &iosb, &alloc, 0,
+							  FILE_SHARE_READ | FILE_SHARE_WRITE,
+							  disps[di],
+							  FILE_NON_DIRECTORY_FILE,
+							  NULL, 0),
+				      STATUS_OBJECT_NAME_INVALID);
+		}
+	}
+	PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* Main                                                                         */
 /* -------------------------------------------------------------------------- */
 
@@ -863,6 +904,7 @@ int main(void)
 	RUN(iocp_completion_on_cancel);
 	RUN(delete_on_close);
 	RUN(query_set_info);
+	RUN(ci_component_length_limit);
 
 	printf("ntio tests: %d passed, %d failed\n", g_pass, g_fail);
 
