@@ -225,6 +225,8 @@ Each open Medium and Low finding was re-read against the code on this branch. St
 
 - H-2 (Medium): needs owner. The generation counter is the ABI change that decision 0003 left open; the free-list restore is not a local change.
 
+- M-2 (Medium): no change. `NtMapViewOfSection` checks `offset > sec->size` before any arithmetic, and checks `actual_size > sec->size - offset` after it. Both guards are present on this branch.
+
 ## Not verified / out of scope
 
 - Nothing was compiled, linked, sanitized, fuzzed, or executed. Overflow and wrap claims come from the arithmetic at the cited lines.
