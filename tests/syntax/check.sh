@@ -1,10 +1,14 @@
 #!/bin/sh
 # check.sh - syntax-check the kernel-facing C sources against the userspace shims.
 #
-# For every src/kernel/nt/*.c, src/loader/*.c and src/kernel/fs/*.c file, runs
+# For every src/kernel/nt/*.c, src/loader/*.c, src/kernel/fs/*.c and arch/x86/nt/*.c
+# file, runs
 #   gcc -fsyntax-only -Wall -Wextra -std=c11 -DUSERSPACE_KSHIM \
-#       -include tests/syntax/shim/kernel_compat.h -Itests/syntax/shim FILE
-# and reports PASS/FAIL per file. Nothing is linked or executed.
+#       -include tests/syntax/shim/kernel_compat.h -Itests/syntax/shim \
+#       -iquote src/kernel/nt -iquote arch/x86/nt FILE
+# and reports PASS/FAIL per file. -iquote (not -I) makes the kernel-tree headers
+# resolve for "..." includes only: -I src/kernel/nt would shadow MinGW's <io.h>
+# through <sys/stat.h>. Nothing is linked or executed.
 #
 # Usage: tests/syntax/check.sh            (from anywhere)
 #        CC=/path/to/gcc tests/syntax/check.sh
@@ -27,10 +31,11 @@ warn_total=0
 tmp=$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/check.$$")
 trap 'rm -f "$tmp"' EXIT
 
-for f in src/kernel/nt/*.c src/loader/*.c src/kernel/fs/*.c; do
+for f in src/kernel/nt/*.c src/loader/*.c src/kernel/fs/*.c arch/x86/nt/*.c; do
     [ -f "$f" ] || continue
     if "$CC" -fsyntax-only -Wall -Wextra -std=c11 -DUSERSPACE_KSHIM \
-            -include "$FORCE_INC" -I"$SHIM_DIR" "$f" >"$tmp" 2>&1; then
+            -include "$FORCE_INC" -I"$SHIM_DIR" \
+            -iquote src/kernel/nt -iquote arch/x86/nt "$f" >"$tmp" 2>&1; then
         status=PASS
         pass=$((pass + 1))
     else
