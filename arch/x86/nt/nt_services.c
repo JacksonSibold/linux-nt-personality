@@ -339,12 +339,14 @@ NTSTATUS nt_svc_NtQueryMutant(unsigned long a0, unsigned long a1, unsigned long 
     NTSTATUS st = ObReferenceObjectByHandle(proc, MutantHandle, &nt_mutant_type, UserMode, 0, &hdr, NULL);
     if (!NT_SUCCESS(st)) return st;
     struct nt_mutant *m = (struct nt_mutant*)nt_object_body(hdr);
-    struct { ULONG CurrentCount; BOOLEAN Owned; BOOLEAN Abandoned; UCHAR R[2]; ULONG OwnerTid; ULONG Reserved[2]; } kinfo;
+    /* 24 bytes, the length reported above; the whole buffer is copied and
+     * zeroed first so no byte is left unset (N-2, N-3). */
+    struct { ULONG CurrentCount; BOOLEAN Owned; BOOLEAN Abandoned; UCHAR R[2]; ULONG OwnerTid; ULONG Reserved[3]; } kinfo;
+    memset(&kinfo, 0, sizeof(kinfo));
     kinfo.CurrentCount = m->header.signal_state ? 1 : 0;
     kinfo.Owned = m->owner ? 1 : 0;
     kinfo.Abandoned = m->abandoned ? 1 : 0;
     kinfo.OwnerTid = m->owner ? m->owner->tid : 0;
-    kinfo.Reserved[0]=0; kinfo.Reserved[1]=0;
     if (copy_to_user(MutantInformation, &kinfo, sizeof(kinfo))) st = STATUS_ACCESS_VIOLATION;
     ObDereferenceObject(hdr);
     return st;
