@@ -22,25 +22,43 @@ CC      := gcc
 NT      := ../../src/kernel/nt
 NTDLL   := ../../src/ntdll
 SHIM    := shim
+# COVERAGE=1: gcov instrumentation, -O0, objects in build-cov/ so the
+# instrumented and plain builds never share .o files. See tools/c_coverage.sh.
+COVERAGE ?= 0
+ifeq ($(COVERAGE),1)
+BUILD   := build-cov
+COV_FLAGS := --coverage
+COV_LIBS  := -lgcov
+else
 BUILD   := build
+COV_FLAGS :=
+COV_LIBS  :=
+endif
 NTSTATUS_INC := $(BUILD)/ntstatus_table.inc
 
 # OPT defaults to -O0. Use OPT=-O2 with a separate BUILD=... directory to
 # expose optimiser-dependent uninitialised reads (-Wuninitialized is on).
+# Coverage builds always use -O0 so that line counts map to source lines.
 OPT     ?= -O0
+ifeq ($(COVERAGE),1)
+OPT     := -O0
+endif
 WARN    := -Wall -Wextra -Wuninitialized
 DEPFLAGS := -MMD -MP
-CFLAGS  := -std=gnu11 -g $(OPT) $(WARN) $(DEPFLAGS) -DUSERSPACE_KSHIM \
+CFLAGS  := -std=gnu11 -g $(OPT) $(WARN) $(DEPFLAGS) $(COV_FLAGS) -DUSERSPACE_KSHIM \
            -include $(SHIM)/khost_prelude.h \
            -iquote $(NT) -iquote $(BUILD) -I$(SHIM)
-LDLIBS  := -lpthread -lws2_32
-LDFLAGS := -fno-use-linker-plugin
+LDLIBS  := -lpthread -lws2_32 $(COV_LIBS)
+LDFLAGS := -fno-use-linker-plugin $(COV_FLAGS)
 
 # Host-only POSIX primitives (see shim/).
 SHIM_OBJS := $(BUILD)/mman_win.o $(BUILD)/posix_host.o $(BUILD)/posix_raw.o
 
 # Test programs and the module objects each one links against.
-TESTS := object_test security_test registry_test i2_test io_test mm_test sync_test proc_thread_test
+TESTS := object_test security_test registry_test i2_test io_test mm_test sync_test proc_thread_test handle_edge_test registry_ops_test
+
+# Tests kept in this directory (not in src/kernel/nt). Their sources are $(t).c here.
+LOCAL_TESTS := handle_edge_test registry_ops_test
 
 # Built but not run by "check" (none at present).
 BUILD_ONLY :=
@@ -54,6 +72,8 @@ registry_test_OBJS    := registry object handle nt_obj sync kshim
 io_test_OBJS          := io object handle iocp nt_obj_weak sync kshim
 proc_thread_test_OBJS := proc_thread object handle nt_obj sync nt_services kshim
 i2_test_OBJS          := object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
+handle_edge_test_OBJS := object handle kshim
+registry_ops_test_OBJS := registry object handle nt_obj sync kshim
 
 # Shim self-tests (shim/mman_test.c). Run by "check"; not kernel module tests.
 SHIM_TESTS := mman_test
@@ -71,13 +91,13 @@ $(BUILD):
 # Host shim units. These are built without the prelude and, for the POSIX
 # wrappers, with only the shim include directory.
 $(BUILD)/posix_raw.o: $(SHIM)/posix_raw.c | $(BUILD)
-	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) -c $< -o $@
+	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -c $< -o $@
 
 $(BUILD)/posix_host.o: $(SHIM)/posix_host.c | $(BUILD)
-	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) -I$(SHIM) -c $< -o $@
+	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -I$(SHIM) -c $< -o $@
 
 $(BUILD)/mman_win.o: $(SHIM)/mman_win.c | $(BUILD)
-	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) -I$(SHIM) -c $< -o $@
+	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -I$(SHIM) -c $< -o $@
 
 # Module sources from src/kernel/nt.
 $(BUILD)/%.o: $(NT)/%.c | $(BUILD)
@@ -101,7 +121,7 @@ $(BUILD)/nt_obj_weak.o: $(BUILD)/nt_obj.o
 
 # Shim self-test: plain host C against the shim, without the module prelude.
 $(BUILD)/mman_test.o: $(SHIM)/mman_test.c | $(BUILD)
-	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) -I$(SHIM) -c $< -o $@
+	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -I$(SHIM) -c $< -o $@
 
 $(BUILD)/mman_test.exe: $(BUILD)/mman_test.o $(SHIM_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
@@ -113,7 +133,8 @@ $(BUILD)/$(1).exe: $(BUILD)/$(1).o $(addprefix $(BUILD)/,$(addsuffix .o,$($(1)_O
 endef
 
 # Test translation units: NT/<name>.c -> build/<name>.o.
-$(foreach t,$(ALL_PROGS),$(eval $(BUILD)/$(t).o: $(NT)/$(t).c | $(BUILD); $$(CC) $$(CFLAGS) -c $$< -o $$@))
+$(foreach t,$(filter-out $(LOCAL_TESTS),$(ALL_PROGS)),$(eval $(BUILD)/$(t).o: $(NT)/$(t).c | $(BUILD); $$(CC) $$(CFLAGS) -c $$< -o $$@))
+$(foreach t,$(LOCAL_TESTS),$(eval $(BUILD)/$(t).o: $(t).c | $(BUILD); $$(CC) $$(CFLAGS) -c $$< -o $$@))
 $(foreach t,$(ALL_PROGS),$(eval $(call PROG_RULE,$(t))))
 
 # Per-program wall-clock limit in seconds. sync_test is slow on Windows

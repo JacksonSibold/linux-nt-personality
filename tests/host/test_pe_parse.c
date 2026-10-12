@@ -1038,6 +1038,252 @@ static void test_export_find_long_key_not_found(void)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Accessor branches: bounds, byte order, fixed-size readers, directories     */
+/* -------------------------------------------------------------------------- */
+static void test_check_read_bounds(void)
+{
+    uint8_t buf[16] = {0};
+    pe_context_t ctx;
+    pe_context_t none = {0};   /* no data pointer */
+
+    MT_EXPECT_EQ(pe_check_read(NULL, 0, 1), PE_ERR_BOUNDS);
+    MT_EXPECT_EQ(pe_context_init(&ctx, buf, sizeof(buf)), PE_OK);
+    MT_EXPECT_EQ(pe_check_read(&ctx, 0, 0), PE_OK);             /* empty read */
+    MT_EXPECT_EQ(pe_check_read(&ctx, 0, 16), PE_OK);            /* ends at EOF */
+    MT_EXPECT_EQ(pe_check_read(&ctx, 15, 1), PE_OK);
+    MT_EXPECT_EQ(pe_check_read(&ctx, 16, 1), PE_ERR_BOUNDS);    /* starts at EOF */
+    MT_EXPECT_EQ(pe_check_read(&ctx, 15, 2), PE_ERR_BOUNDS);    /* one byte over */
+    MT_EXPECT_EQ(pe_check_read(&ctx, 0xFFFFFFF0u, 0x20), PE_ERR_BOUNDS); /* no wrap */
+    MT_EXPECT_EQ(pe_check_read(&ctx, 0xFFFFFFFFu, 1), PE_ERR_BOUNDS);
+    MT_EXPECT_EQ(pe_check_read(&none, 0, 1), PE_ERR_BOUNDS);
+    MT_EXPECT_EQ(pe_context_init(NULL, buf, sizeof(buf)), PE_ERR_BOUNDS);
+}
+
+static void test_little_endian_loaders(void)
+{
+    const uint8_t b[8] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+    pe_context_t ctx;
+
+    MT_EXPECT_EQ(pe_load_u16(b), 0x0201);
+    MT_EXPECT_EQ(pe_load_u32(b), 0x04030201L);
+    MT_EXPECT(pe_load_u64(b) == 0x0807060504030201ULL);
+    MT_EXPECT_EQ(pe_context_init(&ctx, b, sizeof(b)), PE_OK);
+    MT_EXPECT_EQ(pe_file_u16(&ctx, 6), 0x0807);
+    MT_EXPECT_EQ(pe_file_u32(&ctx, 4), 0x08070605L);
+}
+
+static void test_asciiz_branches(void)
+{
+    /* "KERNEL32" and its NUL, then "ab" with no NUL before EOF. */
+    static const uint8_t data[11] = { 'K','E','R','N','E','L','3','2', 0, 'a', 'b' };
+    pe_context_t ctx;
+    const char *s = NULL;
+    size_t n = 99;
+
+    MT_EXPECT_EQ(pe_context_init(&ctx, data, sizeof(data)), PE_OK);
+    MT_EXPECT_EQ(pe_read_asciiz(&ctx, 0, NULL, &n), PE_ERR_BOUNDS);
+    MT_EXPECT_EQ(pe_read_asciiz(&ctx, 0, &s, NULL), PE_ERR_BOUNDS);
+    MT_EXPECT_EQ(pe_read_asciiz(&ctx, (u32)sizeof(data), &s, &n), PE_ERR_BOUNDS);
+
+    MT_EXPECT_EQ(pe_read_asciiz(&ctx, 0, &s, &n), PE_OK);
+    MT_EXPECT(s == (const char *)data);
+    MT_EXPECT_EQ(n, 8);
+
+    s = (const char *)1; n = 99;
+    MT_EXPECT_EQ(pe_read_asciiz(&ctx, 9, &s, &n), PE_ERR_CORRUPT);
+    MT_EXPECT(s == NULL);   /* failure leaves the outputs cleared */
+    MT_EXPECT_EQ(n, 0);
+}
+
+static void test_asciiz_symbol_length_cap(void)
+{
+    /* PE_MAX_SYMBOL_NAME bytes plus NUL is accepted; one byte more is not. */
+    static uint8_t buf[PE_MAX_SYMBOL_NAME + 2];
+    pe_context_t ctx;
+    const char *s = NULL;
+    size_t n = 0;
+
+    memset(buf, 'A', sizeof(buf));
+    buf[PE_MAX_SYMBOL_NAME] = 0;
+    MT_EXPECT_EQ(pe_context_init(&ctx, buf, PE_MAX_SYMBOL_NAME + 1), PE_OK);
+    MT_EXPECT_EQ(pe_read_asciiz(&ctx, 0, &s, &n), PE_OK);
+    MT_EXPECT_EQ(n, PE_MAX_SYMBOL_NAME);
+
+    buf[PE_MAX_SYMBOL_NAME] = 'A';
+    buf[PE_MAX_SYMBOL_NAME + 1] = 0;
+    MT_EXPECT_EQ(pe_context_init(&ctx, buf, PE_MAX_SYMBOL_NAME + 2), PE_OK);
+    MT_EXPECT_EQ(pe_read_asciiz(&ctx, 0, &s, &n), PE_ERR_CORRUPT);
+}
+
+static void test_fixed_readers_bounds_and_fields(void)
+{
+    uint8_t img[IMG_CAP];
+    loaded_t L;
+    IMAGE_IMPORT_DESCRIPTOR id;
+    IMAGE_THUNK_DATA64 th;
+    IMAGE_BASE_RELOCATION br;
+    IMAGE_EXPORT_DIRECTORY ed;
+    IMAGE_TLS_DIRECTORY64 tls;
+
+    img_build_valid(img);
+    img_add_import(img);
+    img_add_reloc(img);
+    if (!load(&L, img, IMG_LEN)) { MT_EXPECT(0); return; }
+    MT_EXPECT_EQ(pe_validate(&L.ctx), PE_OK);
+
+    /* Each reader accepts the last whole structure and rejects one byte past. */
+    MT_EXPECT_EQ(pe_read_import_descriptor(&L.ctx, IMG_RDATA_RAW, &id), PE_OK);
+    MT_EXPECT_EQ(id.DUMMYUNIONNAME.OriginalFirstThunk, 0x2040);
+    MT_EXPECT_EQ(id.Name, 0x2080);
+    MT_EXPECT_EQ(id.FirstThunk, 0x2040);
+    MT_EXPECT_EQ(pe_read_import_descriptor(&L.ctx, IMG_LEN - sizeof(id) + 1, &id), PE_ERR_BOUNDS);
+
+    MT_EXPECT_EQ(pe_read_thunk_data64(&L.ctx, 0x640, &th), PE_OK);
+    MT_EXPECT(th.u1.Ordinal == 0x2060ULL);
+    MT_EXPECT_EQ(pe_read_thunk_data64(&L.ctx, IMG_LEN - sizeof(th) + 1, &th), PE_ERR_BOUNDS);
+
+    MT_EXPECT_EQ(pe_read_base_relocation(&L.ctx, 0x700, &br), PE_OK);
+    MT_EXPECT_EQ(br.VirtualAddress, 0x1000);
+    MT_EXPECT_EQ(br.SizeOfBlock, 12);
+    MT_EXPECT_EQ(pe_read_base_relocation(&L.ctx, IMG_LEN - sizeof(br) + 1, &br), PE_ERR_BOUNDS);
+
+    MT_EXPECT_EQ(pe_read_export_directory(&L.ctx, IMG_LEN - sizeof(ed), &ed), PE_OK);
+    MT_EXPECT_EQ(pe_read_export_directory(&L.ctx, IMG_LEN - sizeof(ed) + 1, &ed), PE_ERR_BOUNDS);
+
+    MT_EXPECT_EQ(pe_read_tls_directory64(&L.ctx, IMG_LEN - sizeof(tls) + 1, &tls), PE_ERR_BOUNDS);
+
+    unload(&L);
+}
+
+static void test_map_headers_branches(void)
+{
+    uint8_t small[63] = {0};
+    uint8_t img[IMG_CAP];
+    loaded_t L;
+    pe_context_t ctx;
+
+    MT_EXPECT_EQ(pe_map_headers(NULL), PE_ERR_BOUNDS);
+    MT_EXPECT_EQ(pe_context_init(&ctx, small, sizeof(small)), PE_OK);
+    MT_EXPECT_EQ(pe_map_headers(&ctx), PE_ERR_TRUNCATED);
+
+    img_build_valid(img);
+    if (!load(&L, img, IMG_LEN)) { MT_EXPECT(0); return; }
+    MT_EXPECT_EQ(pe_map_headers(&L.ctx), PE_OK);
+    MT_EXPECT_EQ(L.ctx.dos_off, 0);
+    MT_EXPECT_EQ(L.ctx.nt_off, IMG_NT);
+    unload(&L);
+}
+
+static void test_directory_get_branches(void)
+{
+    uint8_t img[IMG_CAP];
+    loaded_t L;
+    pe_data_directory_t d;
+
+    img_build_valid(img);
+    img_add_import(img);
+    if (!load(&L, img, IMG_LEN)) { MT_EXPECT(0); return; }
+    MT_EXPECT_EQ(pe_validate(&L.ctx), PE_OK);
+
+    MT_EXPECT_EQ(pe_directory_get(&L.ctx, 16, &d), PE_ERR_DIRECTORY);   /* index past the table */
+    MT_EXPECT_EQ(pe_directory_get(&L.ctx, IMAGE_DIRECTORY_ENTRY_EXPORT, &d), PE_OK);
+    MT_EXPECT_EQ(d.rva, 0);      /* an all-zero entry is "absent", not an error */
+    MT_EXPECT_EQ(d.size, 0);
+    MT_EXPECT_EQ(pe_directory_get(&L.ctx, DIR_IMPORT, &d), PE_OK);
+    MT_EXPECT_EQ(d.rva, 0x2000);
+    MT_EXPECT_EQ(d.size, 40);
+
+    /* RVA at or past SizeOfImage (0x3000). */
+    img_set_dir(L.p, DIR_IMPORT, 0x3000, 40);
+    MT_EXPECT_EQ(pe_directory_get(&L.ctx, DIR_IMPORT, &d), PE_ERR_DIRECTORY);
+
+    /* RVA inside the image, but the size runs past its end. */
+    img_set_dir(L.p, DIR_IMPORT, 0x2FF0, 0x100);
+    MT_EXPECT_EQ(pe_directory_get(&L.ctx, DIR_IMPORT, &d), PE_ERR_DIRECTORY);
+
+    unload(&L);
+}
+
+static void test_rva_to_offset_branches(void)
+{
+    uint8_t img[IMG_CAP];
+    loaded_t L;
+    uint32_t off = 0;
+
+    img_build_valid(img);
+    if (!load(&L, img, IMG_LEN)) { MT_EXPECT(0); return; }
+    MT_EXPECT_EQ(pe_validate(&L.ctx), PE_OK);
+
+    MT_EXPECT_EQ(pe_rva_to_offset(&L.ctx, 0x010, &off), PE_OK);     /* headers map 1:1 */
+    MT_EXPECT_EQ(off, 0x010);
+    MT_EXPECT_EQ(pe_rva_to_offset(&L.ctx, 0x1000, &off), PE_OK);    /* .text start */
+    MT_EXPECT_EQ(off, IMG_TEXT_RAW);
+    MT_EXPECT_EQ(pe_rva_to_offset(&L.ctx, 0x1100, &off), PE_OK);
+    MT_EXPECT_EQ(off, IMG_TEXT_RAW + 0x100);
+    MT_EXPECT_EQ(pe_rva_to_offset(&L.ctx, 0x2100, &off), PE_OK);    /* .rdata */
+    MT_EXPECT_EQ(off, IMG_RDATA_RAW + 0x100);
+
+    /* Between the headers and .text, and past .rdata's virtual size. */
+    MT_EXPECT_EQ(pe_rva_to_offset(&L.ctx, 0x400, &off), PE_ERR_NOT_FOUND);
+    MT_EXPECT_EQ(pe_rva_to_offset(&L.ctx, 0x2200, &off), PE_ERR_NOT_FOUND);
+    MT_EXPECT_EQ(pe_rva_to_offset(&L.ctx, 0x3000, &off), PE_ERR_NOT_FOUND);
+    MT_EXPECT_EQ(pe_rva_to_offset(NULL, 0x1000, &off), PE_ERR_BOUNDS);
+
+    /* A section with no raw data cannot back an RVA. */
+    img_w32(L.p, IMG_SEC(1) + 16, 0);      /* SizeOfRawData of .rdata */
+    MT_EXPECT_EQ(pe_rva_to_offset(&L.ctx, 0x2000, &off), PE_ERR_NOT_FOUND);
+    unload(&L);
+}
+
+static void test_tls_directory_branches(void)
+{
+    uint8_t img[IMG_CAP];
+    loaded_t L;
+    IMAGE_TLS_DIRECTORY64 tls;
+
+    img_build_valid(img);
+    /* TLS template at RVA 0x21A0 (file 0x7A0), inside .rdata. */
+    img_w64(img, 0x7A0, 0x140003000ULL);   /* StartAddressOfRawData */
+    img_w64(img, 0x7A8, 0x140003010ULL);   /* EndAddressOfRawData   */
+    img_w64(img, 0x7B0, 0x140003100ULL);   /* AddressOfIndex        */
+    img_w64(img, 0x7B8, 0x140003200ULL);   /* AddressOfCallBacks    */
+    img_w32(img, 0x7C0, 0x10);             /* SizeOfZeroFill        */
+    if (!load(&L, img, IMG_LEN)) { MT_EXPECT(0); return; }
+    MT_EXPECT_EQ(pe_validate(&L.ctx), PE_OK);
+
+    MT_EXPECT_EQ(pe_tls_directory(&L.ctx, &tls), PE_ERR_NOT_FOUND);  /* no TLS entry yet */
+
+    img_set_dir(L.p, IMAGE_DIRECTORY_ENTRY_TLS, 0x21A0, 16);
+    MT_EXPECT_EQ(pe_tls_directory(&L.ctx, &tls), PE_ERR_CORRUPT);    /* smaller than the struct */
+
+    img_set_dir(L.p, IMAGE_DIRECTORY_ENTRY_TLS, 0x21A0, 40);
+    MT_EXPECT_EQ(pe_tls_directory(&L.ctx, &tls), PE_OK);
+    MT_EXPECT(tls.StartAddressOfRawData == 0x140003000ULL);
+    MT_EXPECT(tls.AddressOfCallBacks == 0x140003200ULL);
+    MT_EXPECT_EQ(tls.SizeOfZeroFill, 0x10);
+    unload(&L);
+}
+
+static void test_validate_diag_reports_reason(void)
+{
+    uint8_t img[IMG_CAP];
+    loaded_t L;
+
+    img_build_valid(img);
+    img[0] = 'X';                          /* break the MZ signature */
+    if (!load(&L, img, IMG_LEN)) { MT_EXPECT(0); return; }
+    MT_EXPECT_EQ(pe_validate(&L.ctx), PE_ERR_MZ);
+    MT_EXPECT(strstr(pe_validate_diag(), "MZ") != NULL);
+    unload(&L);
+
+    img_build_valid(img);
+    if (!load(&L, img, IMG_LEN)) { MT_EXPECT(0); return; }
+    MT_EXPECT_EQ(pe_validate(&L.ctx), PE_OK);
+    MT_EXPECT_EQ(pe_validate_diag()[0], '\0');  /* a clean run clears the reason */
+    unload(&L);
+}
+
+/* -------------------------------------------------------------------------- */
 /* Runner                                                                     */
 /* -------------------------------------------------------------------------- */
 static const mt_case_t cases[] = {
@@ -1073,6 +1319,16 @@ static const mt_case_t cases[] = {
     MT_CASE(test_export_find_long_key_not_found),
     MT_CASE(test_relocs_reserved_type_rejected),
     MT_CASE(test_fuzzed_images_do_not_crash),
+    MT_CASE(test_check_read_bounds),
+    MT_CASE(test_little_endian_loaders),
+    MT_CASE(test_asciiz_branches),
+    MT_CASE(test_asciiz_symbol_length_cap),
+    MT_CASE(test_fixed_readers_bounds_and_fields),
+    MT_CASE(test_map_headers_branches),
+    MT_CASE(test_directory_get_branches),
+    MT_CASE(test_rva_to_offset_branches),
+    MT_CASE(test_tls_directory_branches),
+    MT_CASE(test_validate_diag_reports_reason),
 };
 
 int main(void)
