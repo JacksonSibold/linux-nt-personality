@@ -33,6 +33,9 @@ jobs:
       - name: Repository hygiene checks
         run: python tools/check_repo.py
 
+      - name: Documentation counts are current
+        run: python tools/update_doc_counts.py --check
+
       - name: Provenance SPDX tag syntax
         run: python tools/provenance_scan.py --check
 

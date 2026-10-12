@@ -103,3 +103,28 @@ python3 tools/coverage_report.py --selftest   # check the measurement on a fixtu
 
 Exit status: `0` report printed and all unit tests passed, `1` a unit test
 failed, `2` usage error.
+
+## update_doc_counts.py
+
+Keeps the counts quoted in the docs equal to the repository. A count sits
+between `<!-- counts:NAME:begin -->` and `<!-- counts:NAME:end -->` markers in
+`README.md`, `CONTRIBUTING.md`, `docs/DEVELOPMENT.md`, `docs/KNOWN-ISSUES.md`
+and `docs/status/PROGRESS.md`. Values are counted from the files, never by
+running anything:
+
+- `unit_modules`, `unit_tests`: the `tests/unit/test_*.py` modules and the
+  functions named `test_*` in them (found by parsing, so strings and comments
+  are not counted).
+- `review_*`, `fix_*`: totals in `docs/review/INDEX.md`, checked against the
+  Total rows of its tables.
+- `adr_*`: the status column of `docs/decisions/INDEX.md`.
+- `tracked_files`: the entries of `git ls-files` (a walk outside a git work tree).
+
+```
+python3 tools/update_doc_counts.py --check   # report stale blocks, change nothing
+python3 tools/update_doc_counts.py --write   # rewrite stale blocks in place
+```
+
+Exit status: `0` all blocks current, `1` a block is stale, a block has no
+matching end marker, a source table does not add up, or a target is missing,
+`2` usage error. CI runs `--check`.

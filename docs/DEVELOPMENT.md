@@ -20,9 +20,10 @@ and the list of known problems, see [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 python -m unittest discover tests/unit
 python tools/check_repo.py
 python tools/check_doc_links.py
+python tools/update_doc_counts.py --check
 ```
 
-- `tests/unit` holds 21 test modules (383 tests). They cover the scripts in
+- `tests/unit` holds <!-- counts:unit_modules:begin -->22<!-- counts:unit_modules:end --> test modules (<!-- counts:unit_tests:begin -->401<!-- counts:unit_tests:end --> `test_` functions). They cover the scripts in
   `build/` (`fix_gsbase.py`, `fix_iosb.py`, `gen_ntdll_def.py`, `gen_stubs.py`,
   `merge_dod.py`, `validate_criteria.py`), `tools/` (`check_doc_links.py`, `check_repo.py`,
   `coverage_report.py`, `criteria_report.py`, `ntstatus_lookup.py`, `pe_info.py`,
@@ -43,10 +44,13 @@ python tools/check_doc_links.py
   `--quiet` for the summary only. It does not run the credential pattern scan
   described in `PUBLICATION_CHECKS.md`.
 
+- `tools/update_doc_counts.py --check` compares the counts quoted in `README.md`, `CONTRIBUTING.md`, `docs/DEVELOPMENT.md`, `docs/KNOWN-ISSUES.md` and `docs/status/PROGRESS.md` with the repository. Each count sits between `<!-- counts:NAME:begin -->` and `<!-- counts:NAME:end -->` markers. It exits 1 when a block is stale, and CI runs it. `--write` rewrites stale blocks. The counts come from reading the files, not from running the tests.
+
 ## Running every local check at once
 
 `tools/run_all_checks.sh` runs the CI checks above plus the local C and shell
 suites, in this order: unit tests, `check_repo.py`, `check_doc_links.py`,
+`update_doc_counts.py --check`,
 `provenance_scan.py --check`, `vm/lint.sh`, `tests/syntax/check.sh`,
 `make -C tests/host test`, and `make -C tests/kernel-host check`. It ends with a
 PASS / FAIL / KNOWN-FAIL / SKIP matrix.
