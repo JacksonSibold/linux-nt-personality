@@ -23,6 +23,7 @@ import datetime
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -250,6 +251,17 @@ def run_command(cmd: List[str], timeout: float, cwd: Path, env: Dict[str, str]) 
         }
 
 
+def resolve_command(cmd: List[str]) -> List[str]:
+    """Map a bare 'python3' (as used in registry.yaml) to the running interpreter.
+
+    Windows hosts commonly have no 'python3' on PATH; the harness itself was
+    started with a working interpreter, so reuse it rather than fail with ERROR.
+    """
+    if cmd and cmd[0] in ("python3", "python") and shutil.which(cmd[0]) is None:
+        return [sys.executable] + list(cmd[1:])
+    return list(cmd)
+
+
 def build_command(entry: Dict[str, Any]) -> Optional[List[str]]:
     """Normalize the command field to a list of strings, or None."""
     cmd = entry.get("command")
@@ -327,6 +339,8 @@ def evaluate_criterion(
         result["state"] = "UNIMPLEMENTED"
         result["note"] = "registered test is unimplemented"
         return result
+
+    cmd = resolve_command(cmd)
 
     # Expand relative command paths against project root.
     if not os.path.isabs(cmd[0]):
