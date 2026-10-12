@@ -116,7 +116,7 @@ __visible noinstr void do_nt_syscall(struct pt_regs *regs, unsigned int ssn)
 	/* Exact per-CPU count - cheap, no printk, no sampling */
 	this_cpu_inc(nt_dispatch_count);
 	if (ssn < NT_NR_SERVICES)
-		__this_cpu_add(nt_dispatch_per_ssn[ssn], 1);
+		this_cpu_add(nt_dispatch_per_ssn[ssn], 1);
 	if (unlikely(ssn >= NT_NR_SERVICES)) {
 		regs->ax = STATUS_INVALID_SYSTEM_SERVICE;
 		goto out;
