@@ -851,6 +851,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                         u16 ord = 0;
                         if (copy_from_user(&ord, (void __user *)(actual_base + ords_rva + i*2), 2))
                             break;
+                        if (ord >= ed.NumberOfFunctions) break;
                         u32 func_rva = 0;
                         if (copy_from_user(&func_rva, (void __user *)(actual_base + funcs_rva + ord*4), 4))
                             break;
