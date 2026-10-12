@@ -6,6 +6,7 @@
 
 #include "kshim.h"
 #include "binfmt_pe.c"
+#include "../../loader/pe_prot.h"
 
 #include <string.h>
 #include <stdio.h>
