@@ -26,12 +26,14 @@ Verdict meanings: OK = behaviour on the success path preserved, unwind and error
 - **7fba2cb** `fix(arch-nt): drop stray IO-17 rewind that ran on every read chunk`, for 325b55c. In `ntio_do_read` (arch/x86/nt/nt_io.c) the commit left an unconditional `pos -= got;` after each successful chunk copy. Reads longer than `NTIO_BOUNCE_SIZE` (64 KiB) rewound the position and re-read the first chunk, so the caller got wrong data. The fix removes the stray three lines. The in-branch rewind on copy failure is kept.
 - Re-check after the fix: `tests/syntax/check.sh` gives 32 passed and 5 failed, both before and after, with identical per-file results and 452 warnings in both runs. `make -C tests/host test` passes (pe_parse: 32 run, 0 failed).
 
-## SUSPECT: for human review
+## SUSPECT: resolution
 
-- **b3dcef5**: the IOSB probe is correct, but the commit also adds the IO-17 in-branch rewind to `ntio_do_read`, which its message does not mention. The behaviour is correct; the history is misleading.
-- **d1f866c**: `src/kernel/nt/ntstatus_table.inc` now maps `0xC0000228` and `0xC0000233` where `DLL_NOT_FOUND` and `ENTRYPOINT_NOT_FOUND` belong. Their real values are `0xC0000135` and `0xC0000139` (`src/ntdll/ntstatus.h`). The values come from `src/ntdll/ntstatus_to_dos.c`, whose comments say the header names are unverified. The table owner must decide, so this was not changed.
-- **d921888** and **40f6db0**: `NtMapViewOfSection` rounds `*ViewSize` up before the bounds test. A size above `SIZE_MAX - 4095` wraps to 0 and passes. The natural fix is to compare the raw size with `sec->size - offset` before rounding, but the error code for that case is an owner decision, so it was not applied.
-- **38b1b0a**: the suspend and resume previous-count probe is a snapshot. If the copy-out faults after the count has changed, the call returns `STATUS_ACCESS_VIOLATION` with the suspend already applied.
+Each item was re-checked against the code and the NT references in the repo on branch `haiku/suspects`. Hashes are on that branch.
+
+- **d1f866c** (resolved in `8e7e190`, no table change): `0xC0000135` and `0xC0000139` are the correct header values. `STATUS_DLL_NOT_FOUND` and `STATUS_ENTRYPOINT_NOT_FOUND` already map to 126 and 127 through the aliased rows `STATUS_INVALID_IMAGE_WIN_16` and `STATUS_REGISTRY_CORRUPT`, so no entry was added. The `0xC0000228 -> 599` and `0xC0000233 -> 1908` rows are value-keyed rows from the DISCREPANCIES oracle (section 3). They are not the DLL or entrypoint codes, so their comments now say so. The conformance expectation for `STATUS_DLL_NOT_FOUND` moved from 599 to 126. The generated `ntstatus_table.inc` is unchanged, since the generator strips comments. The probe labels in `tests/differential/probes/probe_ntstatus*.c` still name 0xC0000228 and 0xC0000233 as DLL and entrypoint. Those labels are not changed here, since the probes run only on Windows.
+- **d921888** and **40f6db0** (resolved in `f942cb9`): the raw `*ViewSize` is now compared with `sec->size - offset` before rounding, and a larger size returns `STATUS_INVALID_VIEW_SIZE`, the code the existing bounds test already uses. The same block is fixed in `src/kernel/nt/mm.c` and `arch/x86/nt/mm.c`. The regression test `test_view_size_round_up_wrap` in `src/kernel/nt/mm_test.c` failed before the change (status `STATUS_NO_MEMORY`) and passes now. The kernel-host `make check` passes.
+- **38b1b0a** (not changed, decision): the order cannot be fixed safely here. The only order that avoids a copy-out after the count changes is copy-before-commit with a recheck loop, which changes the thread lock protocol. `arch/x86/nt/proc_thread.c` is kernel-only and is not built by any host target, so such a change could not be compiled or tested. The current behaviour is a known limit: a copy-out fault after the probe returns `STATUS_ACCESS_VIOLATION` with the suspend or resume already applied. Windows also writes the out-parameter after the state change. Separately, `src/kernel/nt/proc_thread.c` still calls `copy_to_user` under `thr->lock` at lines 1435 and 1476. That is the P-9 pattern this commit removed from the arch copy, and it was out of audit scope.
+- **b3dcef5** (note only, history not rewritten): the commit message covers the IOSB probe only. The same commit also adds the IO-17 rewind in `ntio_do_read` (`arch/x86/nt/nt_io.c`, after the failed `copy_to_user` in the chunk loop, `pos -= got`). That rewind is correct, since the position must match the bytes not delivered. It is kept. The message does not mention it. Readers of the history should treat IO-17 as part of this commit.
 
 ## Per-commit audit
 
@@ -45,9 +47,9 @@ Newest first. Files: basenames of every file the commit touches.
 | `e8dd37b` | mm.c | OK | `arch/x86/nt/mm.c:18` | ntmm_init moved to a core_initcall in the kernel build; lazy checks kept for the shim |
 | `075e040` | nt_io.c | OK | `arch/x86/nt/nt_io.c:549` | delete-on-close moved to ntio_file_release, so it runs on the last reference; NtClose no longer unlinks |
 | `325b55c` | nt_io.c | BROKEN | `arch/x86/nt/nt_io.c:1663` | stray unconditional pos -= got after every successful chunk copy; reads over 64 KiB re-read the first chunk. Fixed in 7fba2cb |
-| `b3dcef5` | nt_io.c | SUSPECT | `arch/x86/nt/nt_io.c:1525` | IOSB probe is correct, but the commit also adds the IO-17 in-branch rewind to ntio_do_read, which the message does not mention |
+| `b3dcef5` | nt_io.c | SUSPECT (note, see above) | `arch/x86/nt/nt_io.c:1525` | IOSB probe is correct, but the commit also adds the IO-17 in-branch rewind to ntio_do_read, which the message does not mention |
 | `d730c42` | weak.c | OK | `arch/x86/nt/weak.c:15` | stray RtlUserThreadStart global removed; only comments refer to it now |
-| `38b1b0a` | proc_thread.c | SUSPECT | `arch/x86/nt/proc_thread.c:1356` | probe, then count change, then copy-out after unlock: a fault after the count changed returns STATUS_ACCESS_VIOLATION with the suspend already applied (nt_put_prev_count) |
+| `38b1b0a` | proc_thread.c | SUSPECT (decided: not changed) | `arch/x86/nt/proc_thread.c:1356` | probe, then count change, then copy-out after unlock: a fault after the count changed returns STATUS_ACCESS_VIOLATION with the suspend already applied (nt_put_prev_count) |
 | `a4ddf86` | proc_thread.c | OK | `arch/x86/nt/proc_thread.c:1391` | rcu_read_lock around find_vpid/pid_task in suspend, resume and terminate paths |
 | `d6e5ab7` | proc_thread.c | OK | `arch/x86/nt/proc_thread.c:1201` | cross-process thread creation refused with STATUS_NOT_SUPPORTED before any object is created |
 | `e6d152f` | proc_thread.c | OK | `arch/x86/nt/proc_thread.c:1118` | thr NULL check placed before the first dereference in nt_setup_child_regs |
@@ -78,7 +80,7 @@ Newest first. Files: basenames of every file the commit touches.
 | `5b1fca3` | proc_thread.c | OK | `src/kernel/nt/proc_thread.c:206` | thread_sync_release frees the sync thread on every exit path; nt_thread_destroy still abandons owned mutants |
 | `d490e92` | kshim.c, kshim.h, proc_thread_test.c | OK | `src/kernel/nt/kshim.c:29` | allocation-site tagging only under USERSPACE_KSHIM; kernel kmalloc/kzalloc unchanged |
 | `213d333` | kshim.c | OK | `src/kernel/nt/kshim.c:399` | USERSPACE_KSHIM takes the st_atim branch |
-| `d1f866c` | gen_ntstatus_table.py, ntstatus_table.inc | SUSPECT | `src/kernel/nt/gen_ntstatus_table.py:68` | parser change is sound, but ntstatus_table.inc now maps 0xC0000228 and 0xC0000233 where DLL_NOT_FOUND (0xC0000135) and ENTRYPOINT_NOT_FOUND (0xC0000139) belong (src/ntdll/ntstatus.h); not in the message |
+| `d1f866c` | gen_ntstatus_table.py, ntstatus_table.inc | SUSPECT (resolved in 8e7e190) | `src/kernel/nt/gen_ntstatus_table.py:68` | parser change is sound, but ntstatus_table.inc now maps 0xC0000228 and 0xC0000233 where DLL_NOT_FOUND (0xC0000135) and ENTRYPOINT_NOT_FOUND (0xC0000139) belong (src/ntdll/ntstatus.h); not in the message |
 | `da2531b` | io_test.c | OK | `src/kernel/nt/io_test.c:396` | test-only: roundtrip handle opened read-write so FILE_READ_DATA is granted |
 | `ea3c20a` | mm.c | OK | `arch/x86/nt/mm.c:72` | KERN_EMERG trace demoted to pr_debug in the arch copy of kshim_mprotect |
 | `a9bc215` | 34 files | OK | `src/kernel/nt/gen_ntstatus_table.py:?` | mode-only change (100644 to 100755) on scripts; no content change |
@@ -103,7 +105,7 @@ Newest first. Files: basenames of every file the commit touches.
 | `b125094` | io.c | OK | `src/kernel/nt/io.c:1581` | LARGE_INTEGER off declared only under __KERNEL__; every use is kernel-gated |
 | `0254b09` | registry.c | OK | `src/kernel/nt/registry.c:1403` | output buffers zeroed with kzalloc before copy-out in the registry query and enumerate wrappers |
 | `68fe25b` | handle.c | OK | `src/kernel/nt/handle.c:97` | out-of-range handle index maps to 0, which every caller rejects |
-| `40f6db0` | mm.c | SUSPECT | `src/kernel/nt/mm.c:1524` | src port of d921888; same wrap in the ntmm_round_up(*ViewSize) step |
+| `40f6db0` | mm.c | SUSPECT (resolved in f942cb9) | `src/kernel/nt/mm.c:1524` | src port of d921888; same wrap in the ntmm_round_up(*ViewSize) step |
 | `a3a84fe` | Makefile, ntstatus_table.inc, test_gen_ntstatus_table.py | OK | `src/kernel/nt/ntstatus_table.inc:1` | generated ntstatus_table.inc committed with its rule; later value change is in d1f866c |
 | `ba78f96` | proc_thread.c | OK | `src/kernel/nt/proc_thread.c:1770` | port of 6f4e944: STATUS_NAME_TOO_LONG returned before any write |
 | `c57c6ff` | proc_thread.c | OK | `src/kernel/nt/proc_thread.c:1665` | port of 182ee9f: basic-information structs zeroed before copy |
@@ -132,7 +134,7 @@ Newest first. Files: basenames of every file the commit touches.
 | `3899c83` | proc_thread.c | OK | `arch/x86/nt/proc_thread.c:1594` | NtOpenProcess and NtOpenThread close the new handle when copy-out fails |
 | `16af7b7` | dispatch.c | OK | `arch/x86/nt/dispatch.c:258` | NtQueryVirtualMemory bounce buffer zeroed with kzalloc |
 | `182ee9f` | proc_thread.c | OK | `arch/x86/nt/proc_thread.c:1650` | PROCESS and THREAD_BASIC_INFORMATION zeroed before copy-out |
-| `d921888` | mm.c | SUSPECT | `arch/x86/nt/mm.c:1566` | offset and size checked against the section, but the round-up of a *ViewSize above SIZE_MAX-4095 wraps to 0, which then passes the size check; check the raw size before rounding |
+| `d921888` | mm.c | SUSPECT (resolved in f942cb9) | `arch/x86/nt/mm.c:1566` | offset and size checked against the section, but the round-up of a *ViewSize above SIZE_MAX-4095 wraps to 0, which then passes the size check; check the raw size before rounding |
 | `79d1de2` | nt_io.c | OK | `arch/x86/nt/nt_io.c:2266` | FileNameLength checked for even length and buffer bounds before the rename target is built |
 | `6da43d2` | nt_io.c | OK | `arch/x86/nt/nt_io.c:1898` | early return removed so NtReadFile performs the read and fills the IOSB |
 
