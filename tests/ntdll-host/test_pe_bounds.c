@@ -56,6 +56,17 @@ static void reloc_directory_must_fit_image(void)
     MT_EXPECT(pe_range_fits(0xFFF0, 0x10, 0x10000));
 }
 
+/* LDR-5: the write width depends on the type (8 for DIR64, 4 for HIGHLOW).
+ * The last 4-byte slot fits, and an 8-byte write at the same place does not. */
+static void reloc_write_width_checked(void)
+{
+    unsigned long long image = 0x10000;
+    MT_EXPECT(pe_range_fits(0xFFF8ULL, 8, image));
+    MT_EXPECT(!pe_range_fits(0xFFFCULL, 8, image));
+    MT_EXPECT(pe_range_fits(0xFFFCULL, 4, image));
+    MT_EXPECT(!pe_range_fits(0x10000ULL, 4, image));
+}
+
 /* An offset near 2^64 must not wrap to a small value. */
 static void range_no_wrap(void)
 {
@@ -88,6 +99,7 @@ static const mt_case_t cases[] = {
     { "range_empty_and_zero_limit", range_empty_and_zero_limit },
     { "reloc_target_past_image_rejected", reloc_target_past_image_rejected },
     { "reloc_directory_must_fit_image", reloc_directory_must_fit_image },
+    { "reloc_write_width_checked", reloc_write_width_checked },
     { "range_no_wrap", range_no_wrap },
     { "copy_len_is_min_of_raw_and_virtual", copy_len_is_min_of_raw_and_virtual },
     { "copy_len_zero_virtual_uses_raw", copy_len_zero_virtual_uses_raw },
