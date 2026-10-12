@@ -719,6 +719,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
         u32 chars = pe_load_u32((u8*)hdr + off + 36);
         u32 vs = vsize ? vsize : rawsize;
         if (vs == 0) continue;
+        if (vaddr >= size_image || (u64)vaddr + vs > size_image) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
         unsigned long maddr = base + vaddr;
         unsigned long mlen = PAGE_ALIGN(vs);
         unsigned long prot = pe_prot_from_chars(chars);
