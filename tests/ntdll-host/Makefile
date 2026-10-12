@@ -42,11 +42,22 @@ CC       := gcc
 SANITIZE ?= auto
 SRC      := ../../src/ntdll
 LOADER   := ../../src/loader
+# COVERAGE=1: gcov instrumentation at -O0 in out-cov/ (see tools/c_coverage.sh).
+# --coverage at link time also pulls in libgcov.
+COVERAGE ?= 0
+ifeq ($(COVERAGE),1)
+OUT      := out-cov
+COV_FLAGS := --coverage
+OPT_LEVEL := -O0
+else
 OUT      := out
+COV_FLAGS :=
+OPT_LEVEL := -O1
+endif
 
 # Linker-plugin workaround for the MSYS2 gcc (liblto_plugin.dll fails to load).
 # Harmless on other gcc builds.
-LDFLAGS  := -fno-use-linker-plugin
+LDFLAGS  := -fno-use-linker-plugin $(COV_FLAGS)
 
 ifneq ($(SANITIZE),0)
 SAN_OK := $(shell mkdir -p $(OUT) && printf 'int main(void){return 0;}\n' > $(OUT)/san_probe.c && $(CC) -fsanitize=address,undefined $(LDFLAGS) $(OUT)/san_probe.c -o $(OUT)/san_probe$(EXE_SUFFIX) >/dev/null 2>&1 && $(OUT)/san_probe$(EXE_SUFFIX) >/dev/null 2>&1 && echo yes)
@@ -60,7 +71,7 @@ $(info ntdll-host: sanitizers unavailable, building without them)
 endif
 
 CPPFLAGS := -I$(SRC) -I$(LOADER)
-CFLAGS   := -std=c11 -g -O1 -Wall -Wextra -Werror $(SAN_FLAGS)
+CFLAGS   := -std=c11 -g $(OPT_LEVEL) -Wall -Wextra -Werror $(COV_FLAGS) $(SAN_FLAGS)
 
 TESTS    := test_ntstatus_to_dos test_unwind test_except test_runtime test_win32_policy test_pe_bounds test_ldr_pure
 TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
@@ -72,7 +83,7 @@ TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 RUN_TESTS := $(filter-out test_pe_bounds,$(TESTS))
 RUN_BINS  := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(RUN_TESTS)))
 
-.PHONY: all test test-pe-bounds build clean
+.PHONY: all test test-pe-bounds build clean print-run-bins
 
 all: build test
 
@@ -113,10 +124,15 @@ $(OUT)/test_unwind$(EXE_SUFFIX): $(OUT)/unwind.o $(OUT)/except.o $(OUT)/test_unw
 $(OUT)/test_except$(EXE_SUFFIX): $(OUT)/except.o $(OUT)/unwind.o $(OUT)/test_except.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--allow-multiple-definition $^ -o $@
 
+# Coverage links (libgcov) pull in a CRT _errno that clashes with ntdll_runtime.o;
+# the first definition (ours, listed first) wins, as for unwind and except above.
+comma := ,
+COV_LINK := $(if $(COV_FLAGS),-Wl$(comma)--allow-multiple-definition)
+
 # ntdll_runtime.c replaces libc string and allocator functions. Keep gcc from
 # turning its loops back into calls to memcpy/memset.
 $(OUT)/test_runtime$(EXE_SUFFIX): $(OUT)/ntdll_runtime.o $(OUT)/test_runtime.o
-	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $(COV_LINK) $^ -o $@
 
 # -Wno-error=attributes: ntdll_runtime.c declares "int errno" and "_errno", which
 # clash with the dllimport attribute on MinGW's _errno (see docs/review/ntdll.md).
@@ -134,6 +150,11 @@ $(OUT)/test_runtime.o: EXTRA_CFLAGS := -fno-builtin
 
 $(OUT):
 	mkdir -p $(OUT)
+
+# Prints the binaries "test" runs, so tools/c_coverage.sh can run them without
+# stopping at the first failure.
+print-run-bins:
+	@echo $(RUN_BINS)
 
 clean:
 	rm -rf $(OUT)

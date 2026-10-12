@@ -22,19 +22,34 @@ CC      := gcc
 NT      := ../../src/kernel/nt
 NTDLL   := ../../src/ntdll
 SHIM    := shim
+# COVERAGE=1: gcov instrumentation, -O0, objects in build-cov/ so the
+# instrumented and plain builds never share .o files. See tools/c_coverage.sh.
+COVERAGE ?= 0
+ifeq ($(COVERAGE),1)
+BUILD   := build-cov
+COV_FLAGS := --coverage
+COV_LIBS  := -lgcov
+else
 BUILD   := build
+COV_FLAGS :=
+COV_LIBS  :=
+endif
 NTSTATUS_INC := $(BUILD)/ntstatus_table.inc
 
 # OPT defaults to -O0. Use OPT=-O2 with a separate BUILD=... directory to
 # expose optimiser-dependent uninitialised reads (-Wuninitialized is on).
+# Coverage builds always use -O0 so that line counts map to source lines.
 OPT     ?= -O0
+ifeq ($(COVERAGE),1)
+OPT     := -O0
+endif
 WARN    := -Wall -Wextra -Wuninitialized
 DEPFLAGS := -MMD -MP
-CFLAGS  := -std=gnu11 -g $(OPT) $(WARN) $(DEPFLAGS) -DUSERSPACE_KSHIM \
+CFLAGS  := -std=gnu11 -g $(OPT) $(WARN) $(DEPFLAGS) $(COV_FLAGS) -DUSERSPACE_KSHIM \
            -include $(SHIM)/khost_prelude.h \
            -iquote $(NT) -iquote $(BUILD) -I$(SHIM)
-LDLIBS  := -lpthread -lws2_32
-LDFLAGS := -fno-use-linker-plugin
+LDLIBS  := -lpthread -lws2_32 $(COV_LIBS)
+LDFLAGS := -fno-use-linker-plugin $(COV_FLAGS)
 
 # Host-only POSIX primitives (see shim/).
 SHIM_OBJS := $(BUILD)/mman_win.o $(BUILD)/posix_host.o $(BUILD)/posix_raw.o
@@ -71,13 +86,13 @@ $(BUILD):
 # Host shim units. These are built without the prelude and, for the POSIX
 # wrappers, with only the shim include directory.
 $(BUILD)/posix_raw.o: $(SHIM)/posix_raw.c | $(BUILD)
-	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) -c $< -o $@
+	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -c $< -o $@
 
 $(BUILD)/posix_host.o: $(SHIM)/posix_host.c | $(BUILD)
-	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) -I$(SHIM) -c $< -o $@
+	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -I$(SHIM) -c $< -o $@
 
 $(BUILD)/mman_win.o: $(SHIM)/mman_win.c | $(BUILD)
-	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) -I$(SHIM) -c $< -o $@
+	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -I$(SHIM) -c $< -o $@
 
 # Module sources from src/kernel/nt.
 $(BUILD)/%.o: $(NT)/%.c | $(BUILD)
@@ -101,7 +116,7 @@ $(BUILD)/nt_obj_weak.o: $(BUILD)/nt_obj.o
 
 # Shim self-test: plain host C against the shim, without the module prelude.
 $(BUILD)/mman_test.o: $(SHIM)/mman_test.c | $(BUILD)
-	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) -I$(SHIM) -c $< -o $@
+	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -I$(SHIM) -c $< -o $@
 
 $(BUILD)/mman_test.exe: $(BUILD)/mman_test.o $(SHIM_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)

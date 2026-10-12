@@ -32,12 +32,24 @@ endif
 CC       := gcc
 SANITIZE ?= auto
 SRC      := ../../src/loader
+# COVERAGE=1: gcov instrumentation at -O0 in out-cov/ (see tools/c_coverage.sh).
+COVERAGE ?= 0
+ifeq ($(COVERAGE),1)
+OUT      := out-cov
+COV_FLAGS := --coverage
+COV_LIBS  := -lgcov
+OPT_LEVEL := -O0
+else
 OUT      := out
+COV_FLAGS :=
+COV_LIBS  :=
+OPT_LEVEL := -O1
+endif
 TEST     := $(OUT)/test_pe_parse$(EXE_SUFFIX)
 
 # Linker-plugin workaround for the MSYS2 gcc (liblto_plugin.dll fails to load).
 # Harmless on other gcc builds.
-LDFLAGS  := -fno-use-linker-plugin
+LDFLAGS  := -fno-use-linker-plugin $(COV_FLAGS)
 
 ifneq ($(SANITIZE),0)
 SAN_OK := $(shell mkdir -p $(OUT) && printf 'int main(void){return 0;}\n' > $(OUT)/san_probe.c && $(CC) -fsanitize=address,undefined $(LDFLAGS) $(OUT)/san_probe.c -o $(OUT)/san_probe$(EXE_SUFFIX) >/dev/null 2>&1 && $(OUT)/san_probe$(EXE_SUFFIX) >/dev/null 2>&1 && echo yes)
@@ -51,7 +63,7 @@ $(info host-test: sanitizers unavailable, building without them)
 endif
 
 CPPFLAGS := -I$(SRC)
-CFLAGS   := -std=c11 -g -O1 -Wall -Wextra -Werror $(SAN_FLAGS)
+CFLAGS   := -std=c11 -g $(OPT_LEVEL) -Wall -Wextra -Werror $(COV_FLAGS) $(SAN_FLAGS)
 
 OBJS := $(OUT)/pe_parse.o $(OUT)/pe_image.o $(OUT)/test_pe_parse.o
 
@@ -64,7 +76,7 @@ test: $(TEST)
 	@echo "host-test: pe_validate diagnostics in $(OUT)/pe_diag.log"
 
 $(TEST): $(OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -o $@ $(COV_LIBS)
 
 $(OUT)/pe_parse.o: $(SRC)/pe_parse.c $(SRC)/pe_parse.h $(SRC)/pe_format.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
