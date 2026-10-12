@@ -75,7 +75,24 @@ static void address_below_base_is_not_found(void)
     unwind_clear_modules();
 }
 
+/* x64 RUNTIME_FUNCTION has no flag bits in EndAddress (UNW-4). The last
+ * bytes of a function, including an end that is not 4-aligned, must match. */
+static void end_address_is_not_masked(void)
+{
+    setup_table();
+    IMAGE_RUNTIME_FUNCTION_ENTRY t[1];
+    memset(t, 0, sizeof(t));
+    t[0].BeginAddress = 0x1400;
+    t[0].EndAddress = 0x1407;
+    MT_ASSERT(unwind_register_module(FAKE_BASE, 0x3000, t, 1, g_image) == 0);
+
+    MT_EXPECT(RtlLookupFunctionEntry(FAKE_BASE + 0x1406, NULL, NULL) == &t[0]);
+    MT_EXPECT(RtlLookupFunctionEntry(FAKE_BASE + 0x1407, NULL, NULL) == NULL);
+    unwind_clear_modules();
+}
+
 static const mt_case_t cases[] = {
+    { "end_address_is_not_masked", end_address_is_not_masked },
     { "sized_module_finds_function", sized_module_finds_function },
     { "zero_size_module_finds_function", zero_size_module_finds_function },
     { "zero_size_module_misses_outside_table", zero_size_module_misses_outside_table },

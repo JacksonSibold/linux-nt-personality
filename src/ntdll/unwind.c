@@ -108,8 +108,8 @@ static uint8_t *rva_to_ptr(unwind_module_t *mod, ULONG rva) {
 }
 
 /* Binary search within a single module's table.
- * Table is sorted by BeginAddress. EndAddress low 2 bits are ignored.
- * Returns entry where Begin <= pc < (End & ~3), or NULL.
+ * Table is sorted by BeginAddress. x64 EndAddress has no flag bits (UNW-4).
+ * Returns entry where Begin <= pc < End, or NULL.
  */
 static IMAGE_RUNTIME_FUNCTION_ENTRY *lookup_in_module(unwind_module_t *mod, ULONG64 pc) {
     /* sizeOfImage == 0 means unknown (RtlAddFunctionTable): the table bounds the match. */
@@ -121,7 +121,7 @@ static IMAGE_RUNTIME_FUNCTION_ENTRY *lookup_in_module(unwind_module_t *mod, ULON
     while (lo < hi) {
         ULONG mid = lo + (hi - lo) / 2;
         ULONG begin = mod->funcTable[mid].BeginAddress;
-        ULONG end = mod->funcTable[mid].EndAddress & ~0x3U;
+        ULONG end = mod->funcTable[mid].EndAddress;
         if (rva < begin) hi = mid;
         else if (rva >= end) lo = mid + 1;
         else return &mod->funcTable[mid];
