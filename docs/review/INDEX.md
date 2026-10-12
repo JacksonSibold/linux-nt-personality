@@ -11,26 +11,27 @@ Type: static review. The review itself modified no source file and ran no build,
 | PE exec loader and test shim | [kernel-fs.md](kernel-fs.md) | 5 | 7 | 9 | 3 |
 | NT personality (dispatch, VM, I/O, processes, services) | [arch-x86-nt.md](arch-x86-nt.md) | 14 | 24 | 24 | 1 |
 | NT kernel objects, handles, registry, sync, security, VM, I/O, IOCP, processes, dispatch (`src/kernel/nt`) | [kernel-nt.md](kernel-nt.md) | 7 | 9 | 18 | 1 |
-| NT user-mode runtime: loader, startup, unwind, exception dispatch, C runtime, Win32 shims, NTSTATUS mapping (`src/ntdll`, base `7e75069`) | [ntdll.md](ntdll.md) | 20 | 23 | 21 | 7 |
-| **Total** | | **48** | **66** | **81** | **13** |
+| NT user-mode runtime: loader, startup, unwind, exception dispatch, C runtime, Win32 shims, NTSTATUS mapping (`src/ntdll`, base `7e75069`) | [ntdll.md](ntdll.md) | 20 | 24 | 22 | 8 |
+| **Total** | | **48** | **67** | **82** | **14** |
 
 ## Fix status
 
-Counts are per report and come from the status lines in each report: `Fixed` means a commit fixed the finding, `Partly` means some part is fixed, `Blocked` means it waits for an owner decision, `No change` means the finding was checked and needs no change (or is not a defect), and `Open` means no fix is recorded. The finding IDs are local to each report, so the same defect can appear in two reports (see [decisions index](../decisions/INDEX.md)).
+Counts are per report and were recounted on 2026-10-12 from each finding's recorded status: the `**Status:**` line under the finding, a status marker in its heading, or the status table in the report (ntdll's Medium and Low table, and the prose passes in kernel-nt). `Fixed` means a commit fixed the finding; `Partly` means some part is fixed; `Blocked` means the status says blocked or needs an owner decision; `No change` means the finding was checked and is not a defect (or was already correct); `Open` means no fix is recorded and no owner decision is named. The finding IDs are local to each report, so the same defect can appear in two reports (see [decisions index](../decisions/INDEX.md)).
 
 | Report | Findings | Fixed | Partly | Blocked | No change | Open |
 |---|---|---|---|---|---|---|
-| [loader.md](loader.md) | 15 | 8 | 0 | 0 | 1 | 6 |
-| [kernel-fs.md](kernel-fs.md) | 24 | 12 | 4 | 1 | 0 | 7 |
-| [arch-x86-nt.md](arch-x86-nt.md) | 63 | 10 | 0 | 0 | 1 | 52 |
-| [kernel-nt.md](kernel-nt.md) | 35 | 6 | 1 | 0 | 2 | 26 |
-| **Total** | **137** | **36** | **5** | **1** | **4** | **91** |
+| [loader.md](loader.md) | 15 | 9 | 0 | 1 | 2 | 3 |
+| [kernel-fs.md](kernel-fs.md) | 24 | 16 | 1 | 4 | 0 | 3 |
+| [arch-x86-nt.md](arch-x86-nt.md) | 63 | 33 | 2 | 17 | 2 | 9 |
+| [kernel-nt.md](kernel-nt.md) | 35 | 21 | 1 | 4 | 2 | 7 |
+| [ntdll.md](ntdll.md) | 74 | 42 | 5 | 15 | 0 | 12 |
+| **Total** | **211** | **121** | **9** | **41** | **6** | **34** |
 
-Totals match the severity table above. Open findings by severity are not split out here; each report lists them. The per-report `Fix status` sections name the commits.
+Totals match the severity table above (211 findings in both tables; the per-report rows sum to the total row in each). Open findings by severity are not split out here; each report lists them. The per-report `Fix status` sections name the commits.
 
-Decision records: [docs/decisions/INDEX.md](../decisions/INDEX.md) lists the 28 records with status (8 fixed, 14 open, 5 blocked, 1 no-change).
+Decision records: [docs/decisions/INDEX.md](../decisions/INDEX.md) lists the 35 records with status (11 fixed, 16 open, 7 blocked, 1 no-change).
 
-The per-finding fixed markers are: kernel-fs K-1, K-4 to K-10, K-12, K-13, K-16, K-17 (`fixed`); loader L-1 to L-6, L-8, L-11 (`fixed`); arch D-1, IO-1, IO-2, IO-9, M-3, P-3, P-4, P-10, P-11, P-15 (`fixed`); kernel-nt H-1, O-1, S-1, R-1, IO-1, IOCP-2 (`fixed`) and H-2 (`partly fixed`).
+The per-finding status values are in each report (headings, status lines, and the ntdll status table). The per-report counts above were rechecked against them; the earlier per-finding list in this paragraph was incomplete and has been removed.
 
 ## Top findings
 
