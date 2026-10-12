@@ -404,16 +404,17 @@ pe_status_t pe_validate(pe_context_t *ctx)
     if ((u64)oh_off + fh.SizeOfOptionalHeader > ctx->size)
         PE_FAIL(PE_ERR_TRUNCATED, "optional header %u+%u exceeds size %zu", oh_off, fh.SizeOfOptionalHeader, ctx->size);
 
+    /* PE32+ requires SizeOfOptionalHeader == 240. Check it before reading the
+     * fixed-size structure so a short declared header is never read past. */
+    if (fh.SizeOfOptionalHeader != sizeof(IMAGE_OPTIONAL_HEADER64))
+        PE_FAIL(PE_ERR_CORRUPT, "SizeOfOptionalHeader %u != %zu (PE32+ requires 240)", fh.SizeOfOptionalHeader, sizeof(IMAGE_OPTIONAL_HEADER64));
+
     IMAGE_OPTIONAL_HEADER64 opt;
     s = pe_read_optional_header64(ctx, oh_off, &opt);
     if (s != PE_OK) PE_FAIL(s, "read optional header at %u failed", oh_off);
 
     if (opt.NumberOfRvaAndSizes > IMAGE_NUMBEROF_DIRECTORY_ENTRIES)
         PE_FAIL(PE_ERR_CORRUPT, "NumberOfRvaAndSizes %u > %d", opt.NumberOfRvaAndSizes, IMAGE_NUMBEROF_DIRECTORY_ENTRIES);
-
-    /* SizeOfOptionalHeader wrong for PE32+ : must be exactly 240 */
-    if (fh.SizeOfOptionalHeader != sizeof(IMAGE_OPTIONAL_HEADER64))
-        PE_FAIL(PE_ERR_CORRUPT, "SizeOfOptionalHeader %u != %zu (PE32+ requires 240)", fh.SizeOfOptionalHeader, sizeof(IMAGE_OPTIONAL_HEADER64));
 
     if (fh.NumberOfSections == 0 || fh.NumberOfSections > 96)
         PE_FAIL(PE_ERR_SECTIONS, "NumberOfSections %u out of range [1,96]", fh.NumberOfSections);
