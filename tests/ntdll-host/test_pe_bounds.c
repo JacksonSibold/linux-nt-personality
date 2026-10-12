@@ -85,6 +85,18 @@ static void copy_len_is_min_of_raw_and_virtual(void)
     MT_EXPECT_EQ(pe_copy_len(0x400, 0x400), 0x400);
 }
 
+/* LDR-6: the last section of an image is copied with raw size larger than
+ * virtual size. The copy must end at the virtual end, which is inside the
+ * image, and a section whose virtual end passes the image is refused. */
+static void section_copy_stays_in_image(void)
+{
+    unsigned long long image = 0x1200;
+    unsigned long long copy = pe_copy_len(0x400, 0x200);
+    MT_EXPECT(pe_range_fits(0x1000, copy, image));
+    MT_EXPECT(pe_range_fits(0x1000, 0x200, image));
+    MT_EXPECT(!pe_range_fits(0x1000, 0x400, image));
+}
+
 /* A zero VirtualSize means the raw size is used. */
 static void copy_len_zero_virtual_uses_raw(void)
 {
@@ -103,6 +115,7 @@ static const mt_case_t cases[] = {
     { "range_no_wrap", range_no_wrap },
     { "copy_len_is_min_of_raw_and_virtual", copy_len_is_min_of_raw_and_virtual },
     { "copy_len_zero_virtual_uses_raw", copy_len_zero_virtual_uses_raw },
+    { "section_copy_stays_in_image", section_copy_stays_in_image },
 };
 
 int main(void)

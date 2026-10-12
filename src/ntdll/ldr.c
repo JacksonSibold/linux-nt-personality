@@ -895,14 +895,22 @@ static NTSTATUS ldr_map_sections(ldr_module_t *mod)
         pe_status_t s = pe_section_get(ctx, i, &sv);
         if (s != PE_OK) return STATUS_INVALID_IMAGE_FORMAT;
 
+        /* LDR-6: the section must lie inside the image mapping, and the bytes
+         * copied from the file must lie inside the file. A raw size larger
+         * than the virtual size copies only the virtual size. */
+        unsigned long long vs = sv.virtual_size ? sv.virtual_size : sv.file_size;
+        if (!pe_range_fits(sv.virtual_address, vs, mod->image_size)) return STATUS_INVALID_IMAGE_FORMAT;
+        unsigned long long copy = pe_copy_len(sv.file_size, sv.virtual_size);
+        if (!pe_range_fits(sv.file_offset, copy, mod->file_size)) return STATUS_INVALID_IMAGE_FORMAT;
+
         u8 *va = base + sv.virtual_address;
-        if (sv.file_size > 0)
-            memcpy(va, mod->file_data + sv.file_offset, sv.file_size);
+        if (copy > 0)
+            memcpy(va, mod->file_data + sv.file_offset, (size_t)copy);
 
         /* Zero-fill tail of virtual size. */
-        if (sv.virtual_size > sv.file_size) {
-            size_t z = (size_t)sv.virtual_size - sv.file_size;
-            memset(va + sv.file_size, 0, z);
+        if (vs > copy) {
+            size_t z = (size_t)(vs - copy);
+            memset(va + copy, 0, z);
         }
     }
 
