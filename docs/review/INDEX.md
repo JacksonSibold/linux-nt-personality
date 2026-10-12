@@ -1,7 +1,7 @@
 # Review index: src/loader, src/kernel/fs, arch/x86/nt, src/kernel/nt
 
-Date: 2026-10-12. Branch: `haiku/review` (worktree `ntpers-review`, base `5eb8026`).
-Type: read-only static review. No source file was modified. No build, sanitizer, or runtime test was run. Every finding was checked against the cited lines.
+Date: 2026-10-12. Written on branch `haiku/review` (worktree `ntpers-review`, base `5eb8026`).
+Type: static review. The review itself modified no source file and ran no build, sanitizer, or test. Fixes made after it are recorded in each report's status lines and summarised under [Fix status](#fix-status). Fixes are not compiled or run against a kernel tree.
 
 ## Reports
 
@@ -13,13 +13,31 @@ Type: read-only static review. No source file was modified. No build, sanitizer,
 | NT kernel objects, handles, registry, sync, security, VM, I/O, IOCP, processes, dispatch (`src/kernel/nt`) | [kernel-nt.md](kernel-nt.md) | 7 | 9 | 18 | 1 |
 | **Total** | | **28** | **43** | **60** | **6** |
 
+## Fix status
+
+Counts are per report and come from the status lines in each report: `Fixed` means a commit fixed the finding, `Partly` means some part is fixed, `Blocked` means it waits for an owner decision, `No change` means the finding was checked and needs no change (or is not a defect), and `Open` means no fix is recorded. The finding IDs are local to each report, so the same defect can appear in two reports (see [decisions index](../decisions/INDEX.md)).
+
+| Report | Findings | Fixed | Partly | Blocked | No change | Open |
+|---|---|---|---|---|---|---|
+| [loader.md](loader.md) | 15 | 8 | 0 | 0 | 1 | 6 |
+| [kernel-fs.md](kernel-fs.md) | 24 | 12 | 4 | 1 | 0 | 7 |
+| [arch-x86-nt.md](arch-x86-nt.md) | 63 | 10 | 0 | 0 | 1 | 52 |
+| [kernel-nt.md](kernel-nt.md) | 35 | 6 | 1 | 0 | 2 | 26 |
+| **Total** | **137** | **36** | **5** | **1** | **4** | **91** |
+
+Totals match the severity table above. Open findings by severity are not split out here; each report lists them. The per-report `Fix status` sections name the commits.
+
+Decision records: [docs/decisions/INDEX.md](../decisions/INDEX.md) lists the 28 records with status (8 fixed, 14 open, 5 blocked, 1 no-change).
+
+The per-finding fixed markers are: kernel-fs K-1, K-4 to K-10, K-12, K-13, K-16, K-17 (`fixed`); loader L-1 to L-6, L-8, L-11 (`fixed`); arch D-1, IO-1, IO-2, IO-9, M-3, P-3, P-4, P-10, P-11, P-15 (`fixed`); kernel-nt H-1, O-1, S-1, R-1, IO-1, IOCP-2 (`fixed`) and H-2 (`partly fixed`).
+
 ## Top findings
 
-1. **Out-of-bounds kernel read on a crafted PE** (`src/kernel/fs/binfmt_pe.c:181`, also `:639`). The check `nt_off + 6 > (u32)n` wraps for `e_lfanew` values near 4 GiB, so the header read goes far past the buffer. Any user who can execute a file reaches this. See kernel-fs K-1.
-2. **Kernel pointer used as a section handle** (`arch/x86/nt/mm.c:1540`, `:1549`). `NtCreateSection` returns the object address to user space, and `NtMapViewOfSection` dereferences whatever integer it is given. This is both an address disclosure and a forgery path. See arch M-2. Reachability depends on the `nt_svc_*` wrapper, which is outside this directory.
-3. **Kernel heap read leaks into a filename** (`arch/x86/nt/nt_io.c:2272`). `FileNameLength` is not checked against the buffer, so a rename reads up to about 64 KiB past its allocation, and the bytes become part of the target name. See arch IO-1.
+1. **Out-of-bounds kernel read on a crafted PE** (`src/kernel/fs/binfmt_pe.c:181`, also `:639`). The check `nt_off + 6 > (u32)n` wraps for `e_lfanew` values near 4 GiB, so the header read goes far past the buffer. Any user who can execute a file reaches this. See kernel-fs K-1. **Fixed** in b8930c9 (exe path) and 4ffc5e5 (ntdll path).
+2. **Kernel pointer used as a section handle** (`arch/x86/nt/mm.c:1540`, `:1549`). `NtCreateSection` returns the object address to user space, and `NtMapViewOfSection` dereferences whatever integer it is given. This is both an address disclosure and a forgery path. See arch M-2. Reachability depends on the `nt_svc_*` wrapper, which is outside this directory. **Open** (decision records 0001 and 0021).
+3. **Kernel heap read leaks into a filename** (`arch/x86/nt/nt_io.c:2272`). `FileNameLength` is not checked against the buffer, so a rename reads up to about 64 KiB past its allocation, and the bytes become part of the target name. See arch IO-1. **Fixed** in 79d1de2.
 
-Also high and worth prioritising: uninitialised kernel heap returned to user by `NtQueryVirtualMemory` (`dispatch.c:258-264`, arch D-1); `NtReadFile` always returns success without reading (`nt_io.c:1894-1904`, arch IO-2); any process can open and terminate any other by ID with no access check (`proc_thread.c:1589-1592`, arch P-1); sections left writable and executable with no `mprotect` (`binfmt_pe.c:438`, `713`, kernel-fs K-3); and exec error returns after the point of no return (`binfmt_pe.c:906-942`, kernel-fs K-4).
+Also high and worth prioritising: uninitialised kernel heap returned to user by `NtQueryVirtualMemory` (`dispatch.c:258-264`, arch D-1), **fixed** in 16af7b7; `NtReadFile` always returned success without reading (`nt_io.c:1894-1904`, arch IO-2), **fixed** in 6da43d2; any process can open and terminate any other by ID with no access check (`proc_thread.c:1589-1592`, arch P-1), **open** (records 0002 and 0025); sections left writable and executable with no `mprotect` (`binfmt_pe.c:438`, `713`, kernel-fs K-3), **blocked** (record 0011); and exec error returns after the point of no return (`binfmt_pe.c:906-942`, kernel-fs K-4), **fixed** in 8eac32c (record 0012).
 
 ## Cross-cutting themes
 
