@@ -67,7 +67,7 @@ flowchart TD
     H --> I["start_thread: RIP = entry<br/>GS base = TEB"]
     I --> J["LdrInitializeThunk, ntdll_main.c<br/>map imports, patch IAT, TLS, DllMain"]
     J --> K["jump to exe entry point"]
-    K --> L["Nt* stub<br/>mov r10,rcx; mov eax,SSN; syscall"]
+    K --> L["Nt* stub<br/>mov r10,rcx, mov eax SSN, syscall"]
     L --> M["do_nt_syscall, dispatch.c<br/>see syscall-dispatch.md"]
 ```
 
