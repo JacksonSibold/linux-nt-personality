@@ -1,7 +1,7 @@
 # tests/kernel-host - src/kernel/nt unit tests on the Windows host
 
 Builds the `src/kernel/nt` unit tests with the UCRT gcc from MSYS2
-(`C:/Users/Jackson/repos/TOOLCHAIN.md`) and runs them on the host against
+(`/c/msys64/ucrt64/bin`) and runs them on the host against
 `kshim.c`, using the userspace branch (`-DUSERSPACE_KSHIM`, pthreads).
 
 ```sh
@@ -45,7 +45,15 @@ their working directory, so the scratch files they create stay there.
 
 ## Status
 
-| Program | Result |
+**Current state (2026-10-12): the build fails.** `make` stops at `build/kshim.o`.
+`src/kernel/nt/kshim.c:410-412` reads `st_atime`, `st_mtime` and `st_ctime`, because
+the non-`__linux__` branch of the `KSHIM_STAT_*` macros uses the MinGW names. The host
+`shim/sys/stat.h` declares only the Linux-layout `st_atim`, `st_mtim` and `st_ctim`.
+Commit `6efb8b7` made this change after the results below were recorded. The other
+module objects compile, but no test program links. The results below were recorded
+before `6efb8b7` and were not re-run.
+
+| Program | Result (recorded before `6efb8b7`) |
 |---|---|
 | `object_test` | builds, 9/9 pass |
 | `security_test` | builds, 41/41 ntsec and 609/609 negative pass |
@@ -106,9 +114,9 @@ These do not appear in `TESTS` or `BUILD_ONLY`.
   `src/kernel/nt/gen_ntstatus_table.py` produces. That script needs `python3`,
   which this machine lacks (`python3` resolves to a Store alias stub).
   `tools/ntstatus_inc.sh` extracts the same entry lines with awk and sed into
-  `build/`. It yields 519 entries. The generator's own sanity check expects
-  527, so the count differs from what the generator would say. Not verified
-  against the generator's output.
+  `build/`. On 2026-10-12 it yields 520 entries, the same entry lines as the tracked
+  `src/kernel/nt/ntstatus_table.inc`. The generator has no hard-coded expected
+  count (`ed17a53`).
 - **Pointer width.** Win64 is LLP64, so `long` is 32 bits. The test sources
   cast pointers to `unsigned long`, which gives `-Wpointer-to-int-cast`
   warnings. `-Wall -Wextra` is on and the warnings are left as they are.
@@ -119,7 +127,7 @@ These do not appear in `TESTS` or `BUILD_ONLY`.
   a multiple-definition error. `io_test` links `io.c`'s version, which is the
   file-aware one, by running `objcopy --weaken-symbol` on `nt_obj.o`. The
   kernel Makefile (`arch/x86/nt/Makefile`) lists `nt_io.o`, not `io.o`, and
-  there is no `nt_io.c` in the tree. Worth a look in the sources.
+  there is no `nt_io.c` in `src/kernel/nt`; `arch/x86/nt/nt_io.c` is the arch copy. Worth a look in the sources.
 - **Object identity.** `st_dev`, `st_ino` and `st_nlink` come from
   `GetFileInformationByHandle`. The UCRT `ino_t` is `unsigned short` and
   `dev_t` is `unsigned int`, so `st_ino` keeps only the low 16 bits of the
