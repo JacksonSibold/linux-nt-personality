@@ -167,6 +167,24 @@ status are indexed in [docs/decisions/INDEX.md](decisions/INDEX.md).
   `KSHIM_STAT_*` macros, which fall back to `st_atime` on non-Linux builds.
   The Linux branch is not compiled on this machine.
 
+## Host unit-test harness (tests/kernel-host)
+
+Status from a clean rebuild on 2026-10-12, recorded in
+[tests/kernel-host/README.md](../tests/kernel-host/README.md#status):
+
+- The build succeeds. Earlier notes that it "does not build" are stale.
+- `mman_test` (`shim/mman_test.c`, host shim self-test) is intermittent: 2 of
+  14 runs failed. One failure was the `NOREPLACE over hole + free` check (line
+  57, EEXIST) followed by a segfault; the other was a segfault alone. Not
+  root-caused. This is a shim issue (`tests/kernel-host/shim/mman_win.c`), not
+  a `src/` issue.
+- `io_test` `path_parsing` (io_test.c:558, mixed-case lookup) failed once in
+  13 runs. Not root-caused.
+- `registry_test` ran and passed on this run (10/10). The Windows Application
+  Control block mentioned in earlier notes was not hit.
+- `proc_thread_test` prints `leaks 27` before teardown; that is the live count,
+  and the at-exit count is 0.
+
 ## Top findings from the static review
 
 The review ([review/INDEX.md](review/INDEX.md)) covers four areas: the PE
