@@ -46,14 +46,21 @@ See [tools/README.md](../tools/README.md) for the full options and exit codes.
 ## Paths and environment
 
 Scripts find the repository from their own location, so a checkout can live
-anywhere. There is no absolute path to edit.
+anywhere. There is no absolute path to edit. `build/*.sh`, `build/Makefile`
+and `tools/` resolve the root from `$0` or `__file__`. `vm/` scripts resolve it
+the same way and read `BZIMAGE` and `INITRD` from the environment when set.
 
 | Variable | Default | Used by |
 |---|---|---|
-| `NTPERS_ROOT` | the parent of `build/` (the repository root) | `build/validate_criteria.py` (reads `tests/conformance/criteria.json`), `build/merge_dod.py` (reads `docs/phase0/dod-agent-*.md` and writes `tests/conformance/criteria.json`) |
+| `NTPERS_ROOT` | the parent of `build/` (the repository root) | `build/validate_criteria.py` (reads `tests/conformance/criteria.json`), `build/merge_dod.py` (reads `docs/phase0/dod-agent-*.md` and writes `tests/conformance/criteria.json`), `build/test_ntdll_pe.c` (opens `src/ntdll/syscall_table.def` when the working directory lacks it), `tests/conformance/test_pe_parse.c` (joins the probe list paths; unset means they resolve from the working directory) |
+| `NTPERS_LINUX` | `~/ntpers/linux-6.18` | `build/fix_gsbase.py` and `build/fix_iosb.py` (the Linux 6.18 tree in WSL that they patch) |
 
-Set `NTPERS_ROOT` to an absolute path only to run a script against a different
-tree, for example a copy or a fixture directory. Leave it unset otherwise.
+Set `NTPERS_ROOT` or `NTPERS_LINUX` to an absolute path only to run a script
+against a different tree, for example a copy or a fixture directory. Leave them
+unset otherwise.
+
+Paths under `/mnt/share`, `/tmp` and `/mnt/c/Windows` are fixed guest or WSL
+locations, not host checkout paths, and are not configurable.
 
 ## Other test suites (not run by CI)
 
@@ -63,7 +70,7 @@ tree, for example a copy or a fixture directory. Leave it unset otherwise.
 | `tests/kernel/` | PE test programs run inside a guest kernel through `binfmt_pe` (`make -C tests/kernel`) | `x86_64-w64-mingw32-gcc` and the VM setup in `vm/` |
 | `tests/conformance/` | `make -C tests/conformance test` builds and runs `test_nt_types.c` with `gcc -Werror` | gcc on Linux |
 | `tests/differential/` | Probes and checkers compared against golden output (`make -C tests/differential check`) | gcc; the `golden/` inputs the Makefile reads are not in this snapshot |
-| `build/Makefile` | Top-level targets `test`, `conformance` and `validate-criteria` | `PROJ` is a placeholder (`/path/to/ntpers-research`) and must be set or overridden |
+| `build/Makefile` | Top-level targets `test`, `conformance` and `validate-criteria` | `PROJ` defaults to the repository root derived from the Makefile's location. Override it only to target another tree |
 | `vm/` | Kernel build, initramfs, boot and freshness scripts | WSL Ubuntu and a Linux 6.18 tree at `~/ntpers/linux-6.18`. Read the scripts before running them, because some rebuild that tree |
 | `arch/x86/nt/Makefile` | Kernel object list for the NT personality | Only meaningful inside a kernel tree. See KNOWN-ISSUES.md |
 

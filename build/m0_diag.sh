@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Diagnose where the M0 PE dies. Called by the master during integration.
-PROJ="/path/to/ntpers-research"
+PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJ" || exit 1
 
 LOG=$(ls -t .dodresult/serial-*.log 2>/dev/null | head -1)

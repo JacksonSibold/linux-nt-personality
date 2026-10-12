@@ -121,6 +121,25 @@ class ValidateCriteriaTests(unittest.TestCase):
         self.assertIn("needs MS signing key", stdout)
         self.assertNotIn("DOD-NET-001 [", stdout.split("=== EXT-GATED")[1])
 
+    def test_non_ascii_text_prints_on_cp1252_stdout(self):
+        # A Windows console or redirected pipe can use cp1252. Printing a
+        # criterion with non-cp1252 characters must not crash the script.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            conf = root / "tests" / "conformance"
+            conf.mkdir(parents=True)
+            (conf / "criteria.json").write_text(json.dumps([
+                entry(id="DOD-NET-001", dependency_class="EXT-GATED",
+                      criterion="latency ≤ 5 ms → pass 中"),
+            ]), encoding="utf-8")
+            env = dict(os.environ, NTPERS_ROOT=str(root), PYTHONIOENCODING="cp1252")
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPT)], capture_output=True,
+                stdin=subprocess.DEVNULL, env=env,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+        self.assertIn("latency", proc.stdout.decode("utf-8"))
+
     def test_p0_by_domain_only_counts_p0(self):
         _, stdout, _ = run_validator([
             entry(id="DOD-NET-001", domain="NET", tier="P0"),

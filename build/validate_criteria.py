@@ -2,8 +2,13 @@
 """Validate criteria.json and print the authoritative DoD summary."""
 import json
 import os
+import sys
 from collections import Counter
 from pathlib import Path
+
+# Criteria text is non-ASCII. Write UTF-8 regardless of the console code page,
+# so a cp1252 console or a redirected pipe does not crash on print().
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # Repository root: NTPERS_ROOT if set, otherwise the parent of build/.
 ROOT = Path(os.environ.get("NTPERS_ROOT")

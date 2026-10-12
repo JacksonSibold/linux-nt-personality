@@ -3,7 +3,7 @@
 # that the native PE loader must handle.
 set -euo pipefail
 
-PROJ="/path/to/ntpers-research"
+PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="/tmp/pecorpus"
 mkdir -p "$OUT"
 

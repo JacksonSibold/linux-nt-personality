@@ -2,16 +2,17 @@
 #
 # Paths contain spaces, so every path reference is quoted.
 
-PROJ := /path/to/ntpers-research
 PYTHON ?= python3
-HARNESS := $(PROJ)/tests/harness/dodrun.py
-SELFTEST := $(PROJ)/tests/harness/selftest.py
-VALIDATE := $(PROJ)/build/validate_criteria.py
 
 .PHONY: all test conformance clean validate-criteria ntstatus-table
 
-# Repository root, derived from this Makefile's location (independent of PROJ).
+# Repository root, derived from this Makefile's location. PROJ defaults to it;
+# override PROJ only to point these targets at another tree.
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
+PROJ ?= $(ROOT)
+HARNESS := $(PROJ)/tests/harness/dodrun.py
+SELFTEST := $(PROJ)/tests/harness/selftest.py
+VALIDATE := $(PROJ)/build/validate_criteria.py
 NTSTATUS_SRC := src/ntdll/ntstatus_to_dos.c
 NTSTATUS_GEN := src/kernel/nt/gen_ntstatus_table.py
 NTSTATUS_INC := src/kernel/nt/ntstatus_table.inc

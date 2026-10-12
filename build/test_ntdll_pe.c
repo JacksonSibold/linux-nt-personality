@@ -98,6 +98,15 @@ static struct { char name[64]; uint32_t ssn; } g_map[256];
 static size_t g_map_cnt;
 static int g_ok, g_total;
 
+/* Open a repo-relative file under NTPERS_ROOT. NULL when the variable is unset. */
+static FILE *open_root_file(const char *rel) {
+    const char *root = getenv("NTPERS_ROOT");
+    char path[1024];
+    if (!root || !*root) return NULL;
+    if (snprintf(path, sizeof path, "%s/%s", root, rel) >= (int)sizeof path) return NULL;
+    return fopen(path, "r");
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr, "usage: %s ntdll.dll kernel32.dll\n", argv[0]);
@@ -124,7 +133,7 @@ int main(int argc, char **argv) {
     const char *exp_ptrs[512];
     size_t exp_count=0;
     FILE *def = fopen("src/ntdll/syscall_table.def","r");
-    if (!def) def = fopen("/path/to/ntpers-research/src/ntdll/syscall_table.def","r");
+    if (!def) def = open_root_file("src/ntdll/syscall_table.def");
     if (def) {
         char line[512];
         while (fgets(line, sizeof(line), def)) {
@@ -174,7 +183,7 @@ int main(int argc, char **argv) {
     // Build map name->SSN for stub verification
     g_map_cnt=0;
     def = fopen("src/ntdll/syscall_table.def","r");
-    if (!def) def = fopen("/path/to/ntpers-research/src/ntdll/syscall_table.def","r");
+    if (!def) def = open_root_file("src/ntdll/syscall_table.def");
     if (def) {
         char line[512];
         while (fgets(line, sizeof(line), def)) {

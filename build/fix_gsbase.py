@@ -23,10 +23,14 @@ We also bounds-check the TEB against TASK_SIZE_MAX. Writing a non-canonical or
 kernel address into a GS base is a privilege-escalation primitive, and the
 value ultimately derives from the PE image layout, so it must be validated.
 """
+import os
 import re
 import sys
 
-PATH = "/root/ntpers/linux-6.18/fs/binfmt_pe.c"
+# Linux 6.18 tree in WSL. NTPERS_LINUX overrides the default ~/ntpers/linux-6.18.
+LINUX_TREE = os.environ.get("NTPERS_LINUX") or os.path.join(
+    os.path.expanduser("~"), "ntpers", "linux-6.18")
+PATH = os.path.join(LINUX_TREE, "fs", "binfmt_pe.c")
 
 OLD = """        // start_thread zeroes thread.gsbase via elf_common_init, so set it after
         current->thread.gsbase = (unsigned long)state.teb;
