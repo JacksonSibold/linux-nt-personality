@@ -665,11 +665,16 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
     if (n < 64) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     if (pe_load_u16(hdr) != 0x5A4D) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u32 nt_off = pe_load_u32((u8*)hdr + 60);
-    if (nt_off > (u32)n || (u32)n - nt_off < 6) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
+    /* The file header runs through Characteristics at nt_off+22, so 24 bytes
+     * from nt_off must be inside the read (K-2). */
+    if (nt_off > (u32)n || (u32)n - nt_off < 24) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u32 sig = pe_load_u32((u8*)hdr + nt_off);
     if (sig != 0x4550) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u16 num_sections = pe_load_u16((u8*)hdr + nt_off + 6);
     u16 size_opt = pe_load_u16((u8*)hdr + nt_off + 20);
+    /* Every optional-header field read below (up to oh_off+88) must lie in
+     * the PE32+ optional header; a short one is not a valid image (K-2). */
+    if (size_opt < 112 || size_opt > 240) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     if (num_sections == 0 || num_sections > 96) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u32 oh_off = nt_off + 4 + 20;
     if (oh_off + size_opt > (u32)n) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
