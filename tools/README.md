@@ -146,3 +146,19 @@ python3 tools/update_doc_counts.py --write   # rewrite stale blocks in place
 Exit status: `0` all blocks current, `1` a block is stale, a block has no
 matching end marker, a source table does not add up, or a target is missing,
 `2` usage error. CI runs `--check`.
+
+## static_analyze.sh
+
+POSIX sh, not Python. Runs `gcc -fsyntax-only` with the strict warning set and
+`gcc -fanalyzer -c -o /dev/null` on each buildable unit in `src/loader`,
+`src/kernel/nt`, `src/ntdll` and `arch/x86/nt`, using the host-shim profiles
+from `tests/syntax/check.sh`, `tests/kernel-host` and `tests/ntdll-host`. It
+writes `build/static-analysis/` (`report.txt`, `summary.txt`, `units.txt`).
+Nothing is linked or run. Triage is in `docs/status/STATIC-ANALYSIS.md`.
+
+```
+sh tools/static_analyze.sh               # all in-scope units
+sh tools/static_analyze.sh FILE...       # specific files
+```
+
+Always exits `0`. CI runs it as an informational step.

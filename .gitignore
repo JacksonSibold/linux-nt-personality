@@ -17,3 +17,5 @@ tests/kernel-host/build-*/
 src/ntdll/out/
 tests/host/out-cov/
 tests/ntdll-host/out-cov/
+build/static-analysis*/
+build/fixed-stash/

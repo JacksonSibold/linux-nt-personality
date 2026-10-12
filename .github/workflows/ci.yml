@@ -27,6 +27,10 @@ jobs:
       - name: host-test
         run: make -C tests/host CC=gcc test
 
+      - name: static-analysis (informational)
+        continue-on-error: true
+        run: sh tools/static_analyze.sh
+
       - name: Shell script lint (bash -n, shellcheck)
         run: bash vm/lint.sh
 
