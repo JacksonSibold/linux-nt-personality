@@ -25,6 +25,23 @@ Exit status: `0` all checks pass, `1` at least one failure (each printed as
 `FAIL [check] path: detail`), `2` usage error. It does not perform the
 credential pattern scan described in `PUBLICATION_CHECKS.md`.
 
+## check_doc_links.py
+
+Checks relative links, images and reference links in every tracked `*.md`
+file, and `#anchor` fragments against the headings (GitHub-style slugs) or
+HTML `id`/`name` attributes of the target page. The target file must exist with
+the same letter case, so the result is the same on Windows and Linux. External
+URLs and links inside code are not checked.
+
+```
+python3 tools/check_doc_links.py              # full report
+python3 tools/check_doc_links.py --quiet      # summary line only
+python3 tools/check_doc_links.py --selftest   # built-in fixture
+```
+
+Exit status: `0` all links resolve, `1` at least one broken link (each printed
+as `FAIL [doc-link] path:line: (target) detail`), `2` usage error.
+
 ## ntstatus_lookup.py
 
 Looks up NTSTATUS values by symbolic name, hex or decimal. It reads
