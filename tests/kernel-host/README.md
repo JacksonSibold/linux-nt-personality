@@ -29,8 +29,10 @@ their working directory, so the scratch files they create stay there.
   - `sys/stat.h` - Linux-layout `struct stat` (`st_atim` etc. are
     `struct timespec`), `stat`/`fstat`, `S_IS*`.
   - `sys/mman.h`, `mman_win.c` - `mmap`/`munmap`/`mprotect`/`madvise` on
-    `VirtualAlloc`. Anonymous mappings only. `MAP_FIXED_NOREPLACE` is emulated
-    with `VirtualQuery`.
+    `VirtualAlloc`. Anonymous mappings only. `MAP_FIXED` and
+    `MAP_FIXED_NOREPLACE` are emulated per `VirtualQuery` region: a
+    MEM_RESERVE part left by a partial `munmap` is a hole and can be mapped
+    again (Linux semantics). `shim/mman_test.c` checks this.
   - `sys/syscall.h` - empty stub so `proc_thread.c` parses.
   - `posix_host.c` - `stat`/`fstat` through `GetFileInformationByHandle`,
     `open` through `CreateFileW` with `FILE_SHARE_DELETE` (so unlink-while-open
@@ -51,31 +53,47 @@ their working directory, so the scratch files they create stay there.
 | `security_test` | builds, 41/41 ntsec and 609/609 negative pass |
 | `registry_test` | builds, 10/10 pass |
 | `i2_test` | builds, 7/7 pass |
-| `io_test` | builds, 11/11 in most runs (see below) |
-| `mm_test` | builds, 12/14 pass (2 fail, see below) |
+| `io_test` | builds, 11/11 pass (20/20 runs, see below) |
+| `mm_test` | builds, 14/14 pass |
 | `sync_test` | builds, 21/21 pass, no leaks (slow, see below) |
-| `proc_thread_test` | builds (BUILD_ONLY); exits 0 before printing its summary (see below) |
+| `mman_test` | shim self-test (`shim/mman_test.c`), 3/3 pass |
+| `proc_thread_test` | builds (BUILD_ONLY); runs to its summary, 11/11 pass, exits 1 from a leak check (see below) |
 
-`check` runs `TESTS`. `proc_thread_test` is kept out of `TESTS` because its
-exit status (0) would look like a pass.
+`check` runs `TESTS` and `SHIM_TESTS`. `proc_thread_test` is kept out of
+`TESTS` because its exit status (1, from the leak check) fails the run.
+
+## Results of the 2026-10-12 investigation
+
+- **mm_test: shim bug, fixed in the shim.** Cause: `munmap` on part of an
+  allocation decommits it, and Windows keeps the decommitted part reserved
+  (VirtualQuery reports MEM_RESERVE). The shim then refused
+  `MAP_FIXED_NOREPLACE` over that hole with EEXIST, but mm.c had already freed
+  the range, so the next reserve failed with `STATUS_NO_MEMORY`. Reproduced
+  with plain `mmap`/`munmap` and no mm.c code. `mmap` now maps a range one
+  VirtualQuery region at a time, treating MEM_RESERVE holes as unmapped.
+  `shim/mman_test.c` covers this and fails on the old shim. mm.c was not
+  changed; its VAD invariants held throughout.
+- **io_test: the flake did not reproduce.** 20 runs of the trailing-dot check
+  all passed. The lookup is deterministic: `posix_host.c` opens paths with the
+  `\\?\` prefix, which keeps the trailing dot, so `trail.txt.` is not found.
+  The earlier one-off success is not explained. A separate, deterministic
+  failure was found and fixed: since 1d160e8, `byte_round_trip` read through a
+  write-only handle and failed on every run (10/11). It now opens read-write.
+- **proc_thread_test: no early exit reproduced.** The program runs to its
+  summary (11 passed, 0 failed) in 3 of 3 runs, and also against the shim from
+  before this change. `test_mutant_abandon_peer_terminate` passes. The
+  `pthread_cancel` theory in the earlier notes did not match. It exits 1
+  because the leak check after `ObCleanupObjectManager` reports 1 allocation
+  (the pre-cleanup count is 28 and varies between tests, so some are still
+  freed by background threads). Not resolved; `proc_thread_test` stays out of
+  `TESTS`.
 
 ## Known failures and limits
 
-- **mm_test** (2 of 14). `test_vad_split_coalesce_invariants` (mm_test.c:756)
-  and `test_probe_direct_windows_rule` (mm_test.c:863) fail on
-  `NtAllocateVirtualMemory(MEM_RESERVE)` with `STATUS_NO_MEMORY`. Cause is
-  likely `munmap` on a partial range. Windows can only decommit a part of a
-  reservation, so that part stays reserved and a later
-  `MAP_FIXED_NOREPLACE` at that address is refused. Whole allocations are
-  released. Not fixed.
-- **io_test** (intermittent). `io_test.c:505` expects `OBJECT_NAME_NOT_FOUND`
-  for `trail.txt.` when only `trail.txt` exists. One run returned success, and
-  the next run passed. Not investigated further.
-- **proc_thread_test** (build only). The program returns 0 after
-  `RUN test_mutant_abandon_peer_terminate` and never prints its summary. The
-  peer `NtTerminateThread` path calls `pthread_cancel` (`proc_thread.c:573`).
-  The likely cause is winpthreads cancellation of the wrong thread. Not
-  confirmed.
+- **sync_test** (slow). `wait_on_address_extended` runs 20000 iterations, each
+  with a `pthread_create` and `usleep(2000)`. On Windows that takes minutes.
+  `TIMEOUT` (default 3000 s) bounds each program in `check`.
+- **proc_thread_test** leaks 1 allocation at exit (see above).
 - **sync_test** (slow). `wait_on_address_extended` runs 20000 iterations, each
   with a `pthread_create` and `usleep(2000)`. On Windows that takes minutes.
   `TIMEOUT` (default 3000 s) bounds each program in `check`.
