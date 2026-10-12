@@ -129,6 +129,29 @@ re-tested to confirm those fixes.
   binary-searches it, so a misordered table gives wrong answers without an error.
 - Open: statuses with bit 28 set are normalised only when the top nibble is 0xD.
 
+## Kernel flags and syntax-check gaps
+
+- `TIF_NTABI` and `TIF_NTSUSPEND` are not defined by any source in this
+  repository's userspace model, and their values must come from the kernel
+  patches. `src/kernel/patches/0001-nt-personality-dispatch.patch` defines
+  `TIF_NTABI` as 29 in `arch/x86/include/asm/thread_info.h`. No patch under
+  `src/kernel/patches/` defines `TIF_NTSUSPEND`. The only value in the repo is
+  30, a fallback `#define` in `src/kernel/nt/proc_thread.c` and
+  `arch/x86/nt/proc_thread.c`, and `vm/rebuild_kdir.sh` adds it to the kernel
+  header. Set both from the patches. Do not take the 32/33 values in
+  `tests/syntax/shim/linux/thread_info.h`: those are syntax-check placeholders.
+  See the header comment in `src/kernel/fs/kshim.h`.
+- `src/kernel/fs/binfmt_pe_test.c` does not compile yet. It calls loader
+  helpers that do not exist in the repo (`pe_build_command_line`,
+  `pe_build_environment`, `pe_utf8_to_utf16`, `pe_prot_to_mmap`), uses
+  `PPEB`, `PTEB`, `RTL_USER_PROCESS_PARAMETERS` and `pe_load_state.pe`, none of
+  which are defined, and `binfmt_pe.c` reads `inode->i_mode` and calls
+  `i_uid_read`, which the shared fs stub does not declare. The userspace
+  model's kernel API signatures are fixed; the rest needs loader or stub changes.
+- `src/kernel/nt/kshim.c` depends on glibc `st_atim`. The file now uses
+  `KSHIM_STAT_*` macros, which fall back to `st_atime` on non-Linux builds.
+  The Linux branch is not compiled on this machine.
+
 ## Top findings from the static review
 
 The review ([review/INDEX.md](review/INDEX.md)) covers four areas: the PE
