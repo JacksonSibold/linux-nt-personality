@@ -13,9 +13,9 @@ Status: findings marked `Fixed in <sha>` were fixed in this branch, with a faili
 |---|---|
 | High | 20 |
 | Medium | 23 |
-| Low | 20 |
+| Low | 21 |
 | Info | 7 |
-| **Total** | **70** |
+| **Total** | **71** |
 
 Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium).
 
@@ -193,6 +193,10 @@ The most important point is LDR-1. The real ntdll (MinGW) build compiles only st
 ### RT-5 [Info] Allocator never reuses memory
 - `ntdll_runtime.c:153` (`free`) is a no-op on a 2 MB bump heap shared by the loader, unwinder and exception code. Long-running processes will exhaust it.
 - Fix: a real allocator, or a stated limit.
+
+### RT-6 [Low] _exit spins on hlt, a privileged instruction
+- `ntdll_runtime.c:199` (base): `void _exit(int c){ (void)c; while(1) { __asm__ volatile("hlt"); } }`. `hlt` is privileged, so in user mode it faults rather than exiting. The exit status is also discarded.
+- Fix: call `NtTerminateProcess(NtCurrentProcess(), c)`, as `ExitProcess` does before its `hlt` fallback (`kernel32.c:172`).
 
 ### C runtime (`msvcrt.c`)
 
