@@ -1209,7 +1209,7 @@ static NTSTATUS ldr_resolve_export_in_module(winldr_ctx_t *ctx,
                 continue;
             if (pe_read_asciiz(&mod->pe, name_file_off, &sym, &sym_len) != PE_OK)
                 continue;
-            if (ldr_strcasecmp(sym, name) == 0) {
+            if (strcmp(sym, name) == 0) { /* case-sensitive, as Windows (LDR-7) */
                 u16 ord = pe_file_u16(&mod->pe, ords_off + i * 2);
                 func_index = ord;
                 break;
