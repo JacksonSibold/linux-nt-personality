@@ -85,11 +85,12 @@ class LineTracer:
 def measure(run, paths):
     """Call run() with tracing on. Returns (run's result, {key: set of hit lines})."""
     tracer = LineTracer(paths)
+    previous = sys.gettrace()  # the unit run may itself be traced
     sys.settrace(tracer.global_trace)
     try:
         result = run()
     finally:
-        sys.settrace(None)
+        sys.settrace(previous)
     return result, tracer.hits
 
 
@@ -134,6 +135,7 @@ def render(rows, repo=REPO):
 def selftest():
     """Measure a fixture module with one branch never taken. Returns an exit status."""
     fails = []
+    before = sys.gettrace()
 
     def check(cond, label):
         if not cond:
@@ -173,8 +175,8 @@ def selftest():
         check("cov_fixture_mod.py" in text and "TOTAL" in text, "rendered table")
         check("66.7%" in text, "fixture percentage rendered")
 
-    # The tracer must stop when the measured call returns.
-    check(sys.gettrace() is None, "tracer left installed")
+    # The tracer that was installed before measure() must be back in place.
+    check(sys.gettrace() is before, "measure() did not restore the previous tracer")
 
     if fails:
         for f in fails:

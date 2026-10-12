@@ -8,6 +8,7 @@ import contextlib
 import importlib.util
 import io
 import pathlib
+import sys
 import tempfile
 import unittest
 
@@ -79,6 +80,23 @@ class RenderTests(unittest.TestCase):
     def test_path_outside_repo_keeps_full_name(self):
         name = coverage_report.display_name(pathlib.Path("/elsewhere/x.py"), repo=REPO)
         self.assertTrue(name.endswith("x.py"))
+
+
+class MeasureTests(unittest.TestCase):
+    def test_nested_measure_restores_outer_tracer(self):
+        # The unit run is itself traced, and this file's selftest nests measure().
+        # Measure must hand back whatever tracer was installed before it.
+        previous = sys.gettrace()
+
+        def outer(frame, event, arg):
+            return None
+
+        sys.settrace(outer)
+        try:
+            coverage_report.measure(lambda: None, [])
+            self.assertIs(sys.gettrace(), outer)
+        finally:
+            sys.settrace(previous)
 
 
 class CliTests(unittest.TestCase):
