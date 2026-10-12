@@ -918,101 +918,259 @@ pe_status_t pe_imports_walk(const pe_context_t *ctx,
 /* -------------------------------------------------------------------------- */
 /* Exports                                                                    */
 /* -------------------------------------------------------------------------- */
+/* Export directory tables, validated once and shared by the walker and the
+ * name lookup.  present is 0 when the directory is absent (not an error). */
+typedef struct pe_export_tables {
+    int present;
+    pe_data_directory_t dir;
+    u32 dir_end;               /* dir.rva + dir.size                          */
+    IMAGE_EXPORT_DIRECTORY ed;
+    u32 funcs_off;             /* file offset of AddressOfFunctions           */
+    u32 names_off;             /* file offset of AddressOfNames (0 if none)   */
+    u32 ords_off;              /* file offset of AddressOfNameOrdinals        */
+} pe_export_tables_t;
+
+/* Bounds-checked file offset of element `index` in a table whose elements are
+ * `width` bytes.  The sum is done in 64 bits so it cannot wrap. */
+static pe_status_t pe_export_slot(const pe_context_t *ctx, u32 base_off,
+                                  u32 index, u32 width, u32 *out)
+{
+    u64 off = (u64)base_off + (u64)index * width;
+    if (off + width > ctx->size) return PE_ERR_BOUNDS;
+    *out = (u32)off;
+    return PE_OK;
+}
+
+static pe_status_t pe_export_tables_get(const pe_context_t *ctx,
+                                        pe_export_tables_t *t)
+{
+    pe_status_t s;
+    u32 exp_off;
+
+    t->present = 0;
+    s = pe_directory_get(ctx, IMAGE_DIRECTORY_ENTRY_EXPORT, &t->dir);
+    if (s != PE_OK) return s;
+    if (t->dir.rva == 0 || t->dir.size == 0) return PE_OK;
+    t->present = 1;
+
+    if (t->dir.size < sizeof(IMAGE_EXPORT_DIRECTORY))
+        return PE_ERR_CORRUPT;
+    t->dir_end = t->dir.rva + t->dir.size;
+    if (t->dir_end < t->dir.rva) return PE_ERR_BOUNDS;
+
+    s = pe_rva_to_offset(ctx, t->dir.rva, &exp_off);
+    if (s != PE_OK) return s;
+    s = pe_read_export_directory(ctx, exp_off, &t->ed);
+    if (s != PE_OK) return s;
+
+    /* Name ordinals are 16-bit indexes into the function table, so a table
+     * with more than PE_MAX_EXPORT_ENTRIES entries cannot be addressed.  The
+     * walker's per-function bitmap is sized for this limit. */
+    if (t->ed.NumberOfFunctions > PE_MAX_EXPORT_ENTRIES ||
+        t->ed.NumberOfNames > PE_MAX_EXPORT_ENTRIES)
+        return PE_ERR_CORRUPT;
+
+    if (t->ed.NumberOfFunctions != 0 &&
+        (u64)t->ed.NumberOfFunctions * 4 > ctx->size)
+        return PE_ERR_BOUNDS;
+    if (t->ed.NumberOfNames != 0 &&
+        ((u64)t->ed.NumberOfNames * 4 > ctx->size ||
+         (u64)t->ed.NumberOfNames * 2 > ctx->size))
+        return PE_ERR_BOUNDS;
+
+    s = pe_rva_to_offset(ctx, t->ed.AddressOfFunctions, &t->funcs_off);
+    if (s != PE_OK) return s;
+
+    t->names_off = 0;
+    t->ords_off = 0;
+    if (t->ed.NumberOfNames != 0) {
+        s = pe_rva_to_offset(ctx, t->ed.AddressOfNames, &t->names_off);
+        if (s != PE_OK) return s;
+        s = pe_rva_to_offset(ctx, t->ed.AddressOfNameOrdinals, &t->ords_off);
+        if (s != PE_OK) return s;
+    }
+    return PE_OK;
+}
+
+/* Reads the name-table entry n: its function index and, when it is a valid
+ * name, the name bytes.  Fails if the ordinal does not index a function. */
+static pe_status_t pe_export_name_at(const pe_context_t *ctx,
+                                     const pe_export_tables_t *t, u32 n,
+                                     u32 *ord, const char **name, size_t *len)
+{
+    u32 nptr, optr, name_rva, name_off;
+    pe_status_t s = pe_export_slot(ctx, t->names_off, n, 4, &nptr);
+    if (s != PE_OK) return s;
+    s = pe_export_slot(ctx, t->ords_off, n, 2, &optr);
+    if (s != PE_OK) return s;
+
+    *ord = pe_file_u16(ctx, optr);
+    if (*ord >= t->ed.NumberOfFunctions) return PE_ERR_CORRUPT;
+
+    name_rva = pe_file_u32(ctx, nptr);
+    s = pe_rva_to_offset(ctx, name_rva, &name_off);
+    if (s != PE_OK) return s;
+    return pe_read_asciiz(ctx, name_off, name, len);
+}
+
+/* Fills ent for function index i.  name is NULL for an unnamed export.  On
+ * return ent->rva is 0 when the function slot is empty (no export). */
+static pe_status_t pe_export_build(const pe_context_t *ctx,
+                                   const pe_export_tables_t *t, u32 i,
+                                   const char *name, size_t name_len,
+                                   pe_export_entry_t *ent)
+{
+    u32 func_off, fwd_off;
+    pe_status_t s = pe_export_slot(ctx, t->funcs_off, i, 4, &func_off);
+    if (s != PE_OK) return s;
+
+    memset(ent, 0, sizeof *ent);
+    ent->ordinal = t->ed.Base + i;
+    ent->rva = pe_file_u32(ctx, func_off);
+    ent->name = name;
+    ent->name_len = name_len;
+    if (ent->rva == 0) return PE_OK;
+
+    /* An RVA inside the export directory is a forwarder string. */
+    if (ent->rva >= t->dir.rva && ent->rva < t->dir_end) {
+        s = pe_rva_to_offset(ctx, ent->rva, &fwd_off);
+        if (s != PE_OK) return s;
+        s = pe_read_asciiz(ctx, fwd_off, &ent->forwarder, &ent->forwarder_len);
+        if (s != PE_OK) return s;
+    }
+    return PE_OK;
+}
+
+/* Byte-wise ASCII order, shorter name first on a common prefix. */
+static int pe_name_compare(const char *a, size_t al, const char *b, size_t bl)
+{
+    size_t n = al < bl ? al : bl;
+    int c = n ? memcmp(a, b, n) : 0;
+    if (c != 0) return c;
+    return al < bl ? -1 : (al > bl ? 1 : 0);
+}
+
+/* Each export is delivered once, in two groups: first the named exports in
+ * name-table order (the first name for a function wins), then the unnamed
+ * functions in ordinal order.  The cost is O(NumberOfFunctions +
+ * NumberOfNames), and the bitmap below is the only extra storage. */
 pe_status_t pe_exports_walk(const pe_context_t *ctx,
                             pe_export_cb cb,
                             void *user)
 {
+    pe_export_tables_t t;
+    pe_export_entry_t ent;
+    u64 named[PE_MAX_EXPORT_ENTRIES / 64];
+    pe_status_t s;
+
     if (!ctx || !cb) return PE_ERR_BOUNDS;
+    s = pe_export_tables_get(ctx, &t);
+    if (s != PE_OK || !t.present) return s;
 
-    pe_data_directory_t exp_dir;
-    pe_status_t s = pe_directory_get(ctx, IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_dir);
-    if (s != PE_OK) return s;
-    if (exp_dir.rva == 0 || exp_dir.size == 0) return PE_OK;
-    if (exp_dir.size < sizeof(IMAGE_EXPORT_DIRECTORY))
-        return PE_ERR_CORRUPT;
+    memset(named, 0, sizeof named);
 
-    u32 exp_off;
-    s = pe_rva_to_offset(ctx, exp_dir.rva, &exp_off);
-    if (s != PE_OK) return s;
+    for (u32 n = 0; n < t.ed.NumberOfNames; ++n) {
+        u32 ord;
+        const char *name;
+        size_t name_len;
+        s = pe_export_name_at(ctx, &t, n, &ord, &name, &name_len);
+        if (s != PE_OK) return s;
+        if (named[ord / 64] & ((u64)1 << (ord % 64)))
+            continue;
+        named[ord / 64] |= (u64)1 << (ord % 64);
 
-    IMAGE_EXPORT_DIRECTORY ed;
-    s = pe_read_export_directory(ctx, exp_off, &ed);
-    if (s != PE_OK) return s;
-
-    u32 dir_rva_end = exp_dir.rva + exp_dir.size;
-    if (dir_rva_end < exp_dir.rva) return PE_ERR_BOUNDS;
-
-    /* Validate arrays. */
-    if (ed.NumberOfFunctions != 0) {
-        u64 bytes = (u64)ed.NumberOfFunctions * 4;
-        if (bytes > ctx->size) return PE_ERR_BOUNDS;
-    }
-    if (ed.NumberOfNames != 0) {
-        u64 bytes = (u64)ed.NumberOfNames * 4;
-        if (bytes > ctx->size) return PE_ERR_BOUNDS;
-        bytes = (u64)ed.NumberOfNames * 2;
-        if (bytes > ctx->size) return PE_ERR_BOUNDS;
-    }
-
-    u32 funcs_off;
-    s = pe_rva_to_offset(ctx, ed.AddressOfFunctions, &funcs_off);
-    if (s != PE_OK) return s;
-
-    u32 names_off = 0;
-    if (ed.NumberOfNames != 0) {
-        s = pe_rva_to_offset(ctx, ed.AddressOfNames, &names_off);
+        s = pe_export_build(ctx, &t, ord, name, name_len, &ent);
+        if (s != PE_OK) return s;
+        if (ent.rva == 0) continue;
+        s = cb(user, &ent);
         if (s != PE_OK) return s;
     }
 
-    u32 ords_off = 0;
-    if (ed.NumberOfNames != 0) {
-        s = pe_rva_to_offset(ctx, ed.AddressOfNameOrdinals, &ords_off);
+    for (u32 i = 0; i < t.ed.NumberOfFunctions; ++i) {
+        if (named[i / 64] & ((u64)1 << (i % 64)))
+            continue;
+        s = pe_export_build(ctx, &t, i, NULL, 0, &ent);
         if (s != PE_OK) return s;
-    }
-
-    for (u32 i = 0; i < ed.NumberOfFunctions; ++i) {
-        u32 func_off = funcs_off + i * 4;
-        if (func_off < funcs_off) return PE_ERR_BOUNDS;
-        pe_status_t s2 = pe_check_read(ctx, func_off, 4);
-        if (s2 != PE_OK) return s2;
-        u32 export_rva = pe_file_u32(ctx, func_off);
-        if (export_rva == 0) continue;
-
-        pe_export_entry_t ent = {0};
-        ent.ordinal = ed.Base + i;
-        ent.rva = export_rva;
-
-        if (export_rva >= exp_dir.rva && export_rva < dir_rva_end) {
-            u32 fwd_off;
-            s2 = pe_rva_to_offset(ctx, export_rva, &fwd_off);
-            if (s2 != PE_OK) return s2;
-            s2 = pe_read_asciiz(ctx, fwd_off, &ent.forwarder, &ent.forwarder_len);
-            if (s2 != PE_OK) return s2;
-        }
-
-        /* Find a name mapping to this function index. */
-        for (u32 n = 0; n < ed.NumberOfNames; ++n) {
-            u32 name_rva_ptr = names_off + n * 4;
-            u32 ord_ptr = ords_off + n * 2;
-            if (name_rva_ptr < names_off || ord_ptr < ords_off)
-                continue;
-            if (pe_check_read(ctx, name_rva_ptr, 4) != PE_OK) continue;
-            if (pe_check_read(ctx, ord_ptr, 2) != PE_OK) continue;
-            u16 ord = pe_file_u16(ctx, ord_ptr);
-            if (ord != i) continue;
-            u32 name_rva = pe_file_u32(ctx, name_rva_ptr);
-            u32 name_off;
-            if (pe_rva_to_offset(ctx, name_rva, &name_off) != PE_OK) continue;
-            s2 = pe_read_asciiz(ctx, name_off, &ent.name, &ent.name_len);
-            if (s2 != PE_OK) return s2;
-            break;
-        }
-
+        if (ent.rva == 0) continue;
         s = cb(user, &ent);
         if (s != PE_OK) return s;
     }
 
     return PE_OK;
+}
+
+/* Name lookup.  Binary search over the name table, which the PE specification
+ * requires to be sorted in ASCII order.  A miss is only trusted when the table
+ * is found sorted; otherwise the names are scanned linearly, which is bounded by
+ * PE_MAX_EXPORT_ENTRIES names of at most PE_MAX_SYMBOL_NAME bytes each. */
+pe_status_t pe_export_find(const pe_context_t *ctx,
+                           const char *name,
+                           size_t name_len,
+                           pe_export_entry_t *out)
+{
+    pe_export_tables_t t;
+    pe_status_t s;
+    u32 lo, hi, n;
+    int sorted = 1;
+
+    if (!ctx || !name || !out) return PE_ERR_BOUNDS;
+    if (name_len == 0 || name_len > PE_MAX_SYMBOL_NAME) return PE_ERR_NOT_FOUND;
+
+    s = pe_export_tables_get(ctx, &t);
+    if (s != PE_OK) return s;
+    if (!t.present || t.ed.NumberOfNames == 0) return PE_ERR_NOT_FOUND;
+
+    lo = 0;
+    hi = t.ed.NumberOfNames;
+    while (lo < hi) {
+        u32 mid = lo + (hi - lo) / 2;
+        u32 ord;
+        const char *mname;
+        size_t mlen;
+        int c;
+
+        s = pe_export_name_at(ctx, &t, mid, &ord, &mname, &mlen);
+        if (s != PE_OK) return s;
+        c = pe_name_compare(mname, mlen, name, name_len);
+        if (c == 0) {
+            s = pe_export_build(ctx, &t, ord, mname, mlen, out);
+            if (s != PE_OK) return s;
+            return out->rva == 0 ? PE_ERR_NOT_FOUND : PE_OK;
+        }
+        if (c < 0)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+
+    /* Miss.  Check that the table is sorted; if it is, the miss is final. */
+    for (n = 1; n < t.ed.NumberOfNames && sorted; ++n) {
+        u32 ord_a, ord_b;
+        const char *a, *b;
+        size_t al, bl;
+        s = pe_export_name_at(ctx, &t, n - 1, &ord_a, &a, &al);
+        if (s != PE_OK) return s;
+        s = pe_export_name_at(ctx, &t, n, &ord_b, &b, &bl);
+        if (s != PE_OK) return s;
+        if (pe_name_compare(a, al, b, bl) > 0)
+            sorted = 0;
+    }
+    if (sorted) return PE_ERR_NOT_FOUND;
+
+    /* Unsorted table: linear fallback. */
+    for (n = 0; n < t.ed.NumberOfNames; ++n) {
+        u32 ord;
+        const char *mname;
+        size_t mlen;
+        s = pe_export_name_at(ctx, &t, n, &ord, &mname, &mlen);
+        if (s != PE_OK) return s;
+        if (pe_name_compare(mname, mlen, name, name_len) != 0)
+            continue;
+        s = pe_export_build(ctx, &t, ord, mname, mlen, out);
+        if (s != PE_OK) return s;
+        return out->rva == 0 ? PE_ERR_NOT_FOUND : PE_OK;
+    }
+    return PE_ERR_NOT_FOUND;
 }
 
 /* -------------------------------------------------------------------------- */
