@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #else
+#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
@@ -166,6 +167,18 @@ static inline void *kshim_section_map(struct kshim_section_backing *b, void *add
 
 struct nt_mm g_nt_mm;
 int          g_nt_mm_initialized = 0;
+
+#ifdef __KERNEL__
+/* Initialise the global VAD table once, at boot. The lazy checks in the
+ * service entry points then never race a first use on two CPUs (M-6). */
+static int __init ntmm_kernel_init(void)
+{
+    ntmm_init(&g_nt_mm);
+    g_nt_mm_initialized = 1;
+    return 0;
+}
+core_initcall(ntmm_kernel_init);
+#endif
 
 #ifndef __KERNEL__
 #define ntmm_lock(mm)   spin_lock(&(mm)->lock)
