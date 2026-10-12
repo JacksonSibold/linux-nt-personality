@@ -2130,7 +2130,9 @@ NTSTATUS nt_svc_NtQueryInformationFile(HANDLE FileHandle,
 	struct nt_file_object *file;
 	NTSTATUS status;
 	ULONG retlen = 0;
+#ifdef __KERNEL__
 	void *kbuf = NULL;
+#endif
 
 	if (!IoStatusBlock || !FileInformation)
 		return STATUS_ACCESS_VIOLATION;
@@ -2305,7 +2307,9 @@ NTSTATUS nt_svc_NtSetInformationFile(HANDLE FileHandle,
 {
 	struct nt_file_object *file;
 	NTSTATUS status;
+#ifdef __KERNEL__
 	void *kbuf = NULL;
+#endif
 
 	if (!IoStatusBlock || !FileInformation)
 		return STATUS_ACCESS_VIOLATION;
