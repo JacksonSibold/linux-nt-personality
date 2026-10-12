@@ -21,7 +21,7 @@ python -m unittest discover tests/unit
 python tools/check_repo.py
 ```
 
-- `tests/unit` holds 7 test modules (91 tests). They cover the scripts in
+- `tests/unit` holds 7 test modules (98 tests). They cover the scripts in
   `build/` (`fix_gsbase.py`, `fix_iosb.py`, `gen_ntdll_def.py`, `gen_stubs.py`,
   `merge_dod.py`, `validate_criteria.py`) and
   `src/kernel/nt/gen_ntstatus_table.py`. The tests run scripts as subprocesses
@@ -73,48 +73,45 @@ See [tools/README.md](../tools/README.md) for the full options and exit codes.
 | `vm/` | VM and kernel build scripts |
 | `docs/` | Architecture, research notes, module reference (`docs/modules/`), review reports (`docs/review/`) |
 
-## Known gap: `ntstatus_table.inc` is not tracked
+## Generated file: `ntstatus_table.inc`
 
-`src/kernel/nt/ntstatus_kernel.c` includes `ntstatus_table.inc` at line 22. That
-file is not in the repository, and nothing in the tree creates it except the
-generator. Until the generator runs, the kernel NTSTATUS-to-DOS table cannot be
-compiled from this snapshot.
+`src/kernel/nt/ntstatus_kernel.c` includes `src/kernel/nt/ntstatus_table.inc`
+at line 22. The `.inc` is generated from the userspace table and is tracked in
+the repository, so the kernel source compiles from a checkout. Do not edit the
+`.inc` by hand. Edit `src/ntdll/ntstatus_to_dos.c` and regenerate:
+
+```
+make -f build/Makefile ntstatus-table
+```
+
+`make` runs `python3` by default. Pass `PYTHON=` to use another interpreter.
+The rule rebuilds the `.inc` when either `ntstatus_to_dos.c` or the generator
+changes. It runs the generator from the repository root, so the header's source
+path is stable.
 
 How the generator works, from `src/kernel/nt/gen_ntstatus_table.py`:
 
 1. It reads the userspace source of truth, `src/ntdll/ntstatus_to_dos.c`, and
    finds the array `static const NTSTATUS_TO_DOS NtStatusToDosErrorTable[] = { ... };`.
    If the array is not found, it exits with status 1.
-2. It collects entries of the form `{ NAME, 123L }` with a regular expression.
-   It prints the count and warns if the count is not 527, but it continues.
-3. It writes `src/kernel/nt/ntstatus_table.inc` (or the path given). The file
-   starts with an `AUTO-GENERATED - DO NOT EDIT` comment and a line
-   `Entries: N`. The body is the array lines that contain `STATUS_`, `0x`, or
-   start with `{`, with comments and blank lines removed. Other lines are
-   dropped.
+2. It parses every line of the array body that starts with `{`. An entry is
+   `{ NAME, VALUE }`, where NAME is a `STATUS_` identifier or a cast hex literal
+   such as `(NTSTATUS)0xc0000225L`, and VALUE may carry U/L suffixes such as
+   `1168LL`. A line that starts with `{` but does not parse, or a line that
+   mentions `STATUS_` or `0x` without the leading brace, stops the run with
+   status 1 and writes nothing.
+3. It writes the file with LF line endings. The header starts with an
+   `AUTO-GENERATED - DO NOT EDIT` comment and a line `Entries: N`. The body is
+   the entries, verbatim and in source order.
 
-It does not sort the entries and does not check their order, although
-`ntstatus_kernel.c` binary-searches the table, so it must stay sorted. It also does not evaluate
-the `STATUS_` names, so the entry count is a check on the syntax only.
+The generator does not sort the entries and does not evaluate the `STATUS_`
+names. `ntstatus_kernel.c` binary-searches the table, so it must stay sorted
+by signed value. The generator does not check that. `--expect N` makes the run
+fail unless exactly N entries are found; the Makefile rule does not pass it.
 
-Generate the file from the repository root:
-
-```
-python src/kernel/nt/gen_ntstatus_table.py \
-  --input src/ntdll/ntstatus_to_dos.c \
-  --output src/kernel/nt/ntstatus_table.inc
-```
-
-When this was written, the run printed `Found 519 entries` and the
-`expected 527` warning, and exited with status 0. The 527 figure is in the
-script and in `tests/unit/test_gen_ntstatus_table.py`, so the current source
-and the expected count disagree. This was not resolved.
-
-Notes:
-
-- No Makefile runs the generator. Run it by hand after editing
-  `ntstatus_to_dos.c`.
-- The generated `.inc` is not in `.gitignore`. Do not commit it unless the
-  project decides to track it, because it would show as an untracked file.
-- Regenerate the file whenever `ntstatus_to_dos.c` changes, or the kernel and
-  userspace tables can drift apart.
+The table has 520 entries. An earlier run reported 519 and warned against a
+hard-coded 527. The count was wrong because the regex dropped `1168LL`, and
+527 had no basis in the source. The unit test
+`test_committed_inc_matches_generator_output` fails if the tracked `.inc` no
+longer matches the generator's output, so commit the regenerated `.inc` together
+with any change to `ntstatus_to_dos.c`.
