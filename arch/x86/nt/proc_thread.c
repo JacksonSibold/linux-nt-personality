@@ -1198,6 +1198,11 @@ NTSTATUS nt_svc_NtCreateThreadEx(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess
         if (!target) return STATUS_INVALID_HANDLE;
     }
 
+    /* Cross-process creation is not implemented: the new task always runs in
+     * the caller's address space, so any other target is refused (P-8). */
+    if (target != cur_proc)
+        return STATUS_NOT_SUPPORTED;
+
     /* CREATE_SUSPENDED is 0x00000004 (winbase) and also 0x00000001 for NtCreateThread.
      * Check both plus generic 0x1 to match Windows via both APIs.
      */
