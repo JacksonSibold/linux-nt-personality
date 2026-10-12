@@ -1,19 +1,9 @@
 #!/usr/bin/env python3
 """freshness.py - shared freshness gate for all harness entry points"""
-import re, subprocess, sys, pathlib, platform
+import subprocess, sys, pathlib, platform
 
-_DRIVE_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$")
-
-def windows_to_wsl_path(path: str) -> str:
-    """Translate a Windows drive path to its WSL mount path (C:/x/y becomes /mnt/c/x/y).
-
-    POSIX paths are returned with only separators normalised.
-    """
-    m = _DRIVE_RE.match(path)
-    if m:
-        rest = m.group(2).replace("\\", "/")
-        return f"/mnt/{m.group(1).lower()}/{rest}"
-    return path.replace("\\", "/")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _paths import windows_to_wsl_path  # noqa: E402  (re-exported for callers)
 
 def check_freshness() -> bool:
     """Check source-to-image freshness via vm/freshness.sh. Return True if fresh."""
