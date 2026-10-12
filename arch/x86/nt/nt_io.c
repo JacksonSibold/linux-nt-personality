@@ -2263,6 +2263,9 @@ static NTSTATUS ntio_set_rename(struct nt_file_object *file,
 		return STATUS_INFO_LENGTH_MISMATCH;
 
 	ri = (PFILE_RENAME_INFORMATION)buf;
+	if ((ri->FileNameLength & 1) ||
+	    ri->FileNameLength > len - offsetof(FILE_RENAME_INFORMATION, FileName))
+		return STATUS_INFO_LENGTH_MISMATCH;
 	uname.Buffer = ri->FileName;
 	uname.Length = (USHORT)ri->FileNameLength;
 	uname.MaximumLength = uname.Length;
