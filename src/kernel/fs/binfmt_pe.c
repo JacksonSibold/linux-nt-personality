@@ -52,6 +52,8 @@ static inline void nt_enter_personality(struct task_struct *tsk) { (void)tsk; }
 #define PE_DEFAULT_STACK_RES 0x100000ULL
 #define PE_DEFAULT_STACK_COM 0x1000ULL
 #define PE_TLS_SLOT_COUNT 64
+/* Upper bound on the base-relocation directory read into kernel memory (K-11). */
+#define PE_MAX_RELOC_BYTES (16u << 20)
 
 /* Helpers to load little endian */
 static inline u16 pe_load_u16(const u8 *p) { return (u16)p[0] | ((u16)p[1] << 8); }
@@ -494,6 +496,7 @@ static int pe_apply_relocs(struct pe_load_state *st)
     u32 reloc_rva = pe_load_u32((u8*)st->headers_buf + oh_off + 112 + IMAGE_DIRECTORY_ENTRY_BASERELOC*8);
     u32 reloc_size = pe_load_u32((u8*)st->headers_buf + oh_off + 112 + IMAGE_DIRECTORY_ENTRY_BASERELOC*8 + 4);
     if (reloc_rva == 0 || reloc_size == 0) return 0;
+    if (reloc_size > PE_MAX_RELOC_BYTES) return -ENOEXEC;
     // Translate RVA to file offset by scanning sections
     u32 reloc_off = 0;
     bool found = false;
@@ -808,7 +811,8 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                     }
                 }
                 if (!found && reloc_rva < size_headers) { reloc_off = reloc_rva; found = true; }
-                if (found && (u64)reloc_off + reloc_size <= (u64)fsize) {
+                if (found && reloc_size <= PE_MAX_RELOC_BYTES &&
+                    (u64)reloc_off + reloc_size <= (u64)fsize) {
                     void *buf = kmalloc(reloc_size, GFP_KERNEL);
                     if (buf) {
                         ssize_t nn = pe_kernel_read(f, reloc_off, buf, reloc_size);
