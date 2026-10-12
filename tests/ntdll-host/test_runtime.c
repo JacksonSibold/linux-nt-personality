@@ -13,6 +13,7 @@
 
 void *malloc(size_t sz);
 void *calloc(size_t n, size_t sz);
+void *realloc(void *ptr, size_t sz);
 
 static int g_failures;
 
@@ -79,6 +80,39 @@ static void calloc_zeroes_block(void)
     }
 }
 
+/* realloc to a larger size copies only the old block (RT-2). The byte past the
+ * old 16-byte block belongs to the next block (0xAA) and must not be copied;
+ * the new tail is untouched memory, so it stays zero. */
+static void realloc_grow_copies_only_old_block(void)
+{
+    unsigned char *a = malloc(16);
+    unsigned char *b = malloc(16);
+    CHECK(a != NULL && b != NULL);
+    if (a && b) {
+        memset(a, 0x11, 16);
+        memset(b, 0xAA, 16);
+        unsigned char *n = realloc(a, 64);
+        CHECK(n != NULL);
+        if (n) {
+            CHECK(n[0] == 0x11 && n[15] == 0x11);
+            CHECK(n[16] == 0 && n[63] == 0);
+        }
+    }
+}
+
+/* realloc to a smaller size keeps the leading bytes. */
+static void realloc_shrink_keeps_prefix(void)
+{
+    unsigned char *a = malloc(64);
+    CHECK(a != NULL);
+    if (a) {
+        memset(a, 0x22, 64);
+        unsigned char *n = realloc(a, 8);
+        CHECK(n != NULL);
+        if (n) CHECK(n[0] == 0x22 && n[7] == 0x22);
+    }
+}
+
 typedef void (*test_fn)(void);
 
 static const test_fn tests[] = {
@@ -86,6 +120,8 @@ static const test_fn tests[] = {
     malloc_rejects_huge_request,
     malloc_returns_usable_block,
     calloc_zeroes_block,
+    realloc_grow_copies_only_old_block,
+    realloc_shrink_keeps_prefix,
 };
 
 int main(void)

@@ -141,16 +141,21 @@ static void heap_init(void) {
     }
 }
 
+/* Each block is preceded by a 16-byte header holding its rounded size, so
+ * realloc knows how much of the old block is valid (RT-2). */
+#define BLOCK_HDR 16
+
 void *malloc(size_t sz) {
     if (sz==0) sz=1;
     /* Reject before rounding: sz + 15 must not wrap. */
     if (sz > HEAP_SIZE) return NULL;
     sz = (sz + 15) & ~ (size_t)15; /* 16-byte align */
     heap_init();
-    if (g_heap_off + sz > HEAP_SIZE) return NULL;
-    void *p = g_heap + g_heap_off;
-    g_heap_off += sz;
-    return p;
+    if (sz > HEAP_SIZE - BLOCK_HDR || g_heap_off > HEAP_SIZE - BLOCK_HDR - sz) return NULL;
+    uint8_t *blk = g_heap + g_heap_off;
+    g_heap_off += BLOCK_HDR + sz;
+    *(size_t *)blk = sz;
+    return blk + BLOCK_HDR;
 }
 void free(void *p) { (void)p; /* bump allocator: no free */ }
 void *calloc(size_t n, size_t sz) {
@@ -164,11 +169,10 @@ void *calloc(size_t n, size_t sz) {
 void *realloc(void *ptr, size_t sz) {
     if (!ptr) return malloc(sz);
     if (sz==0) { free(ptr); return NULL; }
+    size_t old = *(size_t *)((uint8_t *)ptr - BLOCK_HDR);
     void *np = malloc(sz);
-    if (np && ptr) {
-        /* We don't know old size; copy up to sz (over-copy may be harmless for bump? but do up to sz) */
-        memcpy(np, ptr, sz);
-    }
+    /* Copy only what the old block holds. On failure np is NULL and ptr stays valid. */
+    if (np) memcpy(np, ptr, old < sz ? old : sz);
     return np;
 }
 char *strdup(const char *s) {
