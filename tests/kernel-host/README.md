@@ -8,7 +8,7 @@ Builds the `src/kernel/nt` unit tests with the UCRT gcc from MSYS2
 export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
 cd tests/kernel-host
 make check          # build and run the programs listed in TESTS
-make                # build only (includes BUILD_ONLY)
+make                # build only (includes BUILD_ONLY, currently empty)
 ```
 
 Outputs go to `build/` (ignored by git). Test programs run with `build/` as
@@ -53,14 +53,13 @@ their working directory, so the scratch files they create stay there.
 | `security_test` | builds, 41/41 ntsec and 609/609 negative pass |
 | `registry_test` | builds, 10/10 pass |
 | `i2_test` | builds, 7/7 pass |
-| `io_test` | builds, 11/11 pass (20/20 runs, see below) |
+| `io_test` | builds; `access_denied_on_valid_handle` passes; path_parsing lookup checks are flaky (see below) |
 | `mm_test` | builds, 14/14 pass |
 | `sync_test` | builds, 21/21 pass, no leaks (slow, see below) |
 | `mman_test` | shim self-test (`shim/mman_test.c`), 3/3 pass |
-| `proc_thread_test` | builds (BUILD_ONLY); runs to its summary, 11/11 pass, exits 1 from a leak check (see below) |
+| `proc_thread_test` | 12/12 pass, 10 of 10 consecutive runs, no leak at exit |
 
-`check` runs `TESTS` and `SHIM_TESTS`. `proc_thread_test` is kept out of
-`TESTS` because its exit status (1, from the leak check) fails the run.
+`check` runs `TESTS` and `SHIM_TESTS`.
 
 ## Results of the 2026-10-12 investigation
 
@@ -79,21 +78,23 @@ their working directory, so the scratch files they create stay there.
   The earlier one-off success is not explained. A separate, deterministic
   failure was found and fixed: since 1d160e8, `byte_round_trip` read through a
   write-only handle and failed on every run (10/11). It now opens read-write.
-- **proc_thread_test: no early exit reproduced.** The program runs to its
-  summary (11 passed, 0 failed) in 3 of 3 runs, and also against the shim from
-  before this change. `test_mutant_abandon_peer_terminate` passes. The
-  `pthread_cancel` theory in the earlier notes did not match. It exits 1
-  because the leak check after `ObCleanupObjectManager` reports 1 allocation
-  (the pre-cleanup count is 28 and varies between tests, so some are still
-  freed by background threads). Not resolved; `proc_thread_test` stays out of
-  `TESTS`.
+- **proc_thread_test: real leak, fixed.** The leaked allocation is the
+  `nt_thread` that `thread_trampoline` creates (`sync.c:134`, found by the
+  allocation-site tags in `kshim.h`). Self-termination (`pthread_exit`) did
+  not reach the trampoline's cleanup, so the `nt_thread` was never freed.
+  `thread_sync_release()` in `proc_thread.c` now frees it on every exit path.
+  `test_suspend_counts` also waited on a sleeper thread that was still running
+  at teardown; it now waits for the thread's exit path.
 
 ## Known failures and limits
 
 - **sync_test** (slow). `wait_on_address_extended` runs 20000 iterations, each
   with a `pthread_create` and `usleep(2000)`. On Windows that takes minutes.
   `TIMEOUT` (default 3000 s) bounds each program in `check`.
-- **proc_thread_test** leaks 1 allocation at exit (see above).
+- **io_test lookup flake.** The trailing-dot, `\\?\` probe and mixed-case
+  checks in `path_parsing` sometimes pass and sometimes fail across runs with
+  the same binary (seen at io_test.c lines 506 and 558). Not investigated;
+  `make check` can fail on it.
 - **sync_test** (slow). `wait_on_address_extended` runs 20000 iterations, each
   with a `pthread_create` and `usleep(2000)`. On Windows that takes minutes.
   `TIMEOUT` (default 3000 s) bounds each program in `check`.
