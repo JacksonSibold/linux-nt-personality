@@ -65,6 +65,9 @@ static NTSTATUS nt_dup_unicodestring(PCUNICODE_STRING src, PUNICODE_STRING dst)
     USHORT max_len;
     if (len & (sizeof(WCHAR)-1))
         return STATUS_OBJECT_NAME_INVALID;
+    /* len + the terminator must fit in USHORT: 0xFFFE + 2 wraps to 0 */
+    if (len > (USHORT)(0xFFFF - sizeof(WCHAR)))
+        return STATUS_NAME_TOO_LONG;
     max_len = (USHORT)(len + sizeof(WCHAR));
     /* zero-length allowed */
     if (len == 0) {
