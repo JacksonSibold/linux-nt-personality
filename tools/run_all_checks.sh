@@ -6,11 +6,12 @@
 #   1. unit tests            python -m unittest discover tests/unit
 #   2. check_repo            tools/check_repo.py
 #   3. check_doc_links       tools/check_doc_links.py
-#   4. provenance_scan       tools/provenance_scan.py --check (if the file exists)
-#   5. lint                  vm/lint.sh
-#   6. syntax                tests/syntax/check.sh
-#   7. host                  make -C tests/host test
-#   8. kernel-host           make -C tests/kernel-host check
+#   4. doc counts            tools/update_doc_counts.py --check
+#   5. provenance_scan       tools/provenance_scan.py --check (if the file exists)
+#   6. lint                  vm/lint.sh
+#   7. syntax                tests/syntax/check.sh
+#   8. host                  make -C tests/host test
+#   9. kernel-host           make -C tests/kernel-host check
 #
 # Python: $PYTHON when set and working, otherwise the WinPython path below,
 # otherwise python3 or python. A candidate counts only if it runs.
@@ -96,13 +97,14 @@ if [ -n "$PY" ]; then
     run_section unit "$PY" -m unittest discover tests/unit
     run_section check_repo "$PY" tools/check_repo.py
     run_section check_doc_links "$PY" tools/check_doc_links.py
+    run_section doc_counts "$PY" tools/update_doc_counts.py --check
     if [ -f tools/provenance_scan.py ]; then
         run_section provenance "$PY" tools/provenance_scan.py --check
     else
         skip provenance "tools/provenance_scan.py not present"
     fi
 else
-    for n in unit check_repo check_doc_links provenance; do
+    for n in unit check_repo check_doc_links doc_counts provenance; do
         skip "$n" "no working Python (set PYTHON or install WinPython)"
     done
 fi
