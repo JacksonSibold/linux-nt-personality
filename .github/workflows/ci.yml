@@ -26,3 +26,6 @@ jobs:
 
       - name: Repository hygiene checks
         run: python tools/check_repo.py
+
+      - name: Documentation links and anchors
+        run: python tools/check_doc_links.py

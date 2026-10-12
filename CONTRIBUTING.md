@@ -10,6 +10,7 @@ please read the [README](README.md) first for its status and limits.
    ```
    python -m unittest discover tests/unit
    python tools/check_repo.py
+   python tools/check_doc_links.py
    ```
 
 2. Keep commits small and focused, one logical change per commit.
@@ -26,8 +27,9 @@ The full list of tools and test suites, and how to run them, is in
   that mix CRLF and bare LF.
 - Give each `.c` header an include guard or `#pragma once`.
 - If you change `src/ntdll/ntstatus_to_dos.c`, regenerate the kernel table with
-  `src/kernel/nt/gen_ntstatus_table.py` as described in
-  [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#known-gap-ntstatus_tableinc-is-not-tracked).
+  `make -f build/Makefile ntstatus-table` and commit the updated
+  `src/kernel/nt/ntstatus_table.inc` in the same commit. See
+  [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#generated-file-ntstatus_tableinc).
 - Do not add a new known gap silently. Record it in the relevant
   `docs/modules/` page and in [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md).
 

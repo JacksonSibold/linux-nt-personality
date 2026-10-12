@@ -9,8 +9,8 @@ Diff direction used below: `git diff --no-index arch/x86/nt/F src/kernel/nt/F`. 
 | File | In arch | In src | Status |
 |---|---|---|---|
 | `mm.c` | yes | yes | differs: 41 ins, 84 del, 11 hunks |
-| `dispatch.c` | yes | yes | differs: 1 ins, 2 del, 2 hunks |
-| `proc_thread.c` | yes | yes | differs: 2 ins, 22 del, 8 hunks |
+| `dispatch.c` | yes | yes | identical since the port (section 6) |
+| `proc_thread.c` | yes | yes | identical since the port (section 6) |
 | `nt_services.c` | yes | yes | identical |
 | `weak.c` | yes | yes | identical |
 | `nt_internal.h` | yes | yes | identical |
@@ -23,6 +23,8 @@ Diff direction used below: `git diff --no-index arch/x86/nt/F src/kernel/nt/F`. 
 Src-only files that the arch Makefile needs but arch does not contain: `handle.c`, `kshim.c`, `iocp.c`, `object.c`, `sync.c`, `security.c`, `nt_obj.c`, `ntstatus_kernel.c`, `debugfs_tests.c`. `stubs.c` is generated (empty) by the scripts. The arch tree on its own cannot build; it is an overlay that depends on the copy step.
 
 ## 2. Real differences per file
+
+This section describes the trees before the port in section 6. For `dispatch.c` and `proc_thread.c` the differences listed here are resolved. `mm.c` is still different, as section 6 explains.
 
 ### mm.c (125 changed lines, 11 hunks)
 
@@ -37,12 +39,12 @@ The largest divergence. Three groups:
 
 Net: neither copy is a superset. Arch is the one with the security fix, src has the coalescing change and the attrs checks.
 
-### dispatch.c (3 changed lines, 2 hunks)
+### dispatch.c (3 changed lines, 2 hunks; resolved by the port)
 
 - Line 258 (`NtQueryVirtualMemory` wrapper): arch `kzalloc`, src `kmalloc`. Arch is the fix from commit `16af7b7`. Src still copies uninitialised kernel heap to user space (review D-1).
 - `nt_exit_personality` (line 304 in arch): arch calls `nt_set_current_thread(NULL)` after abandoning mutants. Src does not. Arch is the one that clears the thread pointer.
 
-### proc_thread.c (24 changed lines, 8 hunks)
+### proc_thread.c (24 changed lines, 8 hunks; resolved by the port)
 
 Src lacks every hardening commit that arch has on this branch:
 
@@ -104,6 +106,8 @@ Nothing in this document changes source. The order of work above is a suggestion
 ## 6. Status
 
 Updated 2026-10-12 on branch `haiku/port` (step 1 of section 5). Arch files were not deleted.
+
+Re-checked on branch `haiku/docsfix` with `git diff --no-index -- arch/x86/nt/F src/kernel/nt/F`: `dispatch.c`, `proc_thread.c`, `nt_services.c`, `weak.c`, `nt_internal.h`, `nt_service_list.h` and `mm.h` are identical in both trees. `mm.c` shows 40 insertions and 82 deletions in 10 hunks (default context), as below.
 
 ### Ported into `src/kernel/nt` (one commit per arch hunk group)
 
