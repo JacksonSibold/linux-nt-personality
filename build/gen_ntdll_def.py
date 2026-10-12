@@ -29,7 +29,7 @@ with open(out_def, 'w') as out:
     for exp in ["AddVectoredExceptionHandler", "RemoveVectoredExceptionHandler",
                 "AddVectoredContinueHandler", "RemoveVectoredContinueHandler",
                 "SetUnhandledExceptionFilter", "UnhandledExceptionFilter",
-                "NtRaiseException", "_NtRaiseException",
+                "_NtRaiseException",
                 "KiUserExceptionDispatcher", "KiUserApcDispatcher",
                 "NtCurrentTeb"]:
         out.write(f"    {exp}\n")
@@ -38,4 +38,4 @@ with open(out_def, 'w') as out:
     out.write(f"    _DllMainCRTStartup\n")
     out.write(f"    DllMainCRTStartup\n")
 
-print(f"Generated {out_def} with {len(entries)*2 + 31} exports")
+print(f"Generated {out_def} with {len(entries)*2 + 30} exports")

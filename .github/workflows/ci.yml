@@ -45,3 +45,6 @@ jobs:
 
       - name: Documentation links and anchors
         run: python tools/check_doc_links.py
+
+      - name: Syscall table parity
+        run: python tools/check_syscall_tables.py

@@ -13,9 +13,9 @@ Status: findings marked `Fixed in <sha>` were fixed in this branch, with a faili
 |---|---|
 | High | 20 |
 | Medium | 24 |
-| Low | 21 |
-| Info | 7 |
-| **Total** | **72** |
+| Low | 22 |
+| Info | 8 |
+| **Total** | **74** |
 
 Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium). Win32 shim pass (branch `haiku/ntdllfix`): K32-1, K32-2, K32-3 and K32-5 (High) fixed. CRT-1 (High) partly fixed (1f334ce), and CRT-3 (High) fixed (1224d00); the CRT-1 export removal needs owner. Bounds pass (branch `haiku/bounds`): MAIN-1 (74b4a14), MAIN-2 (e7f8b2b), LDR-5 (5045b9c) and LDR-6 (d6007f6) fixed with `src/ntdll/pe_bounds.h`; K32-7 (d2d36fe) fixed. Loader pass (branch `haiku/ldrfix`): LDR-2 (a18c03e) and LDR-4 (bef4d79) are fixed, with the address logic in `src/ntdll/ldr_pure.h` and host tests in `test_ldr_pure`. LDR-1 and LDR-3 (High) have design records 0029 and 0031 and are not implemented; each records why (needs VM). Records 0030 and 0032 are marked implemented. `docs/decisions/INDEX.md` lists 0029 to 0032. The MAIN-2 test binary `test_pe_bounds` is build-only on this host (see MAIN-1), so its test cases have not been run here.
 
@@ -405,6 +405,14 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 - `ntdll.def:372` and the other `.def` files export `_DllMainCRTStartup@12`. `ntdll_main.c:36` defines `_DllMainCRTStartup` without a decoration, and x64 builds do not decorate `__stdcall` names. The export names a symbol that is not defined, which the link may reject. Not linked here, so this is unverified.
 - Fix: export `_DllMainCRTStartup` (without `@12`), or drop the entry.
 
+
+### DEF-2 [Low] ntdll.def out of step with syscall_table.def (Fixed in eef2786 and 00e4093)
+- `ntdll.def` had no `NtRtlNtStatusToDosError` or `ZwRtlNtStatusToDosError` export, although `syscall_table.def` has that row (SSN 0x1db) and `generated_stubs.S` has its stub. `NtRaiseException` was listed twice: once for the table row and once from the misc list in `build/gen_ntdll_def.py`, which made the generator output repeat it too. Found by `tools/check_syscall_tables.py`, which now runs the parity check on every representation.
+- Fix: the two missing lines are added, the duplicate is removed, and the generator's misc list no longer repeats `NtRaiseException`. The generator output now matches the checked-in file. The name `NtRtlNtStatusToDosError` itself is not a documented NT service name, so its export is only what the table asks for. Whether that row should be renamed is a question for the table's owner.
+
+### SYS-1 [Info] ArgTypes column disagrees with Arity in five rows
+- `syscall_table.def` lists a different number of argument types from `Arity` for `NtCreateThread` (8 arity, 9 types), `NtQueryDirectoryFile` (11, 10), `NtQueryDirectoryFileEx` (10, 9), `NtSetTimer` (8, 7) and `NtAccessCheckAndAuditAlarm` (11, 10). The kernel service lists agree with `Arity` on all 171 entries, so the stub and dispatch argument counts are consistent. No generator reads the type column.
+- Fix: correct the type lists from the signatures, not from memory. Not changed here. `tools/check_syscall_tables.py` reports these as information.
 
 ### Status codes (`ntstatus.h`, `ntstatus_to_dos.c`)
 
