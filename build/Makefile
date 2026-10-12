@@ -3,7 +3,7 @@
 # Paths contain spaces, so every path reference is quoted.
 
 PROJ := /path/to/ntpers-research
-PYTHON := python3
+PYTHON ?= python3
 HARNESS := $(PROJ)/tests/harness/dodrun.py
 SELFTEST := $(PROJ)/tests/harness/selftest.py
 VALIDATE := $(PROJ)/build/validate_criteria.py
