@@ -19,7 +19,7 @@ Each statement links to the file it comes from. These are recorded results; they
 
 ## Repository map
 
-The snapshot tracks <!-- counts:tracked_files:begin -->494<!-- counts:tracked_files:end --> files (`git ls-files`).
+The snapshot tracks <!-- counts:tracked_files:begin -->496<!-- counts:tracked_files:end --> files (`git ls-files`).
 
 - `src/`: kernel-personality components, loader, ntdll and Win32 experiments.
 - `arch/`: architecture-specific integration.
@@ -43,7 +43,7 @@ python tools/update_doc_counts.py --check
 sh tests/syntax/check.sh
 ```
 
-- **`tests/unit`** holds <!-- counts:unit_modules:begin -->22<!-- counts:unit_modules:end --> test modules with <!-- counts:unit_tests:begin -->401<!-- counts:unit_tests:end --> `test_` functions, counted from the source. The suite passed on 2026-10-12. They cover the scripts in `build/`, `src/kernel/nt/gen_ntstatus_table.py` and `tools/`. The tests use temporary fixtures and do not modify the tree. CI runs them.
+- **`tests/unit`** holds <!-- counts:unit_modules:begin -->23<!-- counts:unit_modules:end --> test modules with <!-- counts:unit_tests:begin -->432<!-- counts:unit_tests:end --> `test_` functions, counted from the source. The suite passed on 2026-10-12. They cover the scripts in `build/`, `src/kernel/nt/gen_ntstatus_table.py` and `tools/`. The tests use temporary fixtures and do not modify the tree. CI runs them.
 - **`tools/check_repo.py`** checks the files listed by `git ls-files`: no binary over 1 MiB, every `.py` compiles, every `.c` with a same-named `.h` has an include guard, and no text file mixes CRLF and bare LF. It exits 1 on any failure. `--quiet` prints only the summary. It does not run the credential scan in `PUBLICATION_CHECKS.md`. CI runs it.
 - **`tests/syntax/check.sh`** runs `gcc -fsyntax-only -Wall -Wextra -std=c11` over every `src/kernel/nt/*.c`, `src/loader/*.c`, `src/kernel/fs/*.c` and `arch/x86/nt/*.c` file, with the shims in `tests/syntax/shim/`. It prints PASS or FAIL per file and exits with the number of failing files. Set `CC=` to choose the compiler. It is not run by CI.
 
