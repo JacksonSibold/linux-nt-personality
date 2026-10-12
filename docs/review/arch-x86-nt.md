@@ -46,6 +46,7 @@ Most High items fall into four groups: information disclosure to user space (ker
 ## Build
 
 ### B-1 [High] kernel_stubs.c does not compile
+- **Status:** decision recorded in docs/decisions/0027-arch-kernel-stubs-file.md; not implemented (kernel source, out of scope for this batch).
 - `arch/x86/nt/kernel_stubs.c:1` contains only the token `test` followed by CRLF. `arch/x86/nt/Makefile:36` builds `kernel_stubs.o` whenever `CONFIG_NT_PERSONALITY` is set, so the build fails.
 - No `kernel_stubs.c` exists in `src/kernel/nt/`, so nothing overrides it.
 - Fix: delete the file and its Makefile line, or restore the intended content.
@@ -109,6 +110,7 @@ Checked and found correct in dispatch.c: argument fetch from the user stack (`di
 ## mm.c (virtual memory manager)
 
 ### M-1 [High] One global VAD table for every process; ProcessHandle is ignored
+- **Status:** decision recorded in docs/decisions/0020-arch-global-vad-table.md; not implemented (kernel source, out of scope for this batch).
 - `arch/x86/nt/mm.c:167`: `struct nt_mm g_nt_mm;` is a single address space. The comment at 165 calls it "singleton for tests".
 - Every service ignores its process handle: `(void)ProcessHandle;` at `mm.c:836` (NtAllocateVirtualMemory), `1133` (NtFreeVirtualMemory), `1271` (NtProtectVirtualMemory), `1353` (NtQueryVirtualMemory), `1553` (NtMapViewOfSection), `1610` (NtUnmapViewOfSection).
 - Operations therefore act on the caller's address space while being recorded in the shared table. Cross-process operations are not possible, and the table of one process is visible to all others.
@@ -116,6 +118,7 @@ Checked and found correct in dispatch.c: argument fetch from the user stack (`di
 - Fix: put the `nt_mm` in the per-process `nt_eprocess`, resolve `ProcessHandle` through the object manager, and reset on exec.
 
 ### M-2 [High] Section handle is a kernel pointer; handles are dereferenced without a lookup
+- **Status:** decision recorded in docs/decisions/0021-arch-section-handle-pointer.md; not implemented (kernel source, out of scope for this batch).
 - `arch/x86/nt/mm.c:1540`: `*SectionHandle = (HANDLE)sec;` hands user space the address of a `kzalloc` object. This is a kernel address disclosure (defeats KASLR) and the handle is forgeable.
 - `mm.c:1549`: `NtMapViewOfSection` does `struct nt_section *sec = (struct nt_section *)SectionHandle;` and then dereferences `sec->attributes` (1550-1568). Any integer passed as the handle is treated as a kernel pointer. Only a NULL check is applied.
 - Reachability: the service table lists `NtCreateSection` and `NtMapViewOfSection` (`nt_service_list.h:31`, `34`). The `nt_svc_*` wrappers that call these functions are not in this directory, so their handle handling was not reviewed.
@@ -183,12 +186,14 @@ Checked and found correct in mm.c: `NtAllocateVirtualMemory` argument validation
 ## proc_thread.c (processes and threads)
 
 ### P-1 [High] Object open and handle creation have no access checks
+- **Status:** decision recorded in docs/decisions/0025-arch-process-thread-open-access.md; not implemented (kernel source, out of scope for this batch).
 - `arch/x86/nt/proc_thread.c:1264`: `ObCreateHandle(cur_proc, thr->obj, 0x1FFFFF, 0, &h)`. The caller's `DesiredAccess` is ignored (`(void)DesiredAccess;` at line 1208), so every new thread handle carries full access.
 - `proc_thread.c:1589-1592` (NtOpenProcess) and `1611-1614` (NtOpenThread): `ObFindProcessByPid(pid)` / `ObFindThreadByTid(tid)` locate any process or thread by ID, and the handle is created with `DesiredAccess ? DesiredAccess : 0x1FFFFF`. The requested rights are granted verbatim, with no owner or security check, and a zero mask means full access.
 - Result: any NT process can open and terminate any other NT process by ID (`NtTerminateProcess`, `proc_thread.c:1545-1572`).
 - Fix: check the caller against the target's owner or a security descriptor, map generic rights, and grant only what was requested.
 
 ### P-2 [High] TEB is kernel heap memory; it is used as the GS base and returned to user space
+- **Status:** decision recorded in docs/decisions/0026-arch-teb-kernel-heap.md; not implemented (kernel source, out of scope for this batch).
 - `arch/x86/nt/proc_thread.c:1007-1010`: the TEB is `kzalloc(2 * PAGE_SIZE)`, and `thr->teb_base` is set to that kernel address.
 - `proc_thread.c:1316`: `nt_write_gsbase(child, thr->teb_base)` installs that kernel address as the child's GS base. Every GS-relative access (TEB, TLS) in user space then faults. `binfmt_pe.c:590` allocates the initial thread's TEB with `vm_mmap`, so the two paths disagree.
 - `proc_thread.c:1817`: `NtQueryInformationThread` returns `target->teb_base` in `TebBaseAddress` to user space. That leaks a kernel heap address.
@@ -270,16 +275,19 @@ Checked and found correct in proc_thread.c: `NtQueryInformationProcess` class 0 
 - Fix: delete the early block. Make the delete check return only in its own branch.
 
 ### IO-3 [High] Handle table is global; handles are shared across all processes
+- **Status:** decision recorded in docs/decisions/0022-arch-global-file-handle-table.md; not implemented (kernel source, out of scope for this batch).
 - `arch/x86/nt/nt_io.c:348`: `static struct ntio_handle_entry ntio_handles[NTIO_MAX_HANDLES];` is one table for the whole system. `ntio_handle_lookup` (`nt_io.c:402-430`), `ntio_handle_close` (`nt_io.c:488-505`) and `NtClose` have no owner check.
 - Any NT process can read, write, query, close or duplicate another process's file handles if it knows the number.
 - Fix: put the table in `nt_eprocess` and check the owner on every lookup.
 
 ### IO-4 [High] No access rights enforced on read, write, query, set, flush, or disposition
+- **Status:** decision recorded in docs/decisions/0023-arch-file-access-rights.md; not implemented (kernel source, out of scope for this batch).
 - `arch/x86/nt/nt_io.c:1890` (NtReadFile), `1962` (NtWriteFile), `2150` (NtQueryInformationFile), `2327` (NtSetInformationFile), `2416` (NtFlushBuffersFile): `ntio_handle_lookup(FileHandle, 0)` passes `required = 0`, so the granted access on the handle is never checked.
 - A handle opened with only `SYNCHRONIZE` can be written. `ntio_set_disposition` (`nt_io.c:2247-2257`) sets `delete_pending` without any `DELETE` check.
 - Fix: pass the right needed by each operation (`FILE_READ_DATA`, `FILE_WRITE_DATA | FILE_APPEND_DATA`, `FILE_READ_ATTRIBUTES`, `FILE_WRITE_ATTRIBUTES`, `DELETE`) to `ntio_handle_lookup`.
 
 ### IO-5 [High] FILE_SUPERSEDE deletes the existing file before the open can succeed
+- **Status:** decision recorded in docs/decisions/0024-arch-supersede-unlink-order.md; not implemented (kernel source, out of scope for this batch).
 - `arch/x86/nt/nt_io.c:1106-1108` (kernel branch): `kshim_vfs_unlink(path)` runs in `ntio_apply_disposition` for `FILE_SUPERSEDE`. That function is called at `nt_io.c:1303`, before the share check (`1489`) and before the open succeeds.
 - If the share check or the open then fails, the original file has already been deleted.
 - Fix: open the existing file first and replace it only after success, or use a rename of the old inode into a temporary name that is removed on success.

@@ -66,10 +66,12 @@ The parser in this directory is careful about bounds for most reads (`pe_check_r
 - Confirm against the PE/COFF specification whether x64 `EndAddress` has reserved low bits. If not, remove the mask. If yes, add a comment citing the spec.
 
 ### L-9 [Low] Public unchecked readers
+- **Status:** decision recorded in docs/decisions/0017-loader-public-unchecked-readers.md; not implemented (changes src/ntdll call sites).
 - `src/loader/pe_parse.c:119-127` (`pe_file_u16`, `pe_file_u32`) are declared in `pe_parse.h` but do no bounds checking. All current internal callers check first, but the API invites misuse.
 - Fix: make them `static`, or rename to `pe_file_u16_unchecked` and add a checked wrapper.
 
 ### L-10 [Low] Shared mutable diagnostic buffer and kernel log flooding
+- **Status:** decision recorded in docs/decisions/0018-loader-diagnostic-buffer.md; not implemented (changes pe_validate callers).
 - `src/loader/pe_parse.c:22` (`pe_diag_buf`) is a file-scope buffer. Concurrent `pe_validate()` calls race on it. The kernel build also calls `pr_info` on every failure (`pe_parse.c:41`), which an attacker can trigger by repeatedly loading crafted files.
 - Fix: pass a caller-owned diag buffer into `pe_validate`, and use `pr_info_ratelimited` (or drop the log) in the kernel path.
 
@@ -88,6 +90,7 @@ The parser in this directory is careful about bounds for most reads (`pe_check_r
 - Fix: validate in `pe_relocs_walk` (accept ABSOLUTE and DIR64 for x64, reject others) or document it in `pe_parse.h`.
 
 ### L-14 [Info] u32 wrap in aligned_highest
+- **Status:** no change; the wrap is unreachable because SizeOfImage must be a multiple of SectionAlignment. See docs/decisions/0019-loader-aligned-highest-wrap.md.
 - `src/loader/pe_parse.c:565`: `(highest + SectionAlignment - 1) & ~(SectionAlignment - 1)` is computed in u32 and can wrap when `highest` is within one alignment unit of 4 GiB. The 1 MiB slack check at 570-571 currently rejects the wrapped value, so there is no accepted bad case today.
 - Fix: compute in u64.
 
