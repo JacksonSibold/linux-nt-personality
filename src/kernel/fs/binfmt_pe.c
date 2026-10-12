@@ -427,7 +427,8 @@ static int pe_map_sections(struct pe_load_state *st)
         kfree(tmp);
         if (map_len > to_copy) {
             unsigned long tail = map_addr + to_copy;
-            clear_user((void __user *)tail, map_len - to_copy);
+            if (clear_user((void __user *)tail, map_len - to_copy))
+                return -EFAULT;
         }
     }
 
@@ -471,7 +472,8 @@ static int pe_map_sections(struct pe_load_state *st)
             unsigned long tail = map_addr + rawsize;
             unsigned long end = map_addr + map_len;
             // Zero the remainder of section (bss)
-            if (end > tail) clear_user((void __user *)tail, end - tail);
+            if (end > tail && clear_user((void __user *)tail, end - tail))
+                return -EFAULT;
         } else if ((vs & (PAGE_SIZE-1)) != 0) {
             // Ensure tail of last page zeroed beyond file data if needed (already handled above)
         }
@@ -724,7 +726,10 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
         kfree(tmp);
         if (hlen > to_copy) {
             unsigned long tail = haddr + to_copy;
-            clear_user((void __user *)tail, hlen - to_copy);
+            if (clear_user((void __user *)tail, hlen - to_copy)) {
+                kfree(hdr); filp_close(f, NULL);
+                return -EFAULT;
+            }
         }
     }
     for (u16 i=0; i<num_sections; ++i) {
@@ -764,7 +769,10 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
         if (vs > rawsize) {
             unsigned long tail = maddr + rawsize;
             unsigned long end = maddr + mlen;
-            if (end > tail) clear_user((void __user *)tail, end - tail);
+            if (end > tail && clear_user((void __user *)tail, end - tail)) {
+                kfree(hdr); filp_close(f, NULL);
+                return -EFAULT;
+            }
         }
         pr_info("binfmt_pe: ntdll mapped section %u vaddr=0x%x vs=0x%x prot=0x%lx at 0x%lx\n", i, vaddr, vs, prot, m);
     }
@@ -998,11 +1006,11 @@ static int load_pe_binary(struct linux_binprm *bprm)
     u64 ntdll_base = 0, ntdll_thunk = 0;
     int has_ntdll = 0;
     {
-        /* A region conflict leaves the NT VAD and the mappings disagreeing,
-         * so it is fatal here; other ntdll failures still fall back to the
-         * exe entry. */
+        /* A region conflict, or a failed write or zeroing into a mapping that
+         * is already committed, is fatal here. Other ntdll failures (file not
+         * found, bad image) still fall back to the exe entry. */
         int ntdll_rc = pe_map_ntdll(&state, &ntdll_base, &ntdll_thunk);
-        if (ntdll_rc == -EADDRNOTAVAIL) {
+        if (ntdll_rc == -EADDRNOTAVAIL || ntdll_rc == -EFAULT) {
             ret = pe_post_commit_fail("ntdll region", ntdll_rc);
             goto out;
         }
