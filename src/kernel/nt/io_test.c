@@ -484,6 +484,21 @@ TEST(access_denied_on_valid_handle)
 /* NT path parsing                                                              */
 /* -------------------------------------------------------------------------- */
 
+/*
+ * Precondition for path_parsing. The trailing-dot checks only mean something
+ * if the host keeps "dotprobe." distinct from "dotprobe" under the scratch
+ * root. Win32 strips the trailing dot unless the path is absolute and gets the
+ * \\?\ prefix, so a relative scratch root makes those checks fail for reasons
+ * unrelated to the NT layer. Fail here, with a clear message, instead.
+ */
+TEST(scratch_root_keeps_trailing_dot)
+{
+	create_file_at("dotprobe.");
+	ASSERT(file_exists_at("dotprobe."));
+	ASSERT(!file_exists_at("dotprobe"));
+	PASS();
+}
+
 TEST(path_parsing)
 {
 	HANDLE h;
@@ -835,6 +850,7 @@ int main(void)
 {
 	setup_root();
 
+	RUN(scratch_root_keeps_trailing_dot);
 	RUN(create_disposition_existing);
 	RUN(create_disposition_nonexistent);
 	RUN(share_mode_matrix);
