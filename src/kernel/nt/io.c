@@ -1578,7 +1578,9 @@ static NTSTATUS ntio_do_read(struct nt_file_object *file, PVOID __user Buffer,
 {
 	loff_t pos;
 	ssize_t r = 0;
+#ifdef __KERNEL__
 	LARGE_INTEGER off;
+#endif
 #ifdef __KERNEL__
 #define NTIO_BOUNCE_SIZE (64*1024)
 #endif
@@ -1668,7 +1670,9 @@ static NTSTATUS ntio_do_write(struct nt_file_object *file, PVOID __user Buffer,
 {
 	loff_t pos;
 	ssize_t r = 0;
+#ifdef __KERNEL__
 	LARGE_INTEGER off;
+#endif
 #ifdef __KERNEL__
 #ifndef NTIO_BOUNCE_SIZE
 #define NTIO_BOUNCE_SIZE (64*1024)
@@ -2126,7 +2130,9 @@ NTSTATUS nt_svc_NtQueryInformationFile(HANDLE FileHandle,
 	struct nt_file_object *file;
 	NTSTATUS status;
 	ULONG retlen = 0;
+#ifdef __KERNEL__
 	void *kbuf = NULL;
+#endif
 
 	if (!IoStatusBlock || !FileInformation)
 		return STATUS_ACCESS_VIOLATION;
@@ -2301,7 +2307,9 @@ NTSTATUS nt_svc_NtSetInformationFile(HANDLE FileHandle,
 {
 	struct nt_file_object *file;
 	NTSTATUS status;
+#ifdef __KERNEL__
 	void *kbuf = NULL;
+#endif
 
 	if (!IoStatusBlock || !FileInformation)
 		return STATUS_ACCESS_VIOLATION;
