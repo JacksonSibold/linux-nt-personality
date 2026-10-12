@@ -343,7 +343,7 @@ static int is_already_loaded_ntdll(const char *name);
 static void* get_ntdll_base(void);
 static NTSTATUS ldr_nt_map_dll(const char *path, void **out_base, size_t *out_size);
 
-static void* ldr_resolve_forwarder(const char *fwd_str) {
+static void* ldr_resolve_forwarder_body(const char *fwd_str) {
     if (!fwd_str || !*fwd_str) return NULL;
     const char *p = fwd_str;
     if (*p == '!') p++;
@@ -399,6 +399,18 @@ static void* ldr_resolve_forwarder(const char *fwd_str) {
     } else {
         return ldr_find_export(host, target);
     }
+}
+
+/* MAIN-4: forwarder chains can loop (A -> B -> A). Each resolution goes through
+ * here, so a depth cap stops the mutual recursion with ldr_find_export. */
+#define LDR_FORWARDER_MAX_DEPTH 16
+static int g_forwarder_depth = 0;
+static void* ldr_resolve_forwarder(const char *fwd_str) {
+    if (g_forwarder_depth >= LDR_FORWARDER_MAX_DEPTH) return NULL;
+    g_forwarder_depth++;
+    void *resolved = ldr_resolve_forwarder_body(fwd_str);
+    g_forwarder_depth--;
+    return resolved;
 }
 
 /* Helper to find export by name (case-insensitive) with forwarder support */
