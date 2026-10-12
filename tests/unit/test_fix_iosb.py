@@ -56,6 +56,14 @@ class ReadRewriteTests(unittest.TestCase):
         text = "iosb->Information = 5;"
         self.assertEqual(apply_table(fix_iosb.READS, text), text)
 
+    def test_comparison_is_a_read_not_an_assignment(self):
+        out = apply_table(fix_iosb.READS, "if (iosb->Information == 0) x;")
+        self.assertEqual(out, "if (ntio_get_iosb_info(iosb) == 0) x;")
+
+    def test_inequality_is_a_read_not_an_assignment(self):
+        out = apply_table(fix_iosb.READS, "if (iosb->Information != 0) x;")
+        self.assertEqual(out, "if (ntio_get_iosb_info(iosb) != 0) x;")
+
     def test_unrelated_struct_field_is_not_touched(self):
         text = "k.Information = info; other->Information;"
         self.assertEqual(apply_table(fix_iosb.READS, text), text)

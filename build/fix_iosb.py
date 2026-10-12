@@ -103,7 +103,7 @@ SINGLES = [
 
 # reads
 READS = [
-    (r"(?P<v>IoStatusBlock|iosb)->Information\b(?!\s*=)",
+    (r"(?P<v>IoStatusBlock|iosb)->Information\b(?!\s*=(?!=))",
      lambda m: "ntio_get_iosb_info(%s)" % m.group("v")),
 ]
 
