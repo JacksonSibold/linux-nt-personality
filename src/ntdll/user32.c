@@ -31,17 +31,19 @@ int WINAPI wsprintfW(WCHAR *out, const WCHAR *fmt, ...){
         p++;
         if(!*p) break;
         int is_ll=0;
-        if(*p=='l'){ p++; if(*p=='l'){ is_ll=1; p++; } }
+        int narrow_str=0;
+        if(*p=='h'){ narrow_str=1; p++; }
+        else if(*p=='l'){ p++; if(*p=='l'){ is_ll=1; p++; } }
         WCHAR spec=*p;
-        if(spec=='s'){
+        /* U32-1: in wsprintfW %s and %ls are wide strings; %S and %hs are narrow. */
+        if(spec=='s' && !narrow_str){
+            const WCHAR *s=va_arg(ap,const WCHAR*);
+            if(!s){ const char *nul="(null)"; for(size_t i=0;nul[i];i++) *pout++=(WCHAR)nul[i]; }
+            else for(;*s;s++) *pout++=*s;
+        } else if(spec=='s' || spec=='S'){
             const char *s=va_arg(ap,const char*);
             if(!s) s="(null)";
-            for(size_t i=0;s[i];i++) *pout++=(WCHAR)s[i];
-        } else if(spec=='S' || spec=='s'){
-            // for wsprintfW, %s is WCHAR*, %S is char*
-            // we already handled char, now wide
-            // heuristic: if spec is 's' with l prefix would be wide, but we treat as above
-            // for simplicity assume %s with wide when no l
+            for(size_t i=0;s[i];i++) *pout++=(WCHAR)(unsigned char)s[i];
         } else if(spec=='d' || spec=='i'){
             long long v=is_ll?va_arg(ap,long long):va_arg(ap,int);
             char buf[32]; int neg=0; unsigned long long uv;
