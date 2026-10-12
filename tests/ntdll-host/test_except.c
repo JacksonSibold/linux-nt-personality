@@ -38,8 +38,11 @@ static void dispatch_with(PVECTORED_EXCEPTION_HANDLER handler, EXCEPTION_DISPOSI
     memset(&rec, 0, sizeof(rec));
     memset(&ctx, 0, sizeof(ctx));
     rec.ExceptionCode = 0xC0000005L; /* STATUS_ACCESS_VIOLATION */
-    ctx.Rip = 0x140001234ULL;        /* not inside any registered function */
-    ctx.Rsp = 0x7fff0000ULL;
+    /* Not inside any registered function: a leaf frame. Its return address
+     * (stack[0]) is 0, so the walk ends after one frame (EXC-2 pops it). */
+    ULONG64 stack[2] = { 0, 0 };
+    ctx.Rip = 0x140001234ULL;
+    ctx.Rsp = (ULONG64)(uintptr_t)stack;
 
     PVOID h = AddVectoredExceptionHandler(1, handler);
     MT_ASSERT(h != NULL);

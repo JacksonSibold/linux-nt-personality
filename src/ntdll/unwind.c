@@ -236,6 +236,17 @@ static int build_chain(unwind_module_t *mod, IMAGE_RUNTIME_FUNCTION_ENTRY *entry
  */
 int unwind_one_frame(PCONTEXT ctx, ULONG64 imageBase, IMAGE_RUNTIME_FUNCTION_ENTRY *entry,
                      uint8_t *image, ULONG64 *establisherFrame) {
+    /* Leaf: no RUNTIME_FUNCTION, so pop the return address from RSP. This must
+     * not depend on a registered module: an unknown PC is still a leaf (EXC-2). */
+    if (!entry) {
+        ULONG64 rsp = ctx->Rsp;
+        ULONG64 ret = *(ULONG64 *)(uintptr_t)rsp;
+        ctx->Rip = ret;
+        ctx->Rsp = rsp + 8;
+        if (establisherFrame) *establisherFrame = rsp;
+        return 0;
+    }
+
     /* Find module */
     unwind_module_t *mod = find_module_by_base(imageBase);
     if (!mod) {
@@ -258,16 +269,6 @@ simple:
     if (!mod) return -1;
 
     ULONG64 controlPc = ctx->Rip;
-    /* Handle leaf: entry == NULL */
-    if (!entry) {
-        /* Leaf: pop return address from stack */
-        ULONG64 rsp = ctx->Rsp;
-        ULONG64 ret = *(ULONG64 *)(uintptr_t)rsp;
-        ctx->Rip = ret;
-        ctx->Rsp = rsp + 8;
-        if (establisherFrame) *establisherFrame = rsp;
-        return 0;
-    }
 
     /* Build chain */
     chain_elem_t chain[MAX_CHAIN];

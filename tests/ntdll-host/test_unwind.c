@@ -127,7 +127,26 @@ static void handler_type_selects_matching_handler(void)
     unwind_clear_modules();
 }
 
+/* A PC with no RUNTIME_FUNCTION and no registered module is a leaf frame: the
+ * return address is at RSP (EXC-2). Dispatch depends on this to pass such a
+ * frame instead of stopping. */
+static void leaf_frame_without_module_pops_return_address(void)
+{
+    unwind_clear_modules();
+    ULONG64 stack[2] = { 0x7000, 0 };
+    CONTEXT ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.Rip = 0x500000;
+    ctx.Rsp = (ULONG64)(uintptr_t)stack;
+
+    ULONG64 est = 0;
+    RtlVirtualUnwind(0, 0, ctx.Rip, NULL, &ctx, NULL, &est, NULL);
+    MT_EXPECT(ctx.Rip == 0x7000);
+    MT_EXPECT(ctx.Rsp == (ULONG64)(uintptr_t)stack + 8);
+}
+
 static const mt_case_t cases[] = {
+    { "leaf_frame_without_module_pops_return_address", leaf_frame_without_module_pops_return_address },
     { "handler_type_selects_matching_handler", handler_type_selects_matching_handler },
     { "end_address_is_not_masked", end_address_is_not_masked },
     { "sized_module_finds_function", sized_module_finds_function },
