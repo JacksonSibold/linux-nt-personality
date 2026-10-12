@@ -37,7 +37,7 @@ their working directory, so the scratch files they create stay there.
   - `posix_host.c` - `stat`/`fstat` through `GetFileInformationByHandle`,
     `open` through `CreateFileW` with `FILE_SHARE_DELETE` (so unlink-while-open
     works), directory opens, `\\?\` paths (so trailing dots are kept), `/tmp`
-    mapped to `%TEMP%`, `system()` limited to `mkdir -p`, `rm -rf` and `&&`
+    mapped to the scratch root (see below), `system()` limited to `mkdir -p`, `rm -rf` and `&&`
     chains, and an unbuffered `stdout`.
   - `posix_raw.c` - `pread`, `pwrite`, `fsync`, `mkdir` on `_read`, `_write`,
     `FlushFileBuffers`, `_mkdir`. Built without the shim include directory so
@@ -61,7 +61,7 @@ before `6efb8b7` and were not re-run.
 | `security_test` | builds, 41/41 ntsec and 609/609 negative pass |
 | `registry_test` | builds, 10/10 pass |
 | `i2_test` | builds, 7/7 pass |
-| `io_test` | builds; `access_denied_on_valid_handle` passes; path_parsing lookup checks are flaky (see below) |
+| `io_test` | 13/13 pass, 50 of 50 consecutive runs at -O0 and -O2, also with `KSHIM_POISON=1` (see below) |
 | `mm_test` | builds, 14/14 pass |
 | `sync_test` | builds, 21/21 pass, no leaks (slow, see below) |
 | `mman_test` | shim self-test (`shim/mman_test.c`), 3/3 pass |
@@ -94,18 +94,47 @@ before `6efb8b7` and were not re-run.
   `test_suspend_counts` also waited on a sleeper thread that was still running
   at teardown; it now waits for the thread's exit path.
 
+### Results of the io_test flake investigation (2026-10-12, second pass)
+
+- **Cause: the scratch root depended on the launch environment.** The root
+  came from TEMP, then TMP, then `.`. A process that saw neither variable got a
+  relative root (`./ntio_test_<pid>`). The shim adds the `\\?\` prefix only to
+  absolute drive paths, so Win32 then stripped the dot from `trail.txt.` and
+  `path_parsing` failed at io_test.c:558 (expected NOT_FOUND, got SUCCESS).
+  Reproduced on demand: with the msys `env` wrapper (after `export PATH` with
+  the MSYS directories first) the original shim failed 50 of 50 runs, and
+  `env -u TEMP -u TMP ./io_test.exe` failed too. Each failing run left a
+  relative `ntio_test_<pid>` root in the build directory (63 in `build-o2/`,
+  49 in `build/`) and none in `%TEMP%`.
+- **Fix.** `host_temp_dir()` in `shim/posix_host.c` takes TMP or TEMP when it is
+  an absolute drive path (MSYS `/c/...` form included), otherwise the current
+  directory, which is always absolute. `GetTempPath` was rejected: with TMP,
+  TEMP and USERPROFILE unset it returns `C:\WINDOWS\`, which is not writable.
+  Relative paths given to the shim are now made absolute before the `\\?\`
+  prefix is added. `io_test` runs `scratch_root_keeps_trailing_dot` first and
+  fails there with a clear message if the root drops dots.
+- **Cleanup.** `io_test` removes its per-pid root after a clean run. Failing
+  runs keep it. A caller-supplied `NTIO_TEST_ROOT` is never removed.
+- **Uninitialised memory: not found.** `KSHIM_POISON=1` (0xA5 fill of every
+  `kmalloc` result, in `kshim_alloc_tagged`) passes at -O0 and -O2 once the
+  root is fixed. The build has no `-Wuninitialized` warnings beyond the
+  known pointer-cast ones. The earlier poisoned failures were the root
+  problem, not a poisoned read.
+- **Shared temp-dir state: not found.** No file named `trail.txt.` exists in
+  any of the ~160 leftover roots in `%TEMP%`, and each run uses its own pid.
+
+Knobs added: `KSHIM_POISON=1` (poison kmalloc results) and `OPT=-O2` with a
+separate `BUILD=build-o2` directory (`build-*/` is git-ignored).
+
 ## Known failures and limits
 
 - **sync_test** (slow). `wait_on_address_extended` runs 20000 iterations, each
   with a `pthread_create` and `usleep(2000)`. On Windows that takes minutes.
   `TIMEOUT` (default 3000 s) bounds each program in `check`.
-- **io_test lookup flake.** The trailing-dot, `\\?\` probe and mixed-case
-  checks in `path_parsing` sometimes pass and sometimes fail across runs with
-  the same binary (seen at io_test.c lines 506 and 558). Not investigated;
-  `make check` can fail on it.
-- **sync_test** (slow). `wait_on_address_extended` runs 20000 iterations, each
-  with a `pthread_create` and `usleep(2000)`. On Windows that takes minutes.
-  `TIMEOUT` (default 3000 s) bounds each program in `check`.
+- **Trailing dots in unlink, rename, mkdir, rmdir.** `khost_unlink`,
+  `khost_rmdir`, `khost_rename` and `khost_raw_mkdir` call the CRT directly,
+  not through the `\\?\` path. A name ending in `.` can therefore be stripped
+  to the wrong file. No test exercises that yet.
 
 ## Modules that cannot be built here
 
@@ -151,5 +180,6 @@ These do not appear in `TESTS` or `BUILD_ONLY`.
   `GetFileInformationByHandle`. The UCRT `ino_t` is `unsigned short` and
   `dev_t` is `unsigned int`, so `st_ino` keeps only the low 16 bits of the
   Win32 file index. Two files that differ only above bit 15 would compare equal.
-- **Scratch root.** Tests use `/tmp`, which maps to `%TEMP%`. Directory
-  opens use `FILE_FLAG_BACKUP_SEMANTICS`.
+- **Scratch root.** Tests use `/tmp`. It maps to TMP, else TEMP (absolute
+  drive path only), else the current directory. It is always absolute, which
+  the `\\?\` prefix requires. Directory opens use `FILE_FLAG_BACKUP_SEMANTICS`.
