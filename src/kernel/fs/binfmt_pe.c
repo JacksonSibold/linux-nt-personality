@@ -254,6 +254,10 @@ static int pe_read_file_headers(struct linux_binprm *bprm, struct pe_load_state 
         pr_info("binfmt_pe: reject: SizeOfImage 0x%x invalid (zero or not aligned to sec_align 0x%x) for %s\n", size_image, sec_align, bprm->filename);
         return -ENOEXEC;
     }
+    if (size_headers > size_image) {
+        pr_info("binfmt_pe: reject: SizeOfHeaders 0x%x > SizeOfImage 0x%x for %s\n", size_headers, size_image, bprm->filename);
+        return -ENOEXEC;
+    }
 
     st->image_base = image_base;
     st->size_of_image = size_image;
@@ -656,6 +660,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
     u64 image_base = pe_load_u64((u8*)hdr + oh_off + 24);
     u32 size_image = pe_load_u32((u8*)hdr + oh_off + 56);
     u32 size_headers = pe_load_u32((u8*)hdr + oh_off + 60);
+    if (size_headers > size_image) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u16 dllchars = pe_load_u16((u8*)hdr + oh_off + 70);
     int dynamic_base = (dllchars & 0x40) != 0;
     u32 section_table_off = oh_off + size_opt;
