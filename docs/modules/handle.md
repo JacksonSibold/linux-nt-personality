@@ -24,21 +24,23 @@ Macros: `NtCurrentProcess()` = (HANDLE)-1, `NtCurrentThread()` = (HANDLE)-2; `HA
 ## Key data structures
 
 - `struct nt_handle_entry` - `obj`, `granted_access`, `attr`, `free`, `next_free`.
-- `struct nt_handle_l3` - 256 entries. `struct nt_handle_l2` - 256 pointers to L3 pages. `struct nt_handle_table` - `lock` (spinlock_t), `owner`, `l1[256]` pointers to L2 directories, `first_free`, `high_water`, `num_handles`.
+- `struct nt_handle_l3` - 256 entries. `struct nt_handle_l2` - 256 pointers to L3 pages. `struct nt_handle_table` - `lock` (spinlock_t), `owner`, `l1[256]` pointers to L2 directories, `first_free`, `last_free`, `free_count`, `high_water`, `num_handles`.
 - Index layout: 8 + 8 + 8 bits, so `HANDLE_MAX_INDEX` = 2^24 - 1. Pages are allocated on demand.
-- Handle value = index shifted left by 2, with the low bits holding flags. The header states that values are multiples of four and that the free list is LIFO.
+- Handle value = index shifted left by 2, with the low bits holding flags. The header states that values are multiples of four and that reuse is LIFO. The code now quarantines closed slots in FIFO order (see below).
 
 ## Invariants and locking (as implemented)
 
 - The table is guarded by a per-table `spinlock_t` (about 8 `spin_lock` and 24 `spin_unlock` sites in `handle.c`).
-- Free indices are kept in a LIFO free list via `next_free`. `first_free` is the head; `HANDLE_INVALID_FREE` (0xFFFFFFFF) marks the end.
+- Closed indices are kept in a FIFO free list linked by `next_free`. `first_free` is the head and `last_free` the tail; a closed index goes to the tail (`handle.c:376`). A slot is reused only when `free_count` is greater than `HANDLE_QUARANTINE` (`handle.c:150-151`). `HANDLE_INVALID_FREE` (0xFFFFFFFF) marks the end.
+- Indices above `HANDLE_MAX_INDEX` are rejected (`handle.c:102`, `161`, `286`; commit `68fe25b`).
 - Handle values have no generation counter. A stale handle can refer to a reused slot, as the header comment notes.
 - Pseudo-handle values (-1 and -2) are interpreted in `ObReferenceObjectByHandle` and never written into the table.
-- `handle.c` (around lines 305-307) comments on how gaps left by out-of-order index creation are initialised as free entries.
+- `handle.c` (around lines 294-330) comments on how gaps left by out-of-order index creation are initialised as free entries, and the gap entries are put at the head of the free list (`handle.c:326-330`), not the tail.
 
 ## Known gaps (evident in code)
 
 - `handle.h` line 35 defines `NT_CURRENT_THREAD_HANDLE` with unbalanced parentheses: `((HANDLE)((ULONG_PTR)-2)`. It is not used anywhere in `src/`, so it does not break the build, but it is wrong. `NT_CURRENT_PROCESS_HANDLE` on line 34 is balanced.
 - No dedicated handle test file exists. Handle behaviour is exercised indirectly through `object_test.c` and `i2_test.c`.
+- The `handle.c` header comment at line 22 still describes the free list as LIFO. The code is FIFO quarantine (see Invariants).
 - The header comment says growth is memory-limited rather than fixed (`handle.c:74-77`). I did not find a limit check in `handle.c` that enforces either a fixed or a memory-based cap, so the table is bounded only by its 2^24 index space.
 - `ObpIncrementHandleCount` and `ObpDecrementHandleCount` are called from this module, but their correctness depends on `object.c`. This doc does not verify them.

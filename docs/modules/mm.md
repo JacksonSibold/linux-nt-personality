@@ -51,7 +51,7 @@ Constants in the header: `NTMM_ALLOC_GRANULARITY` (0x10000), `NTMM_PAGE_SIZE` (4
 
 ## Known gaps (evident in code)
 
-- The free path's unmap comment is stale. In the kernel branch (`mm.c:1165-1195`), the comment at `mm.c:1189-1192` says to call `vm_munmap` directly, and that call is commented out. The active call is `kshim_munmap` (`mm.c:1193`), which in the kernel build is a wrapper around `vm_munmap` (defined near the top of `mm.c`). Behaviour is the same, but the comment does not match the code.
+- The free path's unmap comment is stale. In the kernel branch (`mm.c:1165-1195`), the comment at `mm.c:1188-1192` says to call `vm_munmap` directly, and that call is commented out. The active call is `kshim_munmap` (`mm.c:1194`), which in the kernel build is a wrapper around `vm_munmap` (defined near the top of `mm.c`). Behaviour is the same, but the comment does not match the code.
 - `kshim_mprotect` (`mm.c`, near the top of the kernel section) looks up the unexported symbol `do_mprotect_pkey` through `kallsyms_lookup_name` and falls back to a hand-written `mprotect_fixup` path if the lookup fails. This is fragile and depends on kernel internals.
 - The `PAGE_GUARD` helper `NtMmHandleGuardFault` is a simulation hook (per its comment), not a real page-fault integration.
 - `mm.c:147` substitutes `0x10000` as the target address when the caller supplies none. I did not trace which build branch this line is in.

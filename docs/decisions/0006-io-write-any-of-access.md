@@ -1,6 +1,6 @@
 # 0006: NtWriteFile requires FILE_WRITE_DATA or FILE_APPEND_DATA (IO-1, write half)
 
-Status: Accepted. Implemented in the commit that follows this record.
+Status: Accepted. Implemented in 80b6fea.
 Finding: `docs/review/kernel-nt.md` IO-1 (Medium), write half. The read half is fixed in `1d160e8`.
 Date: 2026-10-12
 

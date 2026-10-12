@@ -16,7 +16,7 @@ Entry point:
 Personality hooks:
 
 - `void nt_enter_personality(struct task_struct *tsk)` - sets `TIF_NTABI` and attaches a sync thread record (`nt_thread_create`) to the current `nt_ethread`.
-- `void nt_exit_personality(struct task_struct *tsk)` - calls `nt_handle_table_destroy`, abandons owned mutants, and clears `TIF_NTABI`.
+- `void nt_exit_personality(struct task_struct *tsk)` - calls `nt_handle_table_destroy`, abandons owned mutants, clears the current `nt_thread` (`nt_set_current_thread(NULL)`, commit `ab11b7c`), and clears `TIF_NTABI`.
 - `void nt_report_missing_service(unsigned int ssn)` - logs an unimplemented SSN.
 - `bool nt_can_sysret(struct pt_regs *regs)` - always returns `true` in this file.
 - `void nt_host_syscall_inc(void)` - increments the per-CPU host-syscall counter for NT tasks.
@@ -56,7 +56,7 @@ Debugfs: `ntpers/dispatch_count`, `ntpers/host_count` and `ntpers/dispatch_per_s
 
 ## Known gaps (evident in code)
 
-- Debug logging in the hot path: `do_nt_syscall` calls `pr_info` for six hard-coded SSNs (`0x53`, `0x1c8`, `0xc5`, `0x1c4`, `0x52`, `0x34`) on every call. These are not gated by a debug option.
+- Debug logging in the hot path: `do_nt_syscall` calls `pr_info` for six hard-coded SSNs (`0x53`, `0x1c8`, `0xc5`, `0x1c4`, `0x52`, `0x34`; `dispatch.c:113-114`) on every call. These are not gated by a debug option.
 - `nt_can_sysret` is a stub that always returns `true`.
 - The table is sized for SSNs up to 0x1db, but only 171 entries are listed in `nt_service_list.h`. The rest of the 476 slots resolve to NULL and return `STATUS_NOT_IMPLEMENTED`.
 - Some service names in `nt_service_list.h` have no `nt_svc_` definition anywhere under `src/kernel/nt/`. Checked: `NtAllocateVirtualMemoryEx`, `NtAlertResumeThread` and `NtWaitForAlertByThreadId`. These resolve to NULL and return `STATUS_NOT_IMPLEMENTED`. I did not check all 171 names.

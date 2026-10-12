@@ -1,6 +1,6 @@
 # 0010: Completion queue quota (IOCP-2)
 
-Status: Accepted. Implemented in the commit that follows this record.
+Status: Accepted. Implemented in 0b7921b.
 Finding: `docs/review/kernel-nt.md` IOCP-2 (Medium).
 Date: 2026-10-12
 
