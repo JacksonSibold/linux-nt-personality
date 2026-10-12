@@ -20,7 +20,9 @@ import re
 import sys
 from collections import OrderedDict
 
-PROJ = "/path/to/ntpers-research"
+# Repository root: NTPERS_ROOT if set, otherwise the parent of build/.
+PROJ = os.environ.get("NTPERS_ROOT") or os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))
 DOCS = os.path.join(PROJ, "docs", "phase0")
 OUT = os.path.join(PROJ, "tests", "conformance", "criteria.json")
 
