@@ -73,13 +73,7 @@ class FallbackTests(unittest.TestCase):
         self.assertNotIn("set_user_gsbase", new)
         self.assertIn("x86_gsbase_write_cpu_inactive((unsigned long)state.teb);", new)
 
-    @unittest.expectedFailure
     def test_fallback_keeps_teb_bounds_check(self):
-        # Known defect: the exact-match replacement refuses a TEB at or above
-        # TASK_SIZE_MAX, but the fallback regex installs the base unchecked.
-        # The script's own comments call an unchecked GS base a privilege
-        # escalation primitive. Marked expectedFailure until the fallback is
-        # given the same guard.
         src = "void f(void)\n{\n\tset_user_gsbase(current, (unsigned long)state.teb);\n}\n"
         _, _, _, new = run_main_on(src)
         self.assertIn("TASK_SIZE_MAX", new)

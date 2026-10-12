@@ -75,13 +75,9 @@ def main():
         if not pat.search(src):
             print("FAILED: could not locate the call site", file=sys.stderr)
             return 1
-        src = pat.sub(
-            "        preempt_disable();\n"
-            "        current->thread.gsindex = 0;\n"
-            "        x86_gsbase_write_cpu_inactive((unsigned long)state.teb);\n"
-            "        preempt_enable();",
-            src,
-        )
+        # Same guarded block as the exact-match path. A lambda keeps re.sub
+        # from interpreting the backslash escapes in the pr_err format string.
+        src = pat.sub(lambda _m: NEW, src)
         print("patched via fallback regex")
     else:
         src = src.replace(OLD, NEW)
