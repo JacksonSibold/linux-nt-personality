@@ -11,6 +11,7 @@
 #define _GNU_SOURCE
 #include "ldr.h"
 #include "pe_bounds.h"
+#include "ldr_pure.h"
 
 #ifndef __MINGW32__
 #include <errno.h>
@@ -1336,18 +1337,17 @@ static NTSTATUS ldr_resolve_imports(winldr_ctx_t *ctx, ldr_module_t *mod)
         NTSTATUS s = ldr_load_dependency(ctx, dep_name, &dep);
         if (!NT_SUCCESS(s)) return s;
 
-        /* Resolve IAT. */
+        /* Resolve IAT.  The ILT is read through its file offset.  The IAT is
+         * written at its RVA in mod->image (LDR-2, decision 0030). */
         u32 ilt_rva = desc.DUMMYUNIONNAME.OriginalFirstThunk ? desc.DUMMYUNIONNAME.OriginalFirstThunk : desc.FirstThunk;
-        u32 ilt_off, iat_off;
+        u32 ilt_off;
         ps = pe_rva_to_offset(&mod->pe, ilt_rva, &ilt_off);
         if (ps != PE_OK) return STATUS_INVALID_IMAGE_FORMAT;
-        ps = pe_rva_to_offset(&mod->pe, desc.FirstThunk, &iat_off);
-        if (ps != PE_OK && desc.FirstThunk != 0) return STATUS_INVALID_IMAGE_FORMAT;
-        if (desc.FirstThunk == 0) iat_off = ilt_off;
+        unsigned long long iat_rva = ldr_iat_base_rva(desc.FirstThunk, ilt_rva);
+        if (iat_rva == 0) return STATUS_INVALID_IMAGE_FORMAT;
 
         for (u32 t = 0; ; ++t) {
             u32 thunk_off = ilt_off + t * sizeof(IMAGE_THUNK_DATA64);
-            u32 iat_slot_off = iat_off + t * sizeof(IMAGE_THUNK_DATA64);
             IMAGE_THUNK_DATA64 thunk;
             ps = pe_read_thunk_data64(&mod->pe, thunk_off, &thunk);
             if (ps != PE_OK) return STATUS_INVALID_IMAGE_FORMAT;
@@ -1372,8 +1372,9 @@ static NTSTATUS ldr_resolve_imports(winldr_ctx_t *ctx, ldr_module_t *mod)
             s = ldr_resolve_thunk(ctx, dep, &sym, &addr);
             if (!NT_SUCCESS(s)) return s;
 
-            /* Patch IAT slot. */
-            memcpy(mod->image + iat_slot_off, &addr, sizeof(addr));
+            /* Patch IAT slot at its RVA; the slot must lie in the image. */
+            if (!ldr_iat_write(mod->image, mod->image_size, iat_rva, t, (unsigned long long)addr))
+                return STATUS_INVALID_IMAGE_FORMAT;
         }
     }
 
@@ -1440,15 +1441,15 @@ NTSTATUS ldr_resolve_delay_imports(winldr_ctx_t *ctx, HMODULE module)
             *pmh = (HMODULE)&dep->entry;
         }
 
-        u32 ilt_off, iat_off;
+        /* The IAT is written at its RVA in mod->image (LDR-2, decision 0030). */
+        u32 ilt_off;
         ps = pe_rva_to_offset(&mod->pe, desc.ImportNameTableRVA, &ilt_off);
         if (ps != PE_OK) return STATUS_INVALID_IMAGE_FORMAT;
-        ps = pe_rva_to_offset(&mod->pe, desc.ImportAddressTableRVA, &iat_off);
-        if (ps != PE_OK) return STATUS_INVALID_IMAGE_FORMAT;
+        unsigned long long iat_rva = desc.ImportAddressTableRVA;
+        if (iat_rva == 0) return STATUS_INVALID_IMAGE_FORMAT;
 
         for (u32 t = 0; ; ++t) {
             u32 thunk_off = ilt_off + t * sizeof(IMAGE_THUNK_DATA64);
-            u32 iat_slot_off = iat_off + t * sizeof(IMAGE_THUNK_DATA64);
             IMAGE_THUNK_DATA64 thunk;
             ps = pe_read_thunk_data64(&mod->pe, thunk_off, &thunk);
             if (ps != PE_OK) return STATUS_INVALID_IMAGE_FORMAT;
@@ -1471,7 +1472,8 @@ NTSTATUS ldr_resolve_delay_imports(winldr_ctx_t *ctx, HMODULE module)
             s = ldr_resolve_thunk(ctx, dep, &sym, &addr);
             if (!NT_SUCCESS(s)) return s;
 
-            memcpy(mod->image + iat_slot_off, &addr, sizeof(addr));
+            if (!ldr_iat_write(mod->image, mod->image_size, iat_rva, t, (unsigned long long)addr))
+                return STATUS_INVALID_IMAGE_FORMAT;
         }
     }
 
