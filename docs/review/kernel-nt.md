@@ -208,6 +208,7 @@ Low findings are not addressed in this pass (M-5 and M-6 are still present, as a
 Each open Medium and Low finding was re-read against the code on this branch. Status values: fixed (commit named by the finding ID), no change, stale, needs owner.
 
 - H-3: fixed. NtDuplicateObject undoes the duplicate and returns the source's close status when DUPLICATE_CLOSE_SOURCE is refused. Test: object_test `duplicate_close_source_protected`. Residual: an undo close on a duplicate created with OBJ_PROTECT_FROM_CLOSE also fails, which leaves that handle in place.
+- H-4: fixed. `ht_alloc_index` returns the entry it claimed, so `ObCreateHandle` no longer re-reads the page pointers after releasing the table lock. No failing test: the defect is a race. Covered by the existing object_test run.
 
 ## Not verified / out of scope
 
