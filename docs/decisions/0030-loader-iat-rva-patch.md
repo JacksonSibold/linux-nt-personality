@@ -1,6 +1,6 @@
 # 0030: IAT slot writes use a file offset, not an RVA (LDR-2)
 
-Status: Proposed. Recorded only, not implemented. Needs test harness: the fix is small, but no host test can reach `ldr_resolve_imports` yet (see Test plan).
+Status: Implemented in a18c03e (LDR-2). The slot write is `ldr_iat_write` in `src/ntdll/ldr_pure.h`, called from both `ldr_resolve_imports` and `ldr_resolve_delay_imports`. Host test: `tests/ntdll-host/test_ldr_pure.c`. Deviations from the sketch: a zero IAT RVA is rejected in both paths. `ldr_resolve_imports` itself is not driven by a host test (no harness reaches it); its address logic is. The Needs-VM case (relocated `.idata` in a MinGW build) is still open.
 Finding: `docs/review/ntdll.md` LDR-2 (High).
 Date: 2026-10-12
 

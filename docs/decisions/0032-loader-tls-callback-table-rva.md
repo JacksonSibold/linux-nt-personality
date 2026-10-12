@@ -1,6 +1,6 @@
 # 0032: TLS callback table read at its preferred-base address (LDR-4)
 
-Status: Proposed. Recorded only, not implemented. Needs VM for the relocated case: the host build cannot run PE code, but the address arithmetic and bounds can be tested once a fixture harness exists (see Test plan).
+Status: Implemented in bef4d79 (LDR-4). The translation and bounded entry read are `ldr_tls_cb_table_rva` and `ldr_tls_cb_entry` in `src/ntdll/ldr_pure.h`, used by `ldr_run_tls_callbacks`. Host test: `tests/ntdll-host/test_ldr_pure.c`. Deviation from the sketch: a table outside the image skips the callbacks and does not fail the load; failing the load is part of LDR-3 (0031). The relocated-base case still needs VM.
 Finding: `docs/review/ntdll.md` LDR-4 (High).
 Date: 2026-10-12
 
