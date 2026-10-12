@@ -445,6 +445,32 @@ void *ntio_handle_lookup_any_of(HANDLE h, ACCESS_MASK mask)
 	return ntio_handle_lookup_mode(h, mask, true);
 }
 
+/*
+ * Status for a failed lookup with the same mask rules as ntio_handle_lookup_mode.
+ * An open handle that lacks the rights is STATUS_ACCESS_DENIED, which is what
+ * ObReferenceObjectByHandle reports. Only a handle that is not open is
+ * STATUS_INVALID_HANDLE.
+ */
+static NTSTATUS ntio_lookup_failure(HANDLE h, ACCESS_MASK mask, bool any_of)
+{
+	ULONG_PTR idx = (ULONG_PTR)h >> 2;
+	NTSTATUS st = STATUS_INVALID_HANDLE;
+
+	if (idx == 0 || idx >= NTIO_MAX_HANDLES)
+		return STATUS_INVALID_HANDLE;
+
+	spin_lock(&ntio_handle_lock);
+	if (ntio_handles[idx].used) {
+		ACCESS_MASK granted = ntio_handles[idx].granted_access;
+		bool denied = any_of ? ((granted & mask) == 0)
+				     : ((granted & mask) != mask);
+		if (denied)
+			st = STATUS_ACCESS_DENIED;
+	}
+	spin_unlock(&ntio_handle_lock);
+	return st;
+}
+
 static void *ntio_handle_lookup_any(HANDLE h) __attribute__((unused));
 static void *ntio_handle_lookup_any(HANDLE h)
 {
@@ -1911,7 +1937,7 @@ NTSTATUS nt_svc_NtReadFile(HANDLE FileHandle, HANDLE Event,
 
 	file = ntio_handle_lookup(FileHandle, FILE_READ_DATA);
 	if (!file)
-		return STATUS_INVALID_HANDLE;
+		return ntio_lookup_failure(FileHandle, FILE_READ_DATA, false);
 
 	if (file->delete_pending) {
 		ntio_file_put(file);
@@ -1979,7 +2005,8 @@ NTSTATUS nt_svc_NtWriteFile(HANDLE FileHandle, HANDLE Event,
 	file = ntio_handle_lookup_any_of(FileHandle,
 					 FILE_WRITE_DATA | FILE_APPEND_DATA);
 	if (!file)
-		return STATUS_INVALID_HANDLE;
+		return ntio_lookup_failure(FileHandle,
+					   FILE_WRITE_DATA | FILE_APPEND_DATA, true);
 
 	if (file->delete_pending) {
 		ntio_file_put(file);
