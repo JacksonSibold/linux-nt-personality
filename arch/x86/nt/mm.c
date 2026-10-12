@@ -1269,7 +1269,6 @@ NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     ULONG_PTR base;
     SIZE_T size;
     (void)ProcessHandle;
-    printk(KERN_EMERG "NtProtectVirtualMemory entry base %p size %lx NewProtect %lx\n", *BaseAddress, (unsigned long)*RegionSize, (unsigned long)NewProtect);
     // Proper path handles MEM_IMAGE | MEM_PRIVATE | MEM_MAPPED uniformly.
     // Previous bypass for 0x140000000 hid the real bug where VAD for
     // .idata was PAGE_READONLY and NtProtect failed due to missing
