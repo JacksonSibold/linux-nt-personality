@@ -178,7 +178,7 @@ static int pe_read_file_headers(struct linux_binprm *bprm, struct pe_load_state 
         return -ENOEXEC;
     }
     nt_off = pe_load_u32((u8*)st->headers_buf + 60);
-    if (nt_off + 6 > (u32)n) {
+    if (nt_off > (u32)n || (u32)n - nt_off < 6) {
         pr_info("binfmt_pe: reject: e_lfanew %u+6 > read %zd for %s\n", nt_off, n, bprm->filename);
         return -ENOEXEC;
     }
