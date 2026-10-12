@@ -21,5 +21,8 @@ jobs:
       - name: Unit tests
         run: python -m unittest discover tests/unit
 
+      - name: host-test
+        run: make -C tests/host CC=gcc test
+
       - name: Repository hygiene checks
         run: python tools/check_repo.py

@@ -404,16 +404,17 @@ pe_status_t pe_validate(pe_context_t *ctx)
     if ((u64)oh_off + fh.SizeOfOptionalHeader > ctx->size)
         PE_FAIL(PE_ERR_TRUNCATED, "optional header %u+%u exceeds size %zu", oh_off, fh.SizeOfOptionalHeader, ctx->size);
 
+    /* PE32+ requires SizeOfOptionalHeader == 240. Check it before reading the
+     * fixed-size structure so a short declared header is never read past. */
+    if (fh.SizeOfOptionalHeader != sizeof(IMAGE_OPTIONAL_HEADER64))
+        PE_FAIL(PE_ERR_CORRUPT, "SizeOfOptionalHeader %u != %zu (PE32+ requires 240)", fh.SizeOfOptionalHeader, sizeof(IMAGE_OPTIONAL_HEADER64));
+
     IMAGE_OPTIONAL_HEADER64 opt;
     s = pe_read_optional_header64(ctx, oh_off, &opt);
     if (s != PE_OK) PE_FAIL(s, "read optional header at %u failed", oh_off);
 
     if (opt.NumberOfRvaAndSizes > IMAGE_NUMBEROF_DIRECTORY_ENTRIES)
         PE_FAIL(PE_ERR_CORRUPT, "NumberOfRvaAndSizes %u > %d", opt.NumberOfRvaAndSizes, IMAGE_NUMBEROF_DIRECTORY_ENTRIES);
-
-    /* SizeOfOptionalHeader wrong for PE32+ : must be exactly 240 */
-    if (fh.SizeOfOptionalHeader != sizeof(IMAGE_OPTIONAL_HEADER64))
-        PE_FAIL(PE_ERR_CORRUPT, "SizeOfOptionalHeader %u != %zu (PE32+ requires 240)", fh.SizeOfOptionalHeader, sizeof(IMAGE_OPTIONAL_HEADER64));
 
     if (fh.NumberOfSections == 0 || fh.NumberOfSections > 96)
         PE_FAIL(PE_ERR_SECTIONS, "NumberOfSections %u out of range [1,96]", fh.NumberOfSections);
@@ -811,7 +812,7 @@ pe_status_t pe_imports_walk(const pe_context_t *ctx,
 
     pe_data_directory_t imp_dir;
     pe_status_t s = pe_directory_get(ctx, IMAGE_DIRECTORY_ENTRY_IMPORT, &imp_dir);
-    if (s != PE_OK) return PE_OK; /* no import directory is fine */
+    if (s != PE_OK) return s; /* empty directory: pe_directory_get already gave PE_OK */
     if (imp_dir.rva == 0 || imp_dir.size == 0) return PE_OK;
 
     u32 imp_off;
@@ -918,7 +919,7 @@ pe_status_t pe_exports_walk(const pe_context_t *ctx,
 
     pe_data_directory_t exp_dir;
     pe_status_t s = pe_directory_get(ctx, IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_dir);
-    if (s != PE_OK) return PE_OK;
+    if (s != PE_OK) return s;
     if (exp_dir.rva == 0 || exp_dir.size == 0) return PE_OK;
     if (exp_dir.size < sizeof(IMAGE_EXPORT_DIRECTORY))
         return PE_ERR_CORRUPT;
@@ -1018,7 +1019,7 @@ pe_status_t pe_relocs_walk(const pe_context_t *ctx,
 
     pe_data_directory_t reloc_dir;
     pe_status_t s = pe_directory_get(ctx, IMAGE_DIRECTORY_ENTRY_BASERELOC, &reloc_dir);
-    if (s != PE_OK) return PE_OK;
+    if (s != PE_OK) return s;
     if (reloc_dir.rva == 0 || reloc_dir.size == 0) return PE_OK;
 
     u32 reloc_off;
@@ -1084,7 +1085,7 @@ pe_status_t pe_exception_walk(const pe_context_t *ctx,
 
     pe_data_directory_t exc_dir;
     pe_status_t s = pe_directory_get(ctx, IMAGE_DIRECTORY_ENTRY_EXCEPTION, &exc_dir);
-    if (s != PE_OK) return PE_OK;
+    if (s != PE_OK) return s;
     if (exc_dir.rva == 0 || exc_dir.size == 0) return PE_OK;
     if ((exc_dir.size % sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY)) != 0)
         return PE_ERR_CORRUPT;
@@ -1102,7 +1103,7 @@ pe_status_t pe_exception_walk(const pe_context_t *ctx,
 
         pe_runtime_function_t out = {
             .begin = rf.BeginAddress,
-            .end = rf.EndAddress & ~0x3U,
+            .end = rf.EndAddress,
             .unwind = rf.DUMMYUNIONNAME.UnwindInfoAddress,
         };
         s = cb(user, &out);
