@@ -55,16 +55,41 @@ CFLAGS   := -std=c11 -g -O1 -Wall -Wextra -Werror $(SAN_FLAGS)
 
 OBJS := $(OUT)/pe_parse.o $(OUT)/pe_image.o $(OUT)/test_pe_parse.o
 
-.PHONY: all test clean
+.PHONY: all test real-pe clean
 
 all: test
 
-test: $(TEST)
+# Real PE images built at test time by the MinGW gcc (see fixtures/). The
+# images are only read as byte buffers by test_real_pe.c and are never run.
+# Each fixture gets one rule below and is listed in FIX_EXES.
+FIX_SRC     := fixtures
+FIX_OUT     := $(OUT)/fixtures
+FIX_EXES    := $(FIX_OUT)/minimal.exe
+FIX_CFLAGS  := -std=c11 -O1 -fno-pic -fno-stack-protector -fno-ident -Wall -Wextra -Werror
+FIX_LDFLAGS := -fno-use-linker-plugin -nostdlib
+
+REAL_TEST := $(OUT)/test_real_pe$(EXE_SUFFIX)
+REAL_OBJS := $(OUT)/pe_parse.o $(OUT)/test_real_pe.o
+
+test: $(TEST) $(REAL_TEST) $(FIX_EXES)
 	./$(TEST) 2>$(OUT)/pe_diag.log
 	@echo "host-test: pe_validate diagnostics in $(OUT)/pe_diag.log"
+	./$(REAL_TEST) 2>>$(OUT)/pe_diag.log
+
+real-pe: $(REAL_TEST) $(FIX_EXES)
+	./$(REAL_TEST) 2>>$(OUT)/pe_diag.log
 
 $(TEST): $(OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -o $@
+
+$(REAL_TEST): $(REAL_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(REAL_OBJS) -o $@
+
+$(FIX_OUT)/minimal.exe: $(FIX_SRC)/minimal.c | $(FIX_OUT)
+	$(CC) $(FIX_CFLAGS) $(FIX_LDFLAGS) -Wl,-e,minimal_entry $< -o $@
+
+$(FIX_OUT):
+	mkdir -p $(FIX_OUT)
 
 $(OUT)/pe_parse.o: $(SRC)/pe_parse.c $(SRC)/pe_parse.h $(SRC)/pe_format.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
