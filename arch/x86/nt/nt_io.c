@@ -370,8 +370,15 @@ NTSTATUS ntio_handle_create(void *obj, ACCESS_MASK granted, HANDLE __user *out)
 	if (!out)
 		return STATUS_INVALID_PARAMETER;
 #ifdef __KERNEL__
-	if (!access_ok(out, sizeof(HANDLE)))
-		return STATUS_ACCESS_VIOLATION;
+	/* Probe the output before a slot is reserved: a bad pointer must not
+	 * consume a handle that no process can then close (IO-6). The value
+	 * written back is the one just read, so the probe has no visible effect. */
+	{
+		HANDLE probe;
+		if (!access_ok(out, sizeof(HANDLE)) || get_user(probe, out) ||
+		    put_user(probe, out))
+			return STATUS_ACCESS_VIOLATION;
+	}
 #endif
 
 	spin_lock(&ntio_handle_lock);
