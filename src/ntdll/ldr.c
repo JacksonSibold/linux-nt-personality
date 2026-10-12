@@ -1532,6 +1532,9 @@ static NTSTATUS ldr_process_attach(winldr_ctx_t *ctx, ldr_module_t *mod)
         if (ctx->init_stack[i] == mod) return STATUS_SUCCESS;
     }
 
+    /* LDR-11: the stack is a fixed array; refuse rather than write past it. */
+    if (ctx->init_stack_depth >= sizeof(ctx->init_stack) / sizeof(ctx->init_stack[0]))
+        return STATUS_INSUFFICIENT_RESOURCES;
     ctx->init_stack[ctx->init_stack_depth++] = mod;
 
     ldr_run_tls_callbacks(ctx, mod, DLL_PROCESS_ATTACH);
