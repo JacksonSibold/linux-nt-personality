@@ -112,7 +112,10 @@ static uint8_t *rva_to_ptr(unwind_module_t *mod, ULONG rva) {
  * Returns entry where Begin <= pc < (End & ~3), or NULL.
  */
 static IMAGE_RUNTIME_FUNCTION_ENTRY *lookup_in_module(unwind_module_t *mod, ULONG64 pc) {
-    if (pc < mod->imageBase || pc >= mod->imageBase + mod->sizeOfImage) return NULL;
+    /* sizeOfImage == 0 means unknown (RtlAddFunctionTable): the table bounds the match. */
+    if (pc < mod->imageBase) return NULL;
+    if (pc - mod->imageBase > 0xFFFFFFFFULL) return NULL;
+    if (mod->sizeOfImage != 0 && pc - mod->imageBase >= mod->sizeOfImage) return NULL;
     ULONG rva = (ULONG)(pc - mod->imageBase);
     ULONG lo = 0, hi = mod->funcCount;
     while (lo < hi) {
