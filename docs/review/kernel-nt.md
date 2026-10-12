@@ -19,30 +19,30 @@ The code is careful about `copy_from_user` at most service entry points, and the
 
 ## Findings
 
-### H-1 [High] User handle index is not range-checked before the handle table
+### H-1 [High] User handle index is not range-checked before the handle table (fixed 68fe25b)
 - `src/kernel/nt/handle.c:95-98` (`handle_to_index` truncates the handle to `u32`), `:105-112` (`ht_entry` asserts `i1 < HANDLE_L1_SIZE` and then indexes `table->l1[i1]`).
 - Callers pass the raw user handle with only `idx == 0` rejected: `ObCloseHandle` (`handle.c:347-348`), `ObReferenceObjectByHandle` (`:429-430`), `NtDuplicateObject` (`:472-473`), `ObHandleIsValid` (`:563-566`, no index check at all). The raw value reaches `nt_obj.c:1094` (`nt_svc_NtClose` kernel branch) and `nt_obj.c:674`, `:755`, `:793`, and others.
 - `HANDLE_MAX_INDEX` is `2^24 - 1` (`handle.h:48`), so any index at or above `2^24` gives `i1 >= 256`. In a kernel build `KASSERT` is `BUG_ON` (`kshim.h:63`), so `NtClose(0x40000000)` panics the kernel. In a release build without the assert the read goes past `l1[256]`. Truncation to `u32` also means a handle value with high bits set aliases a valid slot.
 - Fix: in `handle_to_index` reject values with bits above 32 or indices above `HANDLE_MAX_INDEX`, and return NULL from `ht_entry` instead of asserting for out-of-range indices. Apply the check in all four callers.
 
-### O-1 [High] Destroyed process and thread objects stay in the kernel registries (use after free)
+### O-1 [High] Destroyed process and thread objects stay in the kernel registries (use after free) (fixed 30b200a)
 - `src/kernel/nt/object.c:1174-1189` (`ObDestroyProcessObject`): `ob_unregister_proc(proc)` is inside `#ifndef __KERNEL__` (`:1177-1178`). The kernel branch (`:1183-1185`) frees the object without removing it from `g_ob_proc_list`.
 - `src/kernel/nt/object.c:1191-1207` (`ObDestroyThreadObject`): `ObUnregisterThread(thr)` is also inside `#ifndef __KERNEL__` (`:1194-1195`). The kernel build never removes the node from `g_ob_thr_list`.
 - After `kfree`, `ObFindProcessByPid` (`:897-906`), `ObFindThreadByTid` (`:938-947`), `ObForEachThreadOfProcess`, `ObSuspendProcessThreads`, `ObResumeProcessThreads`, `ObTerminateProcessThreads` (`:948-1018`), and `nt_current_ethread` (`:1035-1051`, which calls `ObFindThreadByTid` first) all walk freed nodes. The lookups by pid or tid can return a dangling pointer, which is then dereferenced, for example in `nt_svc_NtOpenProcess` (`proc_thread.c:1589-1592`).
 - Fix: move `ob_unregister_proc` and `ObUnregisterThread` out of the `#ifndef` block so both builds unregister before `kfree`. Also make the lookup functions take a reference under the registry lock (see P-1).
 
-### S-1 [High] NtWaitForMultipleObjects waits on any object type (type confusion, writes into foreign objects)
+### S-1 [High] NtWaitForMultipleObjects waits on any object type (type confusion, writes into foreign objects) (fixed 6f58d04)
 - `src/kernel/nt/sync.c:2229` calls `ObReferenceObjectByHandle(proc, k_handles[i], NULL, ...)` with a NULL type, so any handle (file, directory, registry key, process, thread) is accepted.
 - `sync.c:2235` then treats the body as a dispatcher header: `hdrs[i] = (struct nt_dispatcher_header *)nt_object_body(hdr);`. The wait path reads `h->type` (`:263-265`) and links a wait block into `h->waiters` (`insert_blocks`, used from the wait engine). The layout of, for example, `struct nt_directory` begins with an `rwlock_t`, so the list head and `signal_state` are written into unrelated memory.
 - Fix: pass the expected dispatcher types, or check `hdr->type` against the set of types whose body begins with `struct nt_dispatcher_header`, and return `STATUS_OBJECT_TYPE_MISMATCH` otherwise.
 
-### D-1 [High] Uninitialised kernel heap returned to user space by NtQueryVirtualMemory
+### D-1 [High] Uninitialised kernel heap returned to user space by NtQueryVirtualMemory (already correct on haiku/ntfix: dispatch.c:258 uses kzalloc; no change)
 - `src/kernel/nt/dispatch.c:258` allocates `kbuf` with `kmalloc(MemoryInformationLength)`, not zeroed.
 - `src/kernel/nt/mm.c:1334-1378`: the kernel writes only `sizeof(MEMORY_BASIC_INFORMATION)` (48 bytes) and sets `*ReturnLength = 48`.
 - `dispatch.c:264` then calls `copy_to_user(MemoryInformation, kbuf, MemoryInformationLength)`, copying the caller-chosen length. Every byte beyond 48 is uninitialised kernel heap.
 - Fix: `kzalloc`, or copy only the bytes the call reported (`kret`).
 
-### R-1 [High] Uninitialised kernel heap returned to user space by NtQueryValueKey
+### R-1 [High] Uninitialised kernel heap returned to user space by NtQueryValueKey (fixed 0254b09)
 - `src/kernel/nt/registry.c:1621` (kernel branch of `nt_svc_NtQueryValueKey`; the shim at `:1448` is the same) allocates `kout = kmalloc(len)`.
 - `NtQueryValueKey` (`registry.c:1079-1140`) fills only `needed` bytes when `Length >= needed`, then the wrapper runs `copy_to_user(info, kout, len)` at `:1625` for the full `len`. The tail is uninitialised. Fix: `kzalloc`, or copy only `min(needed, len)`.
 
@@ -64,7 +64,7 @@ The code is careful about `copy_from_user` at most service entry points, and the
 - The comment at `handle.c:359-375` justifies this as avoiding handle aliasing. Aliasing can instead be prevented with a generation counter in the entry.
 - Fix: add a generation field and restore the free list, or recycle slots with a generation check.
 
-### M-2 [Medium] Section view size and offset checks can be bypassed by integer wrap
+### M-2 [Medium] Section view size and offset checks can be bypassed by integer wrap (already correct on haiku/ntfix: offset checked before arithmetic at mm.c:1516-1527; no change)
 - `src/kernel/nt/mm.c:1517` (`offset = SectionOffset->QuadPart`, unchecked against `sec->size`), `:1524-1526`: `actual_size = sec->size - offset` underflows when `offset > sec->size` and `*ViewSize == 0`. The check `offset + actual_size > sec->size` then cannot fail, because the sum wraps back to `sec->size`.
 - With a nonzero `*ViewSize`, `offset + actual_size` can wrap to a small value for a large aligned offset, passing the check.
 - Result: a VAD and a `kshim_section_map` covering memory outside the section's backing. Fix: check `offset <= sec->size` and `actual_size <= sec->size - offset` before the arithmetic.
@@ -80,7 +80,7 @@ The code is careful about `copy_from_user` at most service entry points, and the
 - Cross-reference: arch-x86-nt.md M-4 and M-5.
 - Fix: record the original state of each piece before mutating, and restore it on any error before returning.
 
-### IO-1 [Medium] NtReadFile and NtWriteFile do not check FILE_READ_DATA or FILE_WRITE_DATA
+### IO-1 [Medium] NtReadFile and NtWriteFile do not check FILE_READ_DATA or FILE_WRITE_DATA (read half fixed 1d160e8; write half open, see Fix status)
 - `src/kernel/nt/io.c:1890` (`nt_svc_NtReadFile`) and `io.c:1957` (`nt_svc_NtWriteFile`) call `ntio_handle_lookup(FileHandle, 0)`. A `required` value of 0 skips the granted-access test in `ntio_handle_lookup` (`io.c:402-428`).
 - A handle opened with only `SYNCHRONIZE` or `FILE_READ_ATTRIBUTES` can therefore be read or written.
 - Fix: pass `FILE_READ_DATA` and `FILE_WRITE_DATA` as `required`, and keep `FILE_APPEND_DATA` handling consistent.
@@ -180,6 +180,25 @@ The code is careful about `copy_from_user` at most service entry points, and the
 
 ### I-1 [Info] Stale comment about the call that frees the mapping
 - `src/kernel/nt/mm.c:1610-1613`: the comment says `vm_munmap` is called, but that line is commented out. The active call is `kshim_munmap` at `:1614`. Same behaviour, but the comment misleads the next reader.
+
+## Fix status (branch haiku/ntfix)
+
+Fixed in this branch: H-1 (68fe25b), R-1 (0254b09; all eight user-output buffers in registry.c), S-1 (6f58d04), O-1 (30b200a), IO-1 read half (1d160e8). Already correct here, no change: D-1, M-2.
+
+Not fixed, needs a design decision:
+
+- M-1: NtCreateSection returns a kernel address as the handle. Needs a real object-table handle and a type-checked lookup in NtMapViewOfSection.
+- P-1: NtOpenProcess and NtOpenThread have no access or owner check and use the registry result unreferenced. Needs a policy for who may open which process.
+- H-2: closed handle slots are never reused. Needs a generation counter in the entry.
+- M-3: section objects are never freed. Needs an object type with a delete callback.
+- M-4: VAD rollback on failed commit or decommit. Needs an undo design.
+- IO-1 write half: NtWriteFile must accept FILE_APPEND_DATA as well as FILE_WRITE_DATA, so the lookup helper needs an any-of mode.
+- IO-2: file handle table is global. Needs a move to the per-process table or an owner field.
+- PT-1: TEB address returned to callers is a kernel heap address. Needs a decision on what to return.
+- IOCP-1: concurrency count is never released. Needs a decision on when a thread counts as finished.
+- IOCP-2: completion queue quota. Needs a chosen limit.
+
+Low findings are not addressed in this pass (M-5 and M-6 are still present, as are the others).
 
 ## Not verified / out of scope
 
