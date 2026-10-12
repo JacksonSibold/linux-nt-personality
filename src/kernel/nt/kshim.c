@@ -393,12 +393,31 @@ void kshim_filp_close(struct file *f) {
     free(f->path_copy);
     free(f);
 }
+/* Stat timestamps. glibc (Linux) has st_atim/st_mtim/st_ctim as struct
+ * timespec with nanoseconds. MinGW only has st_atime/st_mtime/st_ctime
+ * (time_t, whole seconds), so the MinGW branch builds a timespec with tv_nsec 0. */
+#if defined(__linux__)
+#define KSHIM_STAT_ATIM(s) ((s).st_atim)
+#define KSHIM_STAT_MTIM(s) ((s).st_mtim)
+#define KSHIM_STAT_CTIM(s) ((s).st_ctim)
+#else
+static inline struct timespec kshim_stat_ts(time_t t) {
+    struct timespec ts;
+    ts.tv_sec = t;
+    ts.tv_nsec = 0;
+    return ts;
+}
+#define KSHIM_STAT_ATIM(s) kshim_stat_ts((s).st_atime)
+#define KSHIM_STAT_MTIM(s) kshim_stat_ts((s).st_mtime)
+#define KSHIM_STAT_CTIM(s) kshim_stat_ts((s).st_ctime)
+#endif
+
 int kshim_vfs_getattr(struct file *f, struct kstat *st) {
     if (!f || !st) return -1;
     struct stat s;
     if (fstat(f->fd, &s)!=0) return -1;
     st->dev = s.st_dev; st->ino = s.st_ino; st->mode = s.st_mode; st->size = s.st_size;
-    st->atime = s.st_atim; st->mtime = s.st_mtim; st->ctime = s.st_ctim;
+    st->atime = KSHIM_STAT_ATIM(s); st->mtime = KSHIM_STAT_MTIM(s); st->ctime = KSHIM_STAT_CTIM(s);
     st->nlink = s.st_nlink;
     return 0;
 }
@@ -406,7 +425,7 @@ int kshim_vfs_getattr_path(const char *path, struct kstat *st) {
     struct stat s;
     if (stat(path, &s)!=0) return -1;
     st->dev = s.st_dev; st->ino = s.st_ino; st->mode = s.st_mode; st->size = s.st_size;
-    st->atime = s.st_atim; st->mtime = s.st_mtim; st->ctime = s.st_ctim;
+    st->atime = KSHIM_STAT_ATIM(s); st->mtime = KSHIM_STAT_MTIM(s); st->ctime = KSHIM_STAT_CTIM(s);
     st->nlink = s.st_nlink;
     return 0;
 }
