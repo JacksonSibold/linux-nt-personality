@@ -1801,13 +1801,25 @@ NTSTATUS LdrGetProcedureAddress(winldr_ctx_t *ctx,
 
     ldr_module_t *mod = (ldr_module_t *)((char *)module - offsetof(ldr_module_t, entry));
     int by_ord = (name == NULL || name->Buffer == NULL);
-    const char *n = by_ord ? NULL : name->Buffer;
+
+    /* LDR-8: ANSI_STRING is not NUL-terminated and Length is authoritative.
+     * Copy exactly Length bytes into a terminated buffer. */
+    char *n = NULL;
+    if (!by_ord) {
+        size_t len = name->Length;
+        n = (char *)malloc(len + 1);
+        if (!n) return STATUS_NO_MEMORY;
+        memcpy(n, name->Buffer, len);
+        n[len] = '\0';
+        if (strlen(n) != len) { free(n); return STATUS_PROCEDURE_NOT_FOUND; } /* embedded NUL */
+    }
 
     ldr_lock_acquire(ctx);
     ULONG_PTR addr;
     NTSTATUS s = ldr_resolve_export(ctx, mod, n, ordinal, by_ord, &addr, NULL, 0, 0);
     if (NT_SUCCESS(s)) *out = (FARPROC)addr;
     ldr_lock_release(ctx);
+    free(n);
     return s;
 }
 #else
