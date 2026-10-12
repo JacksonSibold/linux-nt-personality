@@ -24,12 +24,14 @@ The parser in this directory is careful about bounds for most reads (`pe_check_r
 - Fix: have `binfmt_pe.c` call `pe_validate()` on a buffer it has fully read (up to `SizeOfHeaders`) and use the `pe_*` walkers for imports, relocations and TLS, instead of the duplicated open-coded parsing. Then delete the duplicate helpers.
 
 ### L-1 [High] Quadratic export name lookup (CPU DoS on crafted input)
+- **Status:** fixed in c021ca9 (failing tests in a69558a). Walker is two linear passes; table counts capped at `PE_MAX_EXPORT_ENTRIES` (65536); `pe_export_find()` added for binary-search lookup. The 65536-entry test drops from about 20 s to well under 1 s.
 - `src/loader/pe_parse.c:964-1000`: the outer loop runs over `NumberOfFunctions` (line 964). For every function with a nonzero RVA the inner loop at 985 scans all `NumberOfNames` entries (985-1000) looking for an ordinal match. The inner loop only exits early on a match, so exports that have no name (or names that appear late in the table) cost a full scan.
 - The validation at 937-946 only checks that each table fits in the file. It does not bound the product of the two counts.
 - Cost is O(NumberOfFunctions x NumberOfNames). Both tables are bounded only by file size, so a single crafted file of about 1 MiB can force on the order of 10^10 inner iterations.
 - Fix: make one pass over the name table and record `name_index_for_ordinal[]` (sized from `NumberOfFunctions`, which is bounded by file size, or keep a bitmap of ordinals that already have a name). Then iterate functions once. Alternatively, build a sorted index. Add a test with a 1 MiB export table.
 
 ### L-2 [Medium] Unbounded symbol-name scans
+- **Status:** fixed in d25d66a (failing tests in b9c66f4). Names and forwarders are capped at `PE_MAX_SYMBOL_NAME` (4096); an overlong or unterminated name returns `PE_ERR_CORRUPT`.
 - `src/loader/pe_parse.c:341` (`pe_read_asciiz`) scans until a NUL byte or end of file. It is called for every import name (`pe_parse.c:897`) and every export name (`pe_parse.c:980`, `997`) with no length cap.
 - Many thunks can point at the same long run of non-NUL bytes near the end of the file, so the total work is O(thunks x file size).
 - Fix: cap name length (for example 512 bytes for imports, 1024 for exports) inside `pe_read_asciiz` or at the call sites, and return `PE_ERR_CORRUPT` when the cap is hit.

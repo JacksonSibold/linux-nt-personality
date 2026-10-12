@@ -33,6 +33,19 @@ typedef enum pe_status {
 } pe_status_t;
 
 /* -------------------------------------------------------------------------- */
+/* Input limits (docs/review/loader.md, L-1 and L-2)                          */
+/* -------------------------------------------------------------------------- */
+/* Import and export names and forwarder strings may be at most this many
+ * bytes, not counting the terminating NUL.  Longer names, and names with no NUL
+ * before end of file, fail with PE_ERR_CORRUPT. */
+#define PE_MAX_SYMBOL_NAME 4096
+
+/* NumberOfFunctions and NumberOfNames may each be at most this many.  Export
+ * ordinals are 16-bit indexes into the function table, so larger tables cannot
+ * be addressed.  Larger values fail with PE_ERR_CORRUPT. */
+#define PE_MAX_EXPORT_ENTRIES 65536
+
+/* -------------------------------------------------------------------------- */
 /* Context                                                                    */
 /* -------------------------------------------------------------------------- */
 typedef struct pe_context {
@@ -223,9 +236,22 @@ pe_status_t pe_imports_walk(const pe_context_t *ctx,
 /* -------------------------------------------------------------------------- */
 typedef pe_status_t (*pe_export_cb)(void *user, const pe_export_entry_t *entry);
 
+/* Delivers each export once: named exports first, in name-table order, then
+ * unnamed functions in ordinal order.  Empty function slots are skipped. */
 pe_status_t pe_exports_walk(const pe_context_t *ctx,
                             pe_export_cb cb,
                             void *user);
+
+/* Looks up one export by name (name_len bytes, not NUL-terminated).  Uses a
+ * binary search over the name table, which the PE specification requires to be
+ * sorted in ASCII order.  If the search misses and the table is not sorted, it
+ * falls back to a linear scan.  Returns PE_OK with *out set (out->forwarder is
+ * set for a forwarded export), PE_ERR_NOT_FOUND if there is no such export, or
+ * a corruption error. */
+pe_status_t pe_export_find(const pe_context_t *ctx,
+                           const char *name,
+                           size_t name_len,
+                           pe_export_entry_t *out);
 
 /* -------------------------------------------------------------------------- */
 /* Relocation walk                                                            */
