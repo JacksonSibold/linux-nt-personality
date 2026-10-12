@@ -500,6 +500,27 @@ static int test_file_section_unsupported(void) {
     return 1;
 }
 
+/* D-2: a *ViewSize within one page of SIZE_MAX rounds up to 0 and used to pass
+ * the size check. It must be refused with STATUS_INVALID_VIEW_SIZE, mapping nothing. */
+static int test_view_size_round_up_wrap(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE sec = NULL;
+    NTSTATUS st = NtCreateSection(&sec, 0, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "create wrap section 0x%lx", (unsigned long)st);
+    LARGE_INTEGER off; off.QuadPart = 0;
+    PVOID base = NULL;
+    SIZE_T vs = (SIZE_T)-1 - 100;
+    st = NtMapViewOfSection(sec, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READWRITE);
+    ASSERT(st == STATUS_INVALID_VIEW_SIZE, "wrapping view size status 0x%lx", (unsigned long)st);
+    ASSERT(base == NULL, "no base for wrapping view size");
+    struct nt_section *s = (struct nt_section *)sec;
+    int fd = s->backing.fd; void *mem = s->backing.mem; size_t bsz = s->backing.size;
+    kfree(s);
+    if (mem) kshim_munmap(mem, bsz);
+    (void)fd;
+    return 1;
+}
+
 /* 8. sections */
 static int test_sections(void) {
     LARGE_INTEGER sz;
@@ -968,6 +989,7 @@ int main(void) {
     RUN_TEST(test_alloc_size_wrap);
     RUN_TEST(test_file_section_unsupported);
     RUN_TEST(test_sections);
+    RUN_TEST(test_view_size_round_up_wrap);
     RUN_TEST(test_probe_virtualquery_regression);
     RUN_TEST(test_reset);
     RUN_TEST(test_vad_split_coalesce_invariants);

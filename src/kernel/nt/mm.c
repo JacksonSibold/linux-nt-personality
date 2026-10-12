@@ -1532,7 +1532,11 @@ NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
     }
     if (offset > sec->size) return STATUS_INVALID_VIEW_SIZE;
     if (*ViewSize == 0) actual_size = sec->size - offset;
-    else actual_size = (ULONG_PTR)ntmm_round_up(*ViewSize, NTMM_PAGE_SIZE);
+    else {
+        /* Check the raw size first: rounding a value near SIZE_MAX wraps to 0. */
+        if (*ViewSize > sec->size - offset) return STATUS_INVALID_VIEW_SIZE;
+        actual_size = (ULONG_PTR)ntmm_round_up(*ViewSize, NTMM_PAGE_SIZE);
+    }
     if (actual_size > sec->size - offset) return STATUS_INVALID_VIEW_SIZE;
     if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
     commit = (sec->attributes & SEC_COMMIT) || (AllocationType & MEM_COMMIT);
