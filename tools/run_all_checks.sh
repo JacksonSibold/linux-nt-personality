@@ -61,7 +61,8 @@ find_python() {
 }
 PY=$(find_python) || PY=""
 
-LOGDIR=$(mktemp -d "${TMPDIR:-/tmp}/run-all-checks.XXXXXX" 2>/dev/null) || LOGDIR=$(mktemp -d)
+LOGDIR="${TMPDIR:-${TEMP:-/tmp}}/run-all-checks.$$"
+mkdir -p "$LOGDIR" || { echo "cannot create log directory $LOGDIR" >&2; exit 1; }
 RESULTS=()
 
 record() { RESULTS+=("$1|$2|$3"); }
