@@ -1045,8 +1045,19 @@ static int load_pe_binary(struct linux_binprm *bprm)
         }
     }
 
-    /* MMF_PE_IMAGE not defined in vanilla; NT state tracked via TIF_NTABI */
-    state.mappings = NULL;
+    /* MMF_PE_IMAGE not defined in vanilla; NT state tracked via TIF_NTABI.
+     * Success keeps the mappings in place, so free only the bookkeeping
+     * nodes (not via pe_unmap_all) and the headers buffer. */
+    {
+        struct pe_mapping *m = state.mappings;
+        while (m) {
+            struct pe_mapping *next = m->next;
+            kfree(m);
+            m = next;
+        }
+        state.mappings = NULL;
+    }
+    kfree(state.headers_buf);
     state.headers_buf = NULL;
     ret = 0;
 out:
