@@ -1767,6 +1767,9 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
         size_t wlen = target->image_path_wlen;
         size_t need = sizeof(UNICODE_STRING) + (wlen+1)*sizeof(WCHAR);
         ULONG need32 = (ULONG)need;
+        /* UNICODE_STRING Length/MaximumLength are USHORT */
+        if ((wlen + 1) * sizeof(WCHAR) > 0xFFFF)
+            return STATUS_NAME_TOO_LONG;
         if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength)))
             copy_to_user(ReturnLength, &need32, sizeof(need32));
         if (ProcessInformationLength < need) return STATUS_INFO_LENGTH_MISMATCH;
