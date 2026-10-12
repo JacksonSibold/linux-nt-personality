@@ -616,6 +616,44 @@ TEST(duplicate_close_source_protected)
     PASS();
 }
 
+/* A symlink whose target names itself must fail with a depth error, not
+ * recurse until the stack overflows. */
+TEST(symlink_self_loop)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(111, "p11");
+    struct nt_ethread *thr = make_thread(proc, 11);
+    UNICODE_STRING us; make_us(&us, "\\BaseNamedObjects\\Loop", wbuf1, sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    struct nt_object_header *h; void *b;
+    NTSTATUS st = ObCreateObject(&nt_symlink_type, &oa, sizeof(struct nt_symlink), &h, &b);
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+    struct nt_symlink *lk = (struct nt_symlink *)b;
+    WCHAR *tb = (WCHAR *)kmalloc(us.Length + sizeof(WCHAR), GFP_KERNEL);
+    ASSERT(tb != NULL);
+    memcpy(tb, us.Buffer, us.Length);
+    tb[us.Length / sizeof(WCHAR)] = 0;
+    lk->target.Buffer = tb;
+    lk->target.Length = us.Length;
+    lk->target.MaximumLength = us.Length + sizeof(WCHAR);
+    HANDLE hl;
+    st = ObInsertObject(h, &oa, 0, proc, &hl);
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+
+    struct nt_object_header *out = NULL;
+    st = ObReferenceObjectByName(&lk->target, NULL, KernelMode, 0, &out);
+    ASSERT_STATUS(st, STATUS_NAME_TOO_LONG);
+    ASSERT(out == NULL);
+
+    ObCloseHandle(proc, hl);
+    ObMakeTemporaryObject(h); ObDereferenceObject(h);
+    ObDestroyProcessObject(proc);
+    ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL);
+    kshim_set_current_thread(NULL);
+    PASS();
+}
+
 /* -------------------------------------------------------------------------- */
 /* Main                                                                        */
 /* -------------------------------------------------------------------------- */
@@ -630,6 +668,7 @@ int main(void)
     RUN(close_pending);
     RUN(duplicate_reduced_access);
     RUN(duplicate_close_source_protected);
+    RUN(symlink_self_loop);
     RUN(inheritance);
     RUN(pseudo_handles);
     RUN(handle_reuse);
