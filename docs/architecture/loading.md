@@ -7,8 +7,8 @@ Two loaders exist in `src/ntdll`, and they are not the same code.
   It maps DLLs, patches import tables, runs TLS callbacks and `DllMain`, then
   calls the exe entry point.
 - **Library loader**, `src/ntdll/ldr.c`, with the pure address helpers in
-  `ldr_pure.h`. It has the full `Ldr*` API (`LdrLoadDll`, forwarders,
-  delay imports, API sets). It is tested on the host. In the MinGW build its
+  `ldr_pure.h`. It has the `Ldr*` API (`LdrLoadDll`, forwarders, delay
+  imports, API sets). It is tested on the host. In the MinGW build its
   real code is excluded, and the exported `Ldr*` functions are stubs
   (decision 0029).
 
@@ -39,8 +39,8 @@ Step detail, all in `ntdll_main.c`:
 
 1. The thunk reads the PEB from `gs:0x30`, then `ImageBaseAddress`. The kernel
    passes the image base in `rcx` too, but this code does not use it.
-2. It maps each imported DLL from `/windows/system32/` only (MAIN-5). Mapping uses `NtCreateFile`, `NtReadFile`
-   and `NtAllocateVirtualMemory`. It applies only `IMAGE_REL_BASED_DIR64`
+2. It maps each imported DLL from `/windows/system32/` only (MAIN-5). Mapping
+   uses `NtCreateFile`, `NtReadFile` and `NtAllocateVirtualMemory`. It applies only `IMAGE_REL_BASED_DIR64`
    relocations, and it rejects other types (`MAIN-2` bounds checks).
 3. The new DLL's own imports are patched. A dependency of that DLL is mapped
    if needed, but its own imports are not patched. Its `DllMain` does not run.
