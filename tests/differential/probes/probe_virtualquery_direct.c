@@ -124,6 +124,12 @@ static void j_add_hex64(ULONGLONG v){ char tmp[32]; u64_hex(tmp,v); j_add(tmp); 
 static void j_add_dec64(ULONGLONG v){ char tmp[32]; u64_dec(tmp,v); j_add(tmp); }
 static void j_add_hex32(ULONG v){ char tmp[12]; u32_hex(tmp,v); j_add(tmp); }
 
+/* Extra NT-path copies of the JSON output (the Windows build captures stdout).
+   Override at build time with -DNTPERS_STAGE_NT=... */
+#ifndef NTPERS_STAGE_NT
+#define NTPERS_STAGE_NT "\\??\\mnt\\share\\.dodresult"
+#endif
+
 static void write_file_nt(const char *path, const char *buf, int len){
     WCHAR wpath[512];
     int i=0; while(path[i] && i<511){ wpath[i]=(WCHAR)path[i]; i++; } wpath[i]=0;
@@ -279,7 +285,7 @@ static void do_probe(void){
     write_file_nt("\\??\\C:\\tmp\\probe_virtualquery.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_virtualquery_direct.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_virtualquery.json", json, jpos);
-    write_file_nt("\\??\\C:\\Users\\Jackson\\Desktop\\probe_direct_win.json", json, jpos);
+    write_file_nt(NTPERS_STAGE_NT "\\probe_direct_win.json", json, jpos);
     NtTerminateProcess(NtCurrentProcess(),0);
 #ifdef NTPERS_VM
     __asm__ volatile("mov $60, %%eax; mov $0, %%edi; syscall" ::: "rax","rdi");
