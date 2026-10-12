@@ -312,7 +312,10 @@ int _exit(int c){ exit(c); return 0; }
 void _Exit(int c){ exit(c); }
 
 /* Exception handler */
-int __C_specific_handler(void *a, void *b, void *c, void *d){ (void)a;(void)b;(void)c;(void)d; return 0; }
+/* No scope table is searched here, so no handler matches. Return
+ * ExceptionContinueSearch (1); 0 is ExceptionContinueExecution and would
+ * resume at the faulting instruction (CRT-6). */
+int __C_specific_handler(void *a, void *b, void *c, void *d){ (void)a;(void)b;(void)c;(void)d; return 1; }
 void* __C_specific_handler_wrapper = __C_specific_handler;
 
 /* Startup helpers */
