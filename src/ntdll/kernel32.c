@@ -138,6 +138,8 @@ HANDLE WINAPI CreateFileW(const WCHAR *lpFileName, DWORD desiredAccess, DWORD sh
     if (!lpFileName) { SetLastError(87); return (HANDLE)(intptr_t)-1; }
     UNICODE_STRING us;
     size_t len=0; while(lpFileName[len]) len++;
+    /* K32-15: Length and MaximumLength (Length + 2) are USHORT; reject names that do not fit. */
+    if (len >= 0x7FFF) { SetLastError(206); return (HANDLE)(intptr_t)-1; } /* ERROR_FILENAME_EXCED_RANGE */
     us.Length = (USHORT)(len*sizeof(WCHAR));
     us.MaximumLength = us.Length + sizeof(WCHAR);
     us.Buffer = (PWSTR)lpFileName;
