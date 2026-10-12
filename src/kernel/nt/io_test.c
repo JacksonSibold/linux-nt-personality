@@ -847,15 +847,15 @@ TEST(query_set_info)
 /* -------------------------------------------------------------------------- */
 
 /*
- * ntio_resolve_ci copies each path component into a NAME_MAX-byte buffer.
- * A component of NAME_MAX (255) characters wrote its NUL one byte past the
- * end, and nothing bounded longer ones. Lookup and create must both reject
- * such a component with STATUS_OBJECT_NAME_INVALID before the copy.
+ * ntio_resolve_ci copies each path component into a NAME_MAX+1 byte buffer
+ * (room for the NUL). A component of up to NAME_MAX (255) characters is a
+ * legal NTFS name and must resolve; a longer one must be rejected with
+ * STATUS_OBJECT_NAME_INVALID before the copy.
  */
 /*
- * An over-long component gets STATUS_OBJECT_NAME_INVALID from the component
- * check. A name of 260 or more characters hits the total-length check first
- * and gets STATUS_NAME_TOO_LONG. Either one is a rejection.
+ * Either NT-layer check may reject an over-long name: a component over
+ * NAME_MAX gets STATUS_OBJECT_NAME_INVALID, and the total-length check gets
+ * STATUS_NAME_TOO_LONG. The tests accept either as a rejection.
  */
 static bool long_name_rejected(NTSTATUS st)
 {
@@ -887,18 +887,23 @@ TEST(ci_component_length_limit)
 	OBJECT_ATTRIBUTES oa;
 	LARGE_INTEGER alloc = { 0 };
 	NTSTATUS st;
-	size_t len;
+	static const size_t accept_lens[] = { 254, 255 };
+	static const size_t reject_lens[] = { 256, 300 };
+	size_t k, len;
 
 	reset_state();
 
 	/*
 	 * Lookup (FILE_OPEN). The root is empty so the joined linux path is
 	 * "/" + component, which fits the PATH_MAX buffer on hosts where
-	 * PATH_MAX is 260. FILE_OPEN only stats, so nothing is created.
-	 * 254 must not be rejected. 255 and 300 must be.
+	 * PATH_MAX is 260. FILE_OPEN only stats, so nothing is created and the
+	 * file is not expected to exist: 254 and 255 must get past the name
+	 * checks (any status other than a name-length rejection), while 256 and
+	 * 300 must be rejected.
 	 */
 	kshim_set_root("");
-	for (len = 254; len <= 300; len += (len == 254) ? 1 : 45) {
+	for (k = 0; k < sizeof(accept_lens) / sizeof(accept_lens[0]); k++) {
+		len = accept_lens[k];
 		memset(name, 'a', len);
 		name[len] = '\0';
 		oa = make_long_attr(name, wname, &us);
@@ -906,9 +911,7 @@ TEST(ci_component_length_limit)
 		st = nt_svc_NtCreateFile(&h, FILE_GENERIC_READ, &oa, &iosb, &alloc, 0,
 					 FILE_SHARE_READ, FILE_OPEN,
 					 FILE_NON_DIRECTORY_FILE, NULL, 0);
-		if (len == 254 ? st == STATUS_OBJECT_NAME_INVALID
-			       : len == 255 ? st != STATUS_OBJECT_NAME_INVALID
-			       : !long_name_rejected(st)) {
+		if (long_name_rejected(st)) {
 			fprintf(stderr, "FAIL %s:%d: lookup len=%zu got 0x%08lx\n",
 				__FILE__, __LINE__, len, (long)st);
 			kshim_set_root(g_test_root);
@@ -918,13 +921,29 @@ TEST(ci_component_length_limit)
 		if (NT_SUCCESS(st))
 			nt_svc_NtClose(h);
 	}
+	for (k = 0; k < sizeof(reject_lens) / sizeof(reject_lens[0]); k++) {
+		len = reject_lens[k];
+		memset(name, 'a', len);
+		name[len] = '\0';
+		oa = make_long_attr(name, wname, &us);
+		iosb.Information = 0;
+		st = nt_svc_NtCreateFile(&h, FILE_GENERIC_READ, &oa, &iosb, &alloc, 0,
+					 FILE_SHARE_READ, FILE_OPEN,
+					 FILE_NON_DIRECTORY_FILE, NULL, 0);
+		if (!long_name_rejected(st)) {
+			fprintf(stderr, "FAIL %s:%d: lookup len=%zu got 0x%08lx\n",
+				__FILE__, __LINE__, len, (long)st);
+			kshim_set_root(g_test_root);
+			g_fail++;
+			return;
+		}
+	}
 	kshim_set_root(g_test_root);
 
 	/*
-	 * Create (FILE_CREATE) under the scratch root. A 300-character name is
-	 * rejected by the NT-layer converter before resolution. A 255-character
-	 * name needs room for root + "/" + name inside PATH_MAX, so it is run
-	 * only when that fits. On a 260-byte PATH_MAX it does not.
+	 * Create and reopen under the scratch root. A 255-character component
+	 * needs root + "/" + name inside PATH_MAX, so it runs only when that
+	 * fits. On a 260-byte PATH_MAX it does not, and is skipped.
 	 */
 	if (strlen(g_test_root) + 1 + 255 < PATH_MAX) {
 		memset(name, 'a', 255);
@@ -934,25 +953,42 @@ TEST(ci_component_length_limit)
 		st = nt_svc_NtCreateFile(&h, FILE_GENERIC_WRITE, &oa, &iosb, &alloc, 0,
 					 FILE_SHARE_READ, FILE_CREATE,
 					 FILE_NON_DIRECTORY_FILE, NULL, 0);
-		if (st != STATUS_OBJECT_NAME_INVALID) {
+		if (!NT_SUCCESS(st)) {
 			fprintf(stderr, "FAIL %s:%d: create len=255 got 0x%08lx\n",
 				__FILE__, __LINE__, (long)st);
 			g_fail++;
 			return;
 		}
+		nt_svc_NtClose(h);
+
+		iosb.Information = 0;
+		st = nt_svc_NtCreateFile(&h, FILE_GENERIC_READ, &oa, &iosb, &alloc, 0,
+					 FILE_SHARE_READ, FILE_OPEN,
+					 FILE_NON_DIRECTORY_FILE, NULL, 0);
+		if (!NT_SUCCESS(st)) {
+			fprintf(stderr, "FAIL %s:%d: reopen len=255 got 0x%08lx\n",
+				__FILE__, __LINE__, (long)st);
+			g_fail++;
+			return;
+		}
+		nt_svc_NtClose(h);
 	}
-	memset(name, 'a', 300);
-	name[300] = '\0';
-	oa = make_long_attr(name, wname, &us);
-	iosb.Information = 0;
-	st = nt_svc_NtCreateFile(&h, FILE_GENERIC_WRITE, &oa, &iosb, &alloc, 0,
-				 FILE_SHARE_READ, FILE_CREATE,
-				 FILE_NON_DIRECTORY_FILE, NULL, 0);
-	if (!long_name_rejected(st)) {
-		fprintf(stderr, "FAIL %s:%d: create len=300 got 0x%08lx\n",
-			__FILE__, __LINE__, (long)st);
-		g_fail++;
-		return;
+
+	for (k = 0; k < sizeof(reject_lens) / sizeof(reject_lens[0]); k++) {
+		len = reject_lens[k];
+		memset(name, 'a', len);
+		name[len] = '\0';
+		oa = make_long_attr(name, wname, &us);
+		iosb.Information = 0;
+		st = nt_svc_NtCreateFile(&h, FILE_GENERIC_WRITE, &oa, &iosb, &alloc, 0,
+					 FILE_SHARE_READ, FILE_CREATE,
+					 FILE_NON_DIRECTORY_FILE, NULL, 0);
+		if (!long_name_rejected(st)) {
+			fprintf(stderr, "FAIL %s:%d: create len=%zu got 0x%08lx\n",
+				__FILE__, __LINE__, len, (long)st);
+			g_fail++;
+			return;
+		}
 	}
 	PASS();
 }
