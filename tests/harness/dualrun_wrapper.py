@@ -24,6 +24,9 @@ import json
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _paths import wsl_repo_root  # noqa: E402
+
 def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -55,7 +58,7 @@ def _require_fresh_or_fail() -> int | None:
         return None
     try:
         if _pf.system() == "Windows":
-            wsl_root = "/path/to/ntpers-research"
+            wsl_root = wsl_repo_root()
             cmd = ["wsl", "-d", "Ubuntu", "--", "bash", f"{wsl_root}/vm/freshness.sh", "check"]
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if proc.returncode != 0:
