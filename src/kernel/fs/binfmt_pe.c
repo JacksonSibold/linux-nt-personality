@@ -636,7 +636,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
     if (n < 64) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     if (pe_load_u16(hdr) != 0x5A4D) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u32 nt_off = pe_load_u32((u8*)hdr + 60);
-    if (nt_off + 6 > (u32)n) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
+    if (nt_off > (u32)n || (u32)n - nt_off < 6) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u32 sig = pe_load_u32((u8*)hdr + nt_off);
     if (sig != 0x4550) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
     u16 num_sections = pe_load_u16((u8*)hdr + nt_off + 6);
