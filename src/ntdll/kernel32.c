@@ -14,6 +14,7 @@
 #include "nt_types.h"
 #include "ntstatus.h"
 #include "ldr.h"
+#include "win32_policy.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -207,7 +208,8 @@ BOOL WINAPI VirtualProtect(LPVOID addr, SIZE_T size, DWORD newProt, DWORD *oldPr
     PVOID base=addr;
     SIZE_T sz=size;
     ULONG old=0;
-    ULONG ntProt=4;
+    ULONG ntProt=0;
+    if (!win32_protect_to_nt(newProt, &ntProt)) { SetLastError(87); /* ERROR_INVALID_PARAMETER */ return 0; }
     NTSTATUS s = NtProtectVirtualMemory((HANDLE)(intptr_t)-1, &base, &sz, ntProt, &old);
     if (s==STATUS_SUCCESS) { if(oldProt) *oldProt=old; SetLastError(0); return 1; }
     SetLastErrorFromStatus(s);
