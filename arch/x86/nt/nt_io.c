@@ -1896,11 +1896,6 @@ NTSTATUS nt_svc_NtReadFile(HANDLE FileHandle, HANDLE Event,
 		return STATUS_DELETE_PENDING;
 	}
 
-	{
-		ntio_file_put(file);
-		return STATUS_SUCCESS;
-	}
-
 	status = ntio_do_read(file, Buffer, Length, ByteOffset, &info);
 #ifdef __KERNEL__
 	{
