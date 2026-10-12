@@ -530,8 +530,15 @@ NTSTATUS NtDuplicateObject(struct nt_eprocess *src_proc,
         return st;
     }
     if (options & DUPLICATE_CLOSE_SOURCE) {
-        /* Close source; ignore protect error? Real NT would return error and not duplicate? But we already duplicated. Follow spec: close source after duplicate. */
-        ObCloseHandle(src_proc, src_handle);
+        /* If the source refuses to close (e.g. PROTECT_FROM_CLOSE), undo the duplicate
+         * so the caller gets an error and no new handle. */
+        st = ObCloseHandle(src_proc, src_handle);
+        if (!NT_SUCCESS(st)) {
+            ObCloseHandle(dst_proc, *dst_handle);
+            *dst_handle = NULL;
+            ObDereferenceObject(obj);
+            return st;
+        }
     }
     ObDereferenceObject(obj); /* extra ref from above */
     return STATUS_SUCCESS;

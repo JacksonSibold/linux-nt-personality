@@ -585,6 +585,37 @@ TEST(stress_random)
     PASS();
 }
 
+/* DUPLICATE_CLOSE_SOURCE must not report success when the source refuses to
+ * close (PROTECT_FROM_CLOSE): no duplicate may be left behind. */
+TEST(duplicate_close_source_protected)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(110, "p10");
+    struct nt_ethread *thr = make_thread(proc, 10);
+    UNICODE_STRING us; make_us(&us, "\\BaseNamedObjects\\DupProt", wbuf1, sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, OBJ_PROTECT_FROM_CLOSE);
+    struct nt_object_header *h; void *b;
+    NTSTATUS st = ObCreateObject(&nt_test_type, &oa, sizeof(struct nt_test_body), &h, &b);
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+    HANDLE hp;
+    st = ObInsertObject(h, &oa, 0x03, proc, &hp);
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+
+    HANDLE hdup = (HANDLE)0x1;
+    st = NtDuplicateObject(proc, hp, proc, &hdup, 0x01, 0, DUPLICATE_CLOSE_SOURCE);
+    ASSERT_STATUS(st, STATUS_HANDLE_NOT_CLOSABLE);
+    ASSERT(hdup == NULL);
+    ASSERT(ObHandleIsValid(proc, hp) == true);
+
+    /* Process teardown force-closes protected handles. */
+    ObDestroyProcessObject(proc);
+    ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL);
+    kshim_set_current_thread(NULL);
+    ObMakeTemporaryObject(h); ObDereferenceObject(h);
+    PASS();
+}
+
 /* -------------------------------------------------------------------------- */
 /* Main                                                                        */
 /* -------------------------------------------------------------------------- */
@@ -598,6 +629,7 @@ int main(void)
     RUN(exclusive);
     RUN(close_pending);
     RUN(duplicate_reduced_access);
+    RUN(duplicate_close_source_protected);
     RUN(inheritance);
     RUN(pseudo_handles);
     RUN(handle_reuse);

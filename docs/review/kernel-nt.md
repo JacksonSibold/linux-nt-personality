@@ -203,6 +203,12 @@ Not fixed. Each has a design record in `docs/decisions/` (index: [docs/decisions
 
 Low findings are not addressed in this pass (M-5 and M-6 are still present, as are the others).
 
+## Medium and Low pass (branch haiku/lows-nt)
+
+Each open Medium and Low finding was re-read against the code on this branch. Status values: fixed (commit named by the finding ID), no change, stale, needs owner.
+
+- H-3: fixed. NtDuplicateObject undoes the duplicate and returns the source's close status when DUPLICATE_CLOSE_SOURCE is refused. Test: object_test `duplicate_close_source_protected`. Residual: an undo close on a duplicate created with OBJ_PROTECT_FROM_CLOSE also fails, which leaves that handle in place.
+
 ## Not verified / out of scope
 
 - Nothing was compiled, linked, sanitized, fuzzed, or executed. Overflow and wrap claims come from the arithmetic at the cited lines.
