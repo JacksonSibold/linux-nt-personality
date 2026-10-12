@@ -1119,6 +1119,7 @@ NTSTATUS NtQueryValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG KeyV
     }
     if (ResultLength) *ResultLength = needed;
     if (Length < needed) { read_unlock(&k->lock); ObDereferenceObject(hdr); return STATUS_BUFFER_TOO_SMALL; }
+    if (!KeyValueInformation) { read_unlock(&k->lock); ObDereferenceObject(hdr); return STATUS_INVALID_PARAMETER; }
     if (KeyValueInformationClass==KeyValuePartialInformation) {
         PKEY_VALUE_PARTIAL_INFORMATION p=(PKEY_VALUE_PARTIAL_INFORMATION)KeyValueInformation;
         p->TitleIndex=0;
