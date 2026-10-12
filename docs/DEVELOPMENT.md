@@ -24,8 +24,8 @@ python tools/check_doc_links.py
 
 - `tests/unit` holds 9 test modules (140 tests). They cover the scripts in
   `build/` (`fix_gsbase.py`, `fix_iosb.py`, `gen_ntdll_def.py`, `gen_stubs.py`,
-  `merge_dod.py`, `validate_criteria.py`), `tools/criteria_report.py` and
-  `src/kernel/nt/gen_ntstatus_table.py`. The tests run scripts as subprocesses
+  `merge_dod.py`, `validate_criteria.py`), `tools/criteria_report.py`,
+  `tools/check_doc_links.py` and `src/kernel/nt/gen_ntstatus_table.py`. The tests run scripts as subprocesses
   or import them, and use temporary fixtures, so they do not modify the tree.
 - `tools/check_doc_links.py` checks every tracked `*.md` file. It verifies
   relative links, images and reference links (the target file must exist,
