@@ -75,7 +75,15 @@ int _initterm(void (**start)(void), void (**end)(void)){
     return 0;
 }
 void abort(void){ NtTerminateProcess((HANDLE)(intptr_t)-1, 3); while(1){} }
-int atexit(void (*f)(void)){ (void)f; return 0; }
+/* CRT-7: atexit handlers are kept in a table and run, last registered first, by exit(). */
+#define MS_ATEXIT_MAX 32
+static void (*g_atexit_fns[MS_ATEXIT_MAX])(void);
+static int g_atexit_count = 0;
+int atexit(void (*f)(void)){
+    if(!f || g_atexit_count >= MS_ATEXIT_MAX) return -1;
+    g_atexit_fns[g_atexit_count++] = f;
+    return 0;
+}
 typedef void (*_onexit_t)(void);
 _onexit_t _onexit(_onexit_t f){ (void)f; return NULL; }
 
@@ -307,9 +315,17 @@ int _snprintf(char *s, SIZE_T n, const char *fmt, ...){
 }
 int _vsnprintf(char *s, SIZE_T n, const char *fmt, va_list ap){ return my_vsprintf(s,n,fmt,ap); }
 
-void exit(int code){ NtTerminateProcess((HANDLE)(intptr_t)-1, code); while(1){} }
-int _exit(int c){ exit(c); return 0; }
-void _Exit(int c){ exit(c); }
+void exit(int code){
+    while(g_atexit_count > 0){
+        void (*f)(void) = g_atexit_fns[--g_atexit_count];
+        f();
+    }
+    NtTerminateProcess((HANDLE)(intptr_t)-1, code);
+    while(1){}
+}
+/* _exit and _Exit do not run atexit handlers (CRT-7). */
+int _exit(int c){ NtTerminateProcess((HANDLE)(intptr_t)-1, c); while(1){} return 0; }
+void _Exit(int c){ NtTerminateProcess((HANDLE)(intptr_t)-1, c); while(1){} }
 
 /* Exception handler */
 /* No scope table is searched here, so no handler matches. Return
