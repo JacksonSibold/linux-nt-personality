@@ -217,7 +217,8 @@ static int my_vsprintf(char *out, size_t outsz, const char *fmt, va_list ap){
             if(pos+1<outsz) out[pos++]=spec;
         }
     }
-    out[pos]='\0';
+    /* CRT-2: size 0 means no buffer, so write the NUL only when there is room. */
+    if(outsz) out[pos]='\0';
     return (int)pos;
 }
 
