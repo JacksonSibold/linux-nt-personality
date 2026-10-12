@@ -11,6 +11,7 @@
 #   test_runtime          freestanding malloc/calloc from ntdll_runtime.c
 #   test_win32_policy     kernel32 shim argument mapping (win32_policy.h)
 #   test_pe_bounds        PE section and relocation range checks (pe_bounds.h)
+#   test_ldr_pure         loader IAT slot writes and TLS callback table reads (ldr_pure.h)
 #
 # SANITIZE=auto (default) enables -fsanitize=address,undefined only when a
 # probe program both links and runs with it. The MSYS2 UCRT64 gcc on the
@@ -60,7 +61,7 @@ endif
 CPPFLAGS := -I$(SRC) -I$(LOADER)
 CFLAGS   := -std=c11 -g -O1 -Wall -Wextra -Werror $(SAN_FLAGS)
 
-TESTS    := test_ntstatus_to_dos test_unwind test_except test_runtime test_win32_policy test_pe_bounds
+TESTS    := test_ntstatus_to_dos test_unwind test_except test_runtime test_win32_policy test_pe_bounds test_ldr_pure
 TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 
 # test_pe_bounds is build-only on this host: Windows Application Control blocks
@@ -94,6 +95,10 @@ $(OUT)/test_win32_policy$(EXE_SUFFIX): test_win32_policy.c minitest.h $(SRC)/win
 
 # Header-only range checks (src/ntdll/pe_bounds.h).
 $(OUT)/test_pe_bounds$(EXE_SUFFIX): test_pe_bounds.c minitest.h $(SRC)/pe_bounds.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only loader address translation (src/ntdll/ldr_pure.h, used by ldr.c).
+$(OUT)/test_ldr_pure$(EXE_SUFFIX): test_ldr_pure.c minitest.h $(SRC)/ldr_pure.h $(SRC)/pe_bounds.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
 
 # unwind.c calls _NtRaiseException from except.c (RtlRaiseException).

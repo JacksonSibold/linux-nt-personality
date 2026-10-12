@@ -11,6 +11,7 @@
 #define _GNU_SOURCE
 #include "ldr.h"
 #include "pe_bounds.h"
+#include "ldr_pure.h"
 
 #ifndef __MINGW32__
 #include <errno.h>
@@ -1336,18 +1337,17 @@ static NTSTATUS ldr_resolve_imports(winldr_ctx_t *ctx, ldr_module_t *mod)
         NTSTATUS s = ldr_load_dependency(ctx, dep_name, &dep);
         if (!NT_SUCCESS(s)) return s;
 
-        /* Resolve IAT. */
+        /* Resolve IAT.  The ILT is read through its file offset.  The IAT is
+         * written at its RVA in mod->image (LDR-2, decision 0030). */
         u32 ilt_rva = desc.DUMMYUNIONNAME.OriginalFirstThunk ? desc.DUMMYUNIONNAME.OriginalFirstThunk : desc.FirstThunk;
-        u32 ilt_off, iat_off;
+        u32 ilt_off;
         ps = pe_rva_to_offset(&mod->pe, ilt_rva, &ilt_off);
         if (ps != PE_OK) return STATUS_INVALID_IMAGE_FORMAT;
-        ps = pe_rva_to_offset(&mod->pe, desc.FirstThunk, &iat_off);
-        if (ps != PE_OK && desc.FirstThunk != 0) return STATUS_INVALID_IMAGE_FORMAT;
-        if (desc.FirstThunk == 0) iat_off = ilt_off;
+        unsigned long long iat_rva = ldr_iat_base_rva(desc.FirstThunk, ilt_rva);
+        if (iat_rva == 0) return STATUS_INVALID_IMAGE_FORMAT;
 
         for (u32 t = 0; ; ++t) {
             u32 thunk_off = ilt_off + t * sizeof(IMAGE_THUNK_DATA64);
-            u32 iat_slot_off = iat_off + t * sizeof(IMAGE_THUNK_DATA64);
             IMAGE_THUNK_DATA64 thunk;
             ps = pe_read_thunk_data64(&mod->pe, thunk_off, &thunk);
             if (ps != PE_OK) return STATUS_INVALID_IMAGE_FORMAT;
@@ -1372,8 +1372,9 @@ static NTSTATUS ldr_resolve_imports(winldr_ctx_t *ctx, ldr_module_t *mod)
             s = ldr_resolve_thunk(ctx, dep, &sym, &addr);
             if (!NT_SUCCESS(s)) return s;
 
-            /* Patch IAT slot. */
-            memcpy(mod->image + iat_slot_off, &addr, sizeof(addr));
+            /* Patch IAT slot at its RVA; the slot must lie in the image. */
+            if (!ldr_iat_write(mod->image, mod->image_size, iat_rva, t, (unsigned long long)addr))
+                return STATUS_INVALID_IMAGE_FORMAT;
         }
     }
 
@@ -1440,15 +1441,15 @@ NTSTATUS ldr_resolve_delay_imports(winldr_ctx_t *ctx, HMODULE module)
             *pmh = (HMODULE)&dep->entry;
         }
 
-        u32 ilt_off, iat_off;
+        /* The IAT is written at its RVA in mod->image (LDR-2, decision 0030). */
+        u32 ilt_off;
         ps = pe_rva_to_offset(&mod->pe, desc.ImportNameTableRVA, &ilt_off);
         if (ps != PE_OK) return STATUS_INVALID_IMAGE_FORMAT;
-        ps = pe_rva_to_offset(&mod->pe, desc.ImportAddressTableRVA, &iat_off);
-        if (ps != PE_OK) return STATUS_INVALID_IMAGE_FORMAT;
+        unsigned long long iat_rva = desc.ImportAddressTableRVA;
+        if (iat_rva == 0) return STATUS_INVALID_IMAGE_FORMAT;
 
         for (u32 t = 0; ; ++t) {
             u32 thunk_off = ilt_off + t * sizeof(IMAGE_THUNK_DATA64);
-            u32 iat_slot_off = iat_off + t * sizeof(IMAGE_THUNK_DATA64);
             IMAGE_THUNK_DATA64 thunk;
             ps = pe_read_thunk_data64(&mod->pe, thunk_off, &thunk);
             if (ps != PE_OK) return STATUS_INVALID_IMAGE_FORMAT;
@@ -1471,7 +1472,8 @@ NTSTATUS ldr_resolve_delay_imports(winldr_ctx_t *ctx, HMODULE module)
             s = ldr_resolve_thunk(ctx, dep, &sym, &addr);
             if (!NT_SUCCESS(s)) return s;
 
-            memcpy(mod->image + iat_slot_off, &addr, sizeof(addr));
+            if (!ldr_iat_write(mod->image, mod->image_size, iat_rva, t, (unsigned long long)addr))
+                return STATUS_INVALID_IMAGE_FORMAT;
         }
     }
 
@@ -1486,19 +1488,24 @@ static void ldr_run_tls_callbacks(winldr_ctx_t *ctx, ldr_module_t *mod, ULONG re
 {
     if (!mod->has_tls || mod->datafile) return;
 
-    /* AddressOfCallBacks is a VA in the image pointing to null-terminated array. */
-    u8 *base = mod->image;
+    /* AddressOfCallBacks is a VA on the preferred base (the directory is read
+     * from the file, before relocation).  The table is read from mod->image at
+     * VA - OriginalBase, bounded by the image (LDR-4, decision 0032).  A table
+     * outside the image is not read. */
+    unsigned int table_rva = 0;
     ULONG_PTR cb_table_va = (ULONG_PTR)mod->tls.AddressOfCallBacks;
-    if (cb_table_va == 0) return;
+    if (ldr_tls_cb_table_rva((unsigned long long)cb_table_va,
+                             (unsigned long long)(ULONG_PTR)mod->entry.OriginalBase,
+                             mod->image_size, &table_rva) != LDR_TLS_CB_OK)
+        return;
 
-    /* The table is at base + (cb_table_va - image_base), but after relocation
-     * the stored value is already the actual VA.  Convert to file offset via
-     * the preferred base delta so we can read through pe parser. */
-    (void)base;
-    /* Simpler: cb_table_va is a VA; array is in image.  Read from image. */
-    ULONG_PTR *table = (ULONG_PTR *)cb_table_va;
-    for (size_t i = 0; table[i] != 0; ++i) {
-        PIMAGE_TLS_CALLBACK cb = (PIMAGE_TLS_CALLBACK)table[i];
+    /* Entries are relocated VAs in the image.  The loop stops at the zero
+     * terminator or at the image end. */
+    for (unsigned long long i = 0; ; ++i) {
+        unsigned long long cb_va = 0;
+        if (!ldr_tls_cb_entry(mod->image, mod->image_size, table_rva, i, &cb_va))
+            break;
+        PIMAGE_TLS_CALLBACK cb = (PIMAGE_TLS_CALLBACK)(ULONG_PTR)cb_va;
         ldr_log_call(ctx, mod, reason, 1, (ULONG_PTR)cb);
         if (ctx->tls_callback_hook)
             ctx->tls_callback_hook(ctx, &mod->entry, reason, NULL, cb,

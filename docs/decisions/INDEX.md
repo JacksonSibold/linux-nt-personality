@@ -9,7 +9,7 @@ Status values:
 - **no-change**: the record is accepted and no code change is needed.
 - **open**: the record is proposed and not implemented.
 
-Snapshot: 2026-10-12, `HEAD` at the time this index was written. 28 records: 8 fixed, 14 open, 5 blocked, 1 no-change.
+Snapshot: 2026-10-12, `HEAD` at the time this index was written. 32 records: 10 fixed, 16 open, 5 blocked, 1 no-change.
 
 | Record | Title | Status | Finding | Commit |
 |---|---|---|---|---|
@@ -41,6 +41,10 @@ Snapshot: 2026-10-12, `HEAD` at the time this index was written. 28 records: 8 f
 | [0026](0026-arch-teb-kernel-heap.md) | TEB is kernel heap memory and is used as the GS base | open | arch P-2 (High) | |
 | [0027](0027-arch-kernel-stubs-file.md) | kernel_stubs.c is not C and breaks the build | blocked | arch B-1 (High) | |
 | [0028](0028-binfmt-pe-test-missing-helpers.md) | binfmt_pe_test.c calls helpers that are not defined anywhere | open | kernel-fs T-1, T-2 (Medium) | |
+| [0029](0029-loader-mingw-build-selection.md) | MinGW build compiles only loader stubs | open | ntdll LDR-1 (High) | |
+| [0030](0030-loader-iat-rva-patch.md) | IAT slot writes use a file offset, not an RVA | fixed | ntdll LDR-2 (High) | a18c03e |
+| [0031](0031-loader-dllmain-tls-order.md) | DllMain and TLS callbacks are never called | open | ntdll LDR-3 (High) | |
+| [0032](0032-loader-tls-callback-table-rva.md) | TLS callback table read at its preferred-base address | fixed | ntdll LDR-4 (High) | bef4d79 |
 
 ## Notes
 
