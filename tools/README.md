@@ -46,6 +46,36 @@ python3 tools/check_doc_links.py --selftest   # built-in fixture
 Exit status: `0` all links resolve, `1` at least one broken link (each printed
 as `FAIL [doc-link] path:line: (target) detail`), `2` usage error.
 
+## check_syscall_tables.py
+
+Checks that every copy of the NT system-call table agrees. The copies are
+`src/ntdll/syscall_table.def` (the source for the generators), the two kernel
+service lists (`src/kernel/nt/nt_service_list.h` and
+`arch/x86/nt/nt_service_list.h`), `build/generated_stubs.S`,
+`src/ntdll/ntdll.def` (names only; it carries no SSNs) and `NT_NR_SERVICES` in
+both kernel trees. It reports:
+
+- `missing` and `extra`: a name that one copy lacks or adds.
+- `ssn-mismatch`: a name whose SSN differs from the table.
+- `duplicate`: a name or an SSN that appears twice in one copy.
+- `argc-mismatch`: a kernel entry whose argument count differs from `Arity`.
+- `alias`: a `Zw` alias whose target is not the matching `Nt` name.
+- `nr-services`: `NT_NR_SERVICES` that is not the highest SSN plus one.
+
+Unused SSNs are expected, so they are printed as `INFO [ssn-gap]` and do not
+fail the check. The `ArgTypes` count in the table is printed as `INFO
+[argc-types]` as well, because no generator reads that column.
+
+```
+python3 tools/check_syscall_tables.py              # full report
+python3 tools/check_syscall_tables.py --quiet      # summary line only
+python3 tools/check_syscall_tables.py --root PATH  # check another tree
+python3 tools/check_syscall_tables.py --selftest   # built-in fixture
+```
+
+Exit status: `0` all copies agree, `1` at least one mismatch (each printed as
+`FAIL [kind] path: detail`), `2` usage error. Standard library only.
+
 ## ntstatus_lookup.py
 
 Looks up NTSTATUS values by symbolic name, hex or decimal. It reads
