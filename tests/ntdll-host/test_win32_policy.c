@@ -40,10 +40,23 @@ static void protect_rejects_invalid_values(void)
     MT_EXPECT(!win32_protect_to_nt(0x06, &nt)); /* READONLY | READWRITE */
 }
 
+/* K32-3: CREATE_NEW must map to FILE_CREATE and CREATE_ALWAYS to
+ * FILE_OVERWRITE_IF. Without this, CREATE_NEW opens an existing file and
+ * CREATE_ALWAYS fails on one. */
+static void create_disposition_maps_win32_values(void)
+{
+    MT_EXPECT_EQ(win32_create_disposition_to_nt(1), 2); /* CREATE_NEW -> FILE_CREATE */
+    MT_EXPECT_EQ(win32_create_disposition_to_nt(2), 5); /* CREATE_ALWAYS -> FILE_OVERWRITE_IF */
+    MT_EXPECT_EQ(win32_create_disposition_to_nt(3), 1); /* OPEN_EXISTING -> FILE_OPEN */
+    MT_EXPECT_EQ(win32_create_disposition_to_nt(4), 3); /* OPEN_ALWAYS -> FILE_OPEN_IF */
+    MT_EXPECT_EQ(win32_create_disposition_to_nt(5), 4); /* TRUNCATE_EXISTING -> FILE_OVERWRITE */
+}
+
 static const mt_case_t cases[] = {
     MT_CASE(protect_maps_each_base_value),
     MT_CASE(protect_ignores_modifier_bits),
     MT_CASE(protect_rejects_invalid_values),
+    MT_CASE(create_disposition_maps_win32_values),
 };
 
 int main(void)

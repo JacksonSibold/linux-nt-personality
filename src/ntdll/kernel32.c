@@ -141,15 +141,7 @@ HANDLE WINAPI CreateFileW(const WCHAR *lpFileName, DWORD desiredAccess, DWORD sh
     oa.SecurityQualityOfService = NULL;
     HANDLE h=NULL;
     IO_STATUS_BLOCK ios;
-    ULONG disp=0;
-    switch(creationDisp){
-        case CREATE_NEW: disp=1; break; /* FILE_CREATE */
-        case CREATE_ALWAYS: disp=2; break; /* FILE_OVERWRITE_IF */
-        case OPEN_EXISTING: disp=1; break; /* FILE_OPEN */
-        case OPEN_ALWAYS: disp=3; break; /* FILE_OPEN_IF */
-        case TRUNCATE_EXISTING: disp=4; break; /* FILE_OVERWRITE */
-        default: disp=1; break;
-    }
+    ULONG disp = win32_create_disposition_to_nt(creationDisp);
     ULONG desired = 0;
     if (desiredAccess & GENERIC_READ) desired |= 0x80000000 | 0x00100080; /* GENERIC_READ + SYNCHRONIZE */
     if (desiredAccess & GENERIC_WRITE) desired |= 0x40000000 | 0x00100080;

@@ -33,4 +33,25 @@ static inline BOOL win32_protect_to_nt(DWORD prot, ULONG *nt)
     }
 }
 
+/* Win32 dwCreationDisposition to NT CreateDisposition (FILE_* values).
+ * NT values: FILE_SUPERSEDE 0, FILE_OPEN 1, FILE_CREATE 2, FILE_OPEN_IF 3,
+ * FILE_OVERWRITE 4, FILE_OVERWRITE_IF 5. Unknown values map to FILE_OPEN. */
+static inline ULONG win32_create_disposition_to_nt(DWORD creation)
+{
+    switch (creation) {
+    case 1: /* CREATE_NEW: fail if the file exists -> FILE_CREATE */
+        return 2;
+    case 2: /* CREATE_ALWAYS: replace or create -> FILE_OVERWRITE_IF */
+        return 5;
+    case 3: /* OPEN_EXISTING -> FILE_OPEN */
+        return 1;
+    case 4: /* OPEN_ALWAYS -> FILE_OPEN_IF */
+        return 3;
+    case 5: /* TRUNCATE_EXISTING -> FILE_OVERWRITE */
+        return 4;
+    default:
+        return 1;
+    }
+}
+
 #endif /* NTDLL_WIN32_POLICY_H */
