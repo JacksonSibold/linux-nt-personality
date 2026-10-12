@@ -132,14 +132,7 @@ class MainTests(unittest.TestCase):
         self.assertEqual(twice.count("static inline NTSTATUS ntio_put_iosb"), 1)
         self.assertNotIn("inserted accessors", stdout)
 
-    @unittest.expectedFailure
     def test_helper_non_kernel_branch_is_not_self_recursive(self):
-        # Known defect: the #else (non-__KERNEL__) branch of the helpers
-        # contains direct "iosb->DUMMYUNIONNAME.Status / ->Information" writes
-        # and a direct read. The rewrite tables match those lines too, so after
-        # main() the helpers call themselves instead of touching the struct.
-        # Marked expectedFailure; it will report "unexpected success" once the
-        # script stops rewriting its own helper bodies.
         _, _, new = run_main_on(self.SOURCE)
         helper = new[new.index("static inline NTSTATUS ntio_put_iosb"):
                      new.index("static NTSTATUS f(")]

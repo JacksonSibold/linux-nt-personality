@@ -73,6 +73,8 @@ static inline ULONG_PTR ntio_get_iosb_info(PIO_STATUS_BLOCK iosb)
 }
 """
 
+HELPER_MARK = "\n/*@@ntio_iosb_helpers@@*/\n"
+
 # (regex, replacement) applied in order. Paired Status+Information writes are
 # collapsed into a single ntio_put_iosb() call.
 PAIRS = [
@@ -113,11 +115,17 @@ def main():
     before = len(re.findall(r"(iosb|IoStatusBlock)->", src))
     print("direct iosb accesses before:", before)
 
-    # Insert helpers after the last #include so the types are available.
-    if "ntio_put_iosb" not in src:
+    # The helpers are the only code allowed to touch the struct directly, so
+    # keep them out of the rewrite tables: swap them for a marker here and put
+    # them back at the end. Otherwise the #else branch gets rewritten into
+    # self-calls.
+    if HELPER in src:
+        src = src.replace(HELPER, HELPER_MARK)
+    elif "ntio_put_iosb" not in src:
+        # Insert helpers after the last #include so the types are available.
         idx = src.rfind("#include")
         end = src.find("\n", idx) + 1
-        src = src[:end] + HELPER + src[end:]
+        src = src[:end] + HELPER_MARK + src[end:]
         print("inserted accessors")
 
     # Reads first: the write regexes use a negative lookahead for '=', but
@@ -137,13 +145,10 @@ def main():
         if n:
             print("  single writes rewritten:", n)
 
-    # Do not rewrite inside the helper itself.
-    src = src.replace(
-        "\tntio_put_iosb(iosb, st, ntio_get_iosb_info(iosb));",
-        "\tiosb->DUMMYUNIONNAME.Status = st;\n\tiosb->Information = info;")
+    after = len(re.findall(r"(iosb|IoStatusBlock)->", src))
+    print("remaining direct accesses (should be 0):", after)
 
-    after = len(re.findall(r"(iosb|IoStatusBlock)->(?!DUMMYUNION)", src))
-    print("remaining direct accesses (should be helper-internal only):", after)
+    src = src.replace(HELPER_MARK, HELPER)
 
     with open(PATH, "w", encoding="utf-8") as fh:
         fh.write(src)
