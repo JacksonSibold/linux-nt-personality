@@ -960,8 +960,12 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
         vad->guard = (Protect & PAGE_GUARD) ? 1 : 0;
         nt_list_insert(mm, vad);
         ntmm_unlock(mm);
-        if (kshim_mmap_reserve((void *)actual_base, (size_t)req_size) == NULL ||
+        void *rsv = kshim_mmap_reserve((void *)actual_base, (size_t)req_size);
+        if (rsv == NULL ||
             kshim_mmap_commit((void *)actual_base, (size_t)req_size, ntmm_prot_to_linux(Protect)) != 0) {
+            /* Release the reservation if the commit failed (M-10). */
+            if (rsv)
+                kshim_munmap((void *)actual_base, (size_t)req_size);
             ntmm_lock(mm);
             nt_list_remove(mm, vad);
             ntmm_unlock(mm);
