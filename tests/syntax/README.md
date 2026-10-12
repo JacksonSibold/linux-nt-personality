@@ -121,16 +121,19 @@ row is corrected here.
   checked with probe copies (not committed). Fixing it needs a change to the
   model or to the include order, so it is left.
 - `src/kernel/fs/binfmt_pe.c`: `inode->i_mode` and `i_uid_read()` (in
-  `pe_map_ntdll`) are not declared by the shared `tests/syntax/shim/linux/fs.h`,
-  whose `struct inode` has only `i_size`. Fixing it needs that stub extended.
+  `pe_map_ntdll`) are now declared by `tests/syntax/shim/linux/fs.h`. The
+  remaining errors are `O_NOFOLLOW`, `O_NONBLOCK`, `force_sigsegv` and
+  `SIGSEGV`. They are modelled in `src/kernel/fs/kshim.h`, but this check does
+  not include that header for this file, so they are still undeclared here.
   The `nt_enter_personality` clash with the kshim model is fixed (guard under
-  `KSHIM_H`). `O_NOFOLLOW`, `O_NONBLOCK`, `force_sigsegv` and `SIGSEGV` are
-  modelled in `kshim.h`.
+  `KSHIM_H`).
 - `src/kernel/fs/binfmt_pe_test.c`: the kshim model now matches the kernel API
   the loader uses (`kernel_read(file, buf, count, pos)`, `f_inode`, `task_struct`
   `mm`/`thread`, `linux_binprm` `cred`, `WCHAR`). Still failing on: (1) helpers
   the test calls that do not exist in the repository: `pe_build_command_line`,
-  `pe_build_environment`, `pe_utf8_to_utf16`, `pe_prot_to_mmap`. (2) Types and
+  `pe_build_environment`, `pe_utf8_to_utf16`, `pe_prot_to_mmap`. None of them
+  was ever defined in any commit, so there is no rename to apply; see
+  `docs/decisions/0028-binfmt-pe-test-missing-helpers.md`. (2) Types and
   members with no definition: `PPEB`, `PTEB`, `RTL_USER_PROCESS_PARAMETERS`, and
   a `pe` member of `struct pe_load_state` (the struct has `peb`). Both need
   loader code, not model code, so they are left.
@@ -159,9 +162,9 @@ row is corrected here.
   header and in `docs/KNOWN-ISSUES.md`. See the commit message for the exact
   set.
 
-Found but not changed: `arch/x86/nt/mm.c:72` still has the `KERN_EMERG`
-`printk` in `kshim_mprotect` (`__KERNEL__` branch, not compiled here). It was
-outside this pass.
+`arch/x86/nt/mm.c`: the `KERN_EMERG` entry trace in `kshim_mprotect` (line 72)
+is now `pr_debug`, the same change as `src/kernel/nt/mm.c`. Its `__KERNEL__`
+branch is not compiled by this script.
 
 ## Warnings that are platform artifacts
 
