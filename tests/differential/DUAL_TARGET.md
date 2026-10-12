@@ -38,17 +38,18 @@ We have stub VM variants for the 5 core probes that avoid `NtCreateFile` where p
 
 ```bash
 wsl -d Ubuntu -- bash -c '
-  STUBS="/path/to/ntpers-research/src/ntdll/syscall_stub.S"
-  DEF="/path/to/ntpers-research/src/ntdll/syscall_table.def"
-  INC="-I/path/to/ntpers-research/src/ntdll -I/path/to/ntpers-research/src/kernel/nt"
+  : "${NTPERS_ROOT:?set NTPERS_ROOT to the repo root as a WSL path}"
+  STUBS="$NTPERS_ROOT/src/ntdll/syscall_stub.S"
+  DEF="$NTPERS_ROOT/src/ntdll/syscall_table.def"
+  INC="-I$NTPERS_ROOT/src/ntdll -I$NTPERS_ROOT/src/kernel/nt"
   for p in probe_ntstatus probe_virtualquery probe_handles probe_path probe_sharemode; do
-    SRC="/path/to/ntpers-research/tests/differential/probes/${p}.c"
+    SRC="$NTPERS_ROOT/tests/differential/probes/${p}.c"
     OUT="/tmp/${p}_vm.exe"
     # VM build: -nostdlib, no CRT, direct syscalls where probe uses GetProcAddress we #ifdef to use stubs
     x86_64-w64-mingw32-gcc -nostdlib -Wl,-e,_start -Wl,--no-seh -Os -s $INC -o $OUT $SRC $STUBS 2>&1 | head
     echo "built $p -> $OUT"
   done
-  cp /tmp/*_vm.exe /mnt/c/Users/Jackson/Desktop/02\ -\ Personal/winapi-native-os/tests/differential/build/ 2>&1 | head
+  cp /tmp/*_vm.exe "$NTPERS_ROOT/tests/differential/build/" 2>&1 | head
 '
 ```
 
