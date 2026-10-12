@@ -1115,6 +1115,11 @@ static void nt_setup_child_regs(struct task_struct *child,
                                  PVOID StartRoutine, PVOID Argument)
 {
     struct pt_regs *regs = task_pt_regs(child);
+    /* Check thr before the first dereference (P-13). */
+    if (!thr) {
+        pr_err("nt_setup_child_regs: NULL thread\n");
+        return;
+    }
     /* Cache stack_base before any call that may sleep (vm_mmap/copy_to_user)
      * so we don't hold thr in a register across a sleep. Re-read thr after.
      */
