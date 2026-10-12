@@ -65,6 +65,8 @@ for line in body.splitlines():
             print(f"ERROR: cannot parse table entry: {stripped}", file=sys.stderr)
             sys.exit(1)
         continue
+    # Allow a trailing C comment after an entry (e.g. a provenance note).
+    stripped = re.sub(r"\s*/\*.*?\*/\s*$", "", stripped)
     if not entry_re.fullmatch(stripped):
         print(f"ERROR: cannot parse table entry: {stripped}", file=sys.stderr)
         sys.exit(1)
