@@ -411,9 +411,9 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 - `ntdll.def` had no `NtRtlNtStatusToDosError` or `ZwRtlNtStatusToDosError` export, although `syscall_table.def` has that row (SSN 0x1db) and `generated_stubs.S` has its stub. `NtRaiseException` was listed twice: once for the table row and once from the misc list in `build/gen_ntdll_def.py`, which made the generator output repeat it too. Found by `tools/check_syscall_tables.py`, which now runs the parity check on every representation.
 - Fix: the two missing lines are added, the duplicate is removed, and the generator's misc list no longer repeats `NtRaiseException`. The generator output now matches the checked-in file. The name `NtRtlNtStatusToDosError` itself is not a documented NT service name, so its export is only what the table asks for. Whether that row should be renamed is a question for the table's owner.
 
-### SYS-1 [Info] ArgTypes column disagrees with Arity in five rows
+### SYS-1 [Info] ArgTypes column disagrees with Arity in five rows (Fixed in 122f91d)
 - `syscall_table.def` lists a different number of argument types from `Arity` for `NtCreateThread` (8 arity, 9 types), `NtQueryDirectoryFile` (11, 10), `NtQueryDirectoryFileEx` (10, 9), `NtSetTimer` (8, 7) and `NtAccessCheckAndAuditAlarm` (11, 10). The kernel service lists agree with `Arity` on all 171 entries, so the stub and dispatch argument counts are consistent. No generator reads the type column.
-- Fix: correct the type lists from the signatures, not from memory. Not changed here. `tools/check_syscall_tables.py` reports these as information.
+- Fixed in 122f91d (generator input, unit test `tests/unit/test_syscall_table_argtypes.py`) and 6bb8f78 (doc counts). `NtCreateThread` follows its kernel handler; the other four follow the public prototypes, as no kernel handler exists for them. `NtSetTimer` has 7 arguments, so its Arity went from 8 to 7 (table and both kernel service lists). `build/generated_stubs.S` regenerates byte-identical, because `gen_stubs.py` ignores these columns, so there is no separate output commit. `tools/check_syscall_tables.py` no longer reports these rows.
 
 ### Status codes (`ntstatus.h`, `ntstatus_to_dos.c`)
 
