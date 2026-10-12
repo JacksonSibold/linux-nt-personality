@@ -203,6 +203,26 @@ static void __attribute__((unused)) free_teb_peb(struct nt_ethread *thr)
     /* freed in ObDestroyThreadObject */
 }
 
+/* Frees the calling thread's sync nt_thread (the one thread_trampoline
+ * creates) and clears the TLS pointer, so the first exit path to reach it
+ * frees it and later calls are no-ops. Nothing else frees it on the
+ * self-exit path: pthread_exit does not reliably run cleanup handlers. */
+static void thread_sync_release(void)
+{
+    struct nt_thread *synct = nt_current_thread();
+    if (!synct) return;
+    nt_set_current_thread(NULL);
+    nt_thread_destroy(synct);
+}
+
+/* Cleanup handler for pthread_cancel, and for normal return via
+ * pthread_cleanup_pop. */
+static void thread_sync_cleanup(void *arg)
+{
+    (void)arg;
+    thread_sync_release();
+}
+
 /* Thread trampoline: sets TLS, handles suspend gate, calls user routine, propagates exit */
 static void *thread_trampoline(void *arg)
 {
@@ -233,6 +253,7 @@ static void *thread_trampoline(void *arg)
     typedef ULONG (*thr_routine_t)(PVOID);
     thr_routine_t routine = (thr_routine_t)thr->start_routine;
     ULONG ret = 0;
+    pthread_cleanup_push(thread_sync_cleanup, NULL);
     if (routine) {
         ret = routine(thr->start_arg);
     }
@@ -248,12 +269,8 @@ static void *thread_trampoline(void *arg)
     /* Also mark process exit if this is last thread? For now leave process alive */
     /* Wake process exit waiters? */
 
-    /* Abandon mutants owned by this sync thread */
-    if (synct) {
-        nt_abandon_owned_mutants(synct);
-        nt_thread_destroy(synct);
-        nt_set_current_thread(NULL);
-    }
+    /* Abandon mutants owned by this sync thread and free it */
+    pthread_cleanup_pop(1);
     kshim_set_current_process(NULL);
     kshim_set_current_thread(NULL);
     return (void*)(ULONG_PTR)ret;
@@ -551,6 +568,7 @@ NTSTATUS nt_svc_NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus)
         pthread_cond_broadcast(&thr->suspend_cond);
         pthread_mutex_unlock(&thr->lock);
         nt_abandon_for_thread(thr);
+        thread_sync_release();
         /* Exit current thread */
         pthread_exit((void*)(ULONG_PTR)ExitStatus);
         return STATUS_SUCCESS; /* not reached */
