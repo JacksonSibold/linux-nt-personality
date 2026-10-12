@@ -33,6 +33,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #else
+#include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/namei.h>
@@ -2526,6 +2527,16 @@ static void __attribute__((constructor)) ntio_init(void)
 	ntio_share_init();
 	ntio_handle_table_init();
 }
+#else
+/* Kernel build: initialise the spinlocks properly rather than relying on
+ * zero-filled statics (IO-10). */
+static int __init ntio_kernel_init(void)
+{
+	ntio_share_init();
+	ntio_handle_table_init();
+	return 0;
+}
+core_initcall(ntio_kernel_init);
 #endif
 
 #ifdef __cplusplus
