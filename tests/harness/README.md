@@ -14,18 +14,20 @@ report a pass than to report a failure.
 
 ## How to run
 
-From WSL (Ubuntu 26.04) with `python3` available:
+From WSL (Ubuntu 26.04) with `python3` available, from the repository root. The
+root is found from the checkout location; set `NTPERS_ROOT` only to point at a
+different tree (see `docs/DEVELOPMENT.md`, "Paths and environment"):
 
 ```bash
 # Full conformance run against the real 423-criteria set:
-python3 "/path/to/ntpers-research/tests/harness/dodrun.py"
+python3 tests/harness/dodrun.py
 
 # Run the harness self-tests:
-python3 "/path/to/ntpers-research/tests/harness/selftest.py"
+python3 tests/harness/selftest.py
 
 # Or via the top-level Makefile:
-make -C "/path/to/ntpers-research/build" conformance
-make -C "/path/to/ntpers-research/build" test
+make -C build conformance
+make -C build test
 ```
 
 Results are written to `reports/results-<UTC>.json` and `reports/summary-<UTC>.txt`.
@@ -62,7 +64,7 @@ with this schema:
 
 ```json
 {
-  "artifact_path": "/path/to/controlling/artifact",
+  "artifact_path": "<controlling artifact, absolute or relative to the repo root>",
   "artifact_sha256": "<sha-256 of the artifact>",
   "obtained_date": "2026-01-01T00:00:00Z",
   "controlling_party": "Microsoft / Valve / ...",
