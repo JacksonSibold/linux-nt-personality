@@ -1896,11 +1896,6 @@ NTSTATUS nt_svc_NtReadFile(HANDLE FileHandle, HANDLE Event,
 		return STATUS_DELETE_PENDING;
 	}
 
-	{
-		ntio_file_put(file);
-		return STATUS_SUCCESS;
-	}
-
 	status = ntio_do_read(file, Buffer, Length, ByteOffset, &info);
 #ifdef __KERNEL__
 	{
@@ -2141,7 +2136,7 @@ NTSTATUS nt_svc_NtQueryInformationFile(HANDLE FileHandle,
 	if (Length > 0 && !access_ok(FileInformation, Length))
 		return STATUS_ACCESS_VIOLATION;
 	if (Length > 0) {
-		kbuf = kmalloc(Length, GFP_KERNEL);
+		kbuf = kzalloc(Length, GFP_KERNEL);
 		if (!kbuf)
 			return STATUS_NO_MEMORY;
 	}
@@ -2268,6 +2263,9 @@ static NTSTATUS ntio_set_rename(struct nt_file_object *file,
 		return STATUS_INFO_LENGTH_MISMATCH;
 
 	ri = (PFILE_RENAME_INFORMATION)buf;
+	if ((ri->FileNameLength & 1) ||
+	    ri->FileNameLength > len - offsetof(FILE_RENAME_INFORMATION, FileName))
+		return STATUS_INFO_LENGTH_MISMATCH;
 	uname.Buffer = ri->FileName;
 	uname.Length = (USHORT)ri->FileNameLength;
 	uname.MaximumLength = uname.Length;

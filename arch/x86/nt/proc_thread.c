@@ -1211,6 +1211,13 @@ NTSTATUS nt_svc_NtCreateThreadEx(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess
     if (!ThreadHandle) return STATUS_INVALID_PARAMETER;
     if (!StartRoutine) return STATUS_INVALID_PARAMETER;
     if (!access_ok(ThreadHandle, sizeof(*ThreadHandle))) return STATUS_ACCESS_VIOLATION;
+    /* Probe the output before creating the thread: a failed write after
+     * wake_up_new_task would leave a running thread with no handle. */
+    {
+        HANDLE zero = NULL;
+        if (copy_to_user(ThreadHandle, &zero, sizeof(zero)))
+            return STATUS_ACCESS_VIOLATION;
+    }
 
     cur_proc = nt_current_eprocess();
     if (!cur_proc) return STATUS_INVALID_PARAMETER;
@@ -1470,6 +1477,7 @@ NTSTATUS nt_svc_NtSuspendProcess(HANDLE ProcessHandle)
     NTSTATUS st;
     if (!ProcessHandle) return STATUS_INVALID_PARAMETER;
     proc = nt_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
     st = ObReferenceObjectByHandle(proc, ProcessHandle, &nt_process_type, UserMode, 0, &hdr, NULL);
     if (!NT_SUCCESS(st)) return STATUS_INVALID_HANDLE;
     target = ObFindProcessByHeader(hdr);
@@ -1485,6 +1493,7 @@ NTSTATUS nt_svc_NtResumeProcess(HANDLE ProcessHandle)
     NTSTATUS st;
     if (!ProcessHandle) return STATUS_INVALID_PARAMETER;
     proc = nt_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
     st = ObReferenceObjectByHandle(proc, ProcessHandle, &nt_process_type, UserMode, 0, &hdr, NULL);
     if (!NT_SUCCESS(st)) return STATUS_INVALID_HANDLE;
     target = ObFindProcessByHeader(hdr);
@@ -1591,7 +1600,10 @@ NTSTATUS nt_svc_NtOpenProcess(PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess,
     proc = nt_current_eprocess();
     st = ObCreateHandle(proc, p->obj, DesiredAccess ? DesiredAccess : 0x1FFFFF, 0, &h);
     if (!NT_SUCCESS(st)) return st;
-    if (copy_to_user(ProcessHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+    if (copy_to_user(ProcessHandle, &h, sizeof(h))) {
+        ObCloseHandle(proc, h);
+        return STATUS_ACCESS_VIOLATION;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -1613,7 +1625,10 @@ NTSTATUS nt_svc_NtOpenThread(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
     proc = nt_current_eprocess();
     st = ObCreateHandle(proc, t->obj, DesiredAccess ? DesiredAccess : 0x1FFFFF, 0, &h);
     if (!NT_SUCCESS(st)) return st;
-    if (copy_to_user(ThreadHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+    if (copy_to_user(ThreadHandle, &h, sizeof(h))) {
+        ObCloseHandle(proc, h);
+        return STATUS_ACCESS_VIOLATION;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -1647,6 +1662,7 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
             copy_to_user(ReturnLength, &need, sizeof(need));
         {
             PROCESS_BASIC_INFORMATION pbi;
+            memset(&pbi, 0, sizeof(pbi)); /* no padding bytes leak to user */
             pbi.ExitStatus = target->terminated ? target->exit_status : 259;
             pbi.PebBaseAddress = (PPEB)(ULONG_PTR)target->peb_base;
             pbi.AffinityMask = target->affinity_mask;
@@ -1751,6 +1767,9 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
         size_t wlen = target->image_path_wlen;
         size_t need = sizeof(UNICODE_STRING) + (wlen+1)*sizeof(WCHAR);
         ULONG need32 = (ULONG)need;
+        /* UNICODE_STRING Length/MaximumLength are USHORT */
+        if ((wlen + 1) * sizeof(WCHAR) > 0xFFFF)
+            return STATUS_NAME_TOO_LONG;
         if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength)))
             copy_to_user(ReturnLength, &need32, sizeof(need32));
         if (ProcessInformationLength < need) return STATUS_INFO_LENGTH_MISMATCH;
@@ -1812,6 +1831,7 @@ NTSTATUS nt_svc_NtQueryInformationThread(HANDLE ThreadHandle, ULONG ThreadInform
             copy_to_user(ReturnLength, &need, sizeof(need));
         {
             THREAD_BASIC_INFORMATION tbi;
+            memset(&tbi, 0, sizeof(tbi)); /* no padding bytes leak to user */
             spin_lock(&target->lock);
             tbi.ExitStatus = target->terminated ? target->exit_status : 259;
             tbi.TebBaseAddress = (PVOID)(ULONG_PTR)target->teb_base;

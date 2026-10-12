@@ -255,7 +255,7 @@ NTSTATUS nt_svc_NtQueryVirtualMemory(unsigned long a0, unsigned long a1, unsigne
         return STATUS_ACCESS_VIOLATION;
     if (ReturnLength && !access_ok(ReturnLength, sizeof(SIZE_T)))
         return STATUS_ACCESS_VIOLATION;
-    PVOID kbuf = kmalloc(MemoryInformationLength, GFP_KERNEL);
+    PVOID kbuf = kzalloc(MemoryInformationLength, GFP_KERNEL);
     if (!kbuf)
         return STATUS_NO_MEMORY;
     SIZE_T kret = 0;
