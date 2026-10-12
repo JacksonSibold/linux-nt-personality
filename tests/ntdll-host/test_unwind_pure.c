@@ -604,6 +604,150 @@ static void chained_info_cycle_is_bounded(void)
     fn_teardown();
 }
 
+/* ---- epilog recognition (x64 prolog and epilog rules) ------------------ */
+
+/* An epilog is: add rsp,imm (or lea rsp,[FP+disp] when a frame register is in
+ * use), zero or more 8-byte pops, then ret or a memory jmp (ModRM mod 00). */
+
+static void epilog_add_imm8_pops_and_ret(void)
+{
+    static const uint8_t b[] = { 0x48, 0x83, 0xC4, 0x20,   /* add rsp,0x20 */
+                                 0x5B,                     /* pop rbx */
+                                 0x41, 0x5E,               /* pop r14 */
+                                 0xC3 };                   /* ret */
+    uwp_epilog_t e;
+    MT_EXPECT(uwp_decode_epilog(b, sizeof(b), 0, &e) == 1);
+    MT_EXPECT(e.bytes == 8);
+    MT_EXPECT(e.useFrame == 0);
+    MT_EXPECT(e.disp == 0x20);
+    MT_EXPECT(e.pops == 2);
+    MT_EXPECT(e.popReg[0] == 3);
+    MT_EXPECT(e.popReg[1] == 14);
+    MT_EXPECT(e.term == UWP_EPI_RET);
+    /* Truncated before the terminator: not an epilog. */
+    MT_EXPECT(uwp_decode_epilog(b, sizeof(b) - 1, 0, &e) == 0);
+}
+
+static void epilog_add_imm32(void)
+{
+    static const uint8_t b[] = { 0x48, 0x81, 0xC4, 0x00, 0x01, 0x00, 0x00,  /* add rsp,0x100 */
+                                 0x5D,                                      /* pop rbp */
+                                 0xC3 };
+    uwp_epilog_t e;
+    MT_EXPECT(uwp_decode_epilog(b, sizeof(b), 0, &e) == 1);
+    MT_EXPECT(e.bytes == 9);
+    MT_EXPECT(e.disp == 0x100);
+    MT_EXPECT(e.pops == 1);
+    MT_EXPECT(e.popReg[0] == 5);
+    MT_EXPECT(e.term == UWP_EPI_RET);
+}
+
+/* lea rsp,[rbp+disp8] with RBP as the frame register, signed displacement. */
+static void epilog_lea_frame_disp8(void)
+{
+    static const uint8_t pos[] = { 0x48, 0x8D, 0x65, 0x20, 0x5D, 0xC3 };  /* lea rsp,[rbp+0x20] */
+    static const uint8_t neg[] = { 0x48, 0x8D, 0x65, 0xF0, 0x5D, 0xC3 };  /* lea rsp,[rbp-0x10] */
+    uwp_epilog_t e;
+    MT_EXPECT(uwp_decode_epilog(pos, sizeof(pos), 5, &e) == 1);
+    MT_EXPECT(e.useFrame == 1);
+    MT_EXPECT(e.disp == 0x20);
+    MT_EXPECT(e.bytes == 6);
+    MT_EXPECT(e.pops == 1 && e.popReg[0] == 5);
+    MT_EXPECT(uwp_decode_epilog(neg, sizeof(neg), 5, &e) == 1);
+    MT_EXPECT(e.disp == -16);
+}
+
+/* REX.B selects R13 as the base with disp32, then pops of R12 and R13. */
+static void epilog_lea_rex_b_disp32(void)
+{
+    static const uint8_t b[] = { 0x49, 0x8D, 0xA5, 0x00, 0x01, 0x00, 0x00,  /* lea rsp,[r13+0x100] */
+                                 0x41, 0x5C,                                /* pop r12 */
+                                 0x41, 0x5D,                                /* pop r13 */
+                                 0xC3 };
+    uwp_epilog_t e;
+    MT_EXPECT(uwp_decode_epilog(b, sizeof(b), 13, &e) == 1);
+    MT_EXPECT(e.useFrame == 1);
+    MT_EXPECT(e.disp == 0x100);
+    MT_EXPECT(e.bytes == 12);
+    MT_EXPECT(e.pops == 2);
+    MT_EXPECT(e.popReg[0] == 12);
+    MT_EXPECT(e.popReg[1] == 13);
+    MT_EXPECT(e.term == UWP_EPI_RET);
+}
+
+static void epilog_ret_imm16(void)
+{
+    static const uint8_t b[] = { 0x48, 0x83, 0xC4, 0x08,   /* add rsp,8 */
+                                 0x58,                     /* pop rax */
+                                 0xC2, 0x08, 0x00 };       /* ret 8 */
+    uwp_epilog_t e;
+    MT_EXPECT(uwp_decode_epilog(b, sizeof(b), 0, &e) == 1);
+    MT_EXPECT(e.term == UWP_EPI_RET);
+    MT_EXPECT(e.retImm == 8);
+    MT_EXPECT(e.bytes == 8);
+}
+
+/* jmp with a ModRM memory operand and mod 00: [rax], [rip+disp32], and the
+ * SIB form with base 101 (disp32), and REX.B for [r9]. */
+static void epilog_jmp_memory_forms(void)
+{
+    static const uint8_t reg[]  = { 0x48, 0x83, 0xC4, 0x08, 0xFF, 0x20 };
+    static const uint8_t rip[]  = { 0x48, 0x83, 0xC4, 0x08, 0xFF, 0x25, 0x10, 0x00, 0x00, 0x00 };
+    static const uint8_t sib[]  = { 0x48, 0x83, 0xC4, 0x08, 0xFF, 0x24, 0x25, 0x10, 0x00, 0x00, 0x00 };
+    static const uint8_t rexb[] = { 0x48, 0x83, 0xC4, 0x08, 0x41, 0xFF, 0x21 };
+    uwp_epilog_t e;
+    MT_EXPECT(uwp_decode_epilog(reg, sizeof(reg), 0, &e) == 1);
+    MT_EXPECT(e.term == UWP_EPI_JMP && e.bytes == 6);
+    MT_EXPECT(uwp_decode_epilog(rip, sizeof(rip), 0, &e) == 1);
+    MT_EXPECT(e.term == UWP_EPI_JMP && e.bytes == 10);
+    MT_EXPECT(uwp_decode_epilog(sib, sizeof(sib), 0, &e) == 1);
+    MT_EXPECT(e.term == UWP_EPI_JMP && e.bytes == 11);
+    MT_EXPECT(uwp_decode_epilog(rexb, sizeof(rexb), 0, &e) == 1);
+    MT_EXPECT(e.term == UWP_EPI_JMP && e.bytes == 7);
+}
+
+/* Bytes that are not epilogs must not be recognised. */
+static void epilog_rejects_non_epilog_bytes(void)
+{
+    static const uint8_t mov[]      = { 0x48, 0x89, 0xD8 };                          /* mov rax,rbx */
+    static const uint8_t addrax[]   = { 0x48, 0x83, 0xC0, 0x08, 0xC3 };             /* add rax,8 */
+    static const uint8_t jmpmod01[] = { 0x48, 0x83, 0xC4, 0x08, 0xFF, 0x60, 0x08 }; /* jmp [rax+8] */
+    static const uint8_t jmpreg[]   = { 0x48, 0x83, 0xC4, 0x08, 0xFF, 0xE0 };       /* jmp rax */
+    static const uint8_t leanofr[]  = { 0x48, 0x8D, 0x65, 0x20, 0xC3 };             /* no frame register */
+    static const uint8_t leawrong[] = { 0x48, 0x8D, 0x65, 0x20, 0xC3 };             /* base rbp, frame 4 */
+    static const uint8_t leasib[]   = { 0x48, 0x8D, 0x64, 0x24, 0x20, 0xC3 };       /* lea rsp,[rsp+0x20] */
+    static const uint8_t poprsp[]   = { 0x48, 0x83, 0xC4, 0x08, 0x5C, 0xC3 };       /* pop rsp */
+    static const uint8_t noterm[]   = { 0x48, 0x83, 0xC4, 0x08, 0x5B };             /* no ret or jmp */
+    static const uint8_t trunc[]    = { 0x48, 0x83, 0xC4 };                         /* cut add */
+    static const uint8_t prefix[]   = { 0x48, 0x83, 0xC4, 0x08, 0x41, 0xC3 };       /* REX.B before ret */
+    static const uint8_t between[]  = { 0x48, 0x83, 0xC4, 0x08, 0x48, 0x89, 0xD8, 0xC3 };
+    uwp_epilog_t e;
+    MT_EXPECT(uwp_decode_epilog(mov, sizeof(mov), 0, &e) == 0);
+    MT_EXPECT(uwp_decode_epilog(addrax, sizeof(addrax), 0, &e) == 0);
+    MT_EXPECT(uwp_decode_epilog(jmpmod01, sizeof(jmpmod01), 0, &e) == 0);
+    MT_EXPECT(uwp_decode_epilog(jmpreg, sizeof(jmpreg), 0, &e) == 0);
+    MT_EXPECT(uwp_decode_epilog(leanofr, sizeof(leanofr), 0, &e) == 0);
+    MT_EXPECT(uwp_decode_epilog(leawrong, sizeof(leawrong), 4, &e) == 0);
+    MT_EXPECT(uwp_decode_epilog(leasib, sizeof(leasib), 4, &e) == 0);
+    MT_EXPECT(uwp_decode_epilog(poprsp, sizeof(poprsp), 0, &e) == 0);
+    MT_EXPECT(uwp_decode_epilog(noterm, sizeof(noterm), 0, &e) == 0);
+    MT_EXPECT(uwp_decode_epilog(trunc, sizeof(trunc), 0, &e) == 0);
+    MT_EXPECT(uwp_decode_epilog(prefix, sizeof(prefix), 0, &e) == 0);
+    MT_EXPECT(uwp_decode_epilog(between, sizeof(between), 0, &e) == 0);
+}
+
+/* Stack release: add uses RSP as base, lea uses the frame register value. */
+static void epilog_release_uses_base_per_form(void)
+{
+    static const uint8_t add[] = { 0x48, 0x83, 0xC4, 0x20, 0xC3 };
+    static const uint8_t lea[] = { 0x48, 0x8D, 0x65, 0x20, 0xC3 };
+    uwp_epilog_t e;
+    MT_EXPECT(uwp_decode_epilog(add, sizeof(add), 5, &e) == 1);
+    MT_EXPECT(uwp_epilog_release(&e, 0x1000, 0x9000) == 0x1020);
+    MT_EXPECT(uwp_decode_epilog(lea, sizeof(lea), 5, &e) == 1);
+    MT_EXPECT(uwp_epilog_release(&e, 0x1000, 0x9000) == 0x9020);
+}
+
 static const mt_case_t cases[] = {
     { "op_slots_follow_the_encoding", op_slots_follow_the_encoding },
     { "alloc_small_is_opinfo_times_8_plus_8", alloc_small_is_opinfo_times_8_plus_8 },
@@ -636,6 +780,14 @@ static const mt_case_t cases[] = {
     { "chained_info_applies_primary_codes", chained_info_applies_primary_codes },
     { "chained_info_cycle_is_bounded", chained_info_cycle_is_bounded },
     { "chained_codes_undo_secondary_before_primary", chained_codes_undo_secondary_before_primary },
+    { "epilog_add_imm8_pops_and_ret", epilog_add_imm8_pops_and_ret },
+    { "epilog_add_imm32", epilog_add_imm32 },
+    { "epilog_lea_frame_disp8", epilog_lea_frame_disp8 },
+    { "epilog_lea_rex_b_disp32", epilog_lea_rex_b_disp32 },
+    { "epilog_ret_imm16", epilog_ret_imm16 },
+    { "epilog_jmp_memory_forms", epilog_jmp_memory_forms },
+    { "epilog_rejects_non_epilog_bytes", epilog_rejects_non_epilog_bytes },
+    { "epilog_release_uses_base_per_form", epilog_release_uses_base_per_form },
 };
 
 int main(void)

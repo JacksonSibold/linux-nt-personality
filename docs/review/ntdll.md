@@ -191,6 +191,7 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 - `unwind.c:738-770`: the handler returned by `RtlVirtualUnwind` is discarded at `unwind.c:754` (`(void)handler;`). No termination or unwind handler is called. `TargetIp` is never jumped to: the function writes the walked context back to the caller, which then continues as if it had returned normally.
 - The header (`unwind.h`) and `ntdll.def:354` export `RtlUnwindEx` as implemented.
 - Fix: implement the second pass. Call each UNW_FLAG_UHANDLER handler in order, then restore the context with `TargetIp` in `Rip`.
+- Epilog detection (x64 "prolog and epilog" rules) is in `unwind_pure.h` as `uwp_decode_epilog` and `uwp_epilog_release`, with host tests for each legal form and for rejected bytes (`test_unwind_pure.c`). It is not wired into `RtlVirtualUnwind`: a PC inside an epilog still takes the prolog/body path. Wiring needs the `jmp` terminator case (the target is read from memory and the unwind restarts there) and the second pass above, so it is left for the UNW-2 work. Until then a PC in an epilog is unwound as body code, which is wrong for an epilog whose `ret` has already popped the frame.
 
 ### UNW-3 [Medium] RtlVirtualUnwind ignores HandlerType
 - `unwind.c:615`: `(void)HandlerType;`. The function returns a handler for either UNW_FLAG_EHANDLER or UNW_FLAG_UHANDLER. An exception filter (EHANDLER) is therefore returned during unwind and runs as a termination handler.
