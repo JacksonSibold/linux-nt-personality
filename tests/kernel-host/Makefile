@@ -21,11 +21,7 @@ NTSTATUS_INC := $(BUILD)/ntstatus_table.inc
 OPT     ?= -O0
 WARN    := -Wall -Wextra -Wuninitialized
 DEPFLAGS := -MMD -MP
-<<<<<<< HEAD
-CFLAGS  := -std=gnu11 -g -O0 $(WARN) $(DEPFLAGS) -DUSERSPACE_KSHIM -DKHOST_LINUX_STAT \
-=======
 CFLAGS  := -std=gnu11 -g $(OPT) $(WARN) $(DEPFLAGS) -DUSERSPACE_KSHIM \
->>>>>>> haiku/flake
            -include $(SHIM)/khost_prelude.h \
            -iquote $(NT) -iquote $(BUILD) -I$(SHIM)
 LDLIBS  := -lpthread -lws2_32
