@@ -39,7 +39,7 @@ ifneq ($(SANITIZE),0)
 SAN_OK := $(shell mkdir -p $(OUT) && printf 'int main(void){return 0;}\n' > $(OUT)/san_probe.c && $(CC) -fsanitize=address,undefined $(LDFLAGS) $(OUT)/san_probe.c -o $(OUT)/san_probe$(EXE_SUFFIX) >/dev/null 2>&1 && $(OUT)/san_probe$(EXE_SUFFIX) >/dev/null 2>&1 && echo yes)
 endif
 ifeq ($(SAN_OK),yes)
-SAN_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer
+SAN_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 $(info host-test: AddressSanitizer and UBSan enabled)
 else
 SAN_FLAGS :=
