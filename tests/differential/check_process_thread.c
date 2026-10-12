@@ -6,7 +6,7 @@ int main(int argc, char **argv){
     const char *path = argc>1 ? argv[1] : "tests/differential/golden/latest/probe_process_thread.json";
     FILE *f=fopen(path,"rb");
     if(!f) f=fopen("../../tests/differential/golden/latest/probe_process_thread.json","rb");
-    if(!f) f=fopen("C:/Users/Jackson/Desktop/02 - Personal/winapi-native-os/tests/differential/golden/latest/probe_process_thread.json","rb");
+    if(!f && getenv("NTPERS_ROOT")){ char alt[1024]; snprintf(alt,sizeof alt,"%s/tests/differential/golden/latest/probe_process_thread.json",getenv("NTPERS_ROOT")); f=fopen(alt,"rb"); }
     if(!f){ fprintf(stderr,"cannot open %s\n",path); return 1; }
     fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
     char *b=malloc(sz+1); fread(b,1,sz,f); b[sz]=0; fclose(f);
@@ -24,7 +24,6 @@ int main(int argc, char **argv){
         const char *impl_paths[] = {
             "src/kernel/nt/proc_thread.c",
             "../../src/kernel/nt/proc_thread.c",
-            "C:/Users/Jackson/Desktop/02 - Personal/winapi-native-os/src/kernel/nt/proc_thread.c",
             NULL
         };
         FILE *pf=NULL;
