@@ -308,7 +308,8 @@ void nt_exit_personality(struct task_struct *tsk)
 
 void nt_report_missing_service(unsigned int ssn)
 {
-	pr_info("nt: missing service %u\n", ssn);
+	/* Any process can reach this in a loop; rate-limit the log (D-3). */
+	pr_info_ratelimited("nt: missing service %u\n", ssn);
 }
 
 bool nt_can_sysret(struct pt_regs *regs)
