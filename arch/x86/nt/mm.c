@@ -49,18 +49,8 @@ static inline int kshim_mmap_commit(void *a,size_t s,int p){
 static inline int kshim_munmap(void *a,size_t s){ return vm_munmap((unsigned long)a, s); }
 static inline int kshim_mprotect(void *a,size_t s,int p){
     unsigned long start = (unsigned long)a;
-    unsigned long len = s;
-    // Try kallsyms lookup for do_mprotect_pkey if available
-    extern unsigned long kallsyms_lookup_name(const char *name);
-    typedef int (*do_mprotect_fn)(unsigned long, size_t, unsigned long, int);
-    unsigned long addr = kallsyms_lookup_name("do_mprotect_pkey");
-    if (addr) {
-        do_mprotect_fn fn = (do_mprotect_fn)addr;
-        int ret = fn(start, len, p, -1);
-        if (ret == 0) return 0;
-        // fallback to mprotect_fixup
-    }
-    // Fallback: use mprotect_fixup path
+    /* Always the supported mprotect_fixup path. The kallsyms lookup of the
+     * internal do_mprotect_pkey() was removed (M-8). */
     unsigned long end;
     unsigned long nstart, tmp;
     struct mm_struct *mm = current->mm;
