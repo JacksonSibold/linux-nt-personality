@@ -218,6 +218,7 @@ Each open Medium and Low finding was re-read against the code on this branch. St
 - M-5: fixed. `NtAllocateVirtualMemory` rejects a RegionSize above `SIZE_MAX - granularity` with `STATUS_INVALID_PARAMETER`, so the round-up cannot wrap to a zero-length VAD. Test: mm_test `test_alloc_size_wrap` (failed before with `STATUS_NO_MEMORY` or success).
 - M-7: fixed. `NtCreateSection` returns `STATUS_NOT_IMPLEMENTED` for a non-NULL FileHandle, as the finding allows, instead of a zeroed anonymous section. The `is_file` branch is now unreachable and is left in place for the owner who adds file backing. Test: mm_test `test_file_section_unsupported` (failed before: status success).
 - M-6: fixed. `NtFreeVirtualMemory` and `NtProtectVirtualMemory` reject a range whose end wraps before computing `end`. No failing test: a wrapping range needs a committed VAD near the top of the address space, which the host shim cannot provide without mapping a huge range. mm_test passes; syntax check.
+- SYNC-1: fixed in the kernel branch of `sync.c` only. `nt_wait_on_address` copies `addr` and `cmp` with `copy_from_user` before comparing. The `#ifndef __KERNEL__` copy at `sync.c:1088` is unchanged. No test: the kernel branch cannot be compiled on the host, and the host build uses plain memcpy. sync_test covers the userspace copy only.
 - R-3: fixed. `build_full_path` adds the separator when the root path is empty instead of reading `buf[-1]`, so the result starts with `\`. Latent; syntax check only.
 
 ## Not verified / out of scope
