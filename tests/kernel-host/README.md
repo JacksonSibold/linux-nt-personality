@@ -11,6 +11,12 @@ make check          # build and run the programs listed in TESTS
 make                # build only (includes BUILD_ONLY, currently empty)
 ```
 
+`TEMP_DIR` is taken from the environment if set, else `TEMP`, `TMP`,
+`LOCALAPPDATA/Temp`, and finally MSYS `/tmp`. The Makefile exports `TMP`,
+`TEMP` and `TMPDIR` from it for the recipes. Under make on this machine the
+environment is sometimes not inherited, so the MSYS `/tmp` fallback is the
+one that resolves (to `C:/msys64/tmp` there), and it is writable.
+
 Outputs go to `build/` (ignored by git). Test programs run with `build/` as
 their working directory, so the scratch files they create stay there.
 
@@ -47,27 +53,32 @@ their working directory, so the scratch files they create stay there.
 
 ## Status
 
-**Current state (2026-10-12): the build fails.** `make` stops at `build/kshim.o`.
-`src/kernel/nt/kshim.c:410-412` reads `st_atime`, `st_mtime` and `st_ctime`, because
-the non-`__linux__` branch of the `KSHIM_STAT_*` macros uses the MinGW names. The host
-`shim/sys/stat.h` declares only the Linux-layout `st_atim`, `st_mtim` and `st_ctim`.
-Commit `6efb8b7` made this change after the results below were recorded. The other
-module objects compile, but no test program links. The results below were recorded
-before `6efb8b7` and were not re-run.
+**Current state (2026-10-12): the build succeeds.** `make clean`, then each target
+built on its own, links with no errors. Commit `213d333` restored the
+`USERSPACE_KSHIM` branch of the `KSHIM_STAT_*` macros, so `kshim.c` builds
+against the shim's `st_atim` layout.
 
-| Program | Result (recorded before `6efb8b7`) |
+`TESTS` lists nine programs: the eight kernel module tests and `proc_thread_test`
+(added to `TESTS` in `a3278a3`). `SHIM_TESTS` is `mman_test`. `make check` runs both.
+
+Counts from a clean rebuild and run, 2026-10-12:
+
+| Program | Result |
 |---|---|
-| `object_test` | builds, 9/9 pass |
-| `security_test` | builds, 41/41 ntsec and 609/609 negative pass |
-| `registry_test` | builds, 10/10 pass |
-| `i2_test` | builds, 7/7 pass |
-| `io_test` | builds; `access_denied_on_valid_handle` passes; path_parsing lookup checks are flaky (see below) |
-| `mm_test` | builds, 14/14 pass |
-| `sync_test` | builds, 21/21 pass, no leaks (slow, see below) |
-| `mman_test` | shim self-test (`shim/mman_test.c`), 3/3 pass |
-| `proc_thread_test` | 12/12 pass, 10 of 10 consecutive runs, no leak at exit |
+| `object_test` | 9/9 pass, rc 0 |
+| `security_test` | 41/41 ntsec and 609/609 negative pass, rc 0 |
+| `registry_test` | 10/10 pass, rc 0. The Windows Application Control block described in earlier notes was not hit on this run, so no policy workaround is in the tree |
+| `i2_test` | 7/7 pass, rc 0 |
+| `io_test` | 12/12 pass in 12 of 13 runs. One run failed `path_parsing` at `io_test.c:558` (see "io_test lookup flake") |
+| `mm_test` | 14/14 pass, rc 0 |
+| `sync_test` | 21/21 pass, rc 0, no leaks. Slowest program; about 5 minutes on the clean run |
+| `proc_thread_test` | 12/12 pass, rc 0. Its `leaks 27` line is the live count printed before teardown; the at-exit count is 0 and the program returns 0 only when it is |
+| `mman_test` | 3/3 pass on the clean run; intermittent, see below |
 
-`check` runs `TESTS` and `SHIM_TESTS`.
+`mman_test` is intermittent on this machine: 2 of 14 runs failed. In one, the
+`NOREPLACE over hole + free` check failed (`shim/mman_test.c:57`, EEXIST) and the
+process then segfaulted. In the other, the process segfaulted (rc 139) with no
+check failure printed. The other 12 runs passed. The cause is not investigated.
 
 ## Results of the 2026-10-12 investigation
 
@@ -100,12 +111,15 @@ before `6efb8b7` and were not re-run.
   with a `pthread_create` and `usleep(2000)`. On Windows that takes minutes.
   `TIMEOUT` (default 3000 s) bounds each program in `check`.
 - **io_test lookup flake.** The trailing-dot, `\\?\` probe and mixed-case
-  checks in `path_parsing` sometimes pass and sometimes fail across runs with
-  the same binary (seen at io_test.c lines 506 and 558). Not investigated;
-  `make check` can fail on it.
+  checks in `path_parsing` sometimes fail across runs with the same binary
+  (seen at io_test.c lines 506 and 558). Status on 2026-10-12: 1 failure in 13
+  runs (`io_test.c:558`, expected `STATUS_OBJECT_NAME_NOT_FOUND`, got success)
+  and 12 passes. Not root-caused; `make check` can fail on it.
+- **mman_test intermittent failure.** See the status table above.
 - **sync_test** (slow). `wait_on_address_extended` runs 20000 iterations, each
-  with a `pthread_create` and `usleep(2000)`. On Windows that takes minutes.
-  `TIMEOUT` (default 3000 s) bounds each program in `check`.
+  with a `pthread_create` and `usleep(2000)`. On Windows it took about 5 minutes
+  on the 2026-10-12 clean run. `TIMEOUT` (default 3000 s) bounds each program
+  in `check`.
 
 ## Modules that cannot be built here
 
