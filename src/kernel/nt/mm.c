@@ -69,7 +69,7 @@ static inline int kshim_mprotect(void *a,size_t s,int p){
     int error = 0;
     const bool rier = (current->personality & READ_IMPLIES_EXEC) && (p & PROT_READ);
     unsigned long prot = (unsigned long)p;
-    printk(KERN_EMERG "kshim_mprotect: start %lx len %zu prot %x\n", start, s, p);
+    pr_debug("kshim_mprotect: start %lx len %zu prot %x\n", start, s, p);
 
     if (!s) return 0;
     if (start & ~PAGE_MASK) return -1;
