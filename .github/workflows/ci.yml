@@ -27,6 +27,9 @@ jobs:
       - name: host-test
         run: make -C tests/host CC=gcc test
 
+      - name: Shell script lint (bash -n, shellcheck)
+        run: bash vm/lint.sh
+
       - name: Repository hygiene checks
         run: python tools/check_repo.py
 
