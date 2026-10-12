@@ -64,7 +64,8 @@ if [ "$NO_RUN" -eq 0 ]; then
 
   echo "== ntdll-host (build, then each test binary)"
   if make -C "$NDIR" COVERAGE=1 build; then
-    for bin in $(make -s -C "$NDIR" COVERAGE=1 print-run-bins); do
+    # make also prints $(info) lines (sanitizer notices) on stdout; keep only the binaries.
+    for bin in $(make -s -C "$NDIR" COVERAGE=1 print-run-bins | tr ' ' '\n' | grep '\.exe$'); do
       (cd "$NDIR" && "./$bin" >/dev/null 2>&1); rc=$?
       if [ "$rc" -eq 0 ]; then
         echo "  $bin: pass"
