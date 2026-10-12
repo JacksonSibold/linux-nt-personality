@@ -615,7 +615,7 @@ PVOID RtlVirtualUnwind(ULONG HandlerType, ULONG64 ImageBase, ULONG64 ControlPc,
                        PCONTEXT ContextRecord, PVOID *HandlerData,
                        PULONG64 EstablisherFrame,
                        PKNONVOLATILE_CONTEXT_POINTERS ContextPointers) {
-    (void)HandlerType;
+    // HandlerType selects which handler kind is returned (UNW-3).
     (void)ControlPc;
     if (!ContextRecord) return NULL;
     unwind_module_t *mod = find_module_by_base(ImageBase);
@@ -651,7 +651,7 @@ PVOID RtlVirtualUnwind(ULONG HandlerType, ULONG64 ImageBase, ULONG64 ControlPc,
     }
 
     /* Determine handler */
-    if (info && (info->Flags & (UNW_FLAG_EHANDLER|UNW_FLAG_UHANDLER))) {
+    if (info && (info->Flags & HandlerType)) {
         /* Handler RVA after codes */
         unsigned count = info->CountOfCodes;
         unsigned aligned = (count + 1) & ~1U;

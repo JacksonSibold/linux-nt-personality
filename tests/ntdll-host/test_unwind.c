@@ -91,7 +91,44 @@ static void end_address_is_not_masked(void)
     unwind_clear_modules();
 }
 
+/* RtlVirtualUnwind returns only the handler whose flag matches HandlerType
+ * (UNW-3). An exception filter (EHANDLER) must not come back during an unwind
+ * request (UHANDLER), and the reverse. */
+static void handler_type_selects_matching_handler(void)
+{
+    setup_table();
+    memset(g_image + 0x2100, 0, 8);
+    g_image[0x2100] = (uint8_t)(1 | (UNW_FLAG_EHANDLER << 3));
+    uint32_t hrva = 0x1500;
+    memcpy(g_image + 0x2104, &hrva, sizeof(hrva));
+
+    IMAGE_RUNTIME_FUNCTION_ENTRY t[1];
+    memset(t, 0, sizeof(t));
+    t[0].BeginAddress = 0x1400;
+    t[0].EndAddress = 0x1500;
+    t[0].DUMMYUNIONNAME.UnwindInfoAddress = 0x2100;
+    MT_ASSERT(unwind_register_module(FAKE_BASE, 0x3000, t, 1, g_image) == 0);
+
+    ULONG64 stack[2] = { 0x7000, 0 };
+    CONTEXT ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.Rip = FAKE_BASE + 0x1450;
+    ctx.Rsp = (ULONG64)(uintptr_t)stack;
+
+    ULONG64 est = 0;
+    PVOID hd = NULL;
+    CONTEXT c = ctx;
+    PVOID h = RtlVirtualUnwind(UNW_FLAG_UHANDLER, FAKE_BASE, ctx.Rip, &t[0], &c, &hd, &est, NULL);
+    MT_EXPECT(h == NULL);
+
+    c = ctx;
+    h = RtlVirtualUnwind(UNW_FLAG_EHANDLER, FAKE_BASE, ctx.Rip, &t[0], &c, &hd, &est, NULL);
+    MT_EXPECT(h == (PVOID)(uintptr_t)(g_image + 0x1500));
+    unwind_clear_modules();
+}
+
 static const mt_case_t cases[] = {
+    { "handler_type_selects_matching_handler", handler_type_selects_matching_handler },
     { "end_address_is_not_masked", end_address_is_not_masked },
     { "sized_module_finds_function", sized_module_finds_function },
     { "zero_size_module_finds_function", zero_size_module_finds_function },

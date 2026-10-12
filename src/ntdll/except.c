@@ -499,7 +499,7 @@ EXCEPTION_DISPOSITION RtlDispatchException(PEXCEPTION_RECORD ExceptionRecord, PC
         CONTEXT tmp = ctx;
         ULONG64 establisher = 0;
         PVOID handlerData = NULL;
-        PVOID handler = RtlVirtualUnwind(0, imgBase, ctx.Rip, entry, &tmp, &handlerData, &establisher, NULL);
+        PVOID handler = RtlVirtualUnwind(UNW_FLAG_EHANDLER, imgBase, ctx.Rip, entry, &tmp, &handlerData, &establisher, NULL);
         if (handler) {
             DISPATCHER_CONTEXT dc;
             dc.ControlPc = ctx.Rip;
