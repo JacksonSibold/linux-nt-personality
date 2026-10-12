@@ -470,7 +470,40 @@ LPVOID WINAPI MapViewOfFile(HANDLE m, DWORD access, DWORD offHi, DWORD offLo, SI
 }
 BOOL WINAPI UnmapViewOfFile(const void *p) { (void)p; SetLastError(0); return 1; }
 BOOL WINAPI SetEndOfFile(HANDLE h) { (void)h; SetLastError(0); return 1; }
-DWORD WINAPI SetFilePointer(HANDLE h, LONG lo, LONG *hi, DWORD method) { (void)h;(void)lo;(void)hi;(void)method; return 0; }
+__declspec(dllimport) extern NTSTATUS NtQueryInformationFile(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, ULONG);
+__declspec(dllimport) extern NTSTATUS NtSetInformationFile(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, ULONG);
+/* K32-11: moves the file pointer. FilePositionInformation is class 14,
+ * FileStandardInformation is class 5. NtReadFile with a NULL offset reads from
+ * this position. */
+#define K32_INVALID_SET_FILE_POINTER 0xFFFFFFFFUL
+DWORD WINAPI SetFilePointer(HANDLE h, LONG lo, LONG *hi, DWORD method) {
+    LONGLONG dist = hi ? (LONGLONG)*hi * 4294967296LL + (LONGLONG)(DWORD)lo : (LONGLONG)lo;
+    LONGLONG base = 0;
+    IO_STATUS_BLOCK ios;
+    if (method == 1 /* FILE_CURRENT */) {
+        LARGE_INTEGER cur;
+        NTSTATUS s = NtQueryInformationFile(h, &ios, &cur, sizeof(cur), 14);
+        if (!NT_SUCCESS(s)) { SetLastErrorFromStatus(s); return K32_INVALID_SET_FILE_POINTER; }
+        base = cur.QuadPart;
+    } else if (method == 2 /* FILE_END */) {
+        struct { LARGE_INTEGER AllocationSize; LARGE_INTEGER EndOfFile; ULONG NumberOfLinks; BOOLEAN DeletePending; BOOLEAN Directory; } std;
+        NTSTATUS s = NtQueryInformationFile(h, &ios, &std, sizeof(std), 5);
+        if (!NT_SUCCESS(s)) { SetLastErrorFromStatus(s); return K32_INVALID_SET_FILE_POINTER; }
+        base = std.EndOfFile.QuadPart;
+    } else if (method != 0 /* FILE_BEGIN */) {
+        SetLastError(87); /* ERROR_INVALID_PARAMETER */
+        return K32_INVALID_SET_FILE_POINTER;
+    }
+    LONGLONG target = base + dist;
+    if (target < 0) { SetLastError(87); return K32_INVALID_SET_FILE_POINTER; }
+    LARGE_INTEGER np;
+    np.QuadPart = target;
+    NTSTATUS s = NtSetInformationFile(h, &ios, &np, sizeof(np), 14);
+    if (!NT_SUCCESS(s)) { SetLastErrorFromStatus(s); return K32_INVALID_SET_FILE_POINTER; }
+    if (hi) *hi = (LONG)(target >> 32);
+    SetLastError(0);
+    return (DWORD)(target & 0xFFFFFFFFLL);
+}
 
 /* Sync */
 /* K32-7: these create real NT objects and return their handles. Named objects
