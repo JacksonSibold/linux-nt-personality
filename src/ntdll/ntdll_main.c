@@ -812,7 +812,7 @@ BOOLEAN NTAPI RtlAddFunctionTable(IMAGE_RUNTIME_FUNCTION_ENTRY *tbl, ULONG count
     return unwind_register_module(base, 0, tbl, count, (uint8_t*)(uintptr_t)base) == 0 ? 1 : 0;
 }
 BOOLEAN NTAPI RtlDeleteFunctionTable(IMAGE_RUNTIME_FUNCTION_ENTRY *tbl) {
-    (void)tbl;
-    return 1;
+    /* Unregister so the table is no longer searched (MAIN-7). */
+    return unwind_unregister_table(tbl) == 0 ? 1 : 0;
 }
 #endif /* __MINGW32__ */

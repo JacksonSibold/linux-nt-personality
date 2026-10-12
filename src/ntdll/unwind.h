@@ -67,6 +67,8 @@ typedef struct _KNONVOLATILE_CONTEXT_POINTERS {
 int unwind_register_module(ULONG64 imageBase, ULONG sizeOfImage,
                            IMAGE_RUNTIME_FUNCTION_ENTRY *funcTable, ULONG funcCount,
                            uint8_t *image);
+/* Remove the entry registered with this funcTable. 0 on success, -1 if none. */
+int unwind_unregister_table(IMAGE_RUNTIME_FUNCTION_ENTRY *funcTable);
 void unwind_clear_modules(void);
 int unwind_module_count(void);
 

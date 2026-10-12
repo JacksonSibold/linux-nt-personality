@@ -145,7 +145,22 @@ static void leaf_frame_without_module_pops_return_address(void)
     MT_EXPECT(ctx.Rsp == (ULONG64)(uintptr_t)stack + 8);
 }
 
+/* RtlDeleteFunctionTable must remove the table from the registry (MAIN-7). */
+static void deleted_table_is_no_longer_searched(void)
+{
+    setup_table();
+    MT_ASSERT(unwind_register_module(FAKE_BASE, 0, g_table, 2, g_image) == 0);
+    MT_ASSERT(RtlLookupFunctionEntry(FAKE_BASE + 0x1050, NULL, NULL) == &g_table[0]);
+
+    MT_EXPECT(unwind_unregister_table(g_table) == 0);
+    MT_EXPECT(unwind_module_count() == 0);
+    MT_EXPECT(RtlLookupFunctionEntry(FAKE_BASE + 0x1050, NULL, NULL) == NULL);
+    MT_EXPECT(unwind_unregister_table(g_table) != 0);
+    unwind_clear_modules();
+}
+
 static const mt_case_t cases[] = {
+    { "deleted_table_is_no_longer_searched", deleted_table_is_no_longer_searched },
     { "leaf_frame_without_module_pops_return_address", leaf_frame_without_module_pops_return_address },
     { "handler_type_selects_matching_handler", handler_type_selects_matching_handler },
     { "end_address_is_not_masked", end_address_is_not_masked },

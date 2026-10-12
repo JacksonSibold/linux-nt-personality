@@ -91,6 +91,17 @@ int unwind_register_module(ULONG64 imageBase, ULONG sizeOfImage,
     return 0;
 }
 
+int unwind_unregister_table(IMAGE_RUNTIME_FUNCTION_ENTRY *funcTable) {
+    for (int i = 0; i < g_module_count; i++) {
+        if (g_modules[i].funcTable != funcTable) continue;
+        for (int j = i; j + 1 < g_module_count; j++) g_modules[j] = g_modules[j + 1];
+        g_module_count--;
+        memset(&g_modules[g_module_count], 0, sizeof(g_modules[0]));
+        return 0;
+    }
+    return -1;
+}
+
 void unwind_clear_modules(void) {
     g_module_count = 0;
     memset(g_modules, 0, sizeof(g_modules));
