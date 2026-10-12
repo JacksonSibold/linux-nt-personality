@@ -70,7 +70,8 @@ test: $(TEST_BINS)
 	@echo "ntdll-host: all tests passed"
 
 # Each test binary: the test file plus the source objects it exercises.
-$(OUT)/test_ntstatus_to_dos$(EXE_SUFFIX): test_ntstatus_to_dos.c minitest.h | $(OUT)
+# The test #includes ntstatus_to_dos.c, so that file and the headers it uses are prerequisites.
+$(OUT)/test_ntstatus_to_dos$(EXE_SUFFIX): test_ntstatus_to_dos.c minitest.h $(SRC)/ntstatus_to_dos.c $(SRC)/ntstatus.h $(SRC)/nt_types.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
 
 # unwind.c calls _NtRaiseException from except.c (RtlRaiseException).
