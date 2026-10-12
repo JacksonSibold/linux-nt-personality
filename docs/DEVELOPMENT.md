@@ -19,13 +19,20 @@ and the list of known problems, see [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 ```
 python -m unittest discover tests/unit
 python tools/check_repo.py
+python tools/check_doc_links.py
 ```
 
-- `tests/unit` holds 8 test modules (126 tests). They cover the scripts in
+- `tests/unit` holds 9 test modules (140 tests). They cover the scripts in
   `build/` (`fix_gsbase.py`, `fix_iosb.py`, `gen_ntdll_def.py`, `gen_stubs.py`,
   `merge_dod.py`, `validate_criteria.py`), `tools/criteria_report.py` and
   `src/kernel/nt/gen_ntstatus_table.py`. The tests run scripts as subprocesses
   or import them, and use temporary fixtures, so they do not modify the tree.
+- `tools/check_doc_links.py` checks every tracked `*.md` file. It verifies
+  relative links, images and reference links (the target file must exist,
+  with the same letter case), and `#anchor` fragments against the headings or
+  HTML ids of the target page. It skips external URLs and code. It prints
+  `FAIL [doc-link] path:line` lines and exits 1 on a broken link.
+  `--selftest` checks its built-in fixture.
 - `tools/check_repo.py` checks the files reported by `git ls-files`: no binary
   over 1 MiB, every `.py` file compiles, every `.c` with a same-named `.h` has an
   include guard in that header, and no text file mixes CRLF and bare LF. It
