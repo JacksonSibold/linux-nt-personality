@@ -28,7 +28,7 @@ LDFLAGS := -fno-use-linker-plugin
 SHIM_OBJS := $(BUILD)/mman_win.o $(BUILD)/posix_host.o $(BUILD)/posix_raw.o
 
 # Test programs and the module objects each one links against.
-TESTS := object_test security_test
+TESTS := object_test security_test registry_test
 
 object_test_OBJS      := object handle kshim
 sync_test_OBJS        := sync kshim
