@@ -546,6 +546,10 @@ static void ntio_file_release(struct kref *ref)
 	if (file->filp)
 		kshim_filp_close(file->filp);
 	ntio_unregister_share(file);
+	/* Delete-on-close: unlink when the last handle or reference is gone, not
+	 * when the first handle is closed (IO-7). */
+	if ((file->delete_on_close || file->delete_pending) && file->linux_path)
+		kshim_vfs_unlink(file->linux_path);
 	kfree(file->linux_path);
 	kfree(file);
 }
@@ -2497,10 +2501,7 @@ __attribute__((weak)) NTSTATUS nt_svc_NtClose(unsigned long a0, unsigned long a1
 		ntio_iocp_put(iocp);
 	} else if (m == 0x46494C45) {
 		struct nt_file_object *file = (struct nt_file_object *)obj;
-		if (file->delete_on_close || file->delete_pending) {
-			if (file->linux_path)
-				kshim_vfs_unlink(file->linux_path);
-		}
+		/* Delete-on-close runs when the last reference goes (IO-7). */
 		ntio_file_put(file);
 	} else {
 		/* Unknown object, nothing to do */
@@ -2528,10 +2529,7 @@ NTSTATUS nt_svc_NtClose(HANDLE Handle)
 		ntio_iocp_put(iocp);
 	} else if (m == 0x46494C45) {
 		struct nt_file_object *file = (struct nt_file_object *)obj;
-		if (file->delete_on_close || file->delete_pending) {
-			if (file->linux_path)
-				kshim_vfs_unlink(file->linux_path);
-		}
+		/* Delete-on-close runs when the last reference goes (IO-7). */
 		ntio_file_put(file);
 	}
 	return STATUS_SUCCESS;
