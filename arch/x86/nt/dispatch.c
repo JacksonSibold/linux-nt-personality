@@ -379,7 +379,10 @@ static const struct file_operations nt_per_ssn_fops = {
 static int __init nt_counters_debugfs_init(void)
 {
 	struct dentry *dir;
+	bool looked_up;
+
 	dir = debugfs_lookup("ntpers", NULL);
+	looked_up = dir != NULL;
 	if (!dir)
 		dir = debugfs_create_dir("ntpers", NULL);
 	if (!dir)
@@ -388,6 +391,9 @@ static int __init nt_counters_debugfs_init(void)
 	debugfs_create_file("dispatch_count", 0444, dir, NULL, &nt_dispatch_count_fops);
 	debugfs_create_file("host_count", 0444, dir, NULL, &nt_host_count_fops);
 	debugfs_create_file("dispatch_per_ssn", 0444, dir, NULL, &nt_per_ssn_fops);
+	/* debugfs_lookup() returns a referenced dentry; drop it (D-6). */
+	if (looked_up)
+		dput(dir);
 	return 0;
 }
 late_initcall(nt_counters_debugfs_init);
