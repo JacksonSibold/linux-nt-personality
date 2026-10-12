@@ -27,6 +27,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _paths import wsl_repo_root  # noqa: E402
+
 
 def project_root() -> Path:
     """Return the repository root from any invocation location."""
@@ -92,7 +95,7 @@ def _freshness_check(root: Path) -> bool:
     try:
         if platform.system() == "Windows":
             # On Windows, delegate freshness check via WSL where KDIR is visible
-            wsl_root = "/path/to/ntpers-research"
+            wsl_root = wsl_repo_root()
             cmd = ["wsl", "-d", "Ubuntu", "--", "bash", f"{wsl_root}/vm/freshness.sh", "check"]
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if proc.returncode != 0:
