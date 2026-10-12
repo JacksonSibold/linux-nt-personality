@@ -18,7 +18,7 @@ NTSTATUS_INC := $(BUILD)/ntstatus_table.inc
 
 WARN    := -Wall -Wextra
 DEPFLAGS := -MMD -MP
-CFLAGS  := -std=gnu11 -g -O0 $(WARN) $(DEPFLAGS) -DUSERSPACE_KSHIM \
+CFLAGS  := -std=gnu11 -g -O0 $(WARN) $(DEPFLAGS) -DUSERSPACE_KSHIM -DKHOST_LINUX_STAT \
            -include $(SHIM)/khost_prelude.h \
            -iquote $(NT) -iquote $(BUILD) -I$(SHIM)
 LDLIBS  := -lpthread -lws2_32
