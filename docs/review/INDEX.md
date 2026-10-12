@@ -11,8 +11,8 @@ Type: read-only static review. No source file was modified. No build, sanitizer,
 | PE exec loader and test shim | [kernel-fs.md](kernel-fs.md) | 5 | 7 | 9 | 3 |
 | NT personality (dispatch, VM, I/O, processes, services) | [arch-x86-nt.md](arch-x86-nt.md) | 14 | 24 | 24 | 1 |
 | NT kernel objects, handles, registry, sync, security, VM, I/O, IOCP, processes, dispatch (`src/kernel/nt`) | [kernel-nt.md](kernel-nt.md) | 7 | 9 | 18 | 1 |
-| NT user-mode runtime: loader, startup, unwind, exception dispatch, C runtime, Win32 shims, NTSTATUS mapping (`src/ntdll`, base `7e75069`) | [ntdll.md](ntdll.md) | 20 | 23 | 20 | 7 |
-| **Total** | | **48** | **66** | **80** | **13** |
+| NT user-mode runtime: loader, startup, unwind, exception dispatch, C runtime, Win32 shims, NTSTATUS mapping (`src/ntdll`, base `7e75069`) | [ntdll.md](ntdll.md) | 20 | 23 | 21 | 7 |
+| **Total** | | **48** | **66** | **81** | **13** |
 
 ## Top findings
 
