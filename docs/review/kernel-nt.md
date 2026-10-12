@@ -227,6 +227,8 @@ Each open Medium and Low finding was re-read against the code on this branch. St
 
 - M-2 (Medium): no change. `NtMapViewOfSection` checks `offset > sec->size` before any arithmetic, and checks `actual_size > sec->size - offset` after it. Both guards are present on this branch.
 
+- O-2: needs owner. The exclusive check and the handle-count increment need one lock. The obvious choice, the parent directory lock, would nest under the handle table lock, and the lock order has not been decided.
+
 ## Not verified / out of scope
 
 - Nothing was compiled, linked, sanitized, fuzzed, or executed. Overflow and wrap claims come from the arithmetic at the cited lines.
