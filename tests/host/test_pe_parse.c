@@ -245,6 +245,18 @@ static void test_truncated_headers_rejected(void)
     MT_EXPECT_EQ(validate_bytes(img, IMG_OPT + 100), PE_ERR_TRUNCATED);
 }
 
+/* A PE32+ optional header must be exactly 240 bytes. A shorter declared size
+ * is corrupt, even when the file is too short to hold 240 bytes. */
+static void test_short_optional_header_is_corrupt(void)
+{
+    uint8_t img[IMG_CAP];
+
+    img_build_valid(img);
+    img_w16(img, IMG_NT + 20, 200);      /* SizeOfOptionalHeader = 200 */
+    MT_EXPECT_EQ(validate_bytes(img, IMG_NT + 24 + 200), PE_ERR_CORRUPT);
+    MT_EXPECT_EQ(validate_bytes(img, IMG_LEN), PE_ERR_CORRUPT);
+}
+
 static void test_bad_signatures_rejected(void)
 {
     uint8_t img[IMG_CAP];
@@ -561,6 +573,7 @@ static const mt_case_t cases[] = {
     MT_CASE(test_every_truncation_rejected),
     MT_CASE(test_truncated_headers_rejected),
     MT_CASE(test_bad_signatures_rejected),
+    MT_CASE(test_short_optional_header_is_corrupt),
     MT_CASE(test_e_lfanew_near_4gib_rejected),
     MT_CASE(test_section_raw_bounds_rejected),
     MT_CASE(test_section_va_bounds_rejected),
