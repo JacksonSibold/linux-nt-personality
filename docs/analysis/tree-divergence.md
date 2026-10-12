@@ -100,3 +100,38 @@ Recommendation: replace the broken file with a real `kernel_stubs.c` in the cano
 6. **Re-run the arch review (findings M-1 to M-13 and P-1 to P-2) against the merged `src/kernel/nt` text** before acting on them, as B-3 already says.
 
 Nothing in this document changes source. The order of work above is a suggestion for the owner; steps 2 and 3 need a design decision and should not be done by the analysis pass.
+
+## 6. Status
+
+Updated 2026-10-12 on branch `haiku/port` (step 1 of section 5). Arch files were not deleted.
+
+### Ported into `src/kernel/nt` (one commit per arch hunk group)
+
+| Commit | Port of arch commit | Content |
+|---|---|---|
+| `545b374` | `16af7b7` | `dispatch.c`: `kmalloc` to `kzalloc` in NtQueryVirtualMemory bounce buffer |
+| `ab11b7c` | `5eb8026` (no hardening commit) | `dispatch.c`: `nt_set_current_thread(NULL)` in `nt_exit_personality` |
+| `ecf6a9e` | `54baad9` | `proc_thread.c`: probe ThreadHandle before creating the thread |
+| `c6f98dd` | `34b3fa8` | `proc_thread.c`: NULL eprocess check in Suspend/ResumeProcess |
+| `0d931bd` | `3899c83` | `proc_thread.c`: close handle when copy_to_user fails (NtOpenProcess/NtOpenThread) |
+| `c57c6ff` | `182ee9f` | `proc_thread.c`: zero PROCESS/THREAD_BASIC_INFORMATION before fill |
+| `ba78f96` | `6f4e944` | `proc_thread.c`: reject image path too long for USHORT |
+| `40f6db0` | `d921888` | `mm.c`: NtMapViewOfSection offset and wrapping-size check |
+
+Each commit message names its arch origin. `git log --oneline -- src/kernel/nt` lists them.
+
+### Result
+
+- `dispatch.c`: identical to arch now (`git diff --no-index` empty).
+- `proc_thread.c`: identical to arch now (empty diff). Arch was the only copy with these fixes, so src is now the superset.
+- `mm.c`: 10 hunks remain (was 11), 122 changed lines (was 125). Remaining hunks, by category:
+  - **VAD coalescing (owner decision, left as src):** `nt_vad_attrs_match` (two copies, stricter in src, `__attribute__((unused))`), `nt_vad_coalesce` (no-op in src, two copies), `nt_coalesce_all`, both `ntmm_check_invariants` loops, `NtAllocateVirtualMemory` (no coalesce after commit), `NtQueryVirtualMemory` (reports single-VAD extent, no merge). Src follows the `probe_virtualquery_direct` oracle; arch keeps merging. Pick one behaviour, test `NtQueryVirtualMemory` region sizes against the probe, then record it. Not changed in this step.
+  - **Src-only, kept:** `nt_vad_split` `section_offset` guard (src sets 0 for non-section VADs, arch computes it unconditionally). This is the opposite of what section 2 says. Src is ahead here, so nothing was ported. `NtProtectVirtualMemory` `printk(KERN_EMERG ...)` removal, a debug line only in arch. Not re-added.
+- Build paths: the `vm/kbuild.sh` and `vm/rebuild_kdir.sh` disagreement from section 3 now only affects `mm.c`. For `dispatch.c` and `proc_thread.c` both copy paths produce the same text after this step.
+
+### Not done in this step
+
+- `nt_io.c` fixes `39de0fb`, `79d1de2`, `6da43d2`. `nt_io.c` exists only in arch, so they need the home decision from step 2. Not ported.
+- `arch/x86/nt/kernel_stubs.c` (broken, section 4) is unchanged.
+- Arch duplicates are still present. Deletion waits for step 4 and for the mm.c coalescing decision.
+- Syntax check not run. No C compiler on PATH (`gcc` not found), and `C:/Users/Jackson/repos/TOOLCHAIN.md` does not exist. The changes are small and mirror arch text that was already in the tree, but none of it has been compiled.
