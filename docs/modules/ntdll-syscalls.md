@@ -1,7 +1,7 @@
 # Module: ntdll-syscalls (system-call stubs and the export surface)
 
 Sources: `src/ntdll/syscall_stub.S`, `src/ntdll/syscall_table.def`, `src/ntdll/nt_syscalls.h`, `src/ntdll/ntdll.def`
-Related: `src/kernel/nt/dispatch.c` (kernel side of the same table, see `docs/modules/dispatch.md`), `ntdll-startup.md` (the non-syscall ntdll exports), `docs/review/ntdll.md`.
+Related: `docs/modules/dispatch.md` (the kernel-side dispatch table; this review did not check whether it is built from `syscall_table.def`), `ntdll-startup.md` (the non-syscall ntdll exports), `docs/review/ntdll.md`.
 
 ## Purpose
 
