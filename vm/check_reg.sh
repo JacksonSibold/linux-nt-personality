@@ -21,7 +21,7 @@ fi
 mkdir -p "$PROJECT_ROOT/.dodresult"
 rm -f "$RESULT_FILE" "$OUT_JSON"
 set +e
-HOME=/root BZIMAGE=/root/ntpers/linux-6.18/arch/x86/boot/bzImage bash "$RUNVM" --test "$TEST_SCRIPT" --share "$SHARE_DIR" --timeout "$TIMEOUT_SEC" --log "$SERIAL_LOG"
+bash "$RUNVM" --test "$TEST_SCRIPT" --share "$SHARE_DIR" --timeout "$TIMEOUT_SEC" --log "$SERIAL_LOG"
 RUNVM_RC=$?
 set -e
 if [ ! -f "$RESULT_FILE" ]; then
