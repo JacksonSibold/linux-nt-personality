@@ -1662,6 +1662,7 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
             copy_to_user(ReturnLength, &need, sizeof(need));
         {
             PROCESS_BASIC_INFORMATION pbi;
+            memset(&pbi, 0, sizeof(pbi)); /* no padding bytes leak to user */
             pbi.ExitStatus = target->terminated ? target->exit_status : 259;
             pbi.PebBaseAddress = (PPEB)(ULONG_PTR)target->peb_base;
             pbi.AffinityMask = target->affinity_mask;
@@ -1827,6 +1828,7 @@ NTSTATUS nt_svc_NtQueryInformationThread(HANDLE ThreadHandle, ULONG ThreadInform
             copy_to_user(ReturnLength, &need, sizeof(need));
         {
             THREAD_BASIC_INFORMATION tbi;
+            memset(&tbi, 0, sizeof(tbi)); /* no padding bytes leak to user */
             spin_lock(&target->lock);
             tbi.ExitStatus = target->terminated ? target->exit_status : 259;
             tbi.TebBaseAddress = (PVOID)(ULONG_PTR)target->teb_base;
