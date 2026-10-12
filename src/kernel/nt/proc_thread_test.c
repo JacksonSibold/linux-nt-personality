@@ -89,9 +89,18 @@ static void test_create_suspended(void){
     PASS();
 }
 
+/* Waits until the sync.c allocations are back to baseline, i.e. the threads
+ * created since the baseline have run their exit path (see thread_trampoline).
+ * Waiting on the thread handle is not enough: it is signalled before the
+ * thread's trampoline has finished. */
+static void wait_sync_released(long baseline){
+    for(int i=0; i<300 && kshim_live_site_count("sync.c")>baseline; i++) usleep(10000);
+}
+
 static void test_suspend_counts(void){
     setup_proc();
     struct nt_eprocess *proc=kshim_current_process();
+    long before = kshim_live_site_count("sync.c");
     HANDLE th;
     NTSTATUS st=nt_svc_NtCreateThreadEx(&th,0,NULL,NtCurrentProcess(),thr_sleeper,NULL,0,0,0,0,NULL);
     ASSERT(st==STATUS_SUCCESS);
@@ -107,6 +116,7 @@ static void test_suspend_counts(void){
     ASSERT(r1s==STATUS_SUCCESS && r1==2);
     ASSERT(r2s==STATUS_SUCCESS && r2==1);
     nt_svc_NtTerminateThread(th,0);
+    wait_sync_released(before);
     ObCloseHandle(proc,th);
     PASS();
 }
