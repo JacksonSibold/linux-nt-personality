@@ -21,9 +21,9 @@ python -m unittest discover tests/unit
 python tools/check_repo.py
 ```
 
-- `tests/unit` holds 7 test modules (98 tests). They cover the scripts in
+- `tests/unit` holds 8 test modules (126 tests). They cover the scripts in
   `build/` (`fix_gsbase.py`, `fix_iosb.py`, `gen_ntdll_def.py`, `gen_stubs.py`,
-  `merge_dod.py`, `validate_criteria.py`) and
+  `merge_dod.py`, `validate_criteria.py`), `tools/criteria_report.py` and
   `src/kernel/nt/gen_ntstatus_table.py`. The tests run scripts as subprocesses
   or import them, and use temporary fixtures, so they do not modify the tree.
 - `tools/check_repo.py` checks the files reported by `git ls-files`: no binary
