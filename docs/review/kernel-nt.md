@@ -212,6 +212,7 @@ Each open Medium and Low finding was re-read against the code on this branch. St
 - H-5: fixed by documentation. The okay_to_close contract in `object.h` now says the table spinlock is held and lists the calls an implementation must not make. No implementation exists in the tree, so no code change.
 - O-3: fixed. Symlink resolution carries a depth counter (`OB_MAX_SYMLINK_DEPTH` 32) and returns `STATUS_NAME_TOO_LONG` past it. Test: object_test `symlink_self_loop` (crashed before the fix).
 - O-4: fixed. `nt_dup_unicodestring` rejects lengths above 0xFFFC with `STATUS_NAME_TOO_LONG` before the terminator is added. No test: no public route reaches it with such a length; syntax check only.
+- R-2: fixed. `dup_us` in `registry.c` has the same USHORT wrap and gets the same guard. Latent; syntax check only.
 
 ## Not verified / out of scope
 

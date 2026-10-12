@@ -179,6 +179,8 @@ static uint64_t now_100ns(void) {
 static NTSTATUS dup_us(PCUNICODE_STRING src, PUNICODE_STRING dst) {
     if (!src || src->Length==0) { dst->Buffer=NULL; dst->Length=0; dst->MaximumLength=0; return STATUS_SUCCESS; }
     if (src->Length & 1) return STATUS_OBJECT_NAME_INVALID;
+    /* len + the terminator must fit in USHORT: 0xFFFE + 2 wraps to 0 */
+    if (src->Length > (USHORT)(0xFFFF - sizeof(WCHAR))) return STATUS_NAME_TOO_LONG;
     USHORT max = src->Length + sizeof(WCHAR);
     PWSTR b = (PWSTR)kmalloc(max, GFP_KERNEL);
     if (!b) return STATUS_NO_MEMORY;
