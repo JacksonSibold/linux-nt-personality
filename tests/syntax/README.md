@@ -47,9 +47,11 @@ includes `linux/slab.h` first, so the conflict remains (see below).
 
 Values that are not mainline values:
 
-- `TIF_NTABI` and `TIF_NTSUSPEND` are not defined anywhere in this repository
-  (`docs/phase1/research-1-nt-architecture.md` describes the flag as a kernel
-  change). They are placeholders (32 and 33).
+- `TIF_NTABI` and `TIF_NTSUSPEND` are not defined in any header this check
+  includes. The kernel patch `src/kernel/patches/0001-nt-personality-dispatch.patch`
+  defines `TIF_NTABI` as 29, and `vm/rebuild_kdir.sh` sets `TIF_NTSUSPEND` to 30.
+  The shim uses placeholders (32 and 33) so the check does not depend on those
+  values (see `src/kernel/fs/kshim.h`).
 - `gfp_t` is `int` to match the `kshim.h` model's `int flags` arguments.
 - `EXSTACK_DEFAULT` is 0. `DEFINE_PER_CPU`, `per_cpu` and `this_cpu_inc` model a
   single instance. `__user` is empty. `THIS_MODULE` is a null pointer.
@@ -59,6 +61,8 @@ Values that are not mainline values:
 The shims are for parsing and type-checking only. They are not a runtime model.
 
 ## Current result (MinGW gcc 16.2, UCRT64)
+
+Re-run on 2026-10-12 with `PATH=/c/msys64/ucrt64/bin:$PATH CC=/c/msys64/ucrt64/bin/gcc.exe sh tests/syntax/check.sh`: `passed=32 failed=5 warnings=452`, the same as the table below. The compiler needs its own `bin` directory on `PATH` to find its DLLs. Without that, every file fails with no output.
 
 Start of the shim work (`5779442`): 28 of 37 files passed. Before the kshim
 pass (fs model, nt/kshim.c, nt/mm.c): 31 of 37 (`passed=31 failed=6
@@ -188,5 +192,5 @@ branch is not compiled by this script.
   question, not a trivial fix.
 - `security_test.c:279`: `count` set but unused.
 - `proc_thread.c:909,915`: unused parameter `Class` (`-Wextra` only).
-- `binfmt_pe.c:330` (`size_image`) and `binfmt_pe.c:1073-1076` (`a2`..`a11`
-  in the `NtTerminateProcess` override): unused parameters (`-Wextra` only).
+- `binfmt_pe.c:333` (`size_image` in `pe_randomize_base`) and `binfmt_pe.c:1139-1144`
+  (`a2`..`a11` in the `NtTerminateProcess` override): unused parameters (`-Wextra` only).
