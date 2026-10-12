@@ -6,7 +6,8 @@ param(
 # This is the "report discrepancies" step.
 
 $ErrorActionPreference = "Stop"
-$ProjectRoot = "/path/to/ntpers-research"
+# Repository root: NTPERS_ROOT if set, otherwise the checkout that contains tests\differential.
+if ($env:NTPERS_ROOT) { $ProjectRoot = $env:NTPERS_ROOT } else { $ProjectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot) }
 $GoldenDir = Join-Path $ProjectRoot "tests\differential\golden\$Build"
 
 if (-not (Test-Path $GoldenDir)) {
