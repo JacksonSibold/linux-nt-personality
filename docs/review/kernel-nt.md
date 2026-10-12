@@ -229,6 +229,8 @@ Each open Medium and Low finding was re-read against the code on this branch. St
 
 - O-2: needs owner. The exclusive check and the handle-count increment need one lock. The obvious choice, the parent directory lock, would nest under the handle table lock, and the lock order has not been decided.
 
+- SYNC-2: needs owner. `timeout_to_jiffies` cannot tell a kernel copy from a kernel address supplied by a user caller. The fix is a copy in each service wrapper that passes a timeout, and the provenance of each caller was only partly traced.
+
 ## Not verified / out of scope
 
 - Nothing was compiled, linked, sanitized, fuzzed, or executed. Overflow and wrap claims come from the arithmetic at the cited lines.
