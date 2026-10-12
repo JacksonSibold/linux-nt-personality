@@ -865,6 +865,15 @@ int main(void)
 	RUN(query_set_info);
 
 	printf("ntio tests: %d passed, %d failed\n", g_pass, g_fail);
+
+	/* Remove the default per-pid scratch root after a clean run, so
+	 * %TEMP%/ntio_test_<pid> does not accumulate. Failing runs keep it for
+	 * inspection. A caller-supplied NTIO_TEST_ROOT is never removed here. */
+	if (!g_fail && !getenv("NTIO_TEST_ROOT")) {
+		char cmd[PATH_MAX + 64];
+		snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", g_test_root);
+		(void)system(cmd);
+	}
 	return g_fail ? 1 : 0;
 }
 

@@ -2,8 +2,8 @@
  *
  * Built with the shim include directory, so <sys/stat.h> resolves to
  * shim/sys/stat.h. Raw Win32/UCRT calls live in posix_raw.c. Paths beginning
- * with "/tmp" are mapped to the Windows temp directory (TEMP, then TMP): the
- * module tests use /tmp as their scratch root.
+ * with "/tmp" are mapped to the scratch root (TMP or TEMP, else the cwd;
+ * see host_temp_dir): the module tests use /tmp as their scratch root.
  *
  * system() is emulated only for the forms the tests use: "mkdir -p \"D\"",
  * "rm -rf \"D\"", and those joined with " && ". Anything else fails with -1.
@@ -33,13 +33,69 @@
 
 int khost_raw_mkdir(const char *path);
 
+/* True for "X:\..." with either separator already normalised to '\'. */
+static int is_drive_abs(const char *p)
+{
+    return ((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z'))
+           && p[1] == ':' && p[2] == '\\';
+}
+
+/* Absolute scratch root for /tmp, as "X:/...", no trailing separator.
+ *
+ * The root must be absolute on every launch, because the \?\ prefix (which
+ * keeps trailing dots) is only added to absolute drive paths. Order:
+ *   1. TMP, then TEMP, if set to an absolute drive path ("C:\..." or the
+ *      MSYS form "/c/...", which is converted to "C:/...").
+ *   2. The current directory, which is always absolute here.
+ * GetTempPath is not used: with TMP, TEMP and USERPROFILE all unset it
+ * returns C:\WINDOWS\, which is not writable (see TOOLCHAIN.md). */
+static int env_abs_dir(const char *name, char *out, size_t outlen)
+{
+    const char *v = getenv(name);
+    size_t n;
+    if (!v || !*v)
+        return 0;
+    if (v[0] == '/' && ((v[1] >= 'a' && v[1] <= 'z') || (v[1] >= 'A' && v[1] <= 'Z'))
+        && v[2] == '/')
+        snprintf(out, outlen, "%c:%s", v[1] & ~0x20, v + 2);
+    else
+        snprintf(out, outlen, "%s", v);
+    for (char *p = out; *p; p++)
+        if (*p == '\\')
+            *p = '/';
+    if (!((out[0] >= 'A' && out[0] <= 'Z') || (out[0] >= 'a' && out[0] <= 'z'))
+        || out[1] != ':' || out[2] != '/')
+        return 0;
+    n = strlen(out);
+    while (n > 3 && out[n - 1] == '/')
+        out[--n] = '\0';
+    return 1;
+}
+
+static void host_temp_dir(char *out, size_t outlen)
+{
+    char cwd[KHOST_PATH_MAX];
+    if (env_abs_dir("TMP", out, outlen) || env_abs_dir("TEMP", out, outlen))
+        return;
+    if (GetCurrentDirectoryA(sizeof(cwd), cwd)) {
+        snprintf(out, outlen, "%s", cwd);
+        for (char *p = out; *p; p++)
+            if (*p == '\\')
+                *p = '/';
+        for (size_t n = strlen(out); n > 3 && out[n - 1] == '/'; n--)
+            out[n - 1] = '\0';
+        return;
+    }
+    fprintf(stderr, "khost: no absolute scratch root (TMP, TEMP unset; cwd failed)\n");
+    abort();
+}
+
 static void translate(const char *in, char *out, size_t outlen)
 {
     if (strncmp(in, "/tmp", 4) == 0 && (in[4] == '\0' || in[4] == '/')) {
-        const char *t = getenv("TEMP");
-        if (!t) t = getenv("TMP");
-        if (!t) t = ".";
-        snprintf(out, outlen, "%s%s", t, in + 4);
+        char base[KHOST_PATH_MAX];
+        host_temp_dir(base, sizeof(base));
+        snprintf(out, outlen, "%s%s", base, in + 4);
         for (char *p = out; *p; p++)
             if (*p == '\\')
                 *p = '/';
@@ -49,8 +105,10 @@ static void translate(const char *in, char *out, size_t outlen)
 }
 
 /* Win32 normalises trailing dots and spaces in ordinary paths, which POSIX
- * does not. The \?\ prefix turns that normalisation off. Only absolute
- * drive paths get the prefix; anything else is passed through unchanged. */
+ * does not. The \?\ prefix turns that normalisation off, but it needs an
+ * absolute drive path, so a relative path is made absolute against the
+ * current directory first (a leading "./" is dropped; \?\ does not resolve
+ * "."). Paths that cannot be made absolute are passed through unchanged. */
 static void to_ext_wide(const char *in, wchar_t *out, size_t n)
 {
     char tmp[KHOST_PATH_MAX + 8];
@@ -59,8 +117,20 @@ static void to_ext_wide(const char *in, wchar_t *out, size_t n)
     for (char *p = tmp; *p; p++)
         if (*p == '/')
             *p = '\\';
-    if (((tmp[0] >= 'A' && tmp[0] <= 'Z') || (tmp[0] >= 'a' && tmp[0] <= 'z'))
-        && tmp[1] == ':' && tmp[2] == '\\')
+    if (!is_drive_abs(tmp) && !(tmp[0] == '\\' && tmp[1] == '\\')) {
+        char cwd[KHOST_PATH_MAX], joined[KHOST_PATH_MAX * 2 + 16];
+        char *rel = tmp;
+        while (rel[0] == '.' && rel[1] == '\\')
+            rel += 2;
+        if (GetCurrentDirectoryA(sizeof(cwd), cwd) && is_drive_abs(cwd)) {
+            size_t cl = strlen(cwd);
+            snprintf(joined, sizeof(joined), "%s%s%s", cwd,
+                     (cl > 0 && cwd[cl - 1] == '\\') ? "" : "\\", rel);
+            if (strlen(joined) < sizeof(tmp))
+                memcpy(tmp, joined, strlen(joined) + 1);
+        }
+    }
+    if (is_drive_abs(tmp))
         snprintf(ext, sizeof(ext), "\\\\?\\%s", tmp);
     else
         snprintf(ext, sizeof(ext), "%s", tmp);
