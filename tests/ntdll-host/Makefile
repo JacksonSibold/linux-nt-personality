@@ -89,7 +89,9 @@ $(OUT)/test_except$(EXE_SUFFIX): $(OUT)/except.o $(OUT)/unwind.o $(OUT)/test_exc
 $(OUT)/test_runtime$(EXE_SUFFIX): $(OUT)/ntdll_runtime.o $(OUT)/test_runtime.o
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
-$(OUT)/ntdll_runtime.o: EXTRA_CFLAGS := -fno-builtin -fno-tree-loop-distribute-patterns
+# -Wno-error=attributes: ntdll_runtime.c declares "int errno" and "_errno", which
+# clash with the dllimport attribute on MinGW's _errno (see docs/review/ntdll.md).
+$(OUT)/ntdll_runtime.o: EXTRA_CFLAGS := -fno-builtin -fno-tree-loop-distribute-patterns -Wno-error=attributes
 
 $(OUT)/%.o: $(SRC)/%.c | $(OUT)
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(CPPFLAGS) -c $< -o $@
