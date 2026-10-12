@@ -229,10 +229,12 @@ Cross-cutting problems the review flags:
 
 - The kernel loader does not use the hardened parser in
   `src/loader/pe_parse.c` (loader L-0). Open.
-- The build may not be reproducible. `arch/x86/nt/kernel_stubs.c` is not C
-  (arch B-1, blocked: record [0027](decisions/0027-arch-kernel-stubs-file.md)),
-  and the two `mm.c` copies still differ in about 120 changed lines (arch B-3,
-  open). The arch-to-src port is tracked in
+- The build may not be reproducible. `arch/x86/nt/kernel_stubs.c` was not C
+  and broke the `CONFIG_NT_PERSONALITY` build. Fixed in 974db57 (arch B-1,
+  record [0027](decisions/0027-arch-kernel-stubs-file.md)): the file now
+  defines `nt_banner_init()`, the same as the vm scripts write. The vm scripts'
+  heredocs still exist, so the banner text is in three places. The two `mm.c`
+  copies still differ in about 120 changed lines (arch B-3, open). The arch-to-src port is tracked in
   [analysis/tree-divergence.md](analysis/tree-divergence.md).
 - There is no access control on handles and processes (arch IO-3, IO-4, P-1;
   kernel-nt IO-2, P-1). Open. `NtReadFile` and `NtWriteFile` now check
