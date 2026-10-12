@@ -42,6 +42,7 @@ __declspec(dllimport) extern NTSTATUS NtFreeVirtualMemory(HANDLE, PVOID*, PSIZE_
 __declspec(dllimport) extern NTSTATUS NtProtectVirtualMemory(HANDLE, PVOID*, PSIZE_T, ULONG, PULONG);
 __declspec(dllimport) extern NTSTATUS NtQueryVirtualMemory(HANDLE, PVOID, ULONG, PVOID, SIZE_T, PSIZE_T);
 __declspec(dllimport) extern NTSTATUS NtTerminateProcess(HANDLE, NTSTATUS);
+__declspec(dllimport) extern NTSTATUS NtQueryPerformanceCounter(PLARGE_INTEGER, PLARGE_INTEGER);
 __declspec(dllimport) extern NTSTATUS NtDelayExecution(BOOLEAN, PLARGE_INTEGER);
 __declspec(dllimport) extern NTSTATUS NtQueryInformationProcess(HANDLE, ULONG, PVOID, ULONG, PULONG);
 __declspec(dllimport) extern NTSTATUS NtWaitForSingleObject(HANDLE, BOOLEAN, PLARGE_INTEGER);
@@ -551,8 +552,21 @@ BOOL WINAPI GetHandleInformation(HANDLE h, DWORD *flags){ (void)h; if(flags) *fl
 DWORD WINAPI GetProcessHandleCount(HANDLE p, DWORD *cnt){ (void)p; if(cnt) *cnt=5; return 1; }
 
 /* Perf */
-BOOL WINAPI QueryPerformanceCounter(LARGE_INTEGER *c){ if(c) c->QuadPart=123456; return 1; }
-BOOL WINAPI QueryPerformanceFrequency(LARGE_INTEGER *c){ if(c) c->QuadPart=1000000; return 1; }
+/* K32-10: the counter and its frequency come from the kernel, not constants. */
+BOOL WINAPI QueryPerformanceCounter(LARGE_INTEGER *c){
+    LARGE_INTEGER count, freq;
+    if(!c) return 0;
+    if(!NT_SUCCESS(NtQueryPerformanceCounter(&count, &freq))) return 0;
+    c->QuadPart = count.QuadPart;
+    return 1;
+}
+BOOL WINAPI QueryPerformanceFrequency(LARGE_INTEGER *c){
+    LARGE_INTEGER count, freq;
+    if(!c) return 0;
+    if(!NT_SUCCESS(NtQueryPerformanceCounter(&count, &freq))) return 0;
+    c->QuadPart = freq.QuadPart;
+    return 1;
+}
 void WINAPI Sleep(DWORD ms){
     LARGE_INTEGER d; d.QuadPart = -(LONGLONG)ms*10000LL;
     NtDelayExecution(0, &d);
