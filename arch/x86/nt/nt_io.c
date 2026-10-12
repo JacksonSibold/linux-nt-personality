@@ -2242,6 +2242,8 @@ static NTSTATUS ntio_set_eof(struct nt_file_object *file,
 	if (len < sizeof(*ei))
 		return STATUS_INFO_LENGTH_MISMATCH;
 	ei = (PFILE_END_OF_FILE_INFORMATION)buf;
+	if (ei->EndOfFile.QuadPart < 0)
+		return STATUS_INVALID_PARAMETER;
 	if (kshim_vfs_truncate(file->filp, ei->EndOfFile.QuadPart) != 0)
 		return STATUS_DISK_FULL;
 	return STATUS_SUCCESS;
