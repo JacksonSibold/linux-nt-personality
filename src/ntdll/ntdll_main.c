@@ -328,7 +328,7 @@ static NTSTATUS ldr_nt_map_dll(const char *path, void **out_base, size_t *out_si
     }
     NtClose(h);
     PVOID tmp = hdr;
-    SIZE_T tmp_sz = hdr_size;
+    SIZE_T tmp_sz = 0; /* MEM_RELEASE requires RegionSize 0 (MAIN-8) */
     NtFreeVirtualMemory((HANDLE)-1, &tmp, &tmp_sz, 0x8000);
     *out_base = img_base;
     *out_size = img_size;
