@@ -809,6 +809,212 @@ static void test_import_name_length_cap(void)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Export table size and lookup (L-1)                                         */
+/* -------------------------------------------------------------------------- */
+/* Writes name strings (NUL-terminated, back to back) at L->strs and returns
+ * each string's RVA through out[]. */
+static void exp_put_strings(uint8_t *b, const exp_layout_t *L,
+                            const char *const *strs, unsigned n, uint32_t *rva)
+{
+    size_t at = L->strs;
+    for (unsigned i = 0; i < n; ++i) {
+        size_t len = strlen(strs[i]) + 1;
+        memcpy(b + at, strs[i], len);
+        rva[i] = exp_rva(at);
+        at += len;
+    }
+}
+
+/* NumberOfFunctions and NumberOfNames above the documented limit, or a huge
+ * NumberOfNames on a tiny file, are rejected as corrupt before any table is
+ * touched. */
+static void test_export_counts_over_limit_rejected(void)
+{
+    exp_layout_t L;
+    uint8_t *b;
+    pe_context_t ctx;
+    exp_seen_t seen;
+
+    L = exp_plan(PE_MAX_EXPORT_ENTRIES + 1, 0, 0);
+    b = exp_image(&L, PE_MAX_EXPORT_ENTRIES + 1, 0);
+    if (!b) { MT_EXPECT(0); return; }
+    MT_EXPECT_EQ(pe_context_init(&ctx, b, L.len), PE_OK);
+    MT_EXPECT_EQ(pe_validate(&ctx), PE_OK);
+    memset(&seen, 0, sizeof seen);
+    MT_EXPECT_EQ(pe_exports_walk(&ctx, cb_exp_keep, &seen), PE_ERR_CORRUPT);
+    free(b);
+
+    L = exp_plan(1, PE_MAX_EXPORT_ENTRIES + 1, 0);
+    b = exp_image(&L, 1, PE_MAX_EXPORT_ENTRIES + 1);
+    if (!b) { MT_EXPECT(0); return; }
+    MT_EXPECT_EQ(pe_context_init(&ctx, b, L.len), PE_OK);
+    MT_EXPECT_EQ(pe_validate(&ctx), PE_OK);
+    memset(&seen, 0, sizeof seen);
+    MT_EXPECT_EQ(pe_exports_walk(&ctx, cb_exp_keep, &seen), PE_ERR_CORRUPT);
+    free(b);
+
+    /* NumberOfNames = 0xFFFFFFFF on a file that is only a few kilobytes. */
+    L = exp_plan(1, 0, 0);
+    b = exp_image(&L, 1, 0);
+    if (!b) { MT_EXPECT(0); return; }
+    img_w32(b, EXP_DIR_OFF + 24, 0xFFFFFFFFu);
+    MT_EXPECT_EQ(pe_context_init(&ctx, b, L.len), PE_OK);
+    MT_EXPECT_EQ(pe_validate(&ctx), PE_OK);
+    memset(&seen, 0, sizeof seen);
+    MT_EXPECT_EQ(pe_exports_walk(&ctx, cb_exp_keep, &seen), PE_ERR_CORRUPT);
+    free(b);
+}
+
+/* A name whose ordinal indexes past NumberOfFunctions has no function to
+ * name. That is corrupt, not an ignored entry. */
+static void test_export_ordinal_out_of_range_rejected(void)
+{
+    static const char *const names[] = { "Ab" };
+    exp_layout_t L = exp_plan(1, 1, 3);
+    uint8_t *b = exp_image(&L, 1, 1);
+    uint32_t rva[1];
+    exp_seen_t seen;
+    pe_context_t ctx;
+    if (!b) { MT_EXPECT(0); return; }
+
+    exp_put_strings(b, &L, names, 1, rva);
+    exp_set_func(b, &L, 0, 0x1000);
+    exp_set_name(b, &L, 0, rva[0], 1);
+
+    MT_EXPECT_EQ(pe_context_init(&ctx, b, L.len), PE_OK);
+    MT_EXPECT_EQ(pe_validate(&ctx), PE_OK);
+    memset(&seen, 0, sizeof seen);
+    MT_EXPECT_EQ(pe_exports_walk(&ctx, cb_exp_keep, &seen), PE_ERR_CORRUPT);
+    free(b);
+}
+
+/* Largest legal table: 65536 functions and 65536 names, about 640 KiB. Every
+ * function has an RVA and every name points at the same string. The walker
+ * must visit each export exactly once in bounded time. */
+static void test_export_max_entries_walk(void)
+{
+    static const uint32_t max = PE_MAX_EXPORT_ENTRIES;
+    static const char *const names[] = { "A" };
+    exp_layout_t L = exp_plan(max, max, 2);
+    uint8_t *b = exp_image(&L, max, max);
+    uint32_t rva[1];
+    exp_seen_t seen;
+    pe_context_t ctx;
+    if (!b) { MT_EXPECT(0); return; }
+
+    exp_put_strings(b, &L, names, 1, rva);
+    for (uint32_t i = 0; i < max; ++i) {
+        exp_set_func(b, &L, i, 0x1000);
+        exp_set_name(b, &L, i, rva[0], (uint16_t)i);
+    }
+
+    MT_EXPECT_EQ(pe_context_init(&ctx, b, L.len), PE_OK);
+    MT_EXPECT_EQ(pe_validate(&ctx), PE_OK);
+    memset(&seen, 0, sizeof seen);
+    MT_EXPECT_EQ(pe_exports_walk(&ctx, cb_exp_keep, &seen), PE_OK);
+    MT_EXPECT_EQ(seen.count, max);
+    free(b);
+}
+
+/* Binary search over a sorted name table. */
+static void test_export_find_sorted(void)
+{
+    static const char *const names[] = { "Alpha", "Beta", "Gamma" };
+    exp_layout_t L = exp_plan(3, 3, 32);
+    uint8_t *b = exp_image(&L, 3, 3);
+    uint32_t rva[3];
+    pe_export_entry_t e;
+    pe_context_t ctx;
+    if (!b) { MT_EXPECT(0); return; }
+
+    exp_put_strings(b, &L, names, 3, rva);
+    for (uint32_t i = 0; i < 3; ++i) {
+        exp_set_func(b, &L, i, 0x1000 + i);
+        exp_set_name(b, &L, i, rva[i], (uint16_t)i);
+    }
+
+    MT_EXPECT_EQ(pe_context_init(&ctx, b, L.len), PE_OK);
+    MT_EXPECT_EQ(pe_validate(&ctx), PE_OK);
+
+    MT_EXPECT_EQ(pe_export_find(&ctx, "Alpha", 5, &e), PE_OK);
+    MT_EXPECT_EQ(e.ordinal, 1);
+    MT_EXPECT_EQ(e.rva, 0x1000);
+    MT_EXPECT_EQ(pe_export_find(&ctx, "Beta", 4, &e), PE_OK);
+    MT_EXPECT_EQ(e.ordinal, 2);
+    MT_EXPECT_EQ(pe_export_find(&ctx, "Gamma", 5, &e), PE_OK);
+    MT_EXPECT_EQ(e.ordinal, 3);
+    MT_EXPECT_EQ(e.rva, 0x1002);
+
+    /* Missing names, including prefixes of present names. */
+    MT_EXPECT_EQ(pe_export_find(&ctx, "Delta", 5, &e), PE_ERR_NOT_FOUND);
+    MT_EXPECT_EQ(pe_export_find(&ctx, "Alp", 3, &e), PE_ERR_NOT_FOUND);
+    MT_EXPECT_EQ(pe_export_find(&ctx, "Gamma!", 6, &e), PE_ERR_NOT_FOUND);
+    MT_EXPECT_EQ(pe_export_find(&ctx, "", 0, &e), PE_ERR_NOT_FOUND);
+    free(b);
+}
+
+/* The spec requires sorted names, but a table that is not sorted must still
+ * resolve every name, through the linear fallback. */
+static void test_export_find_unsorted_falls_back(void)
+{
+    static const char *const names[] = { "Gamma", "Alpha", "Beta" };
+    exp_layout_t L = exp_plan(3, 3, 24);
+    uint8_t *b = exp_image(&L, 3, 3);
+    uint32_t rva[3];
+    pe_export_entry_t e;
+    pe_context_t ctx;
+    if (!b) { MT_EXPECT(0); return; }
+
+    exp_put_strings(b, &L, names, 3, rva);
+    /* Name n maps to function ords[n]. */
+    static const uint16_t ords[3] = { 2, 0, 1 };
+    for (uint32_t i = 0; i < 3; ++i)
+        exp_set_func(b, &L, i, 0x1000 + i);
+    for (uint32_t n = 0; n < 3; ++n)
+        exp_set_name(b, &L, n, rva[n], ords[n]);
+
+    MT_EXPECT_EQ(pe_context_init(&ctx, b, L.len), PE_OK);
+    MT_EXPECT_EQ(pe_validate(&ctx), PE_OK);
+
+    MT_EXPECT_EQ(pe_export_find(&ctx, "Alpha", 5, &e), PE_OK);
+    MT_EXPECT_EQ(e.ordinal, 1);
+    MT_EXPECT_EQ(pe_export_find(&ctx, "Beta", 4, &e), PE_OK);
+    MT_EXPECT_EQ(e.ordinal, 2);
+    MT_EXPECT_EQ(pe_export_find(&ctx, "Gamma", 5, &e), PE_OK);
+    MT_EXPECT_EQ(e.ordinal, 3);
+    MT_EXPECT_EQ(pe_export_find(&ctx, "Missing", 7, &e), PE_ERR_NOT_FOUND);
+    free(b);
+}
+
+/* A lookup key longer than PE_MAX_SYMBOL_NAME cannot match a stored name. */
+static void test_export_find_long_key_not_found(void)
+{
+    static const char *const names[] = { "Alpha" };
+    exp_layout_t L = exp_plan(1, 1, 8);
+    uint8_t *b = exp_image(&L, 1, 1);
+    uint32_t rva[1];
+    pe_export_entry_t e;
+    pe_context_t ctx;
+    char *key;
+    if (!b) { MT_EXPECT(0); return; }
+
+    exp_put_strings(b, &L, names, 1, rva);
+    exp_set_func(b, &L, 0, 0x1000);
+    exp_set_name(b, &L, 0, rva[0], 0);
+    MT_EXPECT_EQ(pe_context_init(&ctx, b, L.len), PE_OK);
+    MT_EXPECT_EQ(pe_validate(&ctx), PE_OK);
+
+    key = malloc(PE_MAX_SYMBOL_NAME + 2);
+    if (!key) { MT_EXPECT(0); free(b); return; }
+    memset(key, 'A', PE_MAX_SYMBOL_NAME + 1);
+    key[PE_MAX_SYMBOL_NAME + 1] = '\0';
+    MT_EXPECT_EQ(pe_export_find(&ctx, key, PE_MAX_SYMBOL_NAME + 1, &e),
+                 PE_ERR_NOT_FOUND);
+    free(key);
+    free(b);
+}
+
+/* -------------------------------------------------------------------------- */
 /* Runner                                                                     */
 /* -------------------------------------------------------------------------- */
 static const mt_case_t cases[] = {
@@ -836,6 +1042,12 @@ static const mt_case_t cases[] = {
     MT_CASE(test_export_forwarder_resolves),
     MT_CASE(test_export_forwarder_length_cap),
     MT_CASE(test_import_name_length_cap),
+    MT_CASE(test_export_counts_over_limit_rejected),
+    MT_CASE(test_export_ordinal_out_of_range_rejected),
+    MT_CASE(test_export_max_entries_walk),
+    MT_CASE(test_export_find_sorted),
+    MT_CASE(test_export_find_unsorted_falls_back),
+    MT_CASE(test_export_find_long_key_not_found),
     MT_CASE(test_fuzzed_images_do_not_crash),
 };
 
