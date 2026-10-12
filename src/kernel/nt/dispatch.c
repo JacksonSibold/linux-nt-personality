@@ -111,7 +111,7 @@ __visible noinstr void do_nt_syscall(struct pt_regs *regs, unsigned int ssn)
 	u32 status;
 	instrumentation_begin();
 	if (ssn == 0x53 || ssn == 0x1c8 || ssn == 0xc5 || ssn == 0x1c4 || ssn == 0x52 || ssn == 0x34) {
-		pr_info("do_nt_syscall: ssn=0x%x TIF_NTABI=%d pid=%d comm=%s\n", ssn, test_thread_flag(TIF_NTABI), current->pid, current->comm);
+		pr_debug("do_nt_syscall: ssn=0x%x TIF_NTABI=%d pid=%d comm=%s\n", ssn, test_thread_flag(TIF_NTABI), current->pid, current->comm);
 	}
 	/* Exact per-CPU count - cheap, no printk, no sampling */
 	this_cpu_inc(nt_dispatch_count);

@@ -203,6 +203,36 @@ Not fixed. Each has a design record in `docs/decisions/` (index: [docs/decisions
 
 Low findings are not addressed in this pass (M-5 and M-6 are still present, as are the others).
 
+## Medium and Low pass (branch haiku/lows-nt)
+
+Each open Medium and Low finding was re-read against the code on this branch. Status values: fixed (commit named by the finding ID), no change, stale, needs owner.
+
+- H-3: fixed. NtDuplicateObject undoes the duplicate and returns the source's close status when DUPLICATE_CLOSE_SOURCE is refused. Test: object_test `duplicate_close_source_protected`. Residual: an undo close on a duplicate created with OBJ_PROTECT_FROM_CLOSE also fails, which leaves that handle in place.
+- H-4: fixed. `ht_alloc_index` returns the entry it claimed, so `ObCreateHandle` no longer re-reads the page pointers after releasing the table lock. No failing test: the defect is a race. Covered by the existing object_test run.
+- H-5: fixed by documentation. The okay_to_close contract in `object.h` now says the table spinlock is held and lists the calls an implementation must not make. No implementation exists in the tree, so no code change.
+- O-3: fixed. Symlink resolution carries a depth counter (`OB_MAX_SYMLINK_DEPTH` 32) and returns `STATUS_NAME_TOO_LONG` past it. Test: object_test `symlink_self_loop` (crashed before the fix).
+- O-4: fixed. `nt_dup_unicodestring` rejects lengths above 0xFFFC with `STATUS_NAME_TOO_LONG` before the terminator is added. No test: no public route reaches it with such a length; syntax check only.
+- R-2: fixed. `dup_us` in `registry.c` has the same USHORT wrap and gets the same guard. Latent; syntax check only.
+- O-5: fixed. `ObMakeTemporaryObject` clears the permanent flags before removing the object from its directory, so nothing is written after a possible free. Latent (the caller holds a reference); object_test passes, no failing test.
+- O-6: fixed. `ObCreateProcessObject` and `ObCreateThreadObject` check the registry insert and destroy the new object on failure. No test: the failure needs an allocation fault, and kshim has no injection hook; syntax check only. Not fixed here: `nt_current_ethread` (object.c, near the thread-creation path) calls `ObRegisterThread` a second time after `ObCreateThreadObject` has already registered the thread, so the list holds two nodes for one thread. Recorded for the owner.
+- M-5: fixed. `NtAllocateVirtualMemory` rejects a RegionSize above `SIZE_MAX - granularity` with `STATUS_INVALID_PARAMETER`, so the round-up cannot wrap to a zero-length VAD. Test: mm_test `test_alloc_size_wrap` (failed before with `STATUS_NO_MEMORY` or success).
+- M-7: fixed. `NtCreateSection` returns `STATUS_NOT_IMPLEMENTED` for a non-NULL FileHandle, as the finding allows, instead of a zeroed anonymous section. The `is_file` branch is now unreachable and is left in place for the owner who adds file backing. Test: mm_test `test_file_section_unsupported` (failed before: status success).
+- M-6: fixed. `NtFreeVirtualMemory` and `NtProtectVirtualMemory` reject a range whose end wraps before computing `end`. No failing test: a wrapping range needs a committed VAD near the top of the address space, which the host shim cannot provide without mapping a huge range. mm_test passes; syntax check.
+- SYNC-1: fixed in the kernel branch of `sync.c` only. `nt_wait_on_address` copies `addr` and `cmp` with `copy_from_user` before comparing. The `#ifndef __KERNEL__` copy at `sync.c:1088` is unchanged. No test: the kernel branch cannot be compiled on the host, and the host build uses plain memcpy. sync_test covers the userspace copy only.
+- SEC-2: fixed. The DACL branch of `sd_from_self_relative` checks that the 8-byte ACL header is inside the buffer before it reads `AclSize`, as the SACL branch already did. The later size check already rejected the same inputs, so no observable behaviour changes; the defect was an out-of-bounds header read. No failing test; security_test passes (41/41, 609/609 negative cases).
+- D-2: fixed. The per-call trace for the six SSNs in `dispatch.c` is `pr_debug` instead of `pr_info`, so it is off in normal builds. `dispatch.c` already fails the syntax check (pre-existing errors, same count before and after).
+- R-3: fixed. `build_full_path` adds the separator when the root path is empty instead of reading `buf[-1]`, so the result starts with `\`. Latent; syntax check only.
+
+- H-2 (Medium): needs owner. The generation counter is the ABI change that decision 0003 left open; the free-list restore is not a local change.
+
+- M-2 (Medium): no change. `NtMapViewOfSection` checks `offset > sec->size` before any arithmetic, and checks `actual_size > sec->size - offset` after it. Both guards are present on this branch.
+
+- O-2: needs owner. The exclusive check and the handle-count increment need one lock. The obvious choice, the parent directory lock, would nest under the handle table lock, and the lock order has not been decided.
+
+- SYNC-2: needs owner. `timeout_to_jiffies` cannot tell a kernel copy from a kernel address supplied by a user caller. The fix is a copy in each service wrapper that passes a timeout, and the provenance of each caller was only partly traced.
+
+- SEC-1: needs owner. The fix either stores capacity in the ACL allocation (a layout change) or returns errors from the registration call sites (six sites in `security.c`). The choice is a design decision.
+
 ## Not verified / out of scope
 
 - Nothing was compiled, linked, sanitized, fuzzed, or executed. Overflow and wrap claims come from the arithmetic at the cited lines.

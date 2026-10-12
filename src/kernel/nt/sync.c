@@ -1829,12 +1829,12 @@ NTSTATUS nt_wait_on_address(void *addr, void *cmp, size_t size, LARGE_INTEGER *t
 {
     ensure_addr_init();
     if (!addr || !cmp || (size!=1 && size!=2 && size!=4 && size!=8)) return STATUS_INVALID_PARAMETER;
-    bool equal = false;
-    if (size==1) equal = (*(volatile uint8_t*)addr == *(uint8_t*)cmp);
-    else if (size==2) equal = (*(volatile uint16_t*)addr == *(uint16_t*)cmp);
-    else if (size==4) equal = (*(volatile uint32_t*)addr == *(uint32_t*)cmp);
-    else equal = (*(volatile uint64_t*)addr == *(uint64_t*)cmp);
-    if (!equal) return STATUS_INVALID_PARAMETER;
+    /* addr and cmp may point into user space: copy both values in (zero-extended,
+     * so the compare is the same for every width) instead of dereferencing them. */
+    uint64_t cur = 0, want = 0;
+    if (copy_from_user(&cur, addr, size) || copy_from_user(&want, cmp, size))
+        return STATUS_ACCESS_VIOLATION;
+    if (cur != want) return STATUS_INVALID_PARAMETER;
     bool is_poll = false;
     long j = timeout_to_jiffies(timeout, &is_poll);
     if (is_poll) return STATUS_TIMEOUT;

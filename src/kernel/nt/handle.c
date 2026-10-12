@@ -142,7 +142,8 @@ static struct nt_handle_entry *ht_entry(struct nt_handle_table *table, u32 index
     return &l3->entries[i3];
 }
 
-static NTSTATUS ht_alloc_index(struct nt_handle_table *table, u32 *out_index)
+static NTSTATUS ht_alloc_index(struct nt_handle_table *table, u32 *out_index,
+                                struct nt_handle_entry **out_entry)
 {
     struct nt_handle_entry *e = NULL;
     u32 idx = 0;
@@ -178,6 +179,7 @@ static NTSTATUS ht_alloc_index(struct nt_handle_table *table, u32 *out_index)
     table->num_handles++;
     spin_unlock(&table->lock);
     *out_index = idx;
+    *out_entry = e;
     return STATUS_SUCCESS;
 }
 
@@ -259,9 +261,8 @@ NTSTATUS ObCreateHandle(struct nt_eprocess *proc,
     if (!proc || !obj || !out_handle) return STATUS_INVALID_PARAMETER;
     table = proc->handle_table;
     if (!table) return STATUS_INVALID_HANDLE;
-    st = ht_alloc_index(table, &idx);
+    st = ht_alloc_index(table, &idx, &e);
     if (!NT_SUCCESS(st)) return st;
-    e = ht_entry(table, idx, false);
     KASSERT(e && !e->free);
     e->obj = obj;
     e->granted_access = granted_access;
@@ -530,8 +531,15 @@ NTSTATUS NtDuplicateObject(struct nt_eprocess *src_proc,
         return st;
     }
     if (options & DUPLICATE_CLOSE_SOURCE) {
-        /* Close source; ignore protect error? Real NT would return error and not duplicate? But we already duplicated. Follow spec: close source after duplicate. */
-        ObCloseHandle(src_proc, src_handle);
+        /* If the source refuses to close (e.g. PROTECT_FROM_CLOSE), undo the duplicate
+         * so the caller gets an error and no new handle. */
+        st = ObCloseHandle(src_proc, src_handle);
+        if (!NT_SUCCESS(st)) {
+            ObCloseHandle(dst_proc, *dst_handle);
+            *dst_handle = NULL;
+            ObDereferenceObject(obj);
+            return st;
+        }
     }
     ObDereferenceObject(obj); /* extra ref from above */
     return STATUS_SUCCESS;

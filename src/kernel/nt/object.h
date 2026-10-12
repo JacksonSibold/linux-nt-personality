@@ -79,6 +79,11 @@ typedef NTSTATUS (*nt_object_parse_t)(struct nt_object_header *parse_obj,
 /*
  * okay_to_close is consulted before a handle is closed.  Returning an error
  * status prevents the close (e.g. protected handles).
+ *
+ * Contract: the handle table spinlock is held while this runs.  An
+ * implementation must not block, must not call ObReferenceObjectByHandle or
+ * any other handle-table operation on the same process, and must not call
+ * ObCloseHandle.
  */
 typedef NTSTATUS (*nt_object_okay_to_close_t)(struct nt_object_header *hdr,
                                                HANDLE handle,

@@ -852,6 +852,8 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     ULONG_PTR orig_base = (ULONG_PTR)*BaseAddress;
     SIZE_T orig_size = *RegionSize;
     if (orig_size == 0) return STATUS_INVALID_PARAMETER;
+    /* Rounding up orig_size (plus the granularity delta) must not wrap. */
+    if (orig_size > (SIZE_T)-1 - NTMM_ALLOC_GRANULARITY) return STATUS_INVALID_PARAMETER;
     if (reserve) {
         if (orig_base != 0) {
             ULONG_PTR rounded = ntmm_round_down(orig_base, NTMM_ALLOC_GRANULARITY);
@@ -1202,6 +1204,8 @@ NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     base = ntmm_round_down(base, NTMM_PAGE_SIZE);
     if (size == 0) return STATUS_INVALID_PARAMETER;
     size = (SIZE_T)ntmm_round_up(size, NTMM_PAGE_SIZE);
+    /* base + size must not wrap past the top of the address space. */
+    if ((ULONG_PTR)size > (ULONG_PTR)-1 - base) return STATUS_INVALID_PARAMETER;
     ULONG_PTR end = base + size;
     ntmm_lock(mm);
     struct nt_vad *first = nt_vad_find(mm, base);
@@ -1265,6 +1269,8 @@ NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     size = *RegionSize;
     base = ntmm_round_down(base, NTMM_PAGE_SIZE);
     size = (SIZE_T)ntmm_round_up(size, NTMM_PAGE_SIZE);
+    /* base + size must not wrap past the top of the address space. */
+    if ((ULONG_PTR)size > (ULONG_PTR)-1 - base) return STATUS_INVALID_PARAMETER;
     ULONG_PTR end = base + size;
     ntmm_lock(mm);
     struct nt_vad *first = nt_vad_find(mm, base);
@@ -1457,6 +1463,9 @@ NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
     (void)ObjectAttributes;
     if (!SectionHandle) return STATUS_INVALID_PARAMETER;
     if (!ntmm_protection_valid(SectionPageProtection)) return STATUS_INVALID_PAGE_PROTECTION;
+    /* File-backed sections are not implemented: the handle is never looked up,
+     * so the section would be zeroed anonymous memory, not the file. */
+    if (FileHandle) return STATUS_NOT_IMPLEMENTED;
     if (MaximumSize) size = (SIZE_T)MaximumSize->QuadPart;
     else if (FileHandle) size = 0;
     else return STATUS_INVALID_PARAMETER;

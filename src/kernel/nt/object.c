@@ -65,6 +65,9 @@ static NTSTATUS nt_dup_unicodestring(PCUNICODE_STRING src, PUNICODE_STRING dst)
     USHORT max_len;
     if (len & (sizeof(WCHAR)-1))
         return STATUS_OBJECT_NAME_INVALID;
+    /* len + the terminator must fit in USHORT: 0xFFFE + 2 wraps to 0 */
+    if (len > (USHORT)(0xFFFF - sizeof(WCHAR)))
+        return STATUS_NAME_TOO_LONG;
     max_len = (USHORT)(len + sizeof(WCHAR));
     /* zero-length allowed */
     if (len == 0) {
@@ -309,9 +312,18 @@ static void ObpRemoveFromDirectory(struct nt_object_header *obj)
 /* Symlink resolution                                                         */
 /* -------------------------------------------------------------------------- */
 
+#define OB_MAX_SYMLINK_DEPTH 32
+
+static NTSTATUS ObpParsePath(PUNICODE_STRING path,
+                               ULONG attributes,
+                               struct nt_object_type *type,
+                               unsigned int depth,
+                               struct nt_object_header **out);
+
 static NTSTATUS ObpResolveSymlink(struct nt_object_header *link_hdr,
                                    struct nt_object_type *type,
                                    ULONG attributes,
+                                   unsigned int depth,
                                    struct nt_object_header **out)
 {
     struct nt_symlink *link = (struct nt_symlink *)nt_object_body(link_hdr);
@@ -324,7 +336,9 @@ static NTSTATUS ObpResolveSymlink(struct nt_object_header *link_hdr,
     }
     if (link->target.Length == 0)
         return STATUS_OBJECT_NAME_NOT_FOUND;
-    status = ObReferenceObjectByName(&link->target, type, KernelMode, 0, out);
+    if (depth >= OB_MAX_SYMLINK_DEPTH)
+        return STATUS_NAME_TOO_LONG;
+    status = ObpParsePath(&link->target, 0, type, depth + 1, out);
     return status;
 }
 
@@ -332,6 +346,7 @@ static NTSTATUS ObpResolveSymlink(struct nt_object_header *link_hdr,
 static NTSTATUS ObpParsePath(PUNICODE_STRING path,
                                ULONG attributes,
                                struct nt_object_type *type,
+                               unsigned int depth,
                                struct nt_object_header **out)
 {
     struct nt_object_header *cur_hdr;
@@ -399,7 +414,7 @@ static NTSTATUS ObpParsePath(PUNICODE_STRING path,
             /* Final component: handle symlink resolution */
             if (found->type == &nt_symlink_type) {
                 struct nt_object_header *resolved = NULL;
-                status = ObpResolveSymlink(found, type, attributes, &resolved);
+                status = ObpResolveSymlink(found, type, attributes, depth, &resolved);
                 ObDereferenceObject(found);
                 ObDereferenceObject(cur_hdr);
                 if (!NT_SUCCESS(status))
@@ -615,7 +630,7 @@ NTSTATUS ObReferenceObjectByName(PUNICODE_STRING path,
 {
     (void)mode; (void)access;
     if (!path || !out) return STATUS_INVALID_PARAMETER;
-    return ObpParsePath(path, 0, type, out);
+    return ObpParsePath(path, 0, type, 0, out);
 }
 
 NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs,
@@ -631,7 +646,7 @@ NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs,
     if (!attrs || !attrs->ObjectName || !out_handle)
         return STATUS_INVALID_PARAMETER;
     ULONG a = attrs->Attributes;
-    status = ObpParsePath(attrs->ObjectName, a, type, &obj);
+    status = ObpParsePath(attrs->ObjectName, a, type, 0, &obj);
     if (!NT_SUCCESS(status))
         return status;
     /* OBJ_EXCLUSIVE handling: if object is exclusive and already has handles, fail */
@@ -656,10 +671,12 @@ NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs,
 NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj)
 {
     if (!obj) return STATUS_INVALID_PARAMETER;
-    if (obj->parent_dir)
-        ObpRemoveFromDirectory(obj);
+    /* Clear the flags first: removing from the directory may drop the last
+     * reference and free obj. */
     obj->flags &= ~OBJ_PERMANENT;
     obj->is_permanent = false;
+    if (obj->parent_dir)
+        ObpRemoveFromDirectory(obj);
     return STATUS_SUCCESS;
 }
 
@@ -1116,7 +1133,8 @@ NTSTATUS ObCreateProcessObject(struct nt_eprocess **out, ULONG pid, const char *
     init_waitqueue_head(&p->exit_wq);
     atomic_set(&p->ref_ext, 1);
 #endif
-    ob_register_proc(p);
+    st = ob_register_proc(p);
+    if (!NT_SUCCESS(st)) { ObDestroyProcessObject(p); return st; }
     *out = p;
     return STATUS_SUCCESS;
 }
@@ -1166,8 +1184,9 @@ NTSTATUS ObCreateThreadObject(struct nt_ethread **out, struct nt_eprocess *proc,
     atomic_set(&t->suspend_count, 0);
     t->tif_flags = 0;
 #endif
+    st = ObRegisterThread(t);
+    if (!NT_SUCCESS(st)) { ObDestroyThreadObject(t); return st; }
     *out = t;
-    ObRegisterThread(t);
     return STATUS_SUCCESS;
 }
 
