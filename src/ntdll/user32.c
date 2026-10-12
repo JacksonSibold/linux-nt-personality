@@ -105,6 +105,10 @@ int WINAPI wsprintfA(char *out, const char *fmt, ...){
             if(neg&&idx>=0) buf[idx--]='-';
             const char *s=buf+idx+1;
             size_t l=strlen(s); memcpy(pout,s,l); pout+=l;
+        } else if(spec=='c'){
+            /* U32-3: %c prints one character, as in wsprintfW. */
+            int c=va_arg(ap,int);
+            *pout++=(char)c;
         } else if(spec=='%'){ *pout++='%'; }
         else { *pout++='%'; *pout++=spec; }
     }
