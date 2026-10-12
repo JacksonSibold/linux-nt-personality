@@ -31,8 +31,8 @@ Looks up NTSTATUS values by symbolic name, hex or decimal. It reads
 `src/ntdll/ntstatus.h` for `STATUS_*` definitions and the
 `NtStatusToDosErrorTable` in `src/ntdll/ntstatus_to_dos.c`. That table is the
 source that `src/kernel/nt/gen_ntstatus_table.py` turns into the kernel copy
-used by `ntstatus_kernel.c` (the generated `ntstatus_table.inc` is not tracked,
-so the tool reads the userspace source directly).
+used by `ntstatus_kernel.c`. The tool reads the userspace source directly, so it
+does not depend on the tracked, generated `ntstatus_table.inc`.
 
 ```
 python3 tools/ntstatus_lookup.py STATUS_BUFFER_OVERFLOW 0xC0000005
