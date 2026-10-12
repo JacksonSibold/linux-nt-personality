@@ -27,7 +27,9 @@ static struct linux_binfmt pe_format;
 #include "../../arch/x86/nt/nt_internal.h"
 extern int ntmm_add_region(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long);
 #else
+#ifndef KSHIM_H /* the userspace model (kshim.h) provides its own */
 static inline void nt_enter_personality(struct task_struct *tsk) { (void)tsk; }
+#endif
 #endif
 
 /* PE constants */

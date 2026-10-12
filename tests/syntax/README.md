@@ -60,8 +60,12 @@ The shims are for parsing and type-checking only. They are not a runtime model.
 
 ## Current result (MinGW gcc 16.2, UCRT64)
 
-Start of the shim work (`5779442`): 28 of 37 files passed. Now: 32 of 37.
-No file that passed at the start fails now.
+Start of the shim work (`5779442`): 28 of 37 files passed. Before the kshim
+pass (fs model, nt/kshim.c, nt/mm.c): 31 of 37 (`passed=31 failed=6
+warnings=452`). Now: 32 of 37 (`passed=32 failed=5 warnings=452`).
+No file that passed at the start fails now. The `binfmt_pe.c` row was marked
+PASS in an earlier pass; a fresh run shows it still fails (72 warnings), so the
+row is corrected here.
 
 | File | start | now | Warnings (now) |
 |------|-------|-----|----------------|
@@ -72,8 +76,8 @@ No file that passed at the start fails now.
 | `arch/x86/nt/nt_services.c` | PASS | PASS | 17 |
 | `arch/x86/nt/proc_thread.c` | PASS | PASS | 6 |
 | `arch/x86/nt/weak.c` | FAIL | PASS | 4 |
-| `src/kernel/fs/binfmt_pe.c` | FAIL | PASS | 82 |
-| `src/kernel/fs/binfmt_pe_test.c` | FAIL | FAIL | 106 |
+| `src/kernel/fs/binfmt_pe.c` | FAIL | FAIL | 72 |
+| `src/kernel/fs/binfmt_pe_test.c` | FAIL | FAIL | 96 |
 | `src/kernel/fs/kshim.c` | PASS | PASS | 10 |
 | `src/kernel/nt/debugfs_tests.c` | PASS | PASS | 0 |
 | `src/kernel/nt/dispatch.c` | FAIL | FAIL | 49 |
@@ -82,7 +86,7 @@ No file that passed at the start fails now.
 | `src/kernel/nt/io.c` | PASS | PASS | 4 |
 | `src/kernel/nt/io_test.c` | PASS | PASS | 4 |
 | `src/kernel/nt/iocp.c` | PASS | PASS | 4 |
-| `src/kernel/nt/kshim.c` | FAIL | FAIL | 4 |
+| `src/kernel/nt/kshim.c` | FAIL | PASS | 4 |
 | `src/kernel/nt/mm.c` | PASS | PASS | 4 |
 | `src/kernel/nt/mm_test.c` | PASS | PASS | 4 |
 | `src/kernel/nt/nt_obj.c` | PASS | PASS | 4 |
@@ -116,22 +120,22 @@ No file that passed at the start fails now.
   header's `struct file` clashes with `kshim.h`'s `struct file`. Both were
   checked with probe copies (not committed). Fixing it needs a change to the
   model or to the include order, so it is left.
-- `src/kernel/nt/kshim.c`: uses glibc `struct stat` members `st_atim`,
-  `st_mtim` and `st_ctim`. MinGW has only `st_atime` and the others. Platform
-  limit, unchanged from the start.
-- `src/kernel/fs/binfmt_pe_test.c`: now gets past the loader (`binfmt_pe.c`
-  itself passes). It fails on two things. (1) Names the test uses that are not
-  defined anywhere in the repository: `pe_build_command_line`,
-  `pe_build_environment`, `pe_utf8_to_utf16`, `pe_prot_to_mmap`, `WCHAR`,
-  `PPEB`, `PTEB`, and a `pe` member of `struct pe_load_state`. The test has
-  probably not compiled against the current loader. (2) The userspace model in
-  `src/kernel/fs/kshim.h` does not match the kernel API the loader uses:
-  `kernel_read()` takes `(f, u64 offset, buf, count)` where the kernel takes
-  `(file, buf, count, pos)`; `struct file` has no `f_inode`; `struct
-  task_struct` has no `mm` or `thread`; `linux_binprm` has no `cred`; and the
-  model defines `nt_enter_personality`, which `binfmt_pe.c` also defines in its
-  `!CONFIG_NT_PERSONALITY` branch. These need a test-model change, so they are
-  left.
+- `src/kernel/fs/binfmt_pe.c`: `inode->i_mode` and `i_uid_read()` (in
+  `pe_map_ntdll`) are not declared by the shared `tests/syntax/shim/linux/fs.h`,
+  whose `struct inode` has only `i_size`. Fixing it needs that stub extended.
+  The `nt_enter_personality` clash with the kshim model is fixed (guard under
+  `KSHIM_H`). `O_NOFOLLOW`, `O_NONBLOCK`, `force_sigsegv` and `SIGSEGV` are
+  modelled in `kshim.h`.
+- `src/kernel/fs/binfmt_pe_test.c`: the kshim model now matches the kernel API
+  the loader uses (`kernel_read(file, buf, count, pos)`, `f_inode`, `task_struct`
+  `mm`/`thread`, `linux_binprm` `cred`, `WCHAR`). Still failing on: (1) helpers
+  the test calls that do not exist in the repository: `pe_build_command_line`,
+  `pe_build_environment`, `pe_utf8_to_utf16`, `pe_prot_to_mmap`. (2) Types and
+  members with no definition: `PPEB`, `PTEB`, `RTL_USER_PROCESS_PARAMETERS`, and
+  a `pe` member of `struct pe_load_state` (the struct has `peb`). Both need
+  loader code, not model code, so they are left.
+- `src/kernel/fs/binfmt_pe_test.c` also pulls in `binfmt_pe.c` through
+  `#include`, so the `binfmt_pe.c` errors above block it too.
 - `arch/x86/nt/kernel_stubs.c`: not C. The file is six bytes (`test` and CRLF),
   committed that way. It is not deleted; the owner decides.
 
@@ -144,9 +148,20 @@ No file that passed at the start fails now.
   `test_prot_mapping()` uses `pe_page_protection_t`, `pe_prot_from_section` and
   `PE_PROT_*`, which that header declares.
 
-Found but not changed: `arch/x86/nt/mm.c:72` and `src/kernel/nt/mm.c:72`
-(`kshim_mprotect`) log at `KERN_EMERG` with `printk`. That code is in the
-`__KERNEL__` branch, so this script does not compile it.
+- `src/kernel/nt/mm.c`: `kshim_mprotect` logged every call at `KERN_EMERG`.
+  Changed to `pr_debug`. Not compiled by this script (`__KERNEL__` branch;
+  `nt_types.h` pulls in `linux/stddef.h`, which has no stub).
+- `src/kernel/nt/kshim.c`: `st_atim`/`st_mtim`/`st_ctim` now go through
+  `KSHIM_STAT_*` macros. Non-Linux builds use `st_atime` etc. with `tv_nsec` 0.
+  Now passes on MinGW.
+- `src/kernel/fs/kshim.h`: `kernel_read` has the kernel signature, and the
+  loader's members are added. TIF placeholder values are documented in that
+  header and in `docs/KNOWN-ISSUES.md`. See the commit message for the exact
+  set.
+
+Found but not changed: `arch/x86/nt/mm.c:72` still has the `KERN_EMERG`
+`printk` in `kshim_mprotect` (`__KERNEL__` branch, not compiled here). It was
+outside this pass.
 
 ## Warnings that are platform artifacts
 
