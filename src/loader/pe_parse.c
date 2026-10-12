@@ -494,9 +494,7 @@ pe_status_t pe_validate(pe_context_t *ctx)
         u32 vsize = sec.Misc.VirtualSize;
         if (vsize == 0) vsize = sec.SizeOfRawData;
 
-        /* Detect VA + vsize overflow */
-        if ((u64)sec.VirtualAddress + vsize < sec.VirtualAddress)
-            PE_FAIL(PE_ERR_SECTIONS, "section %u VA+vsize overflow VA 0x%x vsize 0x%x", i, sec.VirtualAddress, vsize);
+        /* VA + vsize is computed in u64 here, so this also catches overflow */
         if ((u64)sec.VirtualAddress + vsize > opt.SizeOfImage)
             PE_FAIL(PE_ERR_SECTIONS, "section %u VA 0x%x + vsize 0x%x = 0x%x > SizeOfImage 0x%x", i, sec.VirtualAddress, vsize, (u32)((u64)sec.VirtualAddress+vsize), opt.SizeOfImage);
 
