@@ -10,6 +10,7 @@ please read the [README](README.md) first for its status and limits.
    ```
    python -m unittest discover tests/unit
    python tools/check_repo.py
+   python tools/check_doc_links.py
    ```
 
 2. Keep commits small and focused, one logical change per commit.
