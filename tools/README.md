@@ -82,3 +82,20 @@ paths (bad magic, truncation, bad signatures, unreadable import directory).
 
 Exit status: `0` success, `1` the file cannot be read or is not a valid PE,
 `2` usage error.
+
+## coverage_report.py
+
+Line coverage for `build/*.py`, `tools/*.py` and
+`src/kernel/nt/gen_ntstatus_table.py`. It runs `tests/unit` in-process under
+`sys.settrace` and prints one row per file (executable statement lines, lines
+covered, percentage). Docstrings are not counted. Code that a test runs only in
+a subprocess is not seen, so those files show a lower bound. Standard library
+only.
+
+```
+python3 tools/coverage_report.py              # run the unit tests and report
+python3 tools/coverage_report.py --selftest   # check the measurement on a fixture
+```
+
+Exit status: `0` report printed and all unit tests passed, `1` a unit test
+failed, `2` usage error.
