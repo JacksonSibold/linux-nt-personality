@@ -18,6 +18,29 @@ Important: several of these files depend on headers and sources that live in `sr
 
 Total: 63 findings.
 
+## Fix status (branch haiku/iofix)
+
+Each fix is one commit. Fixed findings are marked in their headings below.
+
+| Finding | Commit | Change |
+|---|---|---|
+| IO-2 | 6da43d2 | Removed early `return STATUS_SUCCESS` in `NtReadFile` (`nt_io.c`) |
+| IO-1 | 79d1de2 | Bounded `FileNameLength` in `ntio_set_rename` (`nt_io.c`) |
+| M-3 | d921888 | Section view offset and size check (`mm.c`) |
+| P-4 | 182ee9f | Zeroed `PROCESS_/THREAD_BASIC_INFORMATION` (`proc_thread.c`) |
+| D-1 | 16af7b7 | `kzalloc` for `NtQueryVirtualMemory` bounce buffer (`dispatch.c`) |
+| P-11 | 3899c83 | Close handle on failed copy in `NtOpenProcess`/`NtOpenThread` (`proc_thread.c`) |
+| P-10 | 34b3fa8 | NULL check on current eprocess in Suspend/Resume (`proc_thread.c`) |
+| P-3 | 54baad9 | Probe `ThreadHandle` before creating the thread (`proc_thread.c`) |
+| IO-9 | 39de0fb | `kzalloc` in `NtQueryInformationFile` (`nt_io.c`) |
+| P-15 | 6f4e944 | Reject image path that does not fit USHORT (`proc_thread.c`) |
+
+Corrections found while fixing:
+- N-2 is not a defect. `nt_services.c:330` sets `kinfo.Reserved` and `R[]`, and the struct has no padding bytes. Treat it as closed.
+- P-15 threshold is wrong in the text above. `wlen*sizeof(WCHAR)` overflows USHORT only when `(wlen+1)*2 > 0xFFFF`, which is about 32767 characters, not 16384. The fix uses the correct bound.
+- P-13 was not changed. The caller at `proc_thread.c:1321` passes a non-NULL `thr`, so the early dereference is not reachable with NULL today.
+- Not fixed, because each needs a design decision or touches code that diverges from `src/kernel/nt`: M-1, M-2, IO-3, IO-4, IO-5, P-1, P-2, B-1 (deleting or restoring `kernel_stubs.c` is a decision for the owner), and the other High items that change ownership or lookup rules.
+
 Most High items fall into four groups: information disclosure to user space (kernel heap or stack, kernel pointers), missing access control on processes and handles, state that diverges between the VAD table and real mappings, and kernel out-of-bounds reads in the file layer.
 
 ## Build
@@ -47,7 +70,7 @@ Most High items fall into four groups: information disclosure to user space (ker
 
 ## dispatch.c
 
-### D-1 [High] NtQueryVirtualMemory wrapper copies uninitialised kernel heap to user space
+### D-1 [High] NtQueryVirtualMemory wrapper copies uninitialised kernel heap to user space — FIXED 16af7b7 (kzalloc only; the length cap is not done)
 - `arch/x86/nt/dispatch.c:258`: `kmalloc(MemoryInformationLength, GFP_KERNEL)` is used without zeroing, and the length comes straight from user space (no upper bound).
 - `dispatch.c:262-264`: `NtQueryVirtualMemory` (`mm.c:1345-1459`) writes only `sizeof(MEMORY_BASIC_INFORMATION)` bytes. The wrapper then does `copy_to_user(MemoryInformation, kbuf, MemoryInformationLength)`, which copies the full user-requested length, including the uninitialised tail.
 - Result: up to the requested length of kernel heap contents is returned to the caller. The same bug is in `src/kernel/nt/dispatch.c:258`.
@@ -98,7 +121,7 @@ Checked and found correct in dispatch.c: argument fetch from the user stack (`di
 - Reachability: the service table lists `NtCreateSection` and `NtMapViewOfSection` (`nt_service_list.h:31`, `34`). The `nt_svc_*` wrappers that call these functions are not in this directory, so their handle handling was not reviewed.
 - Fix: allocate section handles through the object manager and resolve them with a type-checked lookup (`ObReferenceObjectByHandle`) in `NtMapViewOfSection`.
 
-### M-3 [High] Section view offset bounds check wraps
+### M-3 [High] Section view offset bounds check wraps — FIXED d921888
 - `arch/x86/nt/mm.c:1566`: `actual_size = sec->size - offset;` is computed with no check that `offset <= sec->size`. If `offset > sec->size`, the subtraction wraps to a huge value.
 - `mm.c:1568`: `if (offset + actual_size > sec->size)` then wraps back below `sec->size` and passes.
 - Result: a view can be mapped that extends past the section, with a size chosen by the caller.
@@ -171,13 +194,13 @@ Checked and found correct in mm.c: `NtAllocateVirtualMemory` argument validation
 - `proc_thread.c:1817`: `NtQueryInformationThread` returns `target->teb_base` in `TebBaseAddress` to user space. That leaks a kernel heap address.
 - Fix: allocate the TEB in user space with `vm_mmap` and copy the initial fields to it, as `binfmt_pe.c` does. Return the user address.
 
-### P-3 [High] Thread is started before the output handle is validated; on failure it keeps running
+### P-3 [High] Thread is started before the output handle is validated; on failure it keeps running — FIXED 54baad9
 - `arch/x86/nt/proc_thread.c:1331`: `wake_up_new_task(child)` runs first. The handle is registered at 1344, and only then does `copy_to_user(ThreadHandle, &h, sizeof(h))` run at 1348.
 - If that copy fails (for example an unmapped user pointer that passes `access_ok` at line 1213), the function closes the handle and returns `STATUS_ACCESS_VIOLATION` at 1352. The comment at 1351 says the child "will exit via termination path", but nothing terminates it.
 - Result: a thread keeps running with no handle and no owner. Repeating the call exhausts thread resources.
 - Fix: probe `ThreadHandle` for writability before creating the thread (for example `put_user(0, ThreadHandle)`), or terminate the child on this path.
 
-### P-4 [Medium] Uninitialised structures copied to user space (kernel stack)
+### P-4 [Medium] Uninitialised structures copied to user space (kernel stack) — FIXED 182ee9f
 - `arch/x86/nt/proc_thread.c:1649-1656`: `PROCESS_BASIC_INFORMATION pbi;` has no initialiser. The `src/kernel/nt/proc_thread.h:27-34` layout has 4 bytes of padding after `ExitStatus` and 4 bytes after `BasePriority`. Those 8 bytes are copied to user space at line 1656.
 - `proc_thread.c:1814-1824`: `THREAD_BASIC_INFORMATION tbi;` (`proc_thread.h:36-43`) has 4 bytes of padding after `ExitStatus`, copied at line 1824.
 - Fix: `= {0}` on both.
@@ -206,11 +229,11 @@ Checked and found correct in mm.c: `NtAllocateVirtualMemory` argument validation
 - `arch/x86/nt/proc_thread.c:1410` and `1451`: `copy_to_user` runs inside `spin_lock(&thr->lock)`. A page fault in the user buffer fails the copy (atomic context) even when the page could be faulted in.
 - Fix: copy the value under the lock, release it, then copy to user.
 
-### P-10 [Low] NULL process not checked
+### P-10 [Low] NULL process not checked — FIXED 34b3fa8
 - `arch/x86/nt/proc_thread.c:1472` (NtSuspendProcess) and `1487` (NtResumeProcess): `proc = nt_current_eprocess();` is used without the NULL check that the thread services have (`1390`, `1506`).
 - Fix: add the check.
 
-### P-11 [Low] Handle leaked when the output copy fails
+### P-11 [Low] Handle leaked when the output copy fails — FIXED 3899c83
 - `arch/x86/nt/proc_thread.c:1592-1594` (NtOpenProcess) and `1614-1616` (NtOpenThread): the handle is created, and if `copy_to_user` fails the function returns without `ObCloseHandle`.
 - Fix: close the handle on the error path.
 
@@ -227,7 +250,7 @@ Checked and found correct in mm.c: `NtAllocateVirtualMemory` argument validation
 - `proc_thread.c:1436` (inside `nt_svc_NtResumeThread`) prints "NtSuspendThread" in its message. Copy-paste error that will mislead debugging.
 - Fix: `pr_debug`, and correct the label.
 
-### P-15 [Low] Long image path silently truncated
+### P-15 [Low] Long image path silently truncated — FIXED 6f4e944 (threshold corrected, see Fix status)
 - `arch/x86/nt/proc_thread.c:1761`: `us.Length = (USHORT)(wlen * sizeof(WCHAR));` truncates for paths of 16384 or more characters, while `MaximumLength` is computed from `(wlen+1)` and also truncated.
 - Fix: reject paths that do not fit in `USHORT`.
 
@@ -235,13 +258,13 @@ Checked and found correct in proc_thread.c: `NtQueryInformationProcess` class 0 
 
 ## nt_io.c (files, handles, paths)
 
-### IO-1 [High] FileNameLength not checked against the buffer; kernel heap read leaks into a file name
+### IO-1 [High] FileNameLength not checked against the buffer; kernel heap read leaks into a file name — FIXED 79d1de2
 - `arch/x86/nt/nt_io.c:2272`: `uname.Length = (USHORT)ri->FileNameLength;` where `ri` points into `kbuf`, a kernel buffer of `Length` bytes allocated at `nt_io.c:2318`. `ntio_set_rename` (`nt_io.c:2259-2270`) checks only `len >= sizeof(...) - sizeof(WCHAR)`.
 - `kshim_ntpath_to_linux` (`nt_io.c:172-190`) then reads `us->Length / 2` wide characters from `us->Buffer`. A `FileNameLength` larger than `len - 20` reads up to about 64 KiB past the allocation.
 - The bytes read are converted into the rename target name (`nt_io.c:2280-2286`), so kernel heap contents become visible through the filesystem.
 - Fix: require `FileNameLength <= len - offsetof(FILE_RENAME_INFORMATION, FileName)` and that the length is even, before building `uname`.
 
-### IO-2 [High] NtReadFile never reads; it always returns success
+### IO-2 [High] NtReadFile never reads; it always returns success — FIXED 6da43d2
 - `arch/x86/nt/nt_io.c:1894-1904`: after the `delete_pending` check, an unconditional block runs `ntio_file_put(file); return STATUS_SUCCESS;`. The following call to `ntio_do_read` (line 1904) and the IOSB update are unreachable.
 - Result: every `NtReadFile` returns `STATUS_SUCCESS` with the buffer untouched and no IO_STATUS_BLOCK written. The caller's IOSB is left with stale values.
 - Fix: delete the early block. Make the delete check return only in its own branch.
@@ -275,7 +298,7 @@ Checked and found correct in proc_thread.c: `NtQueryInformationProcess` class 0 
 - `arch/x86/nt/nt_io.c:2276`: `ntio_handle_lookup(ri->RootDirectory, 0)` takes a reference (`ntio_file_get` on the lookup path, `nt_io.c:420`). The rename branch (`2276-2287`) never calls `ntio_file_put(root)`.
 - Fix: `ntio_file_put(root)` on every return path.
 
-### IO-9 [Medium] Kernel heap copied to user in NtQueryInformationFile
+### IO-9 [Medium] Kernel heap copied to user in NtQueryInformationFile — FIXED 39de0fb
 - `arch/x86/nt/nt_io.c:2144`: `kbuf = kmalloc(Length, GFP_KERNEL);` is not zeroed. The per-class helpers (`ntio_query_basic` 2001-2023, `ntio_query_standard` 2025-2045, `ntio_query_all` 2089-2123) fill fields but not the padding and not every field of the structure.
 - `nt_io.c:2180-2182`: `to_copy = retlen` bytes are copied to user space, so the uninitialised bytes are returned.
 - Fix: `kzalloc`, or zero the buffer before the helper runs.
@@ -329,7 +352,7 @@ Checked and found correct in nt_io.c: `kshim_ntpath_to_linux` rejects `..` compo
 - If the pointer is bad, the function returns `STATUS_ACCESS_VIOLATION` after the release has happened. A caller that retries a failed `ReleaseSemaphore` will release twice.
 - Fix: validate and probe the output pointer before changing state.
 
-### N-2 [Low] Two padding bytes of NtQueryMutant output are uninitialised
+### N-2 [Low] Two padding bytes of NtQueryMutant output are uninitialised — NOT A DEFECT (R[] is set at line 330; no padding)
 - `arch/x86/nt/nt_services.c:325`: `struct { ULONG CurrentCount; BOOLEAN Owned; BOOLEAN Abandoned; UCHAR R[2]; ULONG OwnerTid; ULONG Reserved[2]; } kinfo;`. Lines 326-330 set every field except `kinfo.R[0]` and `kinfo.R[1]`, and the whole structure is copied to user space at line 331.
 - Fix: `memset(&kinfo, 0, sizeof(kinfo))`.
 
