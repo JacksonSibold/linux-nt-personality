@@ -47,7 +47,7 @@ When the walk ends without a resume, `UnhandledExceptionFilter` is called and th
 
 ## Known gaps and defects (see docs/review/ntdll.md)
 
-- **No unwind pass.** Termination handlers and `__finally` blocks never run (EXC-3). `RtlUnwindExWrapper` is a partial implementation with no caller (EXC-6).
+- **No unwind pass.** Termination handlers and `__finally` blocks never run (EXC-3). The unused `RtlUnwindExWrapper` was removed (EXC-6).
 - **Leaf frames stop the walk** (EXC-2). A PC with no `RUNTIME_FUNCTION` gives no unwind, and the walk spins until its frame limit.
 - **Unsynchronised global state** (EXC-4).
 - **Exit status** from `_NtRaiseException` loses the NTSTATUS (EXC-7).
