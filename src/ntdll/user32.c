@@ -22,9 +22,8 @@ static void* my_memcpy(void *d, const void *s, size_t n){ char *dd=d; const char
 #define strlen my_strlen
 #define memcpy my_memcpy
 
-/* Simple wsprintfW - handles %s %d %u %x %X %p %c */
-int WINAPI wsprintfW(WCHAR *out, const WCHAR *fmt, ...){
-    va_list ap; va_start(ap,fmt);
+/* Wide formatter shared by wsprintfW and wvsprintfW (U32-2). Handles %s %d %u %x %X %c. */
+static int fmt_wide(WCHAR *out, const WCHAR *fmt, va_list ap){
     WCHAR *pout=out;
     for(const WCHAR *p=fmt; *p; p++){
         if(*p!='%'){ *pout++=*p; continue; }
@@ -79,11 +78,20 @@ int WINAPI wsprintfW(WCHAR *out, const WCHAR *fmt, ...){
         }
     }
     *pout=0;
-    va_end(ap);
     return (int)(pout-out);
 }
-int WINAPI wsprintfA(char *out, const char *fmt, ...){
+int WINAPI wsprintfW(WCHAR *out, const WCHAR *fmt, ...){
     va_list ap; va_start(ap,fmt);
+    int n=fmt_wide(out,fmt,ap);
+    va_end(ap);
+    return n;
+}
+int WINAPI wvsprintfW(WCHAR *out, const WCHAR *fmt, va_list ap){
+    return fmt_wide(out,fmt,ap);
+}
+
+/* Narrow formatter shared by wsprintfA and wvsprintfA (U32-2). */
+static int fmt_narrow(char *out, const char *fmt, va_list ap){
     char *pout=out;
     for(const char *p=fmt; *p; p++){
         if(*p!='%'){ *pout++=*p; continue; }
@@ -115,14 +123,15 @@ int WINAPI wsprintfA(char *out, const char *fmt, ...){
         else { *pout++='%'; *pout++=spec; }
     }
     *pout='\0';
-    va_end(ap);
     return (int)(pout-out);
 }
-int WINAPI wvsprintfW(WCHAR *out, const WCHAR *fmt, va_list ap){
-    // simplified delegate to wsprintfW with va_list not supported directly; just return 0
-    (void)out;(void)fmt;(void)ap; return 0;
+int WINAPI wsprintfA(char *out, const char *fmt, ...){
+    va_list ap; va_start(ap,fmt);
+    int n=fmt_narrow(out,fmt,ap);
+    va_end(ap);
+    return n;
 }
 int WINAPI wvsprintfA(char *out, const char *fmt, va_list ap){
-    (void)out;(void)fmt;(void)ap; return 0;
+    return fmt_narrow(out,fmt,ap);
 }
 #endif
