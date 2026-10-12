@@ -1102,7 +1102,7 @@ pe_status_t pe_exception_walk(const pe_context_t *ctx,
 
         pe_runtime_function_t out = {
             .begin = rf.BeginAddress,
-            .end = rf.EndAddress & ~0x3U,
+            .end = rf.EndAddress,
             .unwind = rf.DUMMYUNIONNAME.UnwindInfoAddress,
         };
         s = cb(user, &out);
