@@ -1174,8 +1174,10 @@ NTSTATUS ObCreateThreadObject(struct nt_ethread **out, struct nt_eprocess *proc,
 void ObDestroyProcessObject(struct nt_eprocess *proc)
 {
     if (!proc) return;
-#ifndef __KERNEL__
+    /* Unregister in both builds: a freed node left on the list is a use-after-free
+     * for every pid lookup that follows. */
     ob_unregister_proc(proc);
+#ifndef __KERNEL__
     pthread_mutex_destroy(&proc->lock);
     pthread_cond_destroy(&proc->exit_cond);
     if (proc->peb) kfree(proc->peb);
@@ -1191,8 +1193,9 @@ void ObDestroyProcessObject(struct nt_eprocess *proc)
 void ObDestroyThreadObject(struct nt_ethread *thr)
 {
     if (!thr) return;
-#ifndef __KERNEL__
+    /* Unregister in both builds, as for processes above. */
     ObUnregisterThread(thr);
+#ifndef __KERNEL__
     pthread_mutex_destroy(&thr->lock);
     pthread_cond_destroy(&thr->exit_cond);
     pthread_cond_destroy(&thr->suspend_cond);
