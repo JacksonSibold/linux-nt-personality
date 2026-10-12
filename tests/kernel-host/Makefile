@@ -43,7 +43,10 @@ io_test_OBJS          := io object handle iocp nt_obj_weak sync kshim
 proc_thread_test_OBJS := proc_thread object handle nt_obj sync nt_services kshim
 i2_test_OBJS          := object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
 
-PROGS := $(addprefix $(BUILD)/,$(addsuffix .exe,$(ALL_PROGS)))
+# Shim self-tests (shim/mman_test.c). Run by "check"; not kernel module tests.
+SHIM_TESTS := mman_test
+
+PROGS := $(addprefix $(BUILD)/,$(addsuffix .exe,$(ALL_PROGS) $(SHIM_TESTS)))
 
 .PHONY: all check clean
 all: $(PROGS)
@@ -84,6 +87,13 @@ $(BUILD)/ntstatus_kernel.o: $(NTSTATUS_INC)
 $(BUILD)/nt_obj_weak.o: $(BUILD)/nt_obj.o
 	objcopy --weaken-symbol=nt_svc_NtClose $< $@
 
+# Shim self-test: plain host C against the shim, without the module prelude.
+$(BUILD)/mman_test.o: $(SHIM)/mman_test.c | $(BUILD)
+	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) -I$(SHIM) -c $< -o $@
+
+$(BUILD)/mman_test.exe: $(BUILD)/mman_test.o $(SHIM_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
 # Link rule: each program takes its own test object plus its module objects.
 define PROG_RULE
 $(BUILD)/$(1).exe: $(BUILD)/$(1).o $(addprefix $(BUILD)/,$(addsuffix .o,$($(1)_OBJS))) $(SHIM_OBJS)
@@ -99,7 +109,7 @@ $(foreach t,$(ALL_PROGS),$(eval $(call PROG_RULE,$(t))))
 TIMEOUT ?= 3000
 
 check: all
-	@fail=0; for t in $(TESTS); do \
+	@fail=0; for t in $(TESTS) $(SHIM_TESTS); do \
 	  (cd $(BUILD) && timeout $(TIMEOUT) ./$$t.exe > $$t.log 2>&1); rc=$$?; \
 	  echo "$$t rc=$$rc"; [ $$rc -eq 0 ] || fail=1; \
 	done; exit $$fail
