@@ -459,6 +459,29 @@ static void test_relocs_directory_past_file_rejected(void)
     unload(&L);
 }
 
+/* Reserved base-relocation types (6 and 11-15) are not defined by the PE/COFF
+ * specification and must be rejected by the walker. */
+static void test_relocs_reserved_type_rejected(void)
+{
+    static const uint16_t types[] = { 6, 11, 15 };
+    uint8_t img[IMG_CAP];
+
+    for (size_t i = 0; i < sizeof types / sizeof types[0]; ++i) {
+        loaded_t L;
+        walk_stats_t st;
+
+        img_build_valid(img);
+        img_add_reloc(img);
+        img_w16(img, 0x708, (uint16_t)((types[i] << 12) | 0x010));
+        if (!load(&L, img, IMG_LEN)) { MT_EXPECT(0); return; }
+
+        memset(&st, 0, sizeof st);
+        MT_EXPECT_EQ(pe_validate(&L.ctx), PE_OK);
+        MT_EXPECT_EQ(pe_relocs_walk(&L.ctx, cb_reloc, &st), PE_ERR_CORRUPT);
+        unload(&L);
+    }
+}
+
 static void test_exception_bad_size_rejected(void)
 {
     uint8_t img[IMG_CAP];
@@ -1048,6 +1071,7 @@ static const mt_case_t cases[] = {
     MT_CASE(test_export_find_sorted),
     MT_CASE(test_export_find_unsorted_falls_back),
     MT_CASE(test_export_find_long_key_not_found),
+    MT_CASE(test_relocs_reserved_type_rejected),
     MT_CASE(test_fuzzed_images_do_not_crash),
 };
 
