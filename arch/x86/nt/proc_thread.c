@@ -1138,10 +1138,14 @@ static void nt_setup_child_regs(struct task_struct *child,
     if (!thr || !thr->stack_base) {
         pr_err("nt_setup_child_regs: thr invalid after tramp alloc thr=%p\n", thr);
         regs->ip = (unsigned long)StartRoutine;
-    } else {
-        if (!tramp)
-            tramp = (unsigned long)StartRoutine;
+    } else if (tramp) {
+        /* The stub's CALL pushes one return address, so enter it with rsp
+         * 16-byte aligned: StartRoutine then starts with rsp + 8 aligned, as
+         * the ABI requires (P-6). The direct fallback below keeps sp. */
         regs->ip = tramp;
+        regs->sp = sp + 8;
+    } else {
+        regs->ip = (unsigned long)StartRoutine;
     }
     regs->cx = (unsigned long)StartRoutine;
     regs->dx = (unsigned long)Argument;
