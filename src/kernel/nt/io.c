@@ -1887,7 +1887,7 @@ NTSTATUS nt_svc_NtReadFile(HANDLE FileHandle, HANDLE Event,
 		return status;
 	}
 
-	file = ntio_handle_lookup(FileHandle, 0);
+	file = ntio_handle_lookup(FileHandle, FILE_READ_DATA);
 	if (!file)
 		return STATUS_INVALID_HANDLE;
 
