@@ -539,6 +539,7 @@ static int pe_apply_relocs(struct pe_load_state *st)
                 kfree(buf);
                 return -ENOEXEC;
             }
+            if ((u64)page_rva + offset + sizeof(u64) > st->size_of_image) { kfree(buf); return -ENOEXEC; }
             unsigned long target = (unsigned long)st->actual_base + page_rva + offset;
             u64 val;
             if (copy_from_user(&val, (void __user *)target, sizeof(val))) { kfree(buf); return -EFAULT; }
@@ -790,6 +791,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                                     u16 off2 = entry & 0xFFF;
                                     if (type==0) continue;
                                     if (type!=10) { kfree(buf); kfree(hdr); filp_close(f,NULL); return -ENOEXEC; }
+                                    if ((u64)page_rva + off2 + sizeof(u64) > size_image) { kfree(buf); kfree(hdr); filp_close(f,NULL); return -ENOEXEC; }
                                     unsigned long target = (unsigned long)actual_base + page_rva + off2;
                                     u64 val;
                                     if (copy_from_user(&val, (void __user *)target, sizeof(val))) { kfree(buf); kfree(hdr); filp_close(f,NULL); return -EFAULT; }
