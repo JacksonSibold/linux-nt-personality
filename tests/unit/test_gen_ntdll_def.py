@@ -76,12 +76,7 @@ class GenNtdllDefTests(unittest.TestCase):
         self.assertEqual(len(export_lines(lines)), FIXED_EXPORT_COUNT)
         self.assertIn("Generated", stdout)
 
-    @unittest.expectedFailure
     def test_printed_export_count_matches_written_exports(self):
-        # Known defect: the summary is computed as len(entries)*2 + 20, but
-        # the fixed export set is 31 names, so the printed count is wrong.
-        # Marked expectedFailure; it will report "unexpected success" once the
-        # script prints the real count, at which point this marker can go.
         _, stdout, lines = run_script(
             "NT_SYSCALL(NtClose, 0x0f)\nNT_SYSCALL(NtOpen, 0x10)\n")
         printed = int(re.search(r"with (\d+) exports", stdout).group(1))

@@ -38,4 +38,4 @@ with open(out_def, 'w') as out:
     out.write(f"    _DllMainCRTStartup@12\n")
     out.write(f"    DllMainCRTStartup\n")
 
-print(f"Generated {out_def} with {len(entries)*2 + 20} exports")
+print(f"Generated {out_def} with {len(entries)*2 + 31} exports")
