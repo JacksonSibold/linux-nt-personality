@@ -1477,6 +1477,7 @@ NTSTATUS nt_svc_NtSuspendProcess(HANDLE ProcessHandle)
     NTSTATUS st;
     if (!ProcessHandle) return STATUS_INVALID_PARAMETER;
     proc = nt_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
     st = ObReferenceObjectByHandle(proc, ProcessHandle, &nt_process_type, UserMode, 0, &hdr, NULL);
     if (!NT_SUCCESS(st)) return STATUS_INVALID_HANDLE;
     target = ObFindProcessByHeader(hdr);
@@ -1492,6 +1493,7 @@ NTSTATUS nt_svc_NtResumeProcess(HANDLE ProcessHandle)
     NTSTATUS st;
     if (!ProcessHandle) return STATUS_INVALID_PARAMETER;
     proc = nt_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
     st = ObReferenceObjectByHandle(proc, ProcessHandle, &nt_process_type, UserMode, 0, &hdr, NULL);
     if (!NT_SUCCESS(st)) return STATUS_INVALID_HANDLE;
     target = ObFindProcessByHeader(hdr);
