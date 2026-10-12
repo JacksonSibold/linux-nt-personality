@@ -9,6 +9,7 @@
 #   test_unwind           RUNTIME_FUNCTION lookup for registered modules
 #   test_except           vectored exception handler return codes
 #   test_runtime          freestanding malloc/calloc from ntdll_runtime.c
+#   test_win32_policy     kernel32 shim argument mapping (win32_policy.h)
 #
 # SANITIZE=auto (default) enables -fsanitize=address,undefined only when a
 # probe program both links and runs with it. The MSYS2 UCRT64 gcc on the
@@ -58,7 +59,7 @@ endif
 CPPFLAGS := -I$(SRC) -I$(LOADER)
 CFLAGS   := -std=c11 -g -O1 -Wall -Wextra -Werror $(SAN_FLAGS)
 
-TESTS    := test_ntstatus_to_dos test_unwind test_except test_runtime
+TESTS    := test_ntstatus_to_dos test_unwind test_except test_runtime test_win32_policy
 TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 
 .PHONY: all test clean
@@ -72,6 +73,10 @@ test: $(TEST_BINS)
 # Each test binary: the test file plus the source objects it exercises.
 # The test #includes ntstatus_to_dos.c, so that file and the headers it uses are prerequisites.
 $(OUT)/test_ntstatus_to_dos$(EXE_SUFFIX): test_ntstatus_to_dos.c minitest.h $(SRC)/ntstatus_to_dos.c $(SRC)/ntstatus.h $(SRC)/nt_types.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only mapping tests (src/ntdll/win32_policy.h).
+$(OUT)/test_win32_policy$(EXE_SUFFIX): test_win32_policy.c minitest.h $(SRC)/win32_policy.h $(SRC)/nt_types.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
 
 # unwind.c calls _NtRaiseException from except.c (RtlRaiseException).

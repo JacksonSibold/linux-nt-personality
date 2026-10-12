@@ -14,6 +14,7 @@
 #include "nt_types.h"
 #include "ntstatus.h"
 #include "ldr.h"
+#include "win32_policy.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -43,6 +44,7 @@ __declspec(dllimport) extern NTSTATUS NtQueryVirtualMemory(HANDLE, PVOID, ULONG,
 __declspec(dllimport) extern NTSTATUS NtTerminateProcess(HANDLE, NTSTATUS);
 __declspec(dllimport) extern NTSTATUS NtDelayExecution(BOOLEAN, PLARGE_INTEGER);
 __declspec(dllimport) extern NTSTATUS NtQueryInformationProcess(HANDLE, ULONG, PVOID, ULONG, PULONG);
+__declspec(dllimport) extern NTSTATUS NtWaitForSingleObject(HANDLE, BOOLEAN, PLARGE_INTEGER);
 __declspec(dllimport) extern NTSTATUS LdrLoadDll(winldr_ctx_t *ctx, const WCHAR *path, ULONG flags, const WCHAR *name, HMODULE *out);
 __declspec(dllimport) extern NTSTATUS LdrGetProcedureAddress(winldr_ctx_t *ctx, HMODULE mod, const ANSI_STRING *name, WORD ordinal, FARPROC *out);
 __declspec(dllimport) extern NTSTATUS LdrGetDllHandle(winldr_ctx_t *ctx, const WCHAR *name, HMODULE *out);
@@ -140,15 +142,7 @@ HANDLE WINAPI CreateFileW(const WCHAR *lpFileName, DWORD desiredAccess, DWORD sh
     oa.SecurityQualityOfService = NULL;
     HANDLE h=NULL;
     IO_STATUS_BLOCK ios;
-    ULONG disp=0;
-    switch(creationDisp){
-        case CREATE_NEW: disp=1; break; /* FILE_CREATE */
-        case CREATE_ALWAYS: disp=2; break; /* FILE_OVERWRITE_IF */
-        case OPEN_EXISTING: disp=1; break; /* FILE_OPEN */
-        case OPEN_ALWAYS: disp=3; break; /* FILE_OPEN_IF */
-        case TRUNCATE_EXISTING: disp=4; break; /* FILE_OVERWRITE */
-        default: disp=1; break;
-    }
+    ULONG disp = win32_create_disposition_to_nt(creationDisp);
     ULONG desired = 0;
     if (desiredAccess & GENERIC_READ) desired |= 0x80000000 | 0x00100080; /* GENERIC_READ + SYNCHRONIZE */
     if (desiredAccess & GENERIC_WRITE) desired |= 0x40000000 | 0x00100080;
@@ -207,7 +201,8 @@ BOOL WINAPI VirtualProtect(LPVOID addr, SIZE_T size, DWORD newProt, DWORD *oldPr
     PVOID base=addr;
     SIZE_T sz=size;
     ULONG old=0;
-    ULONG ntProt=4;
+    ULONG ntProt=0;
+    if (!win32_protect_to_nt(newProt, &ntProt)) { SetLastError(87); /* ERROR_INVALID_PARAMETER */ return 0; }
     NTSTATUS s = NtProtectVirtualMemory((HANDLE)(intptr_t)-1, &base, &sz, ntProt, &old);
     if (s==STATUS_SUCCESS) { if(oldProt) *oldProt=old; SetLastError(0); return 1; }
     SetLastErrorFromStatus(s);
@@ -311,8 +306,22 @@ void WINAPI DeleteCriticalSection(CRITICAL_SECTION *cs) { (void)cs; }
 BOOL WINAPI TryEnterCriticalSection(CRITICAL_SECTION *cs) { (void)cs; return 1; }
 
 /* TLS */
-DWORD WINAPI TlsAlloc(void) { return 0; }
-BOOL WINAPI TlsFree(DWORD idx) { (void)idx; return 1; }
+/* The index bitmap is process-wide, so it lives in the PEB. */
+DWORD WINAPI TlsAlloc(void) {
+    PTEB teb = NtCurrentTebMingw();
+    PEB *peb = teb ? teb->ProcessEnvironmentBlock : NULL;
+    if (!peb) { SetLastError(8); return WIN32_TLS_OUT_OF_INDEXES; }
+    DWORD idx = win32_tls_alloc(peb->TlsBitmapBits);
+    SetLastError(idx == WIN32_TLS_OUT_OF_INDEXES ? 1087 /* ERROR_NO_MORE_ITEMS */ : 0);
+    return idx;
+}
+BOOL WINAPI TlsFree(DWORD idx) {
+    PTEB teb = NtCurrentTebMingw();
+    PEB *peb = teb ? teb->ProcessEnvironmentBlock : NULL;
+    if (!peb || !win32_tls_free(peb->TlsBitmapBits, idx)) { SetLastError(87); return 0; }
+    SetLastError(0);
+    return 1;
+}
 LPVOID WINAPI TlsGetValue(DWORD idx) {
     PTEB teb = NtCurrentTebMingw();
     if (!teb || idx>=64) return NULL;
@@ -461,7 +470,14 @@ BOOL WINAPI SetEvent(HANDLE h){ (void)h; return 1; }
 BOOL WINAPI ResetEvent(HANDLE h){ (void)h; return 1; }
 BOOL WINAPI ReleaseMutex(HANDLE h){ (void)h; return 1; }
 BOOL WINAPI ReleaseSemaphore(HANDLE h, LONG inc, LONG *prev){ (void)h;(void)inc; if(prev) *prev=0; return 1; }
-DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms){ (void)h;(void)ms; return 0; /* WAIT_OBJECT_0 */ }
+DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms){
+    LARGE_INTEGER t;
+    NTSTATUS s = NtWaitForSingleObject(h, 0, win32_timeout_to_nt(ms, &t));
+    DWORD r = win32_wait_result(s);
+    if (r == WIN32_WAIT_FAILED) { SetLastErrorFromStatus(s); return r; }
+    SetLastError(0);
+    return r;
+}
 DWORD WINAPI WaitForMultipleObjects(DWORD n, const HANDLE *hs, BOOL waitAll, DWORD ms){ (void)n;(void)hs;(void)waitAll;(void)ms; return 0; }
 BOOL WINAPI DuplicateHandle(HANDLE srcP, HANDLE src, HANDLE dstP, HANDLE *dst, DWORD access, BOOL inh, DWORD opts){
     (void)srcP;(void)src;(void)dstP;(void)dst;(void)access;(void)inh;(void)opts; SetLastError(0); if(dst) *dst=src; return 1;
