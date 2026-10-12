@@ -40,15 +40,18 @@ The parser in this directory is careful about bounds for most reads (`pe_check_r
 - Fix: return `s` for any error except the explicit "no directory" case (`rva == 0 || size == 0`, already handled inside the walkers).
 
 ### L-4 [Medium] Relocation walker: u32 offset arithmetic can wrap
+- **Status:** fixed in ece6247.
 - `src/loader/pe_parse.c:1027-1033` and `1048-1049`: `reloc_off + cursor` and `reloc_off + cursor + sizeof(...) + i * 2` are computed in u32. `reloc_dir.size` may be up to `SizeOfImage` (up to 4 GiB), so the sum can exceed 2^32. The wrapped value then passes `pe_check_read`, which is itself a u32 offset check (`pe_parse.c:60-69`).
 - The result is misparsed relocation entries read from the wrong file offset. It is not an out-of-bounds read, because every wrapped access still goes through `pe_check_read` against `ctx->size`.
 - Fix: compute offsets as `u64`, compare to `ctx->size` before narrowing, and reject if the block lies outside the file.
 
 ### L-5 [Low] Import thunk truncation
+- **Status:** fixed in 896f969.
 - `src/loader/pe_parse.c:889`: `pe_rva_to_offset(ctx, (u32)thunk.u1.Ordinal, &ibn_off)` silently drops bits 32-63 of a 64-bit thunk that is not an ordinal.
 - Fix: reject with `PE_ERR_CORRUPT` if `thunk.u1.Ordinal > 0xFFFFFFFFULL` in the non-ordinal branch.
 
 ### L-6 [Low] Dead overflow check in section validation
+- **Status:** fixed in ebf1cec.
 - `src/loader/pe_parse.c:498-499`: `(u64)sec.VirtualAddress + vsize < sec.VirtualAddress` compares a u64 sum with a u32 value. The sum is always at least the operand, so the branch never fires. The real guard is the next check at 500-501, which does work.
 - Fix: delete the dead check, or write it as `vsize > UINT32_MAX - sec.VirtualAddress`.
 

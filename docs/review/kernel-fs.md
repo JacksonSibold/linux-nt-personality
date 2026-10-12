@@ -21,11 +21,13 @@ Most of the High items are memory-safety or exec-contract problems in the loader
 ## Findings
 
 ### K-1 [High] e_lfanew bounds check wraps in u32, giving an out-of-bounds kernel read
+- **Status:** fixed in b8930c9 (exe path) and 4ffc5e5 (ntdll path).
 - `src/kernel/fs/binfmt_pe.c:181`: `if (nt_off + 6 > (u32)n)`. `nt_off` is a u32 read from the file. For `nt_off` in `0xFFFFFFFA..0xFFFFFFFF` the sum wraps to `0..5`, the test passes, and line 186 reads `headers_buf + nt_off` (about 4 GiB past a 4 KiB buffer).
 - The same pattern appears in `pe_map_ntdll` at line 639.
 - Fix: compare without wrapping, for example `if (nt_off > (u32)n || (u32)n - nt_off < 6)`, or do the addition in `size_t`/`u64`. Apply to both sites.
 
 ### K-2 [Medium] Header fields read past the 4 KiB buffer and past the optional header
+- **Status:** partially fixed in b205768: exe path only. The ntdll reads (`pe_map_ntdll`, near the old 741-742 and 799-800) are still unchecked.
 - `src/kernel/fs/binfmt_pe.c:202`: `size_opt` is read at `nt_off + 20` before any check that `nt_off + 22 <= n`. Line 232 reads `Characteristics` at `nt_off + 22` with no check at all.
 - Lines 213-230 read optional-header fields up to `oh_off + 88` with no check against `SizeOfOptionalHeader` (only `oh_off + size_opt <= n` is tested at 209, and `size_opt` may be 2).
 - `headers_buf` is `kzalloc(PAGE_SIZE)` (line 166). If `nt_off` is close to 4 KiB (up to 4090 passes line 181), reads at `nt_off + 22` and `oh_off + 88` run up to about 16-90 bytes past the allocation.
@@ -49,21 +51,25 @@ Most of the High items are memory-safety or exec-contract problems in the loader
 - Fix: remove the `/tmp` candidate. Accept only a root-owned regular file with no group or world write, open with `O_NOFOLLOW`, and check `S_ISREG` before reading.
 
 ### K-6 [High] Unbounded MAP_FIXED of ntdll sections
+- **Status:** fixed in 539775a.
 - `src/kernel/fs/binfmt_pe.c:701-713`: `vaddr` and `vs` are taken from the ntdll section table and used as `maddr = base + vaddr` with no check against `size_image`. The exe path does perform this check (303-310), so the two loaders are inconsistent.
 - `vm_mmap(..., MAP_FIXED)` silently unmaps whatever is at that address, which can include the PEB, TEB, stack, or the exe image.
 - Fix: apply the same bounds checks as the exe path (`vaddr < size_image`, `vaddr + vs <= size_image`, `rawptr + rawsize <= fsize`) before mapping.
 
 ### K-7 [Medium] SizeOfHeaders not bounded by SizeOfImage
+- **Status:** fixed in b611a28.
 - `src/kernel/fs/binfmt_pe.c:400` (`pe_map_sections`) and `682` (`pe_map_ntdll`) map `PAGE_ALIGN(SizeOfHeaders)` at the image base with `MAP_FIXED`. Nothing checks that `SizeOfHeaders <= SizeOfImage`. The check at 269 only covers the section table, and the read at 289 only needs the file to be that large.
 - A header larger than the image reservation overwrites adjacent mappings.
 - Fix: require `size_headers <= size_image` (and page-align the check) in `pe_read_file_headers` and `pe_map_ntdll`.
 
 ### K-8 [Medium] Relocation target not bounded to the image
+- **Status:** fixed in dd6f4c8.
 - `src/kernel/fs/binfmt_pe.c:531`: `target = actual_base + page_rva + offset` with `page_rva` straight from the file. The `copy_from_user` / `copy_to_user` pair at 533-535 then reads and writes that address in the new mm.
 - The same applies at line 780 for ntdll.
 - Fix: require `page_rva < size_of_image` and `page_rva + offset + 8 <= size_of_image` before use.
 
 ### K-9 [Medium] Per-exec memory leaks on the success path
+- **Status:** fixed in db42c03.
 - `src/kernel/fs/binfmt_pe.c:1034`: `state.mappings = NULL;` drops the `pe_mapping` list without freeing its nodes (`kzalloc`, line 105). One node is leaked per mapping per exec.
 - `src/kernel/fs/binfmt_pe.c:1035`: `state.headers_buf = NULL;` drops the headers buffer (`PAGE_SIZE` or larger) without `kfree`.
 - Fix: free the nodes without unmapping them (for example a `pe_state_free_nodes` helper), and `kfree` the buffer before clearing the pointer.
@@ -74,6 +80,7 @@ Most of the High items are memory-safety or exec-contract problems in the loader
 - Fix: check each result and fail the exec (before commit, see K-4) or at least log it.
 
 ### K-11 [Low] Relocation length check wraps; reloc_size is unbounded
+- **Status:** partially fixed in 248eaa1: the u32 wrap is fixed at both sites. The `reloc_size` cap is still open.
 - `src/kernel/fs/binfmt_pe.c:508`: `reloc_off + reloc_size > (u32)st->file_size` is computed in u32. `reloc_size` (from the data directory) is not capped before `kmalloc(reloc_size)` at 509, and line 761 has the same wrap.
 - Fix: compare in `u64`, and cap `reloc_size` (for example to file size and a fixed maximum such as 16 MiB).
 
@@ -87,6 +94,7 @@ Most of the High items are memory-safety or exec-contract problems in the loader
 - Fix: check the return and fail with `-EFAULT`.
 
 ### K-14 [Low] Export lookup for LdrInitializeThunk does no bounds checks
+- **Status:** partially fixed in 63008f4: ordinal bound only. `num_names` cap and `func_rva` range check are still open.
 - `src/kernel/fs/binfmt_pe.c:821-844` (`pe_map_ntdll`): `num_names` is unbounded (a u32 loop with a per-byte `copy_from_user`). `ord` (from the file) is not checked against `NumberOfFunctions` before indexing at 840. `func_rva` is not checked to lie within the image, so `func_rva == 0` gives `thunk = actual_base`, the PE header.
 - Fix: cap `num_names`, check `ord < NumberOfFunctions`, and check `func_rva` lies in `[0, size_image)` and inside an executable section.
 
@@ -95,12 +103,15 @@ Most of the High items are memory-safety or exec-contract problems in the loader
 - Fix: require only `need` bytes (or `min(need, fsize)`).
 
 ### K-16 [Low] Kernel pointers printed with %px
+- **Status:** fixed in 3cc5903.
 - `src/kernel/fs/binfmt_pe.c:1027`: `pr_err("... %px", state.teb)` prints an unhidden kernel address into the log. Fix: use `%p`.
 
 ### K-17 [Low] Duplicate and dead preprocessor blocks
+- **Status:** fixed in 9ce57ae.
 - `src/kernel/fs/binfmt_pe.c:25-34`: `#ifdef CONFIG_NT_PERSONALITY` is nested inside itself, and the inner `#else` can never be taken. Fix: collapse to one block.
 
 ### K-18 [Low] Unchecked return values on load and setup paths
+- **Status:** partially fixed in 833e002: `register_binfmt` return is now checked. The ntdll-fallback policy is a design decision and is still open.
 - `src/kernel/fs/binfmt_pe.c:1069` (`register_binfmt`) and `946` / `955` (ntdll failure is only logged, and the exe entry is used instead without ntdll). Silent degradation to a no-ntdll process is a policy decision that should be explicit.
 - Fix: check `register_binfmt`. For the ntdll fallback, decide whether to fail the exec or keep the fallback and document it.
 
