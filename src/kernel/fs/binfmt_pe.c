@@ -702,8 +702,10 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
         u32 sec_end = section_table_off + (u32)num_sections * 40;
         if (sec_end > (u32)n || size_headers > (u32)n) {
             size_t need = sec_end > size_headers ? sec_end : size_headers;
-            need = PAGE_ALIGN(need);
-            void *nb = kzalloc(need, GFP_KERNEL);
+            /* Allocate a whole page multiple, but require only the bytes the
+             * headers need: a valid short file must not fail the page-aligned
+             * read (K-15). */
+            void *nb = kzalloc(PAGE_ALIGN(need), GFP_KERNEL);
             if (!nb) { kfree(hdr); filp_close(f, NULL); return -ENOMEM; }
             ssize_t nn = pe_kernel_read(f, 0, nb, need);
             if (nn < (ssize_t)need) { kfree(nb); kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
