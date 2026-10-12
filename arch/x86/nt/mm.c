@@ -1623,6 +1623,10 @@ NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
     struct nt_vad *vad = nt_vad_find(mm, base);
     if (!vad) { ntmm_unlock(mm); return STATUS_NOT_MAPPED_VIEW; }
     if (vad->alloc_base != base) { ntmm_unlock(mm); return STATUS_INVALID_PARAMETER; }
+    /* Only section views may be unmapped here; private allocations are
+     * released with NtFreeVirtualMemory (M-13). Split pieces of a view keep
+     * their type, so test the type rather than the section pointer. */
+    if (vad->type == MEM_PRIVATE) { ntmm_unlock(mm); return STATUS_NOT_MAPPED_VIEW; }
     ULONG_PTR unmap_start = vad->start;
     ULONG_PTR unmap_end = vad->end;
     struct nt_vad *left = nt_vad_left_neighbor(mm, vad);
