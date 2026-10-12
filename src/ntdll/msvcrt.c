@@ -296,13 +296,22 @@ int fclose(void *f){ (void)f; return 0; }
 int fgets_dummy(char *s, int n, void *stream){ (void)s;(void)n;(void)stream; return 0; }
 char* fgets(char *s, int n, void *stream){ (void)stream; if(n>0) s[0]='\0'; return NULL; }
 int sscanf(const char *a, const char *b, ...){ (void)a;(void)b; return 0; }
+/* CRT-1: format into a local buffer of MS_SPRINTF_LIMIT bytes, then copy only
+ * the bytes the output needs. The caller's buffer is still unsized, so this
+ * bounds the write to MS_SPRINTF_LIMIT but cannot protect a smaller buffer. */
+static int ms_bounded_vsprintf(char *s, const char *fmt, va_list ap){
+    char tmp[MS_SPRINTF_LIMIT];
+    int n=my_vsprintf(tmp,sizeof(tmp),fmt,ap);
+    memcpy(s,tmp,(size_t)ms_sprintf_write_size((SIZE_T)n));
+    return n;
+}
 int sprintf(char *s, const char *fmt, ...){
     va_list ap; va_start(ap,fmt);
-    int n=my_vsprintf(s,8192,fmt,ap);
+    int n=ms_bounded_vsprintf(s,fmt,ap);
     va_end(ap);
     return n;
 }
-int vsprintf(char *s, const char *fmt, va_list ap){ return my_vsprintf(s,8192,fmt,ap); }
+int vsprintf(char *s, const char *fmt, va_list ap){ return ms_bounded_vsprintf(s,fmt,ap); }
 int snprintf(char *s, SIZE_T n, const char *fmt, ...){
     va_list ap; va_start(ap,fmt);
     int r=my_vsprintf(s,n,fmt,ap);

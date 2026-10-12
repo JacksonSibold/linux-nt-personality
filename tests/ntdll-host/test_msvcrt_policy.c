@@ -39,9 +39,27 @@ static void mul_rejects_wrapping_products(void)
     MT_EXPECT(out == 0x5a5a);
 }
 
+/* CRT-1: sprintf never writes past MS_SPRINTF_LIMIT bytes. */
+static void sprintf_write_size_is_output_plus_nul(void)
+{
+    MT_EXPECT_EQ(ms_sprintf_write_size(0), 1);
+    MT_EXPECT_EQ(ms_sprintf_write_size(5), 6);
+    MT_EXPECT_EQ(ms_sprintf_write_size(MS_SPRINTF_LIMIT - 2), MS_SPRINTF_LIMIT - 1);
+    MT_EXPECT_EQ(ms_sprintf_write_size(MS_SPRINTF_LIMIT - 1), MS_SPRINTF_LIMIT);
+}
+
+static void sprintf_write_size_is_bounded(void)
+{
+    MT_EXPECT_EQ(ms_sprintf_write_size(MS_SPRINTF_LIMIT), MS_SPRINTF_LIMIT);
+    MT_EXPECT_EQ(ms_sprintf_write_size(MS_SPRINTF_LIMIT * 8), MS_SPRINTF_LIMIT);
+    MT_EXPECT(ms_sprintf_write_size((SIZE_T)-1) == MS_SPRINTF_LIMIT);
+}
+
 static const mt_case_t cases[] = {
     MT_CASE(mul_accepts_products_that_fit),
     MT_CASE(mul_rejects_wrapping_products),
+    MT_CASE(sprintf_write_size_is_output_plus_nul),
+    MT_CASE(sprintf_write_size_is_bounded),
 };
 
 int main(void)
