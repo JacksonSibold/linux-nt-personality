@@ -1522,6 +1522,19 @@ static NTSTATUS ntio_open_file(PHANDLE __user FileHandle, POBJECT_ATTRIBUTES __u
 		return STATUS_FILE_IS_A_DIRECTORY;
 	}
 
+#ifdef __KERNEL__
+	/* Probe the IOSB before the handle exists: if it fails afterwards the
+	 * caller would never learn of a live handle (IO-14). */
+	{
+		IO_STATUS_BLOCK probe;
+		if (copy_from_user(&probe, IoStatusBlock, sizeof(probe)) ||
+		    copy_to_user(IoStatusBlock, &probe, sizeof(probe))) {
+			ntio_file_put(file);
+			return STATUS_ACCESS_VIOLATION;
+		}
+	}
+#endif
+
 	granted = file->granted_access;
 	status = ntio_handle_create(file, granted, FileHandle);
 	if (!NT_SUCCESS(status)) {
@@ -1640,6 +1653,9 @@ static NTSTATUS ntio_do_read(struct nt_file_object *file, PVOID __user Buffer,
 			if (got > 0) {
 				if (copy_to_user((char __user *)Buffer + total, kbuf, got)) {
 					kfree(kbuf);
+					/* The read advanced pos but the chunk was not delivered:
+					 * rewind so the position matches the bytes reported (IO-17). */
+					pos -= got;
 					if (total == 0) return STATUS_ACCESS_VIOLATION;
 					break;
 				}
