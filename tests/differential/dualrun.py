@@ -37,6 +37,9 @@ import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness"))
+from _paths import wsl_repo_root  # noqa: E402
+
 def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -349,10 +352,10 @@ exit 0
     if is_windows:
         # Delegate to WSL Ubuntu where QEMU/KVM and kernel are available.
         # We use wsl -d Ubuntu -- bash -c "cd ~/winapi-native-os && python3 tests/harness/vmtest.py --test <guest> --share ... --timeout ..."
-        # The share for vmtest is the project root on WSL side: ~/winapi-native-os is /mnt/c/... via wsl mount but we pass share = /path/to/ntpers-research
+        # The share for vmtest is the project root on WSL side: ~/winapi-native-os is /mnt/c/... via wsl mount but we pass share = the repository root as a WSL path (wsl_repo_root())
         # Simpler: let wsl handle the share path mapping by using ~/winapi-native-os as share (it is synced via git? but we need file in .dodresult to be shared)
         # Instead we directly call WSL's python3 with the host's path translated to /mnt/c/...
-        wsl_root = "/path/to/ntpers-research"
+        wsl_root = wsl_repo_root()
         # Ensure guest script also exists in WSL's file view (it does via /mnt/c/)
         # The result files are written to share (.dodresult) which is same directory seen from both sides.
         wsl_cmd = [
@@ -456,7 +459,7 @@ exit 0
     # If vm_json is still None but we have raw that looks like json, try again with host path via wsl cat
     if vm_json is None and is_windows:
         try:
-            p = subprocess.run(["wsl","-d","Ubuntu","--","bash","-c", f"cat '/path/to/ntpers-research/.dodresult/dualrun_vm_{probe}.json' 2>/dev/null"], capture_output=True, text=True, timeout=5)
+            p = subprocess.run(["wsl","-d","Ubuntu","--","bash","-c", f"cat '{wsl_repo_root()}/.dodresult/dualrun_vm_{probe}.json' 2>/dev/null"], capture_output=True, text=True, timeout=5)
             if p.stdout and p.stdout.strip().startswith("{"):
                 vm_json = json.loads(p.stdout.strip())
                 raw_vm = p.stdout.strip()
@@ -760,7 +763,7 @@ def _freshness_check() -> bool:
         return True
     try:
         if platform.system() == "Windows":
-            wsl_root = "/path/to/ntpers-research"
+            wsl_root = wsl_repo_root()
             cmd = ["wsl", "-d", "Ubuntu", "--", "bash", f"{wsl_root}/vm/freshness.sh", "check"]
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if proc.returncode != 0:

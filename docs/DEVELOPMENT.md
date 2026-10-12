@@ -82,12 +82,38 @@ the same way and read `BZIMAGE` and `INITRD` from the environment when set.
 
 | Variable | Default | Used by |
 |---|---|---|
-| `NTPERS_ROOT` | the parent of `build/` (the repository root) | `build/validate_criteria.py` (reads `tests/conformance/criteria.json`), `build/merge_dod.py` (reads `docs/phase0/dod-agent-*.md` and writes `tests/conformance/criteria.json`), `build/test_ntdll_pe.c` (opens `src/ntdll/syscall_table.def` when the working directory lacks it), `tests/conformance/test_pe_parse.c` (joins the probe list paths; unset means they resolve from the working directory) |
+| `NTPERS_ROOT` | the parent of `build/` (the repository root) | `build/validate_criteria.py` (reads `tests/conformance/criteria.json`), `build/merge_dod.py` (reads `docs/phase0/dod-agent-*.md` and writes `tests/conformance/criteria.json`), `build/test_ntdll_pe.c` (opens `src/ntdll/syscall_table.def` when the working directory lacks it), `tests/conformance/test_pe_parse.c` (joins the probe list paths; unset means they resolve from the working directory), and the harness and differential entry points listed under "Harness root" below |
 | `NTPERS_LINUX` | `~/ntpers/linux-6.18` | `build/fix_gsbase.py` and `build/fix_iosb.py` (the Linux 6.18 tree in WSL that they patch) |
 
 Set `NTPERS_ROOT` or `NTPERS_LINUX` to an absolute path only to run a script
 against a different tree, for example a copy or a fixture directory. Leave them
 unset otherwise.
+
+### Harness root
+
+The conformance harness and the differential tools run WSL commands (freshness
+checks, VM runs, copy-back of results) that need the repository root as a WSL
+path. That root is resolved as follows:
+
+* `NTPERS_ROOT` when it is set and non-empty, used as given;
+* otherwise the checkout that contains the script.
+
+A Windows drive path is converted to its WSL mount path (`C:\x\y` becomes
+`/mnt/c/x/y`). A POSIX path is used unchanged, so `NTPERS_ROOT=/path/to/ntpers-research`
+behaves exactly as the old hardcoded value did.
+
+Before this change about 30 sites hardcoded the placeholder
+`/path/to/ntpers-research`. None remain. The Python entry points import the
+helpers in `tests/harness/_paths.py`: `repo_root()` returns the root as a
+native path and `wsl_repo_root()` returns it as a WSL path. `windows_to_wsl_path()`
+is the shared conversion, and `tests/harness/freshness.py` reuses it.
+`tests/kernel/harness/*.py`, `tests/harness/selftest.py`,
+`tests/harness/vmtest.py`, `tests/harness/dualrun_wrapper.py` and
+`tests/differential/dualrun.py` all use `wsl_repo_root()`. The PowerShell scripts apply the
+same rule inline: `tests/differential/harness.ps1` sets `$ProjectRoot` to the
+native root and `$WslRoot` to its WSL form, and `tests/differential/compare.ps1`
+sets `$ProjectRoot` only.
+Unit tests for the helper are in `tests/unit/test_harness_paths.py`.
 
 Paths under `/mnt/share`, `/tmp` and `/mnt/c/Windows` are fixed guest or WSL
 locations, not host checkout paths, and are not configurable.

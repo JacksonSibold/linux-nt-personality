@@ -11,7 +11,7 @@
 # through <sys/stat.h>. Nothing is linked or executed.
 #
 # Usage: tests/syntax/check.sh            (from anywhere)
-#        CC=/path/to/gcc tests/syntax/check.sh
+#        CC=/usr/bin/gcc tests/syntax/check.sh
 #
 # Exit status: 0 if every file passes, otherwise the number of failing files.
 # Known failures are described in tests/syntax/README.md.

@@ -10,8 +10,14 @@ param(
 # - stores as golden files versioned by Windows build
 
 $ErrorActionPreference = "Stop"
-$ProjectRoot = "/path/to/ntpers-research"
-$WslRoot     = "/path/to/ntpers-research"
+# Repository root: NTPERS_ROOT if set, otherwise the checkout that contains tests\differential.
+if ($env:NTPERS_ROOT) { $ProjectRoot = $env:NTPERS_ROOT } else { $ProjectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot) }
+# The same root as a WSL path (C:\x\y becomes /mnt/c/x/y), for commands run inside Ubuntu.
+if ($ProjectRoot -match '^([A-Za-z]):[\\/](.*)$') {
+    $WslRoot = '/mnt/' + $matches[1].ToLower() + '/' + ($matches[2] -replace '\\', '/')
+} else {
+    $WslRoot = $ProjectRoot -replace '\\', '/'
+}
 $ProbeDir    = Join-Path $ProjectRoot "tests\differential\probes"
 $BuildDir    = Join-Path $ProjectRoot "tests\differential\build"
 $GoldenRoot  = Join-Path $ProjectRoot "tests\differential\golden"
@@ -118,7 +124,7 @@ $checker = Join-Path $ProjectRoot "tests\differential\check_golden_integrity.py"
 # Use wsl python if available, else try python
 $py = "wsl"
 try {
-    wsl bash -c "python3 `"/path/to/ntpers-research/tests/differential/check_golden_integrity.py`" 2>&1"
+    wsl bash -c "python3 `"$WslRoot/tests/differential/check_golden_integrity.py`" 2>&1"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[harness] GOLDEN INTEGRITY FAILED - a bad golden fails loudly rather than silently producing phantom divergences" -ForegroundColor Red
         throw "Golden integrity check failed (see above). Regenerate goldens via Windows two-target build."

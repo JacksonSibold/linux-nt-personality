@@ -2,6 +2,8 @@
 """ handles.py - host side with P1 staleness fix (nonce + timeout handling)"""
 import json, subprocess, sys, pathlib, uuid, datetime
 ROOT = pathlib.Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "tests" / "harness"))
+from _paths import wsl_repo_root
 VMTEST = ROOT / "tests" / "harness" / "vmtest.py"
 GUEST = "/mnt/share/tests/kernel/guest/run_handles.sh"
 RESULT = ROOT / ".dodresult" / "kernel_handles.json"
@@ -16,7 +18,7 @@ def _freshness_ok() -> bool:
             return True
         import subprocess, sys
         if platform.system() == "Windows":
-            wsl_root = "/path/to/ntpers-research"
+            wsl_root = wsl_repo_root()
             cmd = ["wsl", "-d", "Ubuntu", "--", "bash", f"{wsl_root}/vm/freshness.sh", "check"]
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if proc.returncode != 0:

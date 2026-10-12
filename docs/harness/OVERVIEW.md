@@ -216,7 +216,7 @@ Windows (bash on PATH). WSL is not installed. No golden corpus is present.
 |-----|--------|
 | `lint_integrity.py` | **FAIL**, 2 violations. Both are from `check_golden_integrity`: `cannot list golden root tests/differential/golden` (WinError 3). The other 10 checks report 0 violations. |
 | `selftest.py` | **Does not run**. `main()` stops at the lint gate because of the golden violations above. |
-| Selftest functions called directly (outside `main()`) | 24 of 42 pass. 18 fail: 10 dodrun-driven tests (`KeyError` on the criterion, because the lint gate wrote an empty record), 4 golden-corpus tests (golden files missing, or host-build mismatch), 3 freshness tests (`/path/to/ntpers-research` placeholder, WSL not installed), 1 `artifact_identity_stamping` (no built bzImage sidecar). |
+| Selftest functions called directly (outside `main()`) | 24 of 42 pass. 18 fail: 10 dodrun-driven tests (`KeyError` on the criterion, because the lint gate wrote an empty record), 4 golden-corpus tests (golden files missing, or host-build mismatch), 3 freshness tests (WSL not installed), 1 `artifact_identity_stamping` (no built bzImage sidecar). |
 | `dodrun.py` | Not completed. Would refuse at the lint gate. Separately, PyYAML is not installed, so `registry.yaml` cannot be parsed. |
 | `tests/regression/test_smap_guard.py` | **PASS** (exit 0). `vm/runvm.sh` has no SMAP-disable patterns. |
 | `python -m unittest discover tests/unit` | **OK**, 364 tests, 1 skipped (YAML registry, PyYAML absent). Includes the 62 new harness tests. |
@@ -234,11 +234,12 @@ even with a corpus present.
 2. **PyYAML is undeclared.** dodrun needs it for `registry.yaml`; CI does not
    install it. Options: declare and install it in CI, or add a minimal parser for
    the registry subset actually used. The YAML registry test is skipped without it.
-3. **WSL placeholder root.** `/path/to/ntpers-research` appears at about 30 sites:
-   `selftest.py`, `dualrun_wrapper.py`, `vmtest.py`, `tests/differential/dualrun.py`,
-   `tests/differential/*.ps1` and `tests/kernel/harness/*.py`. The kernel harness
-   also uses `~/winapi-native-os`, an older repo name. Only `freshness.py` was
-   fixed in this pass, because the others need WSL and a VM to verify.
+3. **WSL root (resolved).** The hardcoded `/path/to/ntpers-research` placeholder
+   at about 30 sites is gone. Those sites now take the root from `NTPERS_ROOT` or
+   the checkout, through `tests/harness/_paths.py`; see `docs/DEVELOPMENT.md`,
+   "Harness root". The kernel harness still uses `~/winapi-native-os` inside WSL,
+   an older repo name. The WSL paths are not yet verified on a host with WSL and a
+   VM, so they need a run there.
 4. **Relative `cwd` in the registry** resolves against the process working
    directory, not the repo root, which the README does not say.
 5. **Pinned golden build** (`26200.9168`) differs from this host (`26200.9457`).
