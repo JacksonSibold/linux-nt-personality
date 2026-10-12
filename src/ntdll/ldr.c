@@ -952,6 +952,7 @@ static NTSTATUS ldr_map_and_load(winldr_ctx_t *ctx,
     mod->image_size = (mod->pe.size_of_image + align - 1) & ~(align - 1);
     mod->image = ldr_alloc_image(mod->image_size, align);
     if (!mod->image) {
+        free(mod->file_data); /* LDR-10: the file buffer is owned here too */
         free(mod);
         return STATUS_NO_MEMORY;
     }
