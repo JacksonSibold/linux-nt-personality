@@ -1400,7 +1400,7 @@ NTSTATUS nt_svc_NtEnumerateKey(unsigned long a0, unsigned long a1, unsigned long
     (void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
     if (rlen && !access_ok(rlen,sizeof(ULONG))) return STATUS_ACCESS_VIOLATION;
     if (info && len && !access_ok(info,len)) return STATUS_ACCESS_VIOLATION;
-    char *kbuf=NULL; if(len){ kbuf=kmalloc(len,GFP_KERNEL); if(!kbuf) return STATUS_NO_MEMORY; }
+    char *kbuf=NULL; if(len){ kbuf=kzalloc(len,GFP_KERNEL); if(!kbuf) return STATUS_NO_MEMORY; }
     ULONG klen=0;
     NTSTATUS st=NtEnumerateKey(h,idx,cls,kbuf,len,&klen);
     if (rlen){ if(copy_to_user(rlen,&klen,sizeof(ULONG))) {kfree(kbuf); return STATUS_ACCESS_VIOLATION;}}
@@ -1414,7 +1414,7 @@ NTSTATUS nt_svc_NtEnumerateValueKey(unsigned long a0, unsigned long a1, unsigned
     (void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
     if (rlen && !access_ok(rlen,sizeof(ULONG))) return STATUS_ACCESS_VIOLATION;
     if (info && len && !access_ok(info,len)) return STATUS_ACCESS_VIOLATION;
-    char *kbuf=NULL; if(len){ kbuf=kmalloc(len,GFP_KERNEL); if(!kbuf) return STATUS_NO_MEMORY; }
+    char *kbuf=NULL; if(len){ kbuf=kzalloc(len,GFP_KERNEL); if(!kbuf) return STATUS_NO_MEMORY; }
     ULONG klen=0;
     NTSTATUS st=NtEnumerateValueKey(h,idx,cls,kbuf,len,&klen);
     if (rlen){ if(copy_to_user(rlen,&klen,sizeof(ULONG))) {kfree(kbuf); return STATUS_ACCESS_VIOLATION;}}
@@ -1428,7 +1428,7 @@ NTSTATUS nt_svc_NtQueryKey(unsigned long a0, unsigned long a1, unsigned long a2,
     (void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
     if (rlen && !access_ok(rlen,sizeof(ULONG))) return STATUS_ACCESS_VIOLATION;
     if (info && len && !access_ok(info,len)) return STATUS_ACCESS_VIOLATION;
-    char *kbuf=NULL; if(len){ kbuf=kmalloc(len,GFP_KERNEL); if(!kbuf) return STATUS_NO_MEMORY; }
+    char *kbuf=NULL; if(len){ kbuf=kzalloc(len,GFP_KERNEL); if(!kbuf) return STATUS_NO_MEMORY; }
     ULONG klen=0;
     NTSTATUS st=NtQueryKey(h,cls,kbuf,len,&klen);
     if (rlen){ if(copy_to_user(rlen,&klen,sizeof(ULONG))) {kfree(kbuf); return STATUS_ACCESS_VIOLATION;}}
@@ -1445,7 +1445,7 @@ NTSTATUS nt_svc_NtQueryValueKey(unsigned long a0, unsigned long a1, unsigned lon
     if (info && len && !access_ok(info,len)) return STATUS_ACCESS_VIOLATION;
     UNICODE_STRING kname={0}; WCHAR kbuf[256];
     NTSTATUS st=k_copy_us_us(uvn,&kname,kbuf,sizeof(kbuf)); if(!NT_SUCCESS(st)) return st;
-    char *kout=NULL; if(len){ kout=kmalloc(len,GFP_KERNEL); if(!kout) return STATUS_NO_MEMORY; }
+    char *kout=NULL; if(len){ kout=kzalloc(len,GFP_KERNEL); if(!kout) return STATUS_NO_MEMORY; }
     ULONG klen=0;
     st=NtQueryValueKey(h,&kname,cls,kout,len,&klen);
     if (rlen){ if(copy_to_user(rlen,&klen,sizeof(ULONG))) {kfree(kout); return STATUS_ACCESS_VIOLATION;}}
@@ -1572,7 +1572,7 @@ NTSTATUS nt_svc_NtEnumerateKey(unsigned long a0, unsigned long a1, unsigned long
     (void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
     if (rlen && !access_ok(rlen,sizeof(ULONG))) return STATUS_ACCESS_VIOLATION;
     if (info && len && !access_ok(info,len)) return STATUS_ACCESS_VIOLATION;
-    char *kbuf=NULL; if(len){ kbuf=kmalloc(len,GFP_KERNEL); if(!kbuf) return STATUS_NO_MEMORY; }
+    char *kbuf=NULL; if(len){ kbuf=kzalloc(len,GFP_KERNEL); if(!kbuf) return STATUS_NO_MEMORY; }
     ULONG klen=0;
     NTSTATUS st=NtEnumerateKey(h,idx,cls,kbuf,len,&klen);
     if (rlen){ if(copy_to_user(rlen,&klen,sizeof(klen))) {kfree(kbuf); return STATUS_ACCESS_VIOLATION;}}
@@ -1586,7 +1586,7 @@ NTSTATUS nt_svc_NtEnumerateValueKey(unsigned long a0, unsigned long a1, unsigned
     (void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
     if (rlen && !access_ok(rlen,sizeof(ULONG))) return STATUS_ACCESS_VIOLATION;
     if (info && len && !access_ok(info,len)) return STATUS_ACCESS_VIOLATION;
-    char *kbuf=NULL; if(len){ kbuf=kmalloc(len,GFP_KERNEL); if(!kbuf) return STATUS_NO_MEMORY; }
+    char *kbuf=NULL; if(len){ kbuf=kzalloc(len,GFP_KERNEL); if(!kbuf) return STATUS_NO_MEMORY; }
     ULONG klen=0;
     NTSTATUS st=NtEnumerateValueKey(h,idx,cls,kbuf,len,&klen);
     if (rlen){ if(copy_to_user(rlen,&klen,sizeof(klen))) {kfree(kbuf); return STATUS_ACCESS_VIOLATION;}}
@@ -1600,7 +1600,7 @@ NTSTATUS nt_svc_NtQueryKey(unsigned long a0, unsigned long a1, unsigned long a2,
     (void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
     if (rlen && !access_ok(rlen,sizeof(ULONG))) return STATUS_ACCESS_VIOLATION;
     if (info && len && !access_ok(info,len)) return STATUS_ACCESS_VIOLATION;
-    char *kbuf=NULL; if(len){ kbuf=kmalloc(len,GFP_KERNEL); if(!kbuf) return STATUS_NO_MEMORY; }
+    char *kbuf=NULL; if(len){ kbuf=kzalloc(len,GFP_KERNEL); if(!kbuf) return STATUS_NO_MEMORY; }
     ULONG klen=0;
     NTSTATUS st=NtQueryKey(h,cls,kbuf,len,&klen);
     if (rlen){ if(copy_to_user(rlen,&klen,sizeof(klen))) {kfree(kbuf); return STATUS_ACCESS_VIOLATION;}}
@@ -1618,7 +1618,7 @@ NTSTATUS nt_svc_NtQueryValueKey(unsigned long a0, unsigned long a1, unsigned lon
     if (info && len && !access_ok(info,len)) return STATUS_ACCESS_VIOLATION;
     UNICODE_STRING kname={0}; WCHAR kbuf[256];
     NTSTATUS st=k_copy_us(uvn,&kname,kbuf,sizeof(kbuf)); if(!NT_SUCCESS(st)) return st;
-    char *kout=NULL; if(len){ kout=kmalloc(len,GFP_KERNEL); if(!kout) return STATUS_NO_MEMORY; }
+    char *kout=NULL; if(len){ kout=kzalloc(len,GFP_KERNEL); if(!kout) return STATUS_NO_MEMORY; }
     ULONG klen=0;
     st=NtQueryValueKey(h,&kname,cls,kout,len,&klen);
     if (rlen){ if(copy_to_user(rlen,&klen,sizeof(klen))) {kfree(kout); return STATUS_ACCESS_VIOLATION;}}

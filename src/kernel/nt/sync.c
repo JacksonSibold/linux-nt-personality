@@ -2222,6 +2222,7 @@ NTSTATUS nt_svc_NtWaitForMultipleObjects(unsigned long a0, unsigned long a1, uns
     struct nt_object_header *obj_hdrs[MAXIMUM_WAIT_OBJECTS];
     NTSTATUS st = STATUS_SUCCESS;
     extern struct nt_eprocess *nt_get_current_eprocess(void);
+    extern struct nt_object_type nt_event_type, nt_mutant_type, nt_semaphore_type;
     struct nt_eprocess *proc = nt_get_current_eprocess();
     if (!proc) return STATUS_INVALID_PARAMETER;
     for (ULONG i = 0; i < count; i++) {
@@ -2230,6 +2231,14 @@ NTSTATUS nt_svc_NtWaitForMultipleObjects(unsigned long a0, unsigned long a1, uns
         if (!NT_SUCCESS(st)) {
             for (ULONG j = 0; j < i; j++) ObDereferenceObject(obj_hdrs[j]);
             return st;
+        }
+        /* Only event, mutant and semaphore bodies begin with a dispatcher header.
+         * Any other object type would be read as one. */
+        if (hdr->type != &nt_event_type && hdr->type != &nt_mutant_type &&
+            hdr->type != &nt_semaphore_type) {
+            ObDereferenceObject(hdr);
+            for (ULONG j = 0; j < i; j++) ObDereferenceObject(obj_hdrs[j]);
+            return STATUS_OBJECT_TYPE_MISMATCH;
         }
         obj_hdrs[i] = hdr;
         hdrs[i] = (struct nt_dispatcher_header *)nt_object_body(hdr);
