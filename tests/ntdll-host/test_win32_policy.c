@@ -116,7 +116,25 @@ static void wait_result_mapping(void)
     MT_EXPECT_EQ(win32_wait_result((NTSTATUS)0xC0000008L), 0xFFFFFFFFu); /* WAIT_FAILED */
 }
 
+/* K32-7: CreateEvent's bManualReset selects NotificationEvent (0) or
+ * SynchronizationEvent (1). A failed NT create must give NULL, never a
+ * constant that looks like a handle. */
+static void sync_event_type_maps_manual_reset(void)
+{
+    MT_EXPECT_EQ(win32_event_type_to_nt(1), 0); /* manual reset -> NotificationEvent */
+    MT_EXPECT_EQ(win32_event_type_to_nt(0), 1); /* auto reset -> SynchronizationEvent */
+}
+
+static void sync_create_result_is_handle_or_null(void)
+{
+    HANDLE h = (HANDLE)(intptr_t)0x1234;
+    MT_EXPECT(win32_sync_create_result(STATUS_SUCCESS, h) == h);
+    MT_EXPECT(win32_sync_create_result((NTSTATUS)0xC0000017L, h) == NULL); /* NO_MEMORY */
+}
+
 static const mt_case_t cases[] = {
+    MT_CASE(sync_event_type_maps_manual_reset),
+    MT_CASE(sync_create_result_is_handle_or_null),
     MT_CASE(wait_timeout_conversion),
     MT_CASE(wait_result_mapping),
     MT_CASE(protect_maps_each_base_value),

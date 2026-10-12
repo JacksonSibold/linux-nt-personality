@@ -10,6 +10,7 @@
 #define _DEFAULT_SOURCE
 #define _GNU_SOURCE
 #include "ldr.h"
+#include "pe_bounds.h"
 
 #ifndef __MINGW32__
 #include <errno.h>
@@ -832,6 +833,8 @@ static NTSTATUS ldr_apply_relocs(ldr_module_t *mod)
     u32 reloc_off;
     s = pe_rva_to_offset(ctx, dd.rva, &reloc_off);
     if (s != PE_OK) return STATUS_INVALID_IMAGE_FORMAT;
+    /* LDR-5: the directory must lie inside the file. */
+    if (!pe_range_fits(reloc_off, dd.size, ctx->size)) return STATUS_INVALID_IMAGE_FORMAT;
 
     u32 cursor = 0;
     while (cursor < dd.size) {
@@ -840,6 +843,9 @@ static NTSTATUS ldr_apply_relocs(ldr_module_t *mod)
         if (s != PE_OK) return STATUS_INVALID_IMAGE_FORMAT;
         if (block.SizeOfBlock == 0) break;
         if (block.SizeOfBlock < sizeof(block)) return STATUS_INVALID_IMAGE_FORMAT;
+        /* LDR-5: the block, and so each entry read from it, must lie inside
+         * the directory. */
+        if (!pe_range_fits(cursor, block.SizeOfBlock, dd.size)) return STATUS_INVALID_IMAGE_FORMAT;
 
         u32 n = (block.SizeOfBlock - sizeof(block)) / sizeof(u16);
         for (u32 i = 0; i < n; ++i) {
@@ -852,6 +858,10 @@ static NTSTATUS ldr_apply_relocs(ldr_module_t *mod)
                 type != IMAGE_REL_BASED_HIGHLOW) {
                 return STATUS_INVALID_IMAGE_FORMAT;
             }
+            /* LDR-5: the write target must lie inside the image mapping. */
+            unsigned long long target = (unsigned long long)block.VirtualAddress + offset;
+            unsigned long long width = (type == IMAGE_REL_BASED_DIR64) ? 8 : 4;
+            if (!pe_range_fits(target, width, mod->image_size)) return STATUS_INVALID_IMAGE_FORMAT;
             u8 *addr = base + block.VirtualAddress + offset;
             if (type == IMAGE_REL_BASED_DIR64) {
                 u64 v = pe_load_u64(addr);
@@ -885,14 +895,22 @@ static NTSTATUS ldr_map_sections(ldr_module_t *mod)
         pe_status_t s = pe_section_get(ctx, i, &sv);
         if (s != PE_OK) return STATUS_INVALID_IMAGE_FORMAT;
 
+        /* LDR-6: the section must lie inside the image mapping, and the bytes
+         * copied from the file must lie inside the file. A raw size larger
+         * than the virtual size copies only the virtual size. */
+        unsigned long long vs = sv.virtual_size ? sv.virtual_size : sv.file_size;
+        if (!pe_range_fits(sv.virtual_address, vs, mod->image_size)) return STATUS_INVALID_IMAGE_FORMAT;
+        unsigned long long copy = pe_copy_len(sv.file_size, sv.virtual_size);
+        if (!pe_range_fits(sv.file_offset, copy, mod->file_size)) return STATUS_INVALID_IMAGE_FORMAT;
+
         u8 *va = base + sv.virtual_address;
-        if (sv.file_size > 0)
-            memcpy(va, mod->file_data + sv.file_offset, sv.file_size);
+        if (copy > 0)
+            memcpy(va, mod->file_data + sv.file_offset, (size_t)copy);
 
         /* Zero-fill tail of virtual size. */
-        if (sv.virtual_size > sv.file_size) {
-            size_t z = (size_t)sv.virtual_size - sv.file_size;
-            memset(va + sv.file_size, 0, z);
+        if (vs > copy) {
+            size_t z = (size_t)(vs - copy);
+            memset(va + copy, 0, z);
         }
     }
 

@@ -10,6 +10,7 @@
 #   test_except           vectored exception handler return codes
 #   test_runtime          freestanding malloc/calloc from ntdll_runtime.c
 #   test_win32_policy     kernel32 shim argument mapping (win32_policy.h)
+#   test_pe_bounds        PE section and relocation range checks (pe_bounds.h)
 #
 # SANITIZE=auto (default) enables -fsanitize=address,undefined only when a
 # probe program both links and runs with it. The MSYS2 UCRT64 gcc on the
@@ -59,16 +60,28 @@ endif
 CPPFLAGS := -I$(SRC) -I$(LOADER)
 CFLAGS   := -std=c11 -g -O1 -Wall -Wextra -Werror $(SAN_FLAGS)
 
-TESTS    := test_ntstatus_to_dos test_unwind test_except test_runtime test_win32_policy
+TESTS    := test_ntstatus_to_dos test_unwind test_except test_runtime test_win32_policy test_pe_bounds
 TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 
-.PHONY: all test clean
+# test_pe_bounds is build-only on this host: Windows Application Control blocks
+# the freshly built exe at run time (docs/review/ntdll.md, MAIN-1). It is still
+# compiled by `make all` and run by `make test` on hosts that allow it, via
+# `make test-pe-bounds`. Do not rename or relocate the binary to dodge the policy.
+RUN_TESTS := $(filter-out test_pe_bounds,$(TESTS))
+RUN_BINS  := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(RUN_TESTS)))
 
-all: test
+.PHONY: all test test-pe-bounds build clean
 
-test: $(TEST_BINS)
-	@for t in $(TEST_BINS); do ./$$t || exit 1; done
-	@echo "ntdll-host: all tests passed"
+all: build test
+
+build: $(TEST_BINS)
+
+test: $(RUN_BINS)
+	@for t in $(RUN_BINS); do ./$$t || exit 1; done
+	@echo "ntdll-host: all tests passed (test_pe_bounds build-only on this host)"
+
+test-pe-bounds: $(OUT)/test_pe_bounds$(EXE_SUFFIX)
+	./$(OUT)/test_pe_bounds$(EXE_SUFFIX)
 
 # Each test binary: the test file plus the source objects it exercises.
 # The test #includes ntstatus_to_dos.c, so that file and the headers it uses are prerequisites.
@@ -77,6 +90,10 @@ $(OUT)/test_ntstatus_to_dos$(EXE_SUFFIX): test_ntstatus_to_dos.c minitest.h $(SR
 
 # Header-only mapping tests (src/ntdll/win32_policy.h).
 $(OUT)/test_win32_policy$(EXE_SUFFIX): test_win32_policy.c minitest.h $(SRC)/win32_policy.h $(SRC)/nt_types.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only range checks (src/ntdll/pe_bounds.h).
+$(OUT)/test_pe_bounds$(EXE_SUFFIX): test_pe_bounds.c minitest.h $(SRC)/pe_bounds.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
 
 # unwind.c calls _NtRaiseException from except.c (RtlRaiseException).

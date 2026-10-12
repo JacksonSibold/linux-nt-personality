@@ -17,7 +17,7 @@ Status: findings marked `Fixed in <sha>` were fixed in this branch, with a faili
 | Info | 7 |
 | **Total** | **71** |
 
-Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium). Win32 shim pass (branch `haiku/ntdllfix`): K32-1, K32-2, K32-3 and K32-5 (High) fixed. CRT-1 needs owner. MAIN-1, MAIN-2, LDR-5 and LDR-6 are open (see their entries).
+Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium). Win32 shim pass (branch `haiku/ntdllfix`): K32-1, K32-2, K32-3 and K32-5 (High) fixed. CRT-1 needs owner. Bounds pass (branch `haiku/bounds`): MAIN-1 (74b4a14), MAIN-2 (e7f8b2b), LDR-5 (5045b9c) and LDR-6 (d6007f6) fixed with `src/ntdll/pe_bounds.h`; K32-7 (d2d36fe) fixed. The MAIN-2 test binary `test_pe_bounds` is build-only on this host (see MAIN-1), so its test cases have not been run here.
 
 The most important point is LDR-1. The real ntdll (MinGW) build compiles only stubs for `LdrLoadDll`, `LdrGetDllHandle` and `LdrGetProcedureAddress`, so every Win32 `LoadLibrary`, `GetModuleHandle` and `GetProcAddress` call fails. The loader code that would do the work is excluded by a preprocessor branch and is never built for the MinGW target. The findings in the loader are therefore mainly about code that runs in the Linux test build, or that would run once LDR-1 is fixed.
 
@@ -43,14 +43,14 @@ The most important point is LDR-1. The real ntdll (MinGW) build compiles only st
 - `ldr.c:1481`: `ULONG_PTR *table = (ULONG_PTR *)cb_table_va;` uses `mod->tls.AddressOfCallBacks`. That value was read from the file before relocation (in `ldr_map_and_load`, `pe_tls_directory(&mod->pe, ...)`), so it is the unrelocated VA. For any image not loaded at its preferred base, the read goes to the wrong address.
 - Fix: convert to an image RVA (`cb_va - OriginalBase`) and read from `mod->image`, or read the TLS directory from the mapped image after relocation.
 
-### LDR-5 [High] Base relocations write without an image bound (open; not fixed in this pass)
-- Blocked by the same Application Control policy as MAIN-1 (see there).
+### LDR-5 [High] Base relocations write without an image bound (Fixed in 5045b9c)
+- Fix applied: directory checked against the file, each block against the directory, and each write against `image_size`, via `pe_range_fits` in `pe_bounds.h`. Compile-checked with `gcc -fsyntax-only`. Not run: `test_pe_bounds` is blocked on this host (see MAIN-1).
 - `ldr.c:855`: `u8 *addr = base + block.VirtualAddress + offset;` followed by an 8- or 4-byte write. Nothing checks `block.VirtualAddress + offset + size <= mod->image_size`. A crafted `VirtualAddress` writes outside the image mapping.
 - Related: `pe_file_u16(ctx, off)` (`ldr.c:847`) is an unchecked reader (see `pe_parse.h`), and `n` is derived from `SizeOfBlock` without a bound against the directory size or file size.
 - Fix: check each entry's target against `image_size` and each read against the file size. Or drive relocations through `pe_relocs_walk`, which already checks the directory against the file (`src/loader/pe_parse.c:1179`).
 
-### LDR-6 [High] Section copy length is SizeOfRawData, not bounded by the mapping (open; not fixed in this pass)
-- Blocked by the same Application Control policy as MAIN-1 (see there).
+### LDR-6 [High] Section copy length is SizeOfRawData, not bounded by the mapping (Fixed in d6007f6)
+- Fix applied: section checked against `image_size`, raw range against the file, and the copy limited to `pe_copy_len` (min of raw and virtual size). Compile-checked only; `test_pe_bounds` is blocked on this host (see MAIN-1).
 - `ldr.c:890`: `memcpy(va, mod->file_data + sv.file_offset, sv.file_size);` where `sv.file_size` is `SizeOfRawData` (`pe_parse.c:726`).
 - `pe_validate` checks only `VirtualSize` against `SizeOfImage` (`pe_parse.c:506`). A section whose raw size is larger than its virtual size writes past the section, and for the last section past the end of the mapping.
 - Fix: copy `min(SizeOfRawData, VirtualSize)` and require `VirtualAddress + VirtualSize <= image_size` before copying.
@@ -81,15 +81,16 @@ The most important point is LDR-1. The real ntdll (MinGW) build compiles only st
 
 ### Startup and runtime path (`ntdll_main.c`)
 
-### MAIN-1 [High] Section table and section copy are not bounded (open; not fixed in this pass)
-- Blocked. A host test and helper were written (`nt_range_fits`, `pe_copy_len`), but the test binary `tests/ntdll-host/out/test_pe_bounds.exe` was blocked by a Windows Application Control policy when run. The test could not run, so no fix was committed. Next step: clear the policy for that binary or run the test, then apply the fix.
+### MAIN-1 [High] Section table and section copy are not bounded (Fixed in 74b4a14)
+- Fix applied: `ntdll_main.c` checks the section table against the 0x1000-byte header buffer, then each section against `size_image` and its raw range against the file size, before any read. Helpers in `src/ntdll/pe_bounds.h`; host test `tests/ntdll-host/test_pe_bounds.c`.
+- Host run: on this host Windows Application Control blocks `test_pe_bounds.exe` at run time (the policy was not changed and the binary was not renamed or moved). It is marked build-only in `tests/ntdll-host/Makefile`. The helper test passed once before the MAIN-2 cases were added; those cases and the later ones have not been run here. Run `make -C tests/ntdll-host test-pe-bounds` on a host that allows it (Makefile commit 9b21078).
 - `ntdll_main.c:231` computes `sec_off = section_table_off + i*40` for `i < num_sections` (up to 65535). There is no check against the 0x1000-byte header buffer, so a large section count reads past the page.
 - `ntdll_main.c:238` sets `dst = img_base + vaddr`, and `ntdll_main.c:241` reads `rawsize` bytes into `dst`. Nothing checks `vaddr + rawsize <= size_image`, or `rawptr + rawsize` against the file size.
 - This is the live loader for the MinGW build (`LdrInitializeThunk`, `ntdll_main.c:551`). A DLL found on a candidate path (MAIN-5) reaches it.
 - Fix: validate the section table within the header, and each section against `SizeOfImage` and the file size, before reading.
 
-### MAIN-2 [High] Relocations write without an image bound (open; not fixed in this pass)
-- Blocked by the same Application Control policy as MAIN-1 (see there). Helper: `nt_range_fits` on the relocation target.
+### MAIN-2 [High] Relocations write without an image bound (Fixed in e7f8b2b)
+- Fix applied: the relocation directory is checked against `size_image`, and each DIR64 target (8 bytes) against `size_image` before the write. Helper: `pe_range_fits` in `pe_bounds.h`. Same test-run limit as MAIN-1.
 - `ntdll_main.c:270-272`: `if (type!=10)` accepts DIR64 only, then `*p += delta` for `p = img_base + page_rva + off2`. `page_rva` comes from the block and is not checked against `size_image`.
 - Fix: as LDR-5.
 
@@ -270,9 +271,9 @@ The most important point is LDR-1. The real ntdll (MinGW) build compiles only st
 - `kernel32.c:294` (base): `size = (size+15)&~15;` runs before the bounds check on `g_k32_off`. A size near SIZE_MAX wraps to a small block (same class as RT-1).
 - Fix: reject `size` above the heap size before rounding.
 
-### K32-7 [Medium] Events, mutexes and semaphores are fixed handles
+### K32-7 [Medium] Events, mutexes and semaphores are fixed handles (Fixed in d2d36fe)
 - `kernel32.c:454-459`: `CreateEvent`, `CreateMutex` and `CreateSemaphore` return the constants 10, 11 and 12 for every object. `SetEvent`, `ReleaseMutex` and `ReleaseSemaphore` do nothing.
-- Fix: create real kernel objects.
+- Fix applied: the shims call `NtCreateEvent`, `NtCreateMutant` and `NtCreateSemaphore` (NULL on failure, status to GetLastError), and forward `SetEvent`, `ResetEvent`, `ReleaseMutex` and `ReleaseSemaphore` to their NT calls. Named objects fail with `ERROR_CALL_NOT_IMPLEMENTED` (120) rather than returning an unshared object. Helpers and host tests in `win32_policy.h` and `test_win32_policy.c`; this closes the WAIT_FAILED side effect of K32-5.
 
 ### K32-8 [Medium] File-system operations report false success or always fail
 - `kernel32.c:392-398`: `DeleteFileA` and `DeleteFileW` always set `ERROR_FILE_NOT_FOUND` and return FALSE. `kernel32.c:399-402`: `CreateDirectoryA/W` and `RemoveDirectoryA/W` return TRUE without doing anything.

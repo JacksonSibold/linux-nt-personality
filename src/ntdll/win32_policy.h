@@ -109,4 +109,25 @@ static inline DWORD win32_wait_result(NTSTATUS s)
     return WIN32_WAIT_FAILED;
 }
 
+/* K32-7: CreateEvent, CreateMutex and CreateSemaphore create kernel objects
+ * through NtCreateEvent, NtCreateMutant and NtCreateSemaphore. These helpers
+ * are the pure part of that: the event type and the handle result. */
+#define WIN32_EVENT_ALL_ACCESS     0x001F0003u
+#define WIN32_MUTANT_ALL_ACCESS    0x001F0001u
+#define WIN32_SEMAPHORE_ALL_ACCESS 0x001F0003u
+
+/* NT_EVENT_TYPE: NotificationEvent 0 (manual reset), SynchronizationEvent 1
+ * (auto reset). CreateEvent's bManualReset TRUE selects the former. */
+static inline ULONG win32_event_type_to_nt(BOOL manual_reset)
+{
+    return manual_reset ? 0u : 1u;
+}
+
+/* The handle an NT create call produced when it succeeded, or NULL. The
+ * caller reports the status through SetLastError on NULL. */
+static inline HANDLE win32_sync_create_result(NTSTATUS s, HANDLE h)
+{
+    return NT_SUCCESS(s) ? h : NULL;
+}
+
 #endif /* NTDLL_WIN32_POLICY_H */
