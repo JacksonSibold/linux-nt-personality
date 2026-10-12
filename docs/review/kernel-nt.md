@@ -214,7 +214,7 @@ Each open Medium and Low finding was re-read against the code on this branch. St
 - O-4: fixed. `nt_dup_unicodestring` rejects lengths above 0xFFFC with `STATUS_NAME_TOO_LONG` before the terminator is added. No test: no public route reaches it with such a length; syntax check only.
 - R-2: fixed. `dup_us` in `registry.c` has the same USHORT wrap and gets the same guard. Latent; syntax check only.
 - O-5: fixed. `ObMakeTemporaryObject` clears the permanent flags before removing the object from its directory, so nothing is written after a possible free. Latent (the caller holds a reference); object_test passes, no failing test.
-- O-6: fixed. `ObCreateProcessObject` and `ObCreateThreadObject` check the registry insert and destroy the new object on failure. No test: the failure needs an allocation fault, and kshim has no injection hook; syntax check only. Not fixed here: `nt_current_ethread` (object.c, near the thread-creation path) calls `ObRegisterThread` a second time after `ObCreateThreadObject` has already registered the thread, so the list holds two nodes for one thread. Recorded for the owner.
+- O-6: fixed. `ObCreateProcessObject` and `ObCreateThreadObject` check the registry insert and destroy the new object on failure. No test: the failure needs an allocation fault, and kshim has no injection hook; syntax check only. Second registration fixed in c4bffb1 (test ee49ebe): `ObRegisterThread` is idempotent in both branches, and the redundant calls in `nt_current_ethread` (object.c, kernel branch) and `NtCreateThreadEx` (proc_thread.c, kernel branch) are removed. Test: object_test `thread_registry_one_node` (failed before with 2 nodes and 1 left after destroy; passes now).
 - M-5: fixed. `NtAllocateVirtualMemory` rejects a RegionSize above `SIZE_MAX - granularity` with `STATUS_INVALID_PARAMETER`, so the round-up cannot wrap to a zero-length VAD. Test: mm_test `test_alloc_size_wrap` (failed before with `STATUS_NO_MEMORY` or success).
 - M-7: fixed. `NtCreateSection` returns `STATUS_NOT_IMPLEMENTED` for a non-NULL FileHandle, as the finding allows, instead of a zeroed anonymous section. The `is_file` branch is now unreachable and is left in place for the owner who adds file backing. Test: mm_test `test_file_section_unsupported` (failed before: status success).
 - M-6: fixed. `NtFreeVirtualMemory` and `NtProtectVirtualMemory` reject a range whose end wraps before computing `end`. No failing test: a wrapping range needs a committed VAD near the top of the address space, which the host shim cannot provide without mapping a huge range. mm_test passes; syntax check.
@@ -227,11 +227,11 @@ Each open Medium and Low finding was re-read against the code on this branch. St
 
 - M-2 (Medium): no change. `NtMapViewOfSection` checks `offset > sec->size` before any arithmetic, and checks `actual_size > sec->size - offset` after it. Both guards are present on this branch.
 
-- O-2: needs owner. The exclusive check and the handle-count increment need one lock. The obvious choice, the parent directory lock, would nest under the handle table lock, and the lock order has not been decided.
+- O-2: needs owner. The exclusive check and the handle-count increment need one lock. The obvious choice, the parent directory lock, would nest under the handle table lock, and the lock order has not been decided. Design record 0033 (blocked, option 3 recommended: atomic claim, no new lock order).
 
-- SYNC-2: needs owner. `timeout_to_jiffies` cannot tell a kernel copy from a kernel address supplied by a user caller. The fix is a copy in each service wrapper that passes a timeout, and the provenance of each caller was only partly traced.
+- SYNC-2: needs owner. `timeout_to_jiffies` cannot tell a kernel copy from a kernel address supplied by a user caller. The fix is a copy in each service wrapper that passes a timeout, and the provenance of each caller was only partly traced. Design record 0034 (blocked, recommended: copy in each wrapper).
 
-- SEC-1: needs owner. The fix either stores capacity in the ACL allocation (a layout change) or returns errors from the registration call sites (six sites in `security.c`). The choice is a design decision.
+- SEC-1: needs owner. The fix either stores capacity in the ACL allocation (a layout change) or returns errors from the registration call sites (six sites in `security.c`). The choice is a design decision. Design record 0035 (blocked, recommended: return an error from registration; grep finds five call sites, not six).
 
 ## Not verified / out of scope
 

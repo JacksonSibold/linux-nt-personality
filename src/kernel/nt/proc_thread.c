@@ -1366,7 +1366,7 @@ NTSTATUS nt_svc_NtCreateThreadEx(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess
     /* Register thread with object manager so handle stays valid and mutant
      * abandonment can find owner. Object already holds ref via handle.
      */
-    ObRegisterThread(thr);
+    /* ObCreateThreadObject has already registered thr. */
     ObDereferenceObject(thr->obj); /* drop creator ref - now owned by handle + registry */
 
     pr_info("W1_INSTR: copy_to_user handle %p to %p\n", h, ThreadHandle);

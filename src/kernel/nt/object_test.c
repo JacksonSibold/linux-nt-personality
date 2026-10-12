@@ -616,6 +616,53 @@ TEST(duplicate_close_source_protected)
     PASS();
 }
 
+/* The thread registry must hold exactly one node per thread. A second
+ * ObRegisterThread for the same thread (as the kernel branch of
+ * nt_current_ethread used to make after ObCreateThreadObject) must not add a
+ * node, and ObDestroyThreadObject must leave none behind. A leftover node is a
+ * dangling pointer to freed memory for every later tid or header lookup. */
+struct ob_thr_node_view { struct list_head link; struct nt_ethread *thr; };
+extern struct list_head g_ob_thr_list;
+
+static int count_thr_nodes(struct nt_ethread *t)
+{
+    int n = 0;
+    struct list_head *pos;
+    for (pos = g_ob_thr_list.next; pos != &g_ob_thr_list; pos = pos->next) {
+        struct ob_thr_node_view *v = list_entry(pos, struct ob_thr_node_view, link);
+        if (v->thr == t) n++;
+    }
+    return n;
+}
+
+TEST(thread_registry_one_node)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(120, "p12");
+    ASSERT(proc != NULL);
+    struct nt_ethread *thr = make_thread(proc, 12);
+    ASSERT(thr != NULL);
+    int after_create = count_thr_nodes(thr);
+
+    ObRegisterThread(thr); /* redundant second registration */
+    int after_second = count_thr_nodes(thr);
+    struct nt_ethread *found = ObFindThreadByTid(12);
+
+    ObDestroyThreadObject(thr);
+    int after_destroy = count_thr_nodes(thr); /* pointer compare only */
+    ObDestroyProcessObject(proc);
+    kshim_set_current_process(NULL);
+    kshim_set_current_thread(NULL);
+
+    if (after_create != 1 || after_second != 1 || found != thr || after_destroy != 0) {
+        fprintf(stderr, "FAIL %s: nodes after create=%d second register=%d destroy=%d, lookup ok=%d\n",
+                __func__, after_create, after_second, after_destroy, found == thr);
+        g_fail++;
+        return;
+    }
+    PASS();
+}
+
 /* A symlink whose target names itself must fail with a depth error, not
  * recurse until the stack overflows. */
 TEST(symlink_self_loop)
@@ -668,6 +715,7 @@ int main(void)
     RUN(close_pending);
     RUN(duplicate_reduced_access);
     RUN(duplicate_close_source_protected);
+    RUN(thread_registry_one_node);
     RUN(symlink_self_loop);
     RUN(inheritance);
     RUN(pseudo_handles);

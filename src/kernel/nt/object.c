@@ -768,9 +768,16 @@ NTSTATUS ObRegisterThread(struct nt_ethread *t) {
     struct ob_thr_node *n = (struct ob_thr_node*)kzalloc(sizeof(*n), GFP_KERNEL);
     if (!n) return STATUS_NO_MEMORY;
     n->thr = t;
+    /* Idempotent: one node per thread. A repeat registration is a no-op. */
+    bool dup = false;
     pthread_mutex_lock(&g_ob_thr_lock);
-    list_add_tail(&n->link, &g_ob_thr_list);
+    struct list_head *pos;
+    for (pos = g_ob_thr_list.next; pos != &g_ob_thr_list; pos = pos->next) {
+        if (list_entry(pos, struct ob_thr_node, link)->thr == t) { dup = true; break; }
+    }
+    if (!dup) list_add_tail(&n->link, &g_ob_thr_list);
     pthread_mutex_unlock(&g_ob_thr_lock);
+    if (dup) kfree(n);
     return STATUS_SUCCESS;
 }
 void ObUnregisterThread(struct nt_ethread *t) {
@@ -928,9 +935,16 @@ NTSTATUS ObRegisterThread(struct nt_ethread *t) {
     struct ob_thr_node *n = kzalloc(sizeof(*n), GFP_KERNEL);
     if (!n) return STATUS_NO_MEMORY;
     n->thr = t;
+    /* Idempotent: one node per thread. A repeat registration is a no-op. */
+    bool dup = false;
+    struct list_head *pos;
     spin_lock(&g_ob_thr_lock);
-    list_add_tail(&n->link, &g_ob_thr_list);
+    for (pos = g_ob_thr_list.next; pos != &g_ob_thr_list; pos = pos->next) {
+        if (list_entry(pos, struct ob_thr_node, link)->thr == t) { dup = true; break; }
+    }
+    if (!dup) list_add_tail(&n->link, &g_ob_thr_list);
     spin_unlock(&g_ob_thr_lock);
+    if (dup) { kfree(n); return STATUS_SUCCESS; }
     pr_err("ObRegisterThread: thr=%p tid=%lu obj=%p\n", t, t->tid, t->obj);
     return STATUS_SUCCESS;
 }
@@ -1063,7 +1077,7 @@ struct nt_ethread *nt_current_ethread(void) {
      * The StackBase etc are already correct from binfmt_pe.
      * Just set process and tid for handle lookup.
      */
-    ObRegisterThread(t);
+    /* ObCreateThreadObject has already registered t. */
     return t;
 }
 __attribute__((weak)) struct nt_eprocess *nt_get_current_eprocess(void) { return nt_current_eprocess(); }
