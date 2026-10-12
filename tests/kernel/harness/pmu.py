@@ -2,6 +2,8 @@
 """pmu.py - PMU fingerprint harness for DOD-ARCH-B002 - P1 nonce fix"""
 import json, subprocess, sys, pathlib, os, uuid, datetime, hashlib, shutil
 ROOT = pathlib.Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "tests" / "harness"))
+from _paths import wsl_repo_root
 VMTEST = ROOT / "tests" / "harness" / "vmtest.py"
 GUEST = "/mnt/share/tests/kernel/guest/run_pmu.sh"
 RESULT = ROOT / ".dodresult" / "kernel_pmu.json"
@@ -16,7 +18,7 @@ def _freshness_ok() -> bool:
             return True
         import subprocess as _sp
         if _pf.system() == "Windows":
-            wsl_root = "/path/to/ntpers-research"
+            wsl_root = wsl_repo_root()
             cmd = ["wsl", "-d", "Ubuntu", "--", "bash", f"{wsl_root}/vm/freshness.sh", "check"]
             proc = _sp.run(cmd, capture_output=True, text=True, timeout=30)
             if proc.returncode != 0:
@@ -42,11 +44,11 @@ def main():
         rc = subprocess.run(wsl_cmd).returncode
         try:
             subprocess.run(["wsl","-d","Ubuntu","--","bash","-c",
-                "cat ~/winapi-native-os/.dodresult/kernel_pmu.json 2>/dev/null | tr -d '\\r' > '/path/to/ntpers-research/.dodresult/kernel_pmu.json' || true"], timeout=5)
+                f"cat ~/winapi-native-os/.dodresult/kernel_pmu.json 2>/dev/null | tr -d '\\r' > '{wsl_repo_root()}/.dodresult/kernel_pmu.json' || true"], timeout=5)
             subprocess.run(["wsl","-d","Ubuntu","--","bash","-c",
-                "cat ~/winapi-native-os/.dodresult/perf_pe.log 2>/dev/null | tr -d '\\r' > '/path/to/ntpers-research/.dodresult/perf_pe.log' || true"], timeout=5)
+                f"cat ~/winapi-native-os/.dodresult/perf_pe.log 2>/dev/null | tr -d '\\r' > '{wsl_repo_root()}/.dodresult/perf_pe.log' || true"], timeout=5)
             subprocess.run(["wsl","-d","Ubuntu","--","bash","-c",
-                "cat ~/winapi-native-os/.dodresult/perf_elf.log 2>/dev/null | tr -d '\\r' > '/path/to/ntpers-research/.dodresult/perf_elf.log' || true"], timeout=5)
+                f"cat ~/winapi-native-os/.dodresult/perf_elf.log 2>/dev/null | tr -d '\\r' > '{wsl_repo_root()}/.dodresult/perf_elf.log' || true"], timeout=5)
         except Exception as _e: print(f"warn: {_e}", file=sys.stderr)
         if RESULT.exists():
             try:
