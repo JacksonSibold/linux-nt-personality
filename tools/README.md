@@ -14,6 +14,10 @@ files reported by `git ls-files` (or walks the tree outside a git work tree):
 - `header-guard`: a `.c` file with a same-named `.h` beside it needs an
   include guard (`#ifndef`/`#define` pair or `#pragma once`) in that `.h`.
 - `crlf-mix`: no text file mixes CRLF and bare-LF line endings.
+- `conflict-marker`: no text file has a line starting with `<<<<<<< ` or
+  `>>>>>>> `, or a lone `=======` line when the same file also has a
+  `<<<<<<< ` line. These are leftover merge conflict markers. A Markdown
+  setext underline on its own is not reported.
 
 ```
 python3 tools/check_repo.py              # full report
