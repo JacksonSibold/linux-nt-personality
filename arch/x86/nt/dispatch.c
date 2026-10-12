@@ -110,10 +110,9 @@ __visible noinstr void do_nt_syscall(struct pt_regs *regs, unsigned int ssn)
 	unsigned long args[NT_MAX_ARGS] = { };
 	u32 status;
 	instrumentation_begin();
-	if (ssn == 0x53 || ssn == 0x1c8 || ssn == 0xc5 || ssn == 0x1c4 || ssn == 0x52 || ssn == 0x34) {
-		pr_info("do_nt_syscall: ssn=0x%x TIF_NTABI=%d pid=%d comm=%s\n", ssn, test_thread_flag(TIF_NTABI), current->pid, current->comm);
-	}
-	/* Exact per-CPU count - cheap, no printk, no sampling */
+	/* Per-CPU count, cheap, no printk. this_cpu_* is used because the syscall
+	 * path is preemptible: __this_cpu_* could lose or misplace counts when the
+	 * task migrates (D-2). */
 	this_cpu_inc(nt_dispatch_count);
 	if (ssn < NT_NR_SERVICES)
 		this_cpu_add(nt_dispatch_per_ssn[ssn], 1);
