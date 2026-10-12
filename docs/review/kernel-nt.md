@@ -209,6 +209,7 @@ Each open Medium and Low finding was re-read against the code on this branch. St
 
 - H-3: fixed. NtDuplicateObject undoes the duplicate and returns the source's close status when DUPLICATE_CLOSE_SOURCE is refused. Test: object_test `duplicate_close_source_protected`. Residual: an undo close on a duplicate created with OBJ_PROTECT_FROM_CLOSE also fails, which leaves that handle in place.
 - H-4: fixed. `ht_alloc_index` returns the entry it claimed, so `ObCreateHandle` no longer re-reads the page pointers after releasing the table lock. No failing test: the defect is a race. Covered by the existing object_test run.
+- H-5: fixed by documentation. The okay_to_close contract in `object.h` now says the table spinlock is held and lists the calls an implementation must not make. No implementation exists in the tree, so no code change.
 
 ## Not verified / out of scope
 
