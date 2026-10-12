@@ -23,7 +23,7 @@ ifneq (,$(filter Windows_NT,$(OS))$(filter MINGW% MSYS% CYGWIN%,$(UNAME_S)))
 # C:\WINDOWS\". The recipe shell does not reliably inherit them, hence the
 # exports here. TEMP_DIR defaults to the per-user temp directory; override it
 # in the environment if needed.
-TEMP_DIR ?= $(if $(LOCALAPPDATA),$(shell cygpath -m "$(LOCALAPPDATA)/Temp"),C:/Temp)
+TEMP_DIR ?= $(if $(TMP),$(TMP),$(if $(LOCALAPPDATA),$(shell cygpath -m "$(LOCALAPPDATA)/Temp"),C:/Temp))
 export TMP    := $(TEMP_DIR)
 export TEMP   := $(TEMP_DIR)
 export TMPDIR := $(shell cygpath -u "$(TEMP_DIR)")
