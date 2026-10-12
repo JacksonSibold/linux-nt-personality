@@ -220,6 +220,7 @@ Each open Medium and Low finding was re-read against the code on this branch. St
 - M-6: fixed. `NtFreeVirtualMemory` and `NtProtectVirtualMemory` reject a range whose end wraps before computing `end`. No failing test: a wrapping range needs a committed VAD near the top of the address space, which the host shim cannot provide without mapping a huge range. mm_test passes; syntax check.
 - SYNC-1: fixed in the kernel branch of `sync.c` only. `nt_wait_on_address` copies `addr` and `cmp` with `copy_from_user` before comparing. The `#ifndef __KERNEL__` copy at `sync.c:1088` is unchanged. No test: the kernel branch cannot be compiled on the host, and the host build uses plain memcpy. sync_test covers the userspace copy only.
 - SEC-2: fixed. The DACL branch of `sd_from_self_relative` checks that the 8-byte ACL header is inside the buffer before it reads `AclSize`, as the SACL branch already did. The later size check already rejected the same inputs, so no observable behaviour changes; the defect was an out-of-bounds header read. No failing test; security_test passes (41/41, 609/609 negative cases).
+- D-2: fixed. The per-call trace for the six SSNs in `dispatch.c` is `pr_debug` instead of `pr_info`, so it is off in normal builds. `dispatch.c` already fails the syntax check (pre-existing errors, same count before and after).
 - R-3: fixed. `build_full_path` adds the separator when the root path is empty instead of reading `buf[-1]`, so the result starts with `\`. Latent; syntax check only.
 
 ## Not verified / out of scope
