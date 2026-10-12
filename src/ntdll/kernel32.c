@@ -45,6 +45,13 @@ __declspec(dllimport) extern NTSTATUS NtTerminateProcess(HANDLE, NTSTATUS);
 __declspec(dllimport) extern NTSTATUS NtDelayExecution(BOOLEAN, PLARGE_INTEGER);
 __declspec(dllimport) extern NTSTATUS NtQueryInformationProcess(HANDLE, ULONG, PVOID, ULONG, PULONG);
 __declspec(dllimport) extern NTSTATUS NtWaitForSingleObject(HANDLE, BOOLEAN, PLARGE_INTEGER);
+__declspec(dllimport) extern NTSTATUS NtCreateEvent(PHANDLE, ULONG, PVOID, ULONG, BOOLEAN);
+__declspec(dllimport) extern NTSTATUS NtSetEvent(HANDLE, PLONG);
+__declspec(dllimport) extern NTSTATUS NtResetEvent(HANDLE, PLONG);
+__declspec(dllimport) extern NTSTATUS NtCreateMutant(PHANDLE, ULONG, PVOID, BOOLEAN);
+__declspec(dllimport) extern NTSTATUS NtReleaseMutant(HANDLE, PLONG);
+__declspec(dllimport) extern NTSTATUS NtCreateSemaphore(PHANDLE, ULONG, PVOID, LONG, LONG);
+__declspec(dllimport) extern NTSTATUS NtReleaseSemaphore(HANDLE, LONG, PLONG);
 __declspec(dllimport) extern NTSTATUS LdrLoadDll(winldr_ctx_t *ctx, const WCHAR *path, ULONG flags, const WCHAR *name, HMODULE *out);
 __declspec(dllimport) extern NTSTATUS LdrGetProcedureAddress(winldr_ctx_t *ctx, HMODULE mod, const ANSI_STRING *name, WORD ordinal, FARPROC *out);
 __declspec(dllimport) extern NTSTATUS LdrGetDllHandle(winldr_ctx_t *ctx, const WCHAR *name, HMODULE *out);
@@ -460,16 +467,74 @@ BOOL WINAPI SetEndOfFile(HANDLE h) { (void)h; SetLastError(0); return 1; }
 DWORD WINAPI SetFilePointer(HANDLE h, LONG lo, LONG *hi, DWORD method) { (void)h;(void)lo;(void)hi;(void)method; return 0; }
 
 /* Sync */
-HANDLE WINAPI CreateEventA(void *sa, BOOL man, BOOL init, const char *name){ (void)sa;(void)man;(void)init;(void)name; SetLastError(0); return (HANDLE)10; }
-HANDLE WINAPI CreateEventW(void *sa, BOOL man, BOOL init, const WCHAR *name){ (void)sa;(void)man;(void)init;(void)name; return (HANDLE)10; }
-HANDLE WINAPI CreateMutexA(void *sa, BOOL own, const char *name){ (void)sa;(void)own;(void)name; return (HANDLE)11; }
-HANDLE WINAPI CreateMutexW(void *sa, BOOL own, const WCHAR *name){ (void)sa;(void)own;(void)name; return (HANDLE)11; }
-HANDLE WINAPI CreateSemaphoreA(void *sa, LONG init, LONG max, const char *name){ (void)sa;(void)init;(void)max;(void)name; return (HANDLE)12; }
-HANDLE WINAPI CreateSemaphoreW(void *sa, LONG init, LONG max, const WCHAR *name){ (void)sa;(void)init;(void)max;(void)name; return (HANDLE)12; }
-BOOL WINAPI SetEvent(HANDLE h){ (void)h; return 1; }
-BOOL WINAPI ResetEvent(HANDLE h){ (void)h; return 1; }
-BOOL WINAPI ReleaseMutex(HANDLE h){ (void)h; return 1; }
-BOOL WINAPI ReleaseSemaphore(HANDLE h, LONG inc, LONG *prev){ (void)h;(void)inc; if(prev) *prev=0; return 1; }
+/* K32-7: these create real NT objects and return their handles. Named objects
+ * are not supported (there is no shared object namespace here), so a name
+ * fails with ERROR_CALL_NOT_IMPLEMENTED instead of returning an unshared object. */
+#define K32_ERROR_CALL_NOT_IMPLEMENTED 120
+static HANDLE k32_create_sync_result(NTSTATUS s, HANDLE h)
+{
+    HANDLE r = win32_sync_create_result(s, h);
+    if (r) SetLastError(0);
+    else SetLastErrorFromStatus(s);
+    return r;
+}
+HANDLE WINAPI CreateEventA(void *sa, BOOL man, BOOL init, const char *name){
+    (void)sa;
+    if (name) { SetLastError(K32_ERROR_CALL_NOT_IMPLEMENTED); return NULL; }
+    HANDLE h = NULL;
+    NTSTATUS s = NtCreateEvent(&h, WIN32_EVENT_ALL_ACCESS, NULL, win32_event_type_to_nt(man), init ? 1 : 0);
+    return k32_create_sync_result(s, h);
+}
+HANDLE WINAPI CreateEventW(void *sa, BOOL man, BOOL init, const WCHAR *name){
+    (void)sa;
+    if (name) { SetLastError(K32_ERROR_CALL_NOT_IMPLEMENTED); return NULL; }
+    HANDLE h = NULL;
+    NTSTATUS s = NtCreateEvent(&h, WIN32_EVENT_ALL_ACCESS, NULL, win32_event_type_to_nt(man), init ? 1 : 0);
+    return k32_create_sync_result(s, h);
+}
+HANDLE WINAPI CreateMutexA(void *sa, BOOL own, const char *name){
+    (void)sa;
+    if (name) { SetLastError(K32_ERROR_CALL_NOT_IMPLEMENTED); return NULL; }
+    HANDLE h = NULL;
+    NTSTATUS s = NtCreateMutant(&h, WIN32_MUTANT_ALL_ACCESS, NULL, own ? 1 : 0);
+    return k32_create_sync_result(s, h);
+}
+HANDLE WINAPI CreateMutexW(void *sa, BOOL own, const WCHAR *name){
+    (void)sa;
+    if (name) { SetLastError(K32_ERROR_CALL_NOT_IMPLEMENTED); return NULL; }
+    HANDLE h = NULL;
+    NTSTATUS s = NtCreateMutant(&h, WIN32_MUTANT_ALL_ACCESS, NULL, own ? 1 : 0);
+    return k32_create_sync_result(s, h);
+}
+HANDLE WINAPI CreateSemaphoreA(void *sa, LONG init, LONG max, const char *name){
+    (void)sa;
+    if (name) { SetLastError(K32_ERROR_CALL_NOT_IMPLEMENTED); return NULL; }
+    HANDLE h = NULL;
+    NTSTATUS s = NtCreateSemaphore(&h, WIN32_SEMAPHORE_ALL_ACCESS, NULL, init, max);
+    return k32_create_sync_result(s, h);
+}
+HANDLE WINAPI CreateSemaphoreW(void *sa, LONG init, LONG max, const WCHAR *name){
+    (void)sa;
+    if (name) { SetLastError(K32_ERROR_CALL_NOT_IMPLEMENTED); return NULL; }
+    HANDLE h = NULL;
+    NTSTATUS s = NtCreateSemaphore(&h, WIN32_SEMAPHORE_ALL_ACCESS, NULL, init, max);
+    return k32_create_sync_result(s, h);
+}
+static BOOL k32_sync_status(NTSTATUS s)
+{
+    if (NT_SUCCESS(s)) { SetLastError(0); return 1; }
+    SetLastErrorFromStatus(s);
+    return 0;
+}
+BOOL WINAPI SetEvent(HANDLE h){ return k32_sync_status(NtSetEvent(h, NULL)); }
+BOOL WINAPI ResetEvent(HANDLE h){ return k32_sync_status(NtResetEvent(h, NULL)); }
+BOOL WINAPI ReleaseMutex(HANDLE h){ return k32_sync_status(NtReleaseMutant(h, NULL)); }
+BOOL WINAPI ReleaseSemaphore(HANDLE h, LONG inc, LONG *prev){
+    LONG old = 0;
+    NTSTATUS s = NtReleaseSemaphore(h, inc, &old);
+    if (prev && NT_SUCCESS(s)) *prev = old;
+    return k32_sync_status(s);
+}
 DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms){
     LARGE_INTEGER t;
     NTSTATUS s = NtWaitForSingleObject(h, 0, win32_timeout_to_nt(ms, &t));
