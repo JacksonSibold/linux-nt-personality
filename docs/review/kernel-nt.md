@@ -80,7 +80,7 @@ The code is careful about `copy_from_user` at most service entry points, and the
 - Cross-reference: arch-x86-nt.md M-4 and M-5.
 - Fix: record the original state of each piece before mutating, and restore it on any error before returning.
 
-### IO-1 [Medium] NtReadFile and NtWriteFile do not check FILE_READ_DATA or FILE_WRITE_DATA (read half fixed 1d160e8; write half open, see Fix status)
+### IO-1 [Medium] NtReadFile and NtWriteFile do not check FILE_READ_DATA or FILE_WRITE_DATA (read half fixed 1d160e8; write half fixed 80b6fea)
 - `src/kernel/nt/io.c:1890` (`nt_svc_NtReadFile`) and `io.c:1957` (`nt_svc_NtWriteFile`) call `ntio_handle_lookup(FileHandle, 0)`. A `required` value of 0 skips the granted-access test in `ntio_handle_lookup` (`io.c:402-428`).
 - A handle opened with only `SYNCHRONIZE` or `FILE_READ_ATTRIBUTES` can therefore be read or written.
 - Fix: pass `FILE_READ_DATA` and `FILE_WRITE_DATA` as `required`, and keep `FILE_APPEND_DATA` handling consistent.
@@ -185,18 +185,18 @@ The code is careful about `copy_from_user` at most service entry points, and the
 
 Fixed in this branch: H-1 (68fe25b), R-1 (0254b09; all eight user-output buffers in registry.c), S-1 (6f58d04), O-1 (30b200a), IO-1 read half (1d160e8). Already correct here, no change: D-1, M-2.
 
-Not fixed, needs a design decision:
+Fixed on branch haiku/adr: IO-1 write half (80b6fea; any-of lookup, `ntio_handle_lookup_any_of`) and IOCP-2 (0b7921b; `NTIO_IOCP_MAX_QUEUED` = 65536). Neither commit has been compiled or run; no C compiler was available on the machine.
 
-- M-1: NtCreateSection returns a kernel address as the handle. Needs a real object-table handle and a type-checked lookup in NtMapViewOfSection.
-- P-1: NtOpenProcess and NtOpenThread have no access or owner check and use the registry result unreferenced. Needs a policy for who may open which process.
-- H-2: closed handle slots are never reused. Needs a generation counter in the entry.
-- M-3: section objects are never freed. Needs an object type with a delete callback.
-- M-4: VAD rollback on failed commit or decommit. Needs an undo design.
-- IO-1 write half: NtWriteFile must accept FILE_APPEND_DATA as well as FILE_WRITE_DATA, so the lookup helper needs an any-of mode.
-- IO-2: file handle table is global. Needs a move to the per-process table or an owner field.
-- PT-1: TEB address returned to callers is a kernel heap address. Needs a decision on what to return.
-- IOCP-1: concurrency count is never released. Needs a decision on when a thread counts as finished.
-- IOCP-2: completion queue quota. Needs a chosen limit.
+Not fixed. Each has a design record in `docs/decisions/`:
+
+- M-1: NtCreateSection returns a kernel address as the handle. Needs a real object-table handle and a type-checked lookup in NtMapViewOfSection. Record 0001 (object-model change).
+- P-1: NtOpenProcess and NtOpenThread have no access or owner check and use the registry result unreferenced. Needs a policy for who may open which process. Record 0002.
+- H-2: closed handle slots are never reused. Recommended: FIFO quarantine now, generation counter later (ABI). Record 0003.
+- M-3: section objects are never freed. Needs an object type with a delete callback; depends on M-1. Record 0004.
+- M-4: VAD rollback on failed commit or decommit. Recommended: validate, preallocate, then mutate. Record 0005.
+- IO-2: file handle table is global. Interim owner field, long-term per-process table. Record 0007 (owner rule for duplicates needs a decision).
+- PT-1: TEB address returned to callers is a kernel heap address. Needs the TEB user mapping read first. Record 0008.
+- IOCP-1: concurrency count is never released. Needs a decision on when a thread counts as finished. Record 0009.
 
 Low findings are not addressed in this pass (M-5 and M-6 are still present, as are the others).
 
