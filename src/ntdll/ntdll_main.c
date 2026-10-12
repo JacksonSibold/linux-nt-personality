@@ -18,6 +18,7 @@
 #include "unwind.h"
 #include "except.h"
 #include "../loader/pe_format.h"
+#include "pe_bounds.h"
 #undef DUMMYUNIONNAME
 #undef DUMMYSTRUCTNAME
 
@@ -144,9 +145,11 @@ static NTSTATUS ldr_nt_map_dll(const char *path, void **out_base, size_t *out_si
     }
     struct { LARGE_INTEGER AllocationSize; LARGE_INTEGER EndOfFile; ULONG NumberOfLinks; BOOLEAN DeletePending; BOOLEAN Directory; } finfo;
     st = NtQueryInformationFile(h, &ios, &finfo, sizeof(finfo), 5);
-    size_t fsize = 0;
-    if (NT_SUCCESS(st)) fsize = (size_t)finfo.EndOfFile.QuadPart;
-    if (fsize==0) fsize=8192;
+    /* Raw reads are bounded by the file size (MAIN-1). If the query failed,
+     * no bound is known here and NtReadFile still reports short reads. */
+    unsigned long long file_limit = ~0ULL;
+    if (NT_SUCCESS(st) && finfo.EndOfFile.QuadPart > 0)
+        file_limit = (unsigned long long)finfo.EndOfFile.QuadPart;
     void *hdr = NULL;
     SIZE_T hdr_size = 0x1000;
     PVOID base = NULL;
@@ -227,6 +230,11 @@ static NTSTATUS ldr_nt_map_dll(const char *path, void **out_base, size_t *out_si
         }
     }
     u32 section_table_off = oh_off + size_opt;
+    /* MAIN-1: the section table must lie inside the header buffer. */
+    if (!pe_range_fits(section_table_off, (unsigned long long)num_sections * 40, 0x1000)) {
+        NtClose(h);
+        return STATUS_INVALID_IMAGE_FORMAT;
+    }
     for (u16 i=0;i<num_sections;i++) {
         u32 sec_off = section_table_off + i*40;
         u32 vsize = ldr_load_u32((unsigned char*)hdr + sec_off + 8);
@@ -235,6 +243,10 @@ static NTSTATUS ldr_nt_map_dll(const char *path, void **out_base, size_t *out_si
         u32 rawptr = ldr_load_u32((unsigned char*)hdr + sec_off + 20);
         u32 vs = vsize ? vsize : rawsize;
         if (vs==0) continue;
+        /* MAIN-1: the section must lie inside the image, and its raw data
+         * inside the file, before anything is read into it. */
+        if (!pe_range_fits(vaddr, vs, size_image)) { NtClose(h); return STATUS_INVALID_IMAGE_FORMAT; }
+        if (rawsize && !pe_range_fits(rawptr, rawsize, file_limit)) { NtClose(h); return STATUS_INVALID_IMAGE_FORMAT; }
         void *dst = (unsigned char*)img_base + vaddr;
         if (rawsize) {
             off.QuadPart = rawptr;

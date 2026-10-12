@@ -10,6 +10,7 @@
 #   test_except           vectored exception handler return codes
 #   test_runtime          freestanding malloc/calloc from ntdll_runtime.c
 #   test_win32_policy     kernel32 shim argument mapping (win32_policy.h)
+#   test_pe_bounds        PE section and relocation range checks (pe_bounds.h)
 #
 # SANITIZE=auto (default) enables -fsanitize=address,undefined only when a
 # probe program both links and runs with it. The MSYS2 UCRT64 gcc on the
@@ -59,7 +60,7 @@ endif
 CPPFLAGS := -I$(SRC) -I$(LOADER)
 CFLAGS   := -std=c11 -g -O1 -Wall -Wextra -Werror $(SAN_FLAGS)
 
-TESTS    := test_ntstatus_to_dos test_unwind test_except test_runtime test_win32_policy
+TESTS    := test_ntstatus_to_dos test_unwind test_except test_runtime test_win32_policy test_pe_bounds
 TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 
 .PHONY: all test clean
@@ -77,6 +78,10 @@ $(OUT)/test_ntstatus_to_dos$(EXE_SUFFIX): test_ntstatus_to_dos.c minitest.h $(SR
 
 # Header-only mapping tests (src/ntdll/win32_policy.h).
 $(OUT)/test_win32_policy$(EXE_SUFFIX): test_win32_policy.c minitest.h $(SRC)/win32_policy.h $(SRC)/nt_types.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only range checks (src/ntdll/pe_bounds.h).
+$(OUT)/test_pe_bounds$(EXE_SUFFIX): test_pe_bounds.c minitest.h $(SRC)/pe_bounds.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
 
 # unwind.c calls _NtRaiseException from except.c (RtlRaiseException).
