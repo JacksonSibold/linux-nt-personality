@@ -158,3 +158,27 @@ usable as gates.
 - The PE binaries under `tests/kernel/bin/` and the probes under `build/probes/`
   are not in the repository, so the scripts that run them cannot be tested
   here. This review did not run any guest script.
+
+## 8. M0 gate order in `vm/kbuild.sh`
+
+Checked by reading `vm/kbuild.sh`, `vm/check_m0.sh`, `vm/runvm.sh` and
+`vm/freshness.sh`. Not run.
+
+- The M0 gate (`vm/check_m0.sh`, line 229) runs before the freshness manifest
+  is written (`freshness.sh write`, line 244). So the gate never validates a
+  manifest that the same build just wrote.
+- The gate does not read the manifest itself. Its freshness check is inside
+  `vm/runvm.sh` (lines 78-84): `freshness.sh check` compares the stored
+  manifest with the current sources and exits 125 on a mismatch. `check_m0.sh`
+  then finds no `result.exitcode` and fails. So a source change cannot make the
+  gate pass against the previous build's manifest.
+- That protection was silently off on a Linux checkout. `runvm.sh` and
+  `kbuild.sh` only call `freshness.sh` when it is executable (`-x`), and it was
+  stored as mode 100644. The mode fix in the commits that set the index bits on
+  `vm/`, `build/` and `tests/` closes this.
+- The ordering has a side effect: after any source change, `kbuild.sh` fails at
+  the M0 gate, because the stored manifest is still the old one and it is only
+  rewritten after the gate. It needs `vm/rebuild_kdir.sh` (which writes the
+  manifest at line 417) to recover. Moving the write before the gate would
+  stamp a build that has not passed M0, so that was not changed here. Whether
+  `rebuild_kdir.sh` runs the M0 gate before its own write has not been checked.
