@@ -4,6 +4,11 @@ Status: Proposed. Recorded only, not implemented. Needs VM: the fix changes what
 Finding: `docs/review/ntdll.md` LDR-1 (High).
 Date: 2026-10-12
 
+Build recipe added: `src/ntdll/Makefile` (commit `94b2a7c`) links `ntdll.dll` from the MinGW sources, with the `.def` from `build/gen_ntdll_def.py` and `build/generated_stubs.S`. `tests/ntdll-host/check_exports.sh` (commit `cd3de58`) compares the exports with the `.def`. Verified by `objdump` only; the DLL was not run.
+
+- Stubs still linked: `objdump -d` on `ldr.o` shows `LdrLoadDll` as `mov $0xc00000bb,%eax; ret` (STATUS_NOT_SUPPORTED), and `LdrGetDllHandle` as STATUS_DLL_NOT_FOUND. The `__MINGW32__` guard at `ldr.c:83` is unchanged, so this decision is still open.
+- The generator could not be run on this machine: no Python interpreter is installed (`python3` is the Windows Store stub). The export check was run against the checked-in `src/ntdll/ntdll.def`, copied into `out/`. Re-run `make -C src/ntdll check` with Python 3 to check the generated file.
+
 ## Context
 
 `src/ntdll/ldr.c` selects its implementation with `__MINGW32__`:

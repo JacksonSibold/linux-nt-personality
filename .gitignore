@@ -14,3 +14,4 @@ __pycache__/
 tests/host/out/
 tests/ntdll-host/out/
 tests/kernel-host/build-*/
+src/ntdll/out/
