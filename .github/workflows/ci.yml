@@ -48,3 +48,9 @@ jobs:
 
       - name: Syscall table parity
         run: python tools/check_syscall_tables.py
+
+      - name: Criteria traceability matrix is current
+        run: |
+          python tools/criteria_trace.py --selftest
+          python tools/criteria_trace.py --markdown --out docs/status/TRACEABILITY.md
+          git diff --exit-code -- docs/status/TRACEABILITY.md

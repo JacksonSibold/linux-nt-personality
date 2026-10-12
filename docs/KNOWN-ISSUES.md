@@ -7,7 +7,7 @@ Each linked page has the details and line references. The project is an
 incomplete research prototype (see the top-level [README](../README.md)).
 Fix status below comes from the "Fix status" sections and per-finding status
 lines in the review reports, as of 2026-10-12. The fixes were not built in a
-kernel tree and were not run. On 2026-10-12 the unit suite passed (<!-- counts:unit_tests:begin -->434<!-- counts:unit_tests:end --> `test_` functions in <!-- counts:unit_modules:begin -->24<!-- counts:unit_modules:end --> modules),
+kernel tree and were not run. On 2026-10-12 the unit suite passed (<!-- counts:unit_tests:begin -->489<!-- counts:unit_tests:end --> `test_` functions in <!-- counts:unit_modules:begin -->25<!-- counts:unit_modules:end --> modules),
 and the syntax check passed 32 of 37 files
 ([tests/syntax/README.md](../tests/syntax/README.md)). Decision records and their
 status are indexed in [docs/decisions/INDEX.md](decisions/INDEX.md).
