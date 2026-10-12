@@ -873,6 +873,9 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     ULONG_PTR orig_base = (ULONG_PTR)*BaseAddress;
     SIZE_T orig_size = *RegionSize;
     if (orig_size == 0) return STATUS_INVALID_PARAMETER;
+    /* Rounding adds at most two granules; reject sizes that would wrap (M-12). */
+    if (orig_size > (SIZE_T)-1 - 2 * NTMM_ALLOC_GRANULARITY)
+        return STATUS_INVALID_PARAMETER;
     if (reserve) {
         if (orig_base != 0) {
             ULONG_PTR rounded = ntmm_round_down(orig_base, NTMM_ALLOC_GRANULARITY);
@@ -1288,6 +1291,9 @@ NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     base = (ULONG_PTR)*BaseAddress;
     size = *RegionSize;
     base = ntmm_round_down(base, NTMM_PAGE_SIZE);
+    /* Reject a range whose rounded end wraps the address space (M-12). */
+    if (size > (SIZE_T)(~(ULONG_PTR)0) - NTMM_PAGE_SIZE - base)
+        return STATUS_INVALID_PARAMETER;
     size = (SIZE_T)ntmm_round_up(size, NTMM_PAGE_SIZE);
     ULONG_PTR end = base + size;
     ntmm_lock(mm);
