@@ -671,10 +671,12 @@ NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs,
 NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj)
 {
     if (!obj) return STATUS_INVALID_PARAMETER;
-    if (obj->parent_dir)
-        ObpRemoveFromDirectory(obj);
+    /* Clear the flags first: removing from the directory may drop the last
+     * reference and free obj. */
     obj->flags &= ~OBJ_PERMANENT;
     obj->is_permanent = false;
+    if (obj->parent_dir)
+        ObpRemoveFromDirectory(obj);
     return STATUS_SUCCESS;
 }
 
