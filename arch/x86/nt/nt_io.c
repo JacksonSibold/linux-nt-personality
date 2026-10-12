@@ -778,7 +778,7 @@ static bool ntio_casefold_lookup(const char *dir, const char *component,
 static NTSTATUS ntio_resolve_ci(char *path)
 {
 	char resolved[PATH_MAX];
-	char component[NAME_MAX];
+	char component[NAME_MAX + 1];
 	const char *p;
 	size_t rlen = 0;
 	struct stat st;
@@ -797,8 +797,8 @@ static NTSTATUS ntio_resolve_ci(char *path)
 	while (*p) {
 		size_t i = 0;
 		while (*p && *p != '/') {
-			/* Reject a component that would not leave room for its NUL. */
-			if (i + 1 >= NAME_MAX)
+			/* Reject names over NAME_MAX before the copy. */
+			if (i >= NAME_MAX)
 				return STATUS_OBJECT_NAME_INVALID;
 			component[i++] = *p++;
 		}
@@ -816,7 +816,7 @@ static NTSTATUS ntio_resolve_ci(char *path)
 		rlen += i;
 
 		if (stat(resolved, &st) != 0) {
-			char fold[NAME_MAX];
+			char fold[NAME_MAX + 1];
 			char parent[PATH_MAX];
 			size_t plen = rlen - i;
 
@@ -875,7 +875,7 @@ static NTSTATUS ntio_resolve_ci(char *path)
 {
 	char *resolved = kmalloc(PATH_MAX, GFP_KERNEL);
 	if (!resolved) return STATUS_NO_MEMORY;
-	char component[NAME_MAX];
+	char component[NAME_MAX + 1];
 	const char *p;
 	size_t rlen = 0;
 	resolved[0] = '\0';
@@ -889,8 +889,8 @@ static NTSTATUS ntio_resolve_ci(char *path)
 	while (*p) {
 		size_t i = 0;
 		while (*p && *p != '/') {
-			/* Reject a component that would not leave room for its NUL. */
-			if (i + 1 >= NAME_MAX) {
+			/* Reject names over NAME_MAX before the copy. */
+			if (i >= NAME_MAX) {
 				kfree(resolved);
 				return STATUS_OBJECT_NAME_INVALID;
 			}
@@ -907,7 +907,7 @@ static NTSTATUS ntio_resolve_ci(char *path)
 		rlen += i;
 		struct path check;
 		if (kern_path(resolved, LOOKUP_FOLLOW, &check) != 0) {
-			char fold[NAME_MAX];
+			char fold[NAME_MAX + 1];
 			char *parent = kmalloc(PATH_MAX, GFP_KERNEL);
 			if (!parent) { kfree(resolved); return STATUS_NO_MEMORY; }
 			size_t plen = rlen - i;

@@ -355,11 +355,12 @@ Checked and found correct in proc_thread.c: `NtQueryInformationProcess` class 0 
 - Fix: default `g_kshim_root` to a dedicated directory, and open with `openat2` using `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`.
 
 ### IO-12 [Medium] Case-insensitive resolution scans whole directories under a spinlock on every open
-- **Status:** copy bound FIXED 949cf00 (tests 4a5e4c3, 667d788). The locked scan still needs owner: replacing it changes case-insensitive lookup semantics.
+- **Status:** copy bound FIXED 949cf00, revised 25bc012 (tests 4a5e4c3, 667d788, 2393db8). The locked scan still needs owner: replacing it changes case-insensitive lookup semantics.
 - `arch/x86/nt/nt_io.c:857-921` (`ntio_resolve_ci`, kernel branch) runs on every open (`nt_io.c:1029`). For each component that does not exist, `ntio_casefold_lookup` (`nt_io.c:838-850`) walks all children of the parent with `hlist_for_each_entry` while holding `parent->d_lock`.
 - For large directories this holds a spinlock for an unbounded time (soft lockup).
 - Also at `nt_io.c:861-865`: `component[NAME_MAX]` is written by `while (*p && *p != '/') component[i++] = *p++;` with no bound. The caller's check (`kshim_ntpath_to_linux`, `nt_io.c:265`, `clen > NAME_MAX`) lets a component of exactly 255 characters through. The copy then writes its NUL at `component[255]`, one byte past the buffer. Nothing bounds a longer component inside this function. Confirmed by a host test (255-character lookup, expected INVALID, returned `0xC000003A`).
-- Fixed in 949cf00: the loop rejects a component that would leave no room for its NUL (length 255 or more) with `STATUS_OBJECT_NAME_INVALID` before the copy. `ntio_resolve_ci` now returns `NTSTATUS`, and `ntio_resolve_path` propagates it. The kernel branch frees its buffer on that path and returns `STATUS_NO_MEMORY` on its `kmalloc` failures. A 255-character component that used to resolve (by accident, through the overflow) is now rejected. Callers that need 255-character names will need a separate decision.
+- Fixed in 949cf00: the loop rejects a component of 255 or more characters with `STATUS_OBJECT_NAME_INVALID` before the copy. `ntio_resolve_ci` now returns `NTSTATUS`, and `ntio_resolve_path` propagates it. The kernel branch frees its buffer on that path and returns `STATUS_NO_MEMORY` on its `kmalloc` failures.
+- Revised in 25bc012: 255 characters is a legal NTFS name, so 949cf00's rejection was a regression. `component` and `fold` are now `NAME_MAX + 1` (room for the NUL), and the loop rejects only components longer than `NAME_MAX` before the copy. The fold buffer had the same off-by-one: a matching 255-character name could not be copied and silently did not resolve. Stack impact is about two bytes per frame, negligible.
 - Fix still open: use the filesystem's lookup (`lookup_one_len` with a case-insensitive fallback) instead of a locked scan.
 
 ## Fix status (branch haiku/resolveci)
@@ -368,6 +369,8 @@ Checked and found correct in proc_thread.c: `NtQueryInformationProcess` class 0 
 |---|---|---|
 | IO-12 (copy bound) | 4a5e4c3, 667d788 | Tests in `src/kernel/nt/io_test.c` (`ci_component_length_limit`). The first commit's test failed with `STATUS_NAME_TOO_LONG` for the wrong reason. The second reproduces the 255-character overflow. |
 | IO-12 (copy bound) | 949cf00 | Reject components of 255 or more characters before the copy in `ntio_resolve_ci` (`arch/x86/nt/nt_io.c`, `src/kernel/nt/io.c`) |
+| IO-12 (copy bound) | 2393db8 | Test: 255-character lookup must resolve; 256 and 300 must be rejected (fails on 949cf00) |
+| IO-12 (copy bound) | 25bc012 | Size `component` and `fold` as `NAME_MAX + 1`; reject only names longer than `NAME_MAX` (`arch/x86/nt/nt_io.c`, `src/kernel/nt/io.c`) |
 
 Other fixed-size buffers in `arch/x86/nt` and `src/kernel/nt` were checked for copies sized by user-controlled lengths. None were unbounded: `kbuf[4096]` (console write), `rel`/`newpath`/`parent` (`PATH_MAX`, all `snprintf` or `sizeof` bounded), the `vname[256]` registry buffers (capped at 200), and `name[64]` in `binfmt_pe.c` (bounded loop).
 
