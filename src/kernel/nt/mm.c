@@ -852,6 +852,8 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     ULONG_PTR orig_base = (ULONG_PTR)*BaseAddress;
     SIZE_T orig_size = *RegionSize;
     if (orig_size == 0) return STATUS_INVALID_PARAMETER;
+    /* Rounding up orig_size (plus the granularity delta) must not wrap. */
+    if (orig_size > (SIZE_T)-1 - NTMM_ALLOC_GRANULARITY) return STATUS_INVALID_PARAMETER;
     if (reserve) {
         if (orig_base != 0) {
             ULONG_PTR rounded = ntmm_round_down(orig_base, NTMM_ALLOC_GRANULARITY);

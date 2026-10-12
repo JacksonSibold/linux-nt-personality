@@ -478,6 +478,17 @@ static int test_fuzz(void) {
     return 1;
 }
 
+/* M-5: a RegionSize whose round-up wraps must be rejected, not turned into a
+ * zero-length VAD. */
+static int test_alloc_size_wrap(void) {
+    PVOID base = NULL;
+    SIZE_T size = (SIZE_T)-1 - 100;
+    NTSTATUS st = NtAllocateVirtualMemory((HANDLE)-1, &base, 0, &size, MEM_RESERVE, PAGE_READWRITE);
+    ASSERT(st == STATUS_INVALID_PARAMETER, "wrapping size status 0x%lx", (unsigned long)st);
+    ASSERT(base == NULL, "base unchanged");
+    return 1;
+}
+
 /* 8. sections */
 static int test_sections(void) {
     LARGE_INTEGER sz;
@@ -943,6 +954,7 @@ int main(void) {
     RUN_TEST(test_protect_old);
     RUN_TEST(test_fuzz);
     RUN_TEST(test_vad_matrix);
+    RUN_TEST(test_alloc_size_wrap);
     RUN_TEST(test_sections);
     RUN_TEST(test_probe_virtualquery_regression);
     RUN_TEST(test_reset);

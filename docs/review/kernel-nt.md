@@ -215,6 +215,7 @@ Each open Medium and Low finding was re-read against the code on this branch. St
 - R-2: fixed. `dup_us` in `registry.c` has the same USHORT wrap and gets the same guard. Latent; syntax check only.
 - O-5: fixed. `ObMakeTemporaryObject` clears the permanent flags before removing the object from its directory, so nothing is written after a possible free. Latent (the caller holds a reference); object_test passes, no failing test.
 - O-6: fixed. `ObCreateProcessObject` and `ObCreateThreadObject` check the registry insert and destroy the new object on failure. No test: the failure needs an allocation fault, and kshim has no injection hook; syntax check only. Not fixed here: `nt_current_ethread` (object.c, near the thread-creation path) calls `ObRegisterThread` a second time after `ObCreateThreadObject` has already registered the thread, so the list holds two nodes for one thread. Recorded for the owner.
+- M-5: fixed. `NtAllocateVirtualMemory` rejects a RegionSize above `SIZE_MAX - granularity` with `STATUS_INVALID_PARAMETER`, so the round-up cannot wrap to a zero-length VAD. Test: mm_test `test_alloc_size_wrap` (failed before with `STATUS_NO_MEMORY` or success).
 - R-3: fixed. `build_full_path` adds the separator when the root path is empty instead of reading `buf[-1]`, so the result starts with `\`. Latent; syntax check only.
 
 ## Not verified / out of scope
