@@ -44,9 +44,23 @@ static unsigned kshim_tag_hash(const void *p) {
     return (unsigned)(((uintptr_t)p >> 4) & (KSHIM_TAG_BUCKETS - 1));
 }
 
+/* KSHIM_POISON=1 fills every non-zeroed kmalloc with 0xA5 so that a read of
+ * uninitialised heap memory produces a stable, visible wrong value instead of
+ * whatever the previous user of that block left behind. kzalloc is untouched. */
+static int kshim_poison_enabled(void) {
+    static int state = -1;   /* -1 unknown, 0 off, 1 on */
+    if (state < 0) {
+        const char *e = getenv("KSHIM_POISON");
+        state = (e && e[0] == '1') ? 1 : 0;
+    }
+    return state;
+}
+
 void *kshim_alloc_tagged(size_t size, int zero, const char *file, int line) {
     void *p = zero ? calloc(1, size) : malloc(size);
     if (!p) return NULL;
+    if (!zero && kshim_poison_enabled())
+        memset(p, 0xA5, size);
     atomic_fetch_add(&kshim_alloc_count, 1);
     struct kshim_tag *t = malloc(sizeof *t);
     if (t) {

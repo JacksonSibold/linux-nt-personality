@@ -16,9 +16,12 @@ SHIM    := shim
 BUILD   := build
 NTSTATUS_INC := $(BUILD)/ntstatus_table.inc
 
-WARN    := -Wall -Wextra
+# OPT defaults to -O0. Use OPT=-O2 with a separate BUILD=... directory to
+# expose optimiser-dependent uninitialised reads (-Wuninitialized is on).
+OPT     ?= -O0
+WARN    := -Wall -Wextra -Wuninitialized
 DEPFLAGS := -MMD -MP
-CFLAGS  := -std=gnu11 -g -O0 $(WARN) $(DEPFLAGS) -DUSERSPACE_KSHIM \
+CFLAGS  := -std=gnu11 -g $(OPT) $(WARN) $(DEPFLAGS) -DUSERSPACE_KSHIM \
            -include $(SHIM)/khost_prelude.h \
            -iquote $(NT) -iquote $(BUILD) -I$(SHIM)
 LDLIBS  := -lpthread -lws2_32

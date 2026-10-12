@@ -13,3 +13,4 @@ __pycache__/
 .env*
 tests/host/out/
 tests/ntdll-host/out/
+tests/kernel-host/build-*/
