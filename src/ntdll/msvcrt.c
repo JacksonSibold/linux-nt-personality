@@ -80,8 +80,19 @@ typedef void (*_onexit_t)(void);
 _onexit_t _onexit(_onexit_t f){ (void)f; return NULL; }
 
 /* Heap wrappers - use kernel32 Heap */
-void* malloc(SIZE_T s){ HANDLE h=GetProcessHeap(); return h?HeapAlloc(h,0,s):NULL; }
-void free(void *p){ if(p){ HANDLE h=GetProcessHeap(); HeapFree(h,0,p);} }
+/* Each block has a 16-byte header holding the requested size, so realloc
+ * copies only the valid part of the old block (CRT-4). HeapSize is a stub in
+ * the kernel32 shim, so the size cannot come from the heap. */
+#define MS_BLOCK_HDR 16
+void* malloc(SIZE_T s){
+    HANDLE h=GetProcessHeap();
+    if(!h || s > ((SIZE_T)-1) - MS_BLOCK_HDR) return NULL;
+    unsigned char *base=HeapAlloc(h,0,s+MS_BLOCK_HDR);
+    if(!base) return NULL;
+    *(SIZE_T*)base=s;
+    return base+MS_BLOCK_HDR;
+}
+void free(void *p){ if(p){ HANDLE h=GetProcessHeap(); HeapFree(h,0,(unsigned char*)p-MS_BLOCK_HDR);} }
 void* calloc(SIZE_T n, SIZE_T s){
     SIZE_T tot=n*s;
     void *p=malloc(tot);
@@ -91,8 +102,11 @@ void* calloc(SIZE_T n, SIZE_T s){
 void* realloc(void *p, SIZE_T s){
     if(!p) return malloc(s);
     if(s==0){ free(p); return NULL; }
+    SIZE_T old=*(SIZE_T*)((unsigned char*)p-MS_BLOCK_HDR);
     void *np=malloc(s);
-    if(np && p) memcpy(np,p,s);
+    /* On failure the original block is left valid and is not freed. */
+    if(!np) return NULL;
+    memcpy(np,p,old<s?old:s);
     free(p);
     return np;
 }
