@@ -182,6 +182,11 @@ static int pe_read_file_headers(struct linux_binprm *bprm, struct pe_load_state 
         pr_info("binfmt_pe: reject: e_lfanew %u+6 > read %zd for %s\n", nt_off, n, bprm->filename);
         return -ENOEXEC;
     }
+    /* Characteristics (nt_off+22) is the last file-header field read below */
+    if ((u32)n - nt_off < 24) {
+        pr_info("binfmt_pe: reject: file header at %u+24 > read %zd for %s\n", nt_off, n, bprm->filename);
+        return -ENOEXEC;
+    }
     st->nt_off = nt_off;
     sig = pe_load_u32((u8*)st->headers_buf + nt_off);
     if (sig != IMAGE_NT_SIGNATURE) {
@@ -200,8 +205,10 @@ static int pe_read_file_headers(struct linux_binprm *bprm, struct pe_load_state 
         return -ENOEXEC;
     }
     size_opt = pe_load_u16((u8*)st->headers_buf + nt_off + 20);
-    if (size_opt < 2 || size_opt > 240) {
-        pr_info("binfmt_pe: reject: SizeOfOptionalHeader %u out of [2,240] for %s\n", size_opt, bprm->filename);
+    /* 112 bytes is the PE32+ fixed part through NumberOfRvaAndSizes; every
+     * optional-header field read below (up to oh_off+88) lies inside it. */
+    if (size_opt < 112 || size_opt > 240) {
+        pr_info("binfmt_pe: reject: SizeOfOptionalHeader %u out of [112,240] for %s\n", size_opt, bprm->filename);
         return -ENOEXEC;
     }
     st->num_sections = num_sections;
