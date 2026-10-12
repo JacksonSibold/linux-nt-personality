@@ -409,6 +409,15 @@ void except_set_in_dispatch(int v) { t_in_dispatch = v; }
 
 static int g_nested_depth = 0;
 
+/* Vectored continue handlers, in list order. Called whenever dispatch resumes
+ * execution, from a vectored handler or from a frame handler. */
+static void run_continue_handlers(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord) {
+    for (veh_node_t *n = g_vch_head; n; n = n->next) {
+        EXCEPTION_POINTERS cp = { ExceptionRecord, ContextRecord };
+        n->handler(&cp);
+    }
+}
+
 EXCEPTION_DISPOSITION RtlDispatchException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord) {
     if (!ExceptionRecord || !ContextRecord) return ExceptionContinueSearch;
 
@@ -425,7 +434,8 @@ EXCEPTION_DISPOSITION RtlDispatchException(PEXCEPTION_RECORD ExceptionRecord, PC
     for (veh_node_t *n = g_veh_head; n; n = n->next) {
         LONG ret = n->handler(&ptrs);
         if (exc_veh_resumes(ret)) { /* Vectored handlers return -1 to resume, 0 to keep searching. */
-            /* Continue execution: copy back context */
+            /* Continue execution: vectored continue handlers run on this path too (EXC-8). */
+            run_continue_handlers(ExceptionRecord, ContextRecord);
             g_nested_depth--;
             t_in_dispatch = 0;
             return ExceptionContinueExecution;
@@ -469,11 +479,7 @@ EXCEPTION_DISPOSITION RtlDispatchException(PEXCEPTION_RECORD ExceptionRecord, PC
             EXCEPTION_DISPOSITION disp = h(ExceptionRecord, (PVOID)establisher, &ctx, &dc);
             if (exc_frame_resumes(disp)) {
                 *ContextRecord = ctx;
-                /* Call vectored continue handlers */
-                for (veh_node_t *n = g_vch_head; n; n = n->next) {
-                    EXCEPTION_POINTERS cp = { ExceptionRecord, ContextRecord };
-                    n->handler(&cp);
-                }
+                run_continue_handlers(ExceptionRecord, ContextRecord);
                 g_nested_depth--;
                 t_in_dispatch = 0;
                 return ExceptionContinueExecution;
