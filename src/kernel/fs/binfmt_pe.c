@@ -516,7 +516,7 @@ static int pe_apply_relocs(struct pe_load_state *st)
         }
     }
     if (!found) return -ENOEXEC;
-    if (reloc_off + reloc_size > (u32)st->file_size) return -ENOEXEC;
+    if ((u64)reloc_off + reloc_size > (u64)st->file_size) return -ENOEXEC;
     void *buf = kmalloc(reloc_size, GFP_KERNEL);
     if (!buf) return -ENOMEM;
     ssize_t n = pe_kernel_read(st->file, reloc_off, buf, reloc_size);
@@ -771,7 +771,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                     }
                 }
                 if (!found && reloc_rva < size_headers) { reloc_off = reloc_rva; found = true; }
-                if (found && reloc_off + reloc_size <= (u32)fsize) {
+                if (found && (u64)reloc_off + reloc_size <= (u64)fsize) {
                     void *buf = kmalloc(reloc_size, GFP_KERNEL);
                     if (buf) {
                         ssize_t nn = pe_kernel_read(f, reloc_off, buf, reloc_size);
