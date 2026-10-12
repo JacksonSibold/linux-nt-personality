@@ -17,7 +17,7 @@ Status: findings marked `Fixed in <sha>` were fixed in this branch, with a faili
 | Info | 7 |
 | **Total** | **71** |
 
-Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium).
+Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium). Win32 shim pass (branch `haiku/ntdllfix`): K32-1, K32-2, K32-3 and K32-5 (High) fixed. CRT-1 needs owner. MAIN-1, MAIN-2, LDR-5 and LDR-6 are open (see their entries).
 
 The most important point is LDR-1. The real ntdll (MinGW) build compiles only stubs for `LdrLoadDll`, `LdrGetDllHandle` and `LdrGetProcedureAddress`, so every Win32 `LoadLibrary`, `GetModuleHandle` and `GetProcAddress` call fails. The loader code that would do the work is excluded by a preprocessor branch and is never built for the MinGW target. The findings in the loader are therefore mainly about code that runs in the Linux test build, or that would run once LDR-1 is fixed.
 
@@ -43,12 +43,14 @@ The most important point is LDR-1. The real ntdll (MinGW) build compiles only st
 - `ldr.c:1481`: `ULONG_PTR *table = (ULONG_PTR *)cb_table_va;` uses `mod->tls.AddressOfCallBacks`. That value was read from the file before relocation (in `ldr_map_and_load`, `pe_tls_directory(&mod->pe, ...)`), so it is the unrelocated VA. For any image not loaded at its preferred base, the read goes to the wrong address.
 - Fix: convert to an image RVA (`cb_va - OriginalBase`) and read from `mod->image`, or read the TLS directory from the mapped image after relocation.
 
-### LDR-5 [High] Base relocations write without an image bound
+### LDR-5 [High] Base relocations write without an image bound (open; not fixed in this pass)
+- Blocked by the same Application Control policy as MAIN-1 (see there).
 - `ldr.c:855`: `u8 *addr = base + block.VirtualAddress + offset;` followed by an 8- or 4-byte write. Nothing checks `block.VirtualAddress + offset + size <= mod->image_size`. A crafted `VirtualAddress` writes outside the image mapping.
 - Related: `pe_file_u16(ctx, off)` (`ldr.c:847`) is an unchecked reader (see `pe_parse.h`), and `n` is derived from `SizeOfBlock` without a bound against the directory size or file size.
 - Fix: check each entry's target against `image_size` and each read against the file size. Or drive relocations through `pe_relocs_walk`, which already checks the directory against the file (`src/loader/pe_parse.c:1179`).
 
-### LDR-6 [High] Section copy length is SizeOfRawData, not bounded by the mapping
+### LDR-6 [High] Section copy length is SizeOfRawData, not bounded by the mapping (open; not fixed in this pass)
+- Blocked by the same Application Control policy as MAIN-1 (see there).
 - `ldr.c:890`: `memcpy(va, mod->file_data + sv.file_offset, sv.file_size);` where `sv.file_size` is `SizeOfRawData` (`pe_parse.c:726`).
 - `pe_validate` checks only `VirtualSize` against `SizeOfImage` (`pe_parse.c:506`). A section whose raw size is larger than its virtual size writes past the section, and for the last section past the end of the mapping.
 - Fix: copy `min(SizeOfRawData, VirtualSize)` and require `VirtualAddress + VirtualSize <= image_size` before copying.
@@ -79,13 +81,15 @@ The most important point is LDR-1. The real ntdll (MinGW) build compiles only st
 
 ### Startup and runtime path (`ntdll_main.c`)
 
-### MAIN-1 [High] Section table and section copy are not bounded
+### MAIN-1 [High] Section table and section copy are not bounded (open; not fixed in this pass)
+- Blocked. A host test and helper were written (`nt_range_fits`, `pe_copy_len`), but the test binary `tests/ntdll-host/out/test_pe_bounds.exe` was blocked by a Windows Application Control policy when run. The test could not run, so no fix was committed. Next step: clear the policy for that binary or run the test, then apply the fix.
 - `ntdll_main.c:231` computes `sec_off = section_table_off + i*40` for `i < num_sections` (up to 65535). There is no check against the 0x1000-byte header buffer, so a large section count reads past the page.
 - `ntdll_main.c:238` sets `dst = img_base + vaddr`, and `ntdll_main.c:241` reads `rawsize` bytes into `dst`. Nothing checks `vaddr + rawsize <= size_image`, or `rawptr + rawsize` against the file size.
 - This is the live loader for the MinGW build (`LdrInitializeThunk`, `ntdll_main.c:551`). A DLL found on a candidate path (MAIN-5) reaches it.
 - Fix: validate the section table within the header, and each section against `SizeOfImage` and the file size, before reading.
 
-### MAIN-2 [High] Relocations write without an image bound
+### MAIN-2 [High] Relocations write without an image bound (open; not fixed in this pass)
+- Blocked by the same Application Control policy as MAIN-1 (see there). Helper: `nt_range_fits` on the relocation target.
 - `ntdll_main.c:270-272`: `if (type!=10)` accepts DIR64 only, then `*p += delta` for `p = img_base + page_rva + off2`. `page_rva` comes from the block and is not checked against `size_image`.
 - Fix: as LDR-5.
 
@@ -200,7 +204,8 @@ The most important point is LDR-1. The real ntdll (MinGW) build compiles only st
 
 ### C runtime (`msvcrt.c`)
 
-### CRT-1 [High] sprintf and vsprintf write without a size
+### CRT-1 [High] sprintf and vsprintf write without a size (needs owner)
+- Not changed in this pass. The write is unbounded by contract, like C sprintf. The 8192 cap is a truncation, not an overflow guard: short output writes only its own length. The defect is the export, so the fix is an API decision: remove `sprintf`/`vsprintf` from `msvcrt.def` and `msvcrt.c`, or require `snprintf`. `msvcrt.c` is MinGW-only and cannot be host-tested.
 - `msvcrt.c:273-279`: `sprintf` and `vsprintf` format into the caller's buffer with a size of 8192 (`my_vsprintf(s, 8192, ...)`), whatever the buffer really is. Any caller with a smaller buffer overflows it.
 - Fix: remove these, or require callers to use `snprintf`.
 
@@ -230,15 +235,21 @@ The most important point is LDR-1. The real ntdll (MinGW) build compiles only st
 
 ### Win32 shim: kernel32 (`kernel32.c`)
 
-### K32-1 [High] VirtualProtect ignores the requested protection
+### K32-1 [High] VirtualProtect ignores the requested protection (reproduced; Fixed in 195a68b)
+- Test: `tests/ntdll-host/test_win32_policy.c`, `protect_maps_each_base_value`. It failed before the fix (every value returned 4).
+- Fix applied: `win32_protect_to_nt` in `src/ntdll/win32_policy.h` maps the Win32 base protection; `VirtualProtect` uses it and returns ERROR_INVALID_PARAMETER for an invalid value.
 - `kernel32.c:210` (base): `ULONG ntProt=4;` and `newProt` is never used. Every `VirtualProtect` call sets PAGE_READWRITE, so code pages become writable and lose execute.
 - Fix: map `newProt` the way `VirtualAlloc` does (`kernel32.c:180-193`).
 
-### K32-2 [High] TlsAlloc always returns index 0
+### K32-2 [High] TlsAlloc always returns index 0 (reproduced; Fixed in 5430103)
+- Test: `tests/ntdll-host/test_win32_policy.c`, `tls_alloc_*` and `tls_free_*`. The alloc tests failed before the fix.
+- Fix applied: the index bitmap is PEB.TlsBitmapBits (process-wide); `win32_tls_alloc` and `win32_tls_free` in `win32_policy.h`. Not thread-safe yet, which matches the rest of the shim (see K32-14).
 - `kernel32.c:314` (base): `DWORD WINAPI TlsAlloc(void) { return 0; }`. Every TLS user shares slot 0.
 - Fix: allocate from a bitmap of `TlsSlots` in the TEB, and free it in `TlsFree`.
 
-### K32-3 [High] CreateFileW maps two creation dispositions to the wrong NT values
+### K32-3 [High] CreateFileW maps two creation dispositions to the wrong NT values (reproduced; Fixed in 3b9107e)
+- Test: `tests/ntdll-host/test_win32_policy.c`, `create_disposition_maps_win32_values`. It failed before the fix (CREATE_NEW gave 1, CREATE_ALWAYS gave 2).
+- Fix applied: `win32_create_disposition_to_nt` in `win32_policy.h`, used by `CreateFileW`.
 - `kernel32.c:145`: `CREATE_NEW` maps to `disp=1` (FILE_OPEN), but its comment says FILE_CREATE. FILE_CREATE is 2. `kernel32.c:146`: `CREATE_ALWAYS` maps to `disp=2` (FILE_CREATE), but its comment says FILE_OVERWRITE_IF, which is 5.
 - Effect: CREATE_NEW opens an existing file instead of failing, and CREATE_ALWAYS fails on an existing file.
 - Fix: CREATE_NEW to 2, CREATE_ALWAYS to 5.
@@ -248,7 +259,10 @@ The most important point is LDR-1. The real ntdll (MinGW) build compiles only st
 - Effect: `GetProcAddress`, `GetModuleHandle*`, `LoadLibrary*` cannot succeed.
 - Fix: a process-wide loader context, created during startup.
 
-### K32-5 [High] WaitForSingleObject returns success without waiting
+### K32-5 [High] WaitForSingleObject returns success without waiting (reproduced; Fixed in a2fa151)
+- Test: `tests/ntdll-host/test_win32_policy.c`, `wait_timeout_conversion` and `wait_result_mapping`. Both failed before the fix.
+- Fix applied: calls `NtWaitForSingleObject`; `win32_timeout_to_nt` and `win32_wait_result` in `win32_policy.h` do the conversions.
+- Side effect: CreateEvent, CreateMutex and CreateSemaphore still return fake handles (K32-7), so waits on them now return WAIT_FAILED instead of success. Fix K32-7 with it.
 - `kernel32.c:464` (base): `{ (void)h;(void)ms; return 0; /* WAIT_OBJECT_0 */ }`. Callers proceed as though the object were signalled.
 - Fix: call `NtWaitForSingleObject`.
 
