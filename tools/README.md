@@ -104,6 +104,24 @@ python3 tools/coverage_report.py --selftest   # check the measurement on a fixtu
 Exit status: `0` report printed and all unit tests passed, `1` a unit test
 failed, `2` usage error.
 
+## c_coverage.sh
+
+gcov line coverage for the C host suites. It builds and runs
+`tests/kernel-host` (`make check`), `tests/host` and `tests/ntdll-host` with
+`COVERAGE=1` (instrumented, `-O0`, objects in `build-cov/` and `out-cov/`),
+then prints per-file line coverage for `src/kernel/nt`, `src/loader` and
+`src/ntdll` (test drivers `*_test.c` are skipped; a file no suite compiles is
+shown as "not built") and the 15 largest uncovered functions. Needs the MSYS2
+UCRT64 gcc (`gcov` ships with it). The kernel-host suite takes minutes.
+
+```
+sh tools/c_coverage.sh             # run all suites, then report
+sh tools/c_coverage.sh --no-run    # report from the existing counters
+```
+
+Exit status: `0` all suites passed, `1` a suite or test failed (the report is
+still printed), `2` gcov missing or usage error.
+
 ## update_doc_counts.py
 
 Keeps the counts quoted in the docs equal to the repository. A count sits
