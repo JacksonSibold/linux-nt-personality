@@ -1,4 +1,8 @@
 #!/bin/sh
+# DEPRECATED: broken copy of vm/diag_m0.sh with its variables stripped (mkdir -p with no
+# argument, empty [ -x ] test, RC=True, exit with no status). Not repaired: the intended
+# output paths and exit policy cannot be recovered unambiguously. Use vm/diag_m0.sh instead.
+# See docs/vm/CLEANUP.md (section 1). Do not run.
 set -eu
 SHARE=/mnt/share
 RESULT_DIR=/.dodresult
