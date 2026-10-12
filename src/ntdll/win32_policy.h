@@ -9,6 +9,7 @@
 #define NTDLL_WIN32_POLICY_H
 
 #include "nt_types.h"
+#include "ntstatus.h"
 
 /* Win32 PAGE_* protection value to NT protection value. The two sets of
  * numbers are the same for the base values. Returns 0 for a value that is
@@ -80,6 +81,32 @@ static inline BOOL win32_tls_free(ULONG bits[2], DWORD idx)
     if (!(bits[idx / 32] & mask)) return 0;
     bits[idx / 32] &= ~mask;
     return 1;
+}
+
+/* WaitForSingleObject timeout to an NT relative timeout (100 ns units,
+ * negative means relative). INFINITE (0xFFFFFFFF) gives NULL, which means
+ * wait without a timeout. */
+#define WIN32_INFINITE 0xFFFFFFFFu
+#define WIN32_WAIT_FAILED 0xFFFFFFFFu
+
+static inline PLARGE_INTEGER win32_timeout_to_nt(DWORD ms, LARGE_INTEGER *t)
+{
+    if (ms == WIN32_INFINITE) return NULL;
+    t->QuadPart = -((LONGLONG)ms * 10000);
+    return t;
+}
+
+/* NTSTATUS from NtWaitForSingleObject to the WaitForSingleObject result.
+ * WAIT_OBJECT_0 0, WAIT_ABANDONED 0x80, WAIT_TIMEOUT 258, WAIT_FAILED. */
+static inline DWORD win32_wait_result(NTSTATUS s)
+{
+    if (s >= STATUS_WAIT_0 && s <= STATUS_WAIT_63)
+        return (DWORD)(s - STATUS_WAIT_0);
+    if (s >= STATUS_ABANDONED_WAIT_0 && s <= STATUS_ABANDONED_WAIT_63)
+        return 0x80u + (DWORD)(s - STATUS_ABANDONED_WAIT_0);
+    if (s == STATUS_TIMEOUT)
+        return 258u;
+    return WIN32_WAIT_FAILED;
 }
 
 #endif /* NTDLL_WIN32_POLICY_H */

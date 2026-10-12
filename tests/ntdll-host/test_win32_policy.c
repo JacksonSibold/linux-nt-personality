@@ -4,6 +4,7 @@
  */
 #include "minitest.h"
 #include "win32_policy.h"
+#include "ntstatus.h"
 
 /* K32-1: VirtualProtect must pass the requested protection to NT. */
 static void protect_maps_each_base_value(void)
@@ -90,7 +91,34 @@ static void tls_free_rejects_unallocated_index(void)
     MT_EXPECT(!win32_tls_free(bits, 0xFFFFFFFFu));
 }
 
+/* K32-5: WaitForSingleObject must wait on the object and report what the
+ * wait returned, instead of returning WAIT_OBJECT_0 at once. */
+static void wait_timeout_conversion(void)
+{
+    LARGE_INTEGER t;
+    t.QuadPart = 0;
+    MT_EXPECT(win32_timeout_to_nt(WIN32_INFINITE, &t) == NULL);
+
+    PLARGE_INTEGER p = win32_timeout_to_nt(0, &t);
+    MT_ASSERT(p == &t);
+    MT_EXPECT_EQ(p->QuadPart, 0);
+
+    p = win32_timeout_to_nt(1500, &t);
+    MT_ASSERT(p == &t);
+    MT_EXPECT_EQ(p->QuadPart, -15000000); /* 1500 ms in 100 ns units, relative */
+}
+
+static void wait_result_mapping(void)
+{
+    MT_EXPECT_EQ(win32_wait_result(STATUS_WAIT_0), 0);            /* WAIT_OBJECT_0 */
+    MT_EXPECT_EQ(win32_wait_result(STATUS_ABANDONED_WAIT_0), 0x80); /* WAIT_ABANDONED */
+    MT_EXPECT_EQ(win32_wait_result(STATUS_TIMEOUT), 258);          /* WAIT_TIMEOUT */
+    MT_EXPECT_EQ(win32_wait_result((NTSTATUS)0xC0000008L), 0xFFFFFFFFu); /* WAIT_FAILED */
+}
+
 static const mt_case_t cases[] = {
+    MT_CASE(wait_timeout_conversion),
+    MT_CASE(wait_result_mapping),
     MT_CASE(protect_maps_each_base_value),
     MT_CASE(protect_ignores_modifier_bits),
     MT_CASE(protect_rejects_invalid_values),

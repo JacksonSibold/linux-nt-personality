@@ -44,6 +44,7 @@ __declspec(dllimport) extern NTSTATUS NtQueryVirtualMemory(HANDLE, PVOID, ULONG,
 __declspec(dllimport) extern NTSTATUS NtTerminateProcess(HANDLE, NTSTATUS);
 __declspec(dllimport) extern NTSTATUS NtDelayExecution(BOOLEAN, PLARGE_INTEGER);
 __declspec(dllimport) extern NTSTATUS NtQueryInformationProcess(HANDLE, ULONG, PVOID, ULONG, PULONG);
+__declspec(dllimport) extern NTSTATUS NtWaitForSingleObject(HANDLE, BOOLEAN, PLARGE_INTEGER);
 __declspec(dllimport) extern NTSTATUS LdrLoadDll(winldr_ctx_t *ctx, const WCHAR *path, ULONG flags, const WCHAR *name, HMODULE *out);
 __declspec(dllimport) extern NTSTATUS LdrGetProcedureAddress(winldr_ctx_t *ctx, HMODULE mod, const ANSI_STRING *name, WORD ordinal, FARPROC *out);
 __declspec(dllimport) extern NTSTATUS LdrGetDllHandle(winldr_ctx_t *ctx, const WCHAR *name, HMODULE *out);
@@ -469,7 +470,14 @@ BOOL WINAPI SetEvent(HANDLE h){ (void)h; return 1; }
 BOOL WINAPI ResetEvent(HANDLE h){ (void)h; return 1; }
 BOOL WINAPI ReleaseMutex(HANDLE h){ (void)h; return 1; }
 BOOL WINAPI ReleaseSemaphore(HANDLE h, LONG inc, LONG *prev){ (void)h;(void)inc; if(prev) *prev=0; return 1; }
-DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms){ (void)h;(void)ms; return 0; /* WAIT_OBJECT_0 */ }
+DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms){
+    LARGE_INTEGER t;
+    NTSTATUS s = NtWaitForSingleObject(h, 0, win32_timeout_to_nt(ms, &t));
+    DWORD r = win32_wait_result(s);
+    if (r == WIN32_WAIT_FAILED) { SetLastErrorFromStatus(s); return r; }
+    SetLastError(0);
+    return r;
+}
 DWORD WINAPI WaitForMultipleObjects(DWORD n, const HANDLE *hs, BOOL waitAll, DWORD ms){ (void)n;(void)hs;(void)waitAll;(void)ms; return 0; }
 BOOL WINAPI DuplicateHandle(HANDLE srcP, HANDLE src, HANDLE dstP, HANDLE *dst, DWORD access, BOOL inh, DWORD opts){
     (void)srcP;(void)src;(void)dstP;(void)dst;(void)access;(void)inh;(void)opts; SetLastError(0); if(dst) *dst=src; return 1;
