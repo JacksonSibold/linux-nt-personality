@@ -28,7 +28,11 @@ LDFLAGS := -fno-use-linker-plugin
 SHIM_OBJS := $(BUILD)/mman_win.o $(BUILD)/posix_host.o $(BUILD)/posix_raw.o
 
 # Test programs and the module objects each one links against.
-TESTS := object_test security_test registry_test i2_test io_test
+TESTS := object_test security_test registry_test i2_test io_test mm_test
+
+# Built but not run by "check": exits 0 before printing its summary (see README).
+BUILD_ONLY := proc_thread_test
+ALL_PROGS := $(TESTS) $(BUILD_ONLY)
 
 object_test_OBJS      := object handle kshim
 sync_test_OBJS        := sync kshim
@@ -39,7 +43,7 @@ io_test_OBJS          := io object handle iocp nt_obj_weak sync kshim
 proc_thread_test_OBJS := proc_thread object handle nt_obj sync nt_services kshim
 i2_test_OBJS          := object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
 
-PROGS := $(addprefix $(BUILD)/,$(addsuffix .exe,$(TESTS)))
+PROGS := $(addprefix $(BUILD)/,$(addsuffix .exe,$(ALL_PROGS)))
 
 .PHONY: all check clean
 all: $(PROGS)
@@ -87,8 +91,8 @@ $(BUILD)/$(1).exe: $(BUILD)/$(1).o $(addprefix $(BUILD)/,$(addsuffix .o,$($(1)_O
 endef
 
 # Test translation units: NT/<name>.c -> build/<name>.o.
-$(foreach t,$(TESTS),$(eval $(BUILD)/$(t).o: $(NT)/$(t).c | $(BUILD); $$(CC) $$(CFLAGS) -c $$< -o $$@))
-$(foreach t,$(TESTS),$(eval $(call PROG_RULE,$(t))))
+$(foreach t,$(ALL_PROGS),$(eval $(BUILD)/$(t).o: $(NT)/$(t).c | $(BUILD); $$(CC) $$(CFLAGS) -c $$< -o $$@))
+$(foreach t,$(ALL_PROGS),$(eval $(call PROG_RULE,$(t))))
 
 # Per-program wall-clock limit in seconds. sync_test is slow on Windows
 # (its wait_on_address loop sleeps 2 ms per iteration).
