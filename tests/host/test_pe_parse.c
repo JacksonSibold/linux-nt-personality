@@ -464,6 +464,28 @@ static void test_exception_bad_size_rejected(void)
     unload(&L);
 }
 
+/* x64 RUNTIME_FUNCTION.EndAddress is an exclusive RVA with no flag bits, so
+ * a function that ends on an odd byte must keep its exact end. */
+static void test_exception_end_address_not_truncated(void)
+{
+    uint8_t img[IMG_CAP];
+    loaded_t L;
+    walk_stats_t st;
+
+    img_build_valid(img);
+    img_add_exception(img);             /* EndAddress = 0x1007 */
+    if (!load(&L, img, IMG_LEN)) { MT_EXPECT(0); return; }
+
+    memset(&st, 0, sizeof st);
+    MT_EXPECT_EQ(pe_validate(&L.ctx), PE_OK);
+    MT_EXPECT_EQ(pe_exception_walk(&L.ctx, cb_exc, &st), PE_OK);
+    MT_EXPECT_EQ(st.excs, 1);
+    MT_EXPECT_EQ(st.exc_begin, 0x1000);
+    MT_EXPECT_EQ(st.exc_end, 0x1007);
+    MT_EXPECT_EQ(st.exc_unwind, 0x2140);
+    unload(&L);
+}
+
 /* A directory that stops validating after pe_validate() must not look like an
  * empty directory to the walkers. */
 static void test_walkers_report_bad_directory(void)
@@ -550,6 +572,7 @@ static const mt_case_t cases[] = {
     MT_CASE(test_relocs_bad_block_sizes_rejected),
     MT_CASE(test_relocs_directory_past_file_rejected),
     MT_CASE(test_exception_bad_size_rejected),
+    MT_CASE(test_exception_end_address_not_truncated),
     MT_CASE(test_walkers_report_bad_directory),
     MT_CASE(test_fuzzed_images_do_not_crash),
 };
