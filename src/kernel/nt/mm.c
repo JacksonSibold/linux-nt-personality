@@ -1459,6 +1459,9 @@ NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
     (void)ObjectAttributes;
     if (!SectionHandle) return STATUS_INVALID_PARAMETER;
     if (!ntmm_protection_valid(SectionPageProtection)) return STATUS_INVALID_PAGE_PROTECTION;
+    /* File-backed sections are not implemented: the handle is never looked up,
+     * so the section would be zeroed anonymous memory, not the file. */
+    if (FileHandle) return STATUS_NOT_IMPLEMENTED;
     if (MaximumSize) size = (SIZE_T)MaximumSize->QuadPart;
     else if (FileHandle) size = 0;
     else return STATUS_INVALID_PARAMETER;

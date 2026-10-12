@@ -489,6 +489,17 @@ static int test_alloc_size_wrap(void) {
     return 1;
 }
 
+/* M-7: a file-backed section is not implemented; it must not be created as
+ * zeroed anonymous memory. */
+static int test_file_section_unsupported(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x1000;
+    HANDLE sec = NULL;
+    NTSTATUS st = NtCreateSection(&sec, 0, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, (HANDLE)0x1234);
+    ASSERT(st == STATUS_NOT_IMPLEMENTED, "file section status 0x%lx", (unsigned long)st);
+    ASSERT(sec == NULL, "no section handle");
+    return 1;
+}
+
 /* 8. sections */
 static int test_sections(void) {
     LARGE_INTEGER sz;
@@ -955,6 +966,7 @@ int main(void) {
     RUN_TEST(test_fuzz);
     RUN_TEST(test_vad_matrix);
     RUN_TEST(test_alloc_size_wrap);
+    RUN_TEST(test_file_section_unsupported);
     RUN_TEST(test_sections);
     RUN_TEST(test_probe_virtualquery_regression);
     RUN_TEST(test_reset);
