@@ -464,6 +464,35 @@ static void test_exception_bad_size_rejected(void)
     unload(&L);
 }
 
+/* A directory that stops validating after pe_validate() must not look like an
+ * empty directory to the walkers. */
+static void test_walkers_report_bad_directory(void)
+{
+    uint8_t img[IMG_CAP];
+    loaded_t L;
+    walk_stats_t st;
+
+    img_build_valid(img);
+    img_add_import(img);
+    img_add_reloc(img);
+    img_add_exception(img);
+    if (!load(&L, img, IMG_LEN)) { MT_EXPECT(0); return; }
+    MT_EXPECT_EQ(pe_validate(&L.ctx), PE_OK);
+
+    /* Corrupt the directories in place, after validation. */
+    img_set_dir(L.p, DIR_EXPORT, 0xFFFF0000u, 40);
+    img_set_dir(L.p, DIR_IMPORT, 0xFFFF0000u, 40);
+    img_set_dir(L.p, DIR_EXCEPTION, 0xFFFF0000u, 12);
+    img_set_dir(L.p, DIR_BASERELOC, 0xFFFF0000u, 8);
+
+    memset(&st, 0, sizeof st);
+    MT_EXPECT(pe_imports_walk(&L.ctx, cb_dll, cb_sym, &st) != PE_OK);
+    MT_EXPECT(pe_exports_walk(&L.ctx, cb_export, &st) != PE_OK);
+    MT_EXPECT(pe_relocs_walk(&L.ctx, cb_reloc, &st) != PE_OK);
+    MT_EXPECT(pe_exception_walk(&L.ctx, cb_exc, &st) != PE_OK);
+    unload(&L);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Fuzzing: random byte mutations of a valid image                            */
 /* -------------------------------------------------------------------------- */
@@ -521,6 +550,7 @@ static const mt_case_t cases[] = {
     MT_CASE(test_relocs_bad_block_sizes_rejected),
     MT_CASE(test_relocs_directory_past_file_rejected),
     MT_CASE(test_exception_bad_size_rejected),
+    MT_CASE(test_walkers_report_bad_directory),
     MT_CASE(test_fuzzed_images_do_not_crash),
 };
 
