@@ -10,6 +10,11 @@ repository hygiene):
   header-guard  every .c with a same-named .h beside it has an include guard
                 (#ifndef/#define pair or #pragma once) in that .h
   crlf-mix      no text file mixes CRLF and bare-LF line endings
+  conflict-marker
+                a line starting with "<<<<<<< " or ">>>>>>> ", or a lone
+                "=======" line in a file that also has a "<<<<<<< " line
+                (leftover merge conflict markers; a Markdown setext underline
+                alone is not flagged)
 
 Files are taken from `git ls-files` when run inside a git work tree, so
 untracked build products are ignored; otherwise the tree is walked.
@@ -32,6 +37,9 @@ GUARD_RE = re.compile(
     re.MULTILINE,
 )
 SKIP_DIRS = {".git", "__pycache__"}
+CONFLICT_OPEN = b"<<<<<<< "
+CONFLICT_CLOSE = b">>>>>>> "
+CONFLICT_SEP = b"======="
 
 
 def repo_root_default():
@@ -58,6 +66,23 @@ def list_files(root):
 
 def is_binary(head):
     return b"\x00" in head
+
+
+def find_conflict_markers(data):
+    """Return (line number, text) for each leftover merge conflict marker line.
+
+    A lone "=======" counts only when the same file also has a "<<<<<<< " line,
+    so Markdown setext underlines in files without a conflict are not reported.
+    CRLF line endings are ignored when matching.
+    """
+    lines = [line.rstrip(b"\r") for line in data.split(b"\n")]
+    has_open = any(line.startswith(CONFLICT_OPEN) for line in lines)
+    found = []
+    for lineno, line in enumerate(lines, 1):
+        if (line.startswith(CONFLICT_OPEN) or line.startswith(CONFLICT_CLOSE)
+                or (has_open and line == CONFLICT_SEP)):
+            found.append((lineno, line[:60].decode("utf-8", "replace")))
+    return found
 
 
 def check_file(root, rel, failures):
@@ -88,6 +113,8 @@ def check_file(root, rel, failures):
     if crlf and bare_lf:
         failures.append(("crlf-mix", rel,
                          f"{crlf} CRLF lines and {bare_lf} bare-LF lines"))
+    for lineno, text in find_conflict_markers(data):
+        failures.append(("conflict-marker", rel, f"line {lineno}: {text}"))
     return True
 
 

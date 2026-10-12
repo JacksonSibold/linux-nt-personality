@@ -22,7 +22,7 @@ python tools/check_repo.py
 python tools/check_doc_links.py
 ```
 
-- `tests/unit` holds 16 test modules (303 tests). They cover the scripts in
+- `tests/unit` holds 21 test modules (383 tests). They cover the scripts in
   `build/` (`fix_gsbase.py`, `fix_iosb.py`, `gen_ntdll_def.py`, `gen_stubs.py`,
   `merge_dod.py`, `validate_criteria.py`), `tools/` (`check_doc_links.py`, `check_repo.py`,
   `coverage_report.py`, `criteria_report.py`, `ntstatus_lookup.py`, `pe_info.py`,
@@ -36,7 +36,9 @@ python tools/check_doc_links.py
   `--selftest` checks its built-in fixture.
 - `tools/check_repo.py` checks the files reported by `git ls-files`: no binary
   over 1 MiB, every `.py` file compiles, every `.c` with a same-named `.h` has an
-  include guard in that header, and no text file mixes CRLF and bare LF. It
+  include guard in that header, no text file mixes CRLF and bare LF, and no
+  text file has leftover merge conflict markers (`<<<<<<< `, `>>>>>>> `, or a
+  lone `=======` in a file that also has `<<<<<<< `). It
   prints `FAIL [check] path: detail` lines and exits 1 on any failure. Use
   `--quiet` for the summary only. It does not run the credential pattern scan
   described in `PUBLICATION_CHECKS.md`.
