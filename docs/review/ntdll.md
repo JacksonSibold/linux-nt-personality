@@ -17,7 +17,7 @@ Status: findings marked `Fixed in <sha>` were fixed in this branch, with a faili
 | Info | 7 |
 | **Total** | **71** |
 
-Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium). Win32 shim pass (branch `haiku/ntdllfix`): K32-1, K32-2, K32-3 and K32-5 (High) fixed. CRT-1 needs owner. Bounds pass (branch `haiku/bounds`): MAIN-1 (74b4a14), MAIN-2 (e7f8b2b), LDR-5 (5045b9c) and LDR-6 (d6007f6) fixed with `src/ntdll/pe_bounds.h`; K32-7 (d2d36fe) fixed. The MAIN-2 test binary `test_pe_bounds` is build-only on this host (see MAIN-1), so its test cases have not been run here.
+Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium). Win32 shim pass (branch `haiku/ntdllfix`): K32-1, K32-2, K32-3 and K32-5 (High) fixed. CRT-1 needs owner. Bounds pass (branch `haiku/bounds`): MAIN-1 (74b4a14), MAIN-2 (e7f8b2b), LDR-5 (5045b9c) and LDR-6 (d6007f6) fixed with `src/ntdll/pe_bounds.h`; K32-7 (d2d36fe) fixed. Loader pass (branch `haiku/ldr`): LDR-1 to LDR-4 (High) have design records 0029 to 0032 and are not implemented; each records why (needs VM or a fixture harness). `docs/decisions/INDEX.md` does not exist, so no index rows were added. The MAIN-2 test binary `test_pe_bounds` is build-only on this host (see MAIN-1), so its test cases have not been run here.
 
 The most important point is LDR-1. The real ntdll (MinGW) build compiles only stubs for `LdrLoadDll`, `LdrGetDllHandle` and `LdrGetProcedureAddress`, so every Win32 `LoadLibrary`, `GetModuleHandle` and `GetProcAddress` call fails. The loader code that would do the work is excluded by a preprocessor branch and is never built for the MinGW target. The findings in the loader are therefore mainly about code that runs in the Linux test build, or that would run once LDR-1 is fixed.
 
@@ -25,21 +25,25 @@ The most important point is LDR-1. The real ntdll (MinGW) build compiles only st
 
 ### Loader (`ldr.c`, `ldr.h`)
 
-### LDR-1 [High] MinGW build compiles only stubs for the loader API
+### LDR-1 [High] MinGW build compiles only stubs for the loader API (Design recorded in eed4379, not implemented: needs VM)
+- Record: `docs/decisions/0029-loader-mingw-build-selection.md`. Recommended split (`ldr_core.c`, `ldr_nt.c`, `ldr_host.c`) is not small and cannot be verified without the NT kernel.
 - `src/ntdll/ldr.c:82` opens `#ifndef __MINGW32__`, which contains the whole implementation. `ldr.c:1784` is the matching `#else`, and lines 1784-1809 are stubs. Under `__MINGW32__`, `LdrLoadDll` returns `STATUS_NOT_SUPPORTED` (`ldr.c:1789`), `LdrGetDllHandle` returns `STATUS_DLL_NOT_FOUND` (`ldr.c:1791`), `winldr_ctx_create` returns NULL (`ldr.c:1794`). The `__MINGW32__` file-helper branches at `ldr.c:623-818` and `ldr.c:1541-1553` are inside the excluded block, so they are dead code for the target.
 - Callers in `kernel32.c` (lines 225, 247, 263, 271) pass a NULL context, which is a second failure (K32-4).
 - Fix: split the platform choice so the NT-syscall implementation is compiled for `__MINGW32__` and the POSIX one only for host tests. Create one process-wide loader context at startup.
 
-### LDR-2 [High] Import address table patched at a file offset, not an RVA
+### LDR-2 [High] Import address table patched at a file offset, not an RVA (Design recorded in dff91e1, not implemented: needs test harness)
+- Record: `docs/decisions/0030-loader-iat-rva-patch.md`. The fix is small, but no host test reaches `ldr_resolve_imports` yet.
 - `ldr.c:1326` computes `iat_off` with `pe_rva_to_offset(FirstThunk)`, and `pe_rva_to_offset` returns a file offset (`src/loader/pe_parse.c:730-766`). `ldr.c:1358` then writes `memcpy(mod->image + iat_slot_off, ...)`, where `mod->image` is the RVA-laid-out image. The IAT is therefore not patched wherever file and virtual layout differ, and the write lands on unrelated bytes. The delay-import path has the same mix at `ldr.c:1428` and `ldr.c:1456`.
 - Fix: keep the RVA (`FirstThunk + t * 8`) and write to `mod->image + rva`. Read thunks from the file with the file offset, as now.
 
-### LDR-3 [High] DllMain and TLS callbacks are never called
+### LDR-3 [High] DllMain and TLS callbacks are never called (Design recorded in b2c2913, not implemented: needs VM)
+- Record: `docs/decisions/0031-loader-dllmain-tls-order.md`. Executing PE code is impossible in the Linux build; the hook return type must change to test failure paths.
 - `ldr.c:1491-1499` (`ldr_run_dll_main`) only calls the optional test hook. `ldr.c:1467-1486` (`ldr_run_tls_callbacks`) only logs and calls the hook. `mod->entry.EntryPoint` is set at `ldr.c:944` and never called anywhere in the file.
 - Effect: no DLL initialisation runs in the Linux build, and none is planned for the MinGW build (LDR-1).
 - Fix: call each TLS callback, then `DllMain(hinst, DLL_PROCESS_ATTACH, NULL)`, in the documented order. Keep the hook as an extra observer for tests.
 
-### LDR-4 [High] TLS callback table dereferenced at its preferred-base address
+### LDR-4 [High] TLS callback table dereferenced at its preferred-base address (Design recorded in bf73e1d, not implemented: needs test harness and VM)
+- Record: `docs/decisions/0032-loader-tls-callback-table-rva.md`. The relocated-base case needs VM; the bounds and address arithmetic need the harness from 0030.
 - `ldr.c:1481`: `ULONG_PTR *table = (ULONG_PTR *)cb_table_va;` uses `mod->tls.AddressOfCallBacks`. That value was read from the file before relocation (in `ldr_map_and_load`, `pe_tls_directory(&mod->pe, ...)`), so it is the unrelocated VA. For any image not loaded at its preferred base, the read goes to the wrong address.
 - Fix: convert to an image RVA (`cb_va - OriginalBase`) and read from `mod->image`, or read the TLS directory from the mapped image after relocation.
 
