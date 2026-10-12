@@ -27,7 +27,7 @@ Most of the High items are memory-safety or exec-contract problems in the loader
 - Fix: compare without wrapping, for example `if (nt_off > (u32)n || (u32)n - nt_off < 6)`, or do the addition in `size_t`/`u64`. Apply to both sites.
 
 ### K-2 [Medium] Header fields read past the 4 KiB buffer and past the optional header
-- **Status:** partially fixed in b205768: exe path only. The ntdll reads (`pe_map_ntdll`, near the old 741-742 and 799-800) are still unchecked.
+- **Status:** fixed in b205768 (exe path) and e9012fa (ntdll path: 24 bytes from e_lfanew, SizeOfOptionalHeader in [112,240]).
 - `src/kernel/fs/binfmt_pe.c:202`: `size_opt` is read at `nt_off + 20` before any check that `nt_off + 22 <= n`. Line 232 reads `Characteristics` at `nt_off + 22` with no check at all.
 - Lines 213-230 read optional-header fields up to `oh_off + 88` with no check against `SizeOfOptionalHeader` (only `oh_off + size_opt <= n` is tested at 209, and `size_opt` may be 2).
 - `headers_buf` is `kzalloc(PAGE_SIZE)` (line 166). If `nt_off` is close to 4 KiB (up to 4090 passes line 181), reads at `nt_off + 22` and `oh_off + 88` run up to about 16-90 bytes past the allocation.
@@ -84,7 +84,7 @@ Most of the High items are memory-safety or exec-contract problems in the loader
 - Fix: check each result and fail the exec (before commit, see K-4) or at least log it.
 
 ### K-11 [Low] Relocation length check wraps; reloc_size is unbounded
-- **Status:** partially fixed in 248eaa1: the u32 wrap is fixed at both sites. The `reloc_size` cap is still open.
+- **Status:** fixed in 248eaa1 (u32 wrap, both sites) and d4a33f2 (`reloc_size` capped at 16 MiB).
 - `src/kernel/fs/binfmt_pe.c:508`: `reloc_off + reloc_size > (u32)st->file_size` is computed in u32. `reloc_size` (from the data directory) is not capped before `kmalloc(reloc_size)` at 509, and line 761 has the same wrap.
 - Fix: compare in `u64`, and cap `reloc_size` (for example to file size and a fixed maximum such as 16 MiB).
 
@@ -100,11 +100,12 @@ Most of the High items are memory-safety or exec-contract problems in the loader
 - Fix: check the return and fail with `-EFAULT`.
 
 ### K-14 [Low] Export lookup for LdrInitializeThunk does no bounds checks
-- **Status:** partially fixed in 63008f4: ordinal bound only. `num_names` cap and `func_rva` range check are still open.
+- **Status:** fixed in 63008f4 (ordinal bound) and d022f12 (name scan capped; thunk RVA non-zero, inside the image, inside an executable section).
 - `src/kernel/fs/binfmt_pe.c:821-844` (`pe_map_ntdll`): `num_names` is unbounded (a u32 loop with a per-byte `copy_from_user`). `ord` (from the file) is not checked against `NumberOfFunctions` before indexing at 840. `func_rva` is not checked to lie within the image, so `func_rva == 0` gives `thunk = actual_base`, the PE header.
 - Fix: cap `num_names`, check `ord < NumberOfFunctions`, and check `func_rva` lies in `[0, size_image)` and inside an executable section.
 
 ### K-15 [Low] Short ntdll files rejected for alignment reasons
+- **Status:** fixed in c75cda6: the header re-read requires only the bytes the headers need.
 - `src/kernel/fs/binfmt_pe.c:666-678`: the header re-read requires `nn >= PAGE_ALIGN(need)`. A valid ntdll shorter than the next page boundary fails.
 - Fix: require only `need` bytes (or `min(need, fsize)`).
 
@@ -134,11 +135,13 @@ Most of the High items are memory-safety or exec-contract problems in the loader
 ## Test code
 
 ### T-1 [Medium] binfmt_pe_test.c cannot compile in userspace
+- **Status:** needs owner: moving the parsing helpers into a kernel-free header is a test-layout refactor.
 - `src/kernel/fs/binfmt_pe_test.c:7-8` includes `kshim.h` and then `binfmt_pe.c`. `binfmt_pe.c:8-21` unconditionally includes `<linux/...>` headers, and the repository has no such include directory (a search finds no `linux/kernel.h`).
 - `kshim.h:3-4` says `binfmt_pe.c` includes the shim when `PE_BINFMT_TEST` is defined. There is no such guard in `binfmt_pe.c` (grep finds none).
 - Fix: move the pure parsing helpers into a header that does not depend on kernel headers, and add the `PE_BINFMT_TEST` guard the shim comment describes, or fix the comment.
 
 ### T-2 [Medium] Tests call functions that do not exist
+- **Status:** needs owner: implement the helpers (see K-19) or delete the tests; either is a design call.
 - `src/kernel/fs/binfmt_pe_test.c:534` (`pe_build_command_line`), `545` (`pe_build_environment`), and `561-574` (`pe_utf8_to_utf16`) are not defined anywhere in `binfmt_pe.c` or elsewhere in the tree. The test binary would fail to link even with the include issue fixed.
 - Fix: implement these helpers (and wire them into the loader, see K-19), or remove the tests.
 
@@ -148,6 +151,7 @@ Most of the High items are memory-safety or exec-contract problems in the loader
 ## Shim header
 
 ### S-1 [Low] kshim.h has no guard against kernel inclusion
+- **Status:** needs owner: src/kernel/nt headers include kshim.h, so a guard here changes includes outside this review scope.
 - `src/kernel/fs/kshim.h:69` defines `#define current ((struct task_struct *)kshim_current_task())`, and lines 136-148 define `printk`, `pr_info`, and `kmalloc`/`kfree` as userspace functions with no `__KERNEL__` guard. Any kernel translation unit that includes it would have its `current` and allocation calls replaced.
 - Fix: wrap the whole header in `#ifndef __KERNEL__`, or rename the shim macros.
 
