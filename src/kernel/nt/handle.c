@@ -147,12 +147,15 @@ static NTSTATUS ht_alloc_index(struct nt_handle_table *table, u32 *out_index)
     struct nt_handle_entry *e = NULL;
     u32 idx = 0;
     spin_lock(&table->lock);
-    /* W1 FIX: ignore first_free to avoid handle reuse aliasing; always use high_water */
-    if (false && table->first_free != HANDLE_INVALID_FREE) {
+    /* Reuse a closed slot only after HANDLE_QUARANTINE others have been freed (FIFO). */
+    if (table->free_count > HANDLE_QUARANTINE && table->first_free != HANDLE_INVALID_FREE) {
         idx = table->first_free;
         e = ht_entry(table, idx, false);
         KASSERT(e && e->free);
         table->first_free = e->next_free;
+        if (table->first_free == HANDLE_INVALID_FREE)
+            table->last_free = HANDLE_INVALID_FREE;
+        table->free_count--;
     } else {
         idx = table->high_water;
         if (idx > HANDLE_MAX_INDEX) {
@@ -191,6 +194,8 @@ NTSTATUS ObCreateHandleTable(struct nt_eprocess *proc, struct nt_handle_table **
     spin_lock_init(&table->lock);
     table->owner = proc;
     table->first_free = HANDLE_INVALID_FREE;
+    table->last_free = HANDLE_INVALID_FREE;
+    table->free_count = 0;
     /* Windows starts handles around 0xC8 (index 50) for a fresh process.
      * We reserve indices 1..49 as already-used system handles (stdin/out, etc.)
      * so the first user handle is 0xC8, matching Windows shape.
@@ -301,6 +306,8 @@ NTSTATUS ObpCreateHandleAtIndex(struct nt_handle_table *table,
                     struct nt_handle_entry *pe = ht_entry(table, prev, false);
                     if (pe) pe->next_free = fe->next_free;
                 }
+                if (table->last_free == cur) table->last_free = prev;
+                table->free_count--;
                 break;
             }
             prev = cur;
@@ -317,7 +324,10 @@ NTSTATUS ObpCreateHandleAtIndex(struct nt_handle_table *table,
             struct nt_handle_entry *ge = ht_entry(table, g, true);
             if (ge && ge->free) {
                 ge->next_free = table->first_free;
+                if (table->first_free == HANDLE_INVALID_FREE)
+                    table->last_free = g;
                 table->first_free = g;
+                table->free_count++;
             }
         }
         table->high_water = index + 1;
@@ -363,23 +373,26 @@ NTSTATUS ObCloseHandle(struct nt_eprocess *proc, HANDLE handle)
         st = obj->type->ops.okay_to_close(obj, handle, UserMode);
         if (!NT_SUCCESS(st)) { spin_unlock(&table->lock); return st; }
     }
-    /* Remove entry - W1 FIX: do not immediately reuse handle index to avoid stale aliasing.
-     * Original code did LIFO reuse via first_free, but that causes handle value reuse
-     * which can alias a just-freed handle to a new object before the old handle's
-     * user-space value is fully retired (e.g., NtClose followed immediately by
-     * NtCreateThreadEx can reuse same handle value, and a subsequent NtResumeThread
-     * on the old handle value would incorrectly resolve to the new object).
-     * Instead, keep freed entries as free but not on free list; next alloc will use
-     * high_water (monotonic) and the freed slot will be reused only after high_water
-     * wraps or via explicit free-list walk. This matches Windows' non-deterministic
-     * reuse and avoids the W1 handle-alias bug.
-     */
+    /* Remove entry. Reuse is quarantined: the slot goes to the tail of a FIFO free
+     * list and is handed out again only after HANDLE_QUARANTINE other slots have
+     * been freed. A stale handle value can still alias after enough churn, which is
+     * the W1 concern narrowed, not removed (see docs/decisions/0003). */
     e->free = true;
     e->obj = NULL;
     e->granted_access = 0;
     e->attr = 0;
-    /* Do not push to first_free; keep free list empty so next alloc uses high_water */
-    /* e->next_free remains INVALID; first_free stays as is */
+    /* Append to the tail of the FIFO free list. ht_alloc_index pops from the head
+     * only when free_count > HANDLE_QUARANTINE, so the value is not reissued soon. */
+    e->next_free = HANDLE_INVALID_FREE;
+    if (table->last_free != HANDLE_INVALID_FREE) {
+        struct nt_handle_entry *te = ht_entry(table, table->last_free, false);
+        KASSERT(te);
+        te->next_free = idx;
+    } else {
+        table->first_free = idx;
+    }
+    table->last_free = idx;
+    table->free_count++;
     table->num_handles--;
     spin_unlock(&table->lock);
 

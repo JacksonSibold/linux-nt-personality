@@ -69,9 +69,15 @@ struct nt_handle_table {
     struct nt_eprocess     *owner;
     struct nt_handle_l2    *l1[HANDLE_L1_SIZE];
     u32                     first_free;
+    u32                     last_free;
+    u32                     free_count;
     u32                     high_water;
     u32                     num_handles;
 };
+
+/* Closed slots are reused FIFO and only after more than this many are free,
+ * so a closed handle value is not reissued for at least this many allocations. */
+#define HANDLE_QUARANTINE       4096U
 
 struct nt_object_header;
 struct nt_object_type;
