@@ -177,6 +177,36 @@ Exit status: `0` all blocks current, `1` a block is stale, a block has no
 matching end marker, a source table does not add up, or a target is missing,
 `2` usage error. CI runs `--check`.
 
+## criteria_trace.py
+
+Traceability matrix from the Definition-of-Done criteria in
+`tests/conformance/criteria.json` (423 entries) to the evidence under `tests/`.
+It finds the criterion IDs that each file under `tests/` names (text match, so
+no PyYAML is needed) and the active entries of `tests/harness/registry.yaml`.
+Each criterion gets one class, first match wins:
+
+- `HAS-HARNESS-ENTRY`: the registry registers a runnable command for it.
+- `HAS-HOST-TEST`: a code file under `tests/` (outside `tests/unit`) names it.
+- `REFERENCED-IN-DOCS`: named elsewhere under `tests/` (documents, data,
+  comments, unimplemented registry entries, `tests/unit` self-tests).
+- `NO-EVIDENCE`: nothing under `tests/` names it.
+
+This is traceability, not results. No class is a pass, and the result column
+stays `unknown` unless a repository record states a status. Detection is
+textual, so a probe that covers a criterion without naming its ID is not
+counted. `DOD-PE-A010/B010` counts both IDs.
+
+```
+python3 tools/criteria_trace.py                  # class counts
+python3 tools/criteria_trace.py --json           # every criterion, JSON
+python3 tools/criteria_trace.py --markdown --out docs/status/TRACEABILITY.md
+python3 tools/criteria_trace.py --selftest       # built-in checks on synthetic data
+```
+
+Exit status: `0` success, `1` an input cannot be read or the selftest fails,
+`2` usage error. CI regenerates `docs/status/TRACEABILITY.md` and fails when
+the committed file differs.
+
 ## static_analyze.sh
 
 POSIX sh, not Python. Runs `gcc -fsyntax-only` with the strict warning set and
