@@ -551,6 +551,40 @@ static void chained_info_applies_primary_codes(void)
     fn_teardown();
 }
 
+/* Two-level chain where order matters. The chained (secondary) entry saves RBX
+ * at [RSP+0x10] in the body, after the primary's allocation. The documented
+ * walk undoes the chained codes first (RSP still at the body value), then the
+ * primary's codes: ALLOC 0x20, PUSH RBP, then the return address.
+ * Undoing the primary first moves RSP to S+0x28 before the save is read, so
+ * RBX would come from the wrong slot. */
+static void chained_codes_undo_secondary_before_primary(void)
+{
+    fn_setup();
+    /* Secondary at INFO_RVA: CHAININFO, SAVE_NONVOL rbx at offset slot 2 (x8 = 0x10). */
+    put_info(INFO_RVA, UNW_FLAG_CHAININFO, 0, 0, 0,
+             (const uint16_t[]){ uc(4, UWOP_SAVE_NONVOL, 3), raw(2) }, 2);
+    IMAGE_RUNTIME_FUNCTION_ENTRY chained = { FN_BEGIN, FN_END, { 0x2100 } };
+    memcpy(g_image + INFO_RVA + 4 + 2 * sizeof(uint16_t), &chained, sizeof(chained));
+    /* Primary at 0x2100: push rbp (1), sub rsp,0x20 (5); prolog size 6. */
+    put_info(0x2100, 0, 6, 0, 0,
+             (const uint16_t[]){ uc(5, UWOP_ALLOC_SMALL, 3), uc(1, UWOP_PUSH_NONVOL, 5) }, 2);
+    g_stack[0] = 0x0;      /* S: body RSP */
+    g_stack[2] = 0xBEEF;   /* saved RBX at S+0x10 */
+    g_stack[4] = 0xFACE;   /* saved RBP at S+0x20 */
+    g_stack[5] = 0x7070;   /* return address at S+0x28 */
+    g_stack[7] = 0x1234;   /* decoy at S+0x38, read only in the wrong order */
+
+    CONTEXT c; memset(&c, 0, sizeof(c));
+    c.Rsp = addr_of(&g_stack[0]);
+    ULONG64 est = 0;
+    MT_EXPECT(run_frame(&c, BODY_PC, &est) == 0);
+    MT_EXPECT(c.Rbx == 0xBEEF);
+    MT_EXPECT(c.Rbp == 0xFACE);
+    MT_EXPECT(c.Rip == 0x7070);
+    MT_EXPECT(c.Rsp == addr_of(&g_stack[6]));
+    fn_teardown();
+}
+
 /* A chain that loops back to itself must stop at MAX_CHAIN and return. */
 static void chained_info_cycle_is_bounded(void)
 {
@@ -601,6 +635,7 @@ static const mt_case_t cases[] = {
     { "prolog_end_undoes_all_codes", prolog_end_undoes_all_codes },
     { "chained_info_applies_primary_codes", chained_info_applies_primary_codes },
     { "chained_info_cycle_is_bounded", chained_info_cycle_is_bounded },
+    { "chained_codes_undo_secondary_before_primary", chained_codes_undo_secondary_before_primary },
 };
 
 int main(void)

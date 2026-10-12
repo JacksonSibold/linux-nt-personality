@@ -160,26 +160,12 @@ static UNWIND_INFO *get_unwind_info(unwind_module_t *mod, IMAGE_RUNTIME_FUNCTION
     return (UNWIND_INFO *)rva_to_ptr(mod, rva);
 }
 
-/* Resolve chained info: follow CHAININFO flags until primary.
- * We collect the chain into an array chain[0] = outermost (initial entry's info),
- * chain[depth-1] = innermost primary. For unwinding we need to process codes
- * from each info that contributes. The simplest is to process each info's codes
- * in order of chain traversal? But spec says when walking codes, after exhausting
- * secondary's array, continue to primary's array. So total code sequence is
- * concatenation of secondary + primary (and recursively). The mid-prologue logic
- * should consider the combined SizeOfProlog? Actually each chained entry has its
- * own Begin/End and SizeOfProlog relative to its own Begin. So we need to know
- * which chained portion the ControlPc is in to decide prolog offset correctly.
- *
- * For now we handle the common case where ControlPc is in primary's range, and
- * chained info represents extra prolog outside primary? The MS spec for shrink-wrapping
- * uses chained info for saves outside prolog. We'll implement generic chain walk
- * that collects all infos and processes codes considering ControlPc offset per info.
- *
- * For simplicity we unwind by iterating chain infos from secondary to primary,
- * applying each info's codes with mid-prologue consideration based on ControlPc
- * relative to that info's FunctionEntry->Begin.
- */
+/* Chained info: follow UNW_FLAG_CHAININFO from the entry the PC resolved to
+ * until the primary UNWIND_INFO (flag clear). chain[0] is the resolved entry,
+ * chain[depth-1] the primary. The concatenated code sequence is the codes of
+ * chain[0], then chain[1], and so on (x64 exception handling, "Unwind
+ * procedure"). Each chained entry's prolog test uses its own Begin and
+ * SizeOfProlog. */
 
 #define MAX_CHAIN 8
 
@@ -347,14 +333,11 @@ simple:
      * So using current rsp for save address works if we process in array order.
      */
 
-    /* Process each info's codes in chain order: from secondary to primary? Or primary last?
-     * We have infos[0] = initial (secondary if chained), infos[depth-1] = primary. Prolog order for shrink-wrap
-     * secondary's codes represent saves outside prolog? The spec says chained info for shrink-wrap saves nonvolatile
-     * registers outside prolog. Those saves are not in primary's prolog (they occur later, but still need unwinding).
-     * For unwinding, we should process secondary's codes first? Probably yes secondary's codes correspond to outer region?
-     * We'll process in order of chain index 0..depth-1 (secondary first, primary last) each with its own array order.
-     * This will first handle secondary saves then primary unwinding.
-     */
+    /* Order (MS x64 spec, "Unwind procedure"): the walk starts at the
+     * UNWIND_INFO the PC resolved to and, when its codes run out, links to the
+     * parent and walks that array next, until the primary (no CHAININFO flag).
+     * infos[0] is the entry the PC resolved to, infos[depth-1] the primary, so
+     * the codes are applied in index order 0..depth-1, each in array order. */
 
     /* Context pointers tracking */
     PKNONVOLATILE_CONTEXT_POINTERS ctxPtrs = NULL; /* not used now */
@@ -363,7 +346,7 @@ simple:
      * Actually SET_FPREG handling needs frame register value. We'll handle within loop.
      */
 
-    for (int ci = infoCount - 1; ci >= 0; ci--) {
+    for (int ci = 0; ci < infoCount; ci++) {
         UNWIND_INFO *info = infos[ci];
         IMAGE_RUNTIME_FUNCTION_ENTRY *curEntry = entries[ci];
         ULONG64 funcBegin = imageBase + curEntry->BeginAddress;
