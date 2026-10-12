@@ -30,10 +30,27 @@ tests/differential/
 ## Prerequisites
 
 - **Windows host**: PowerShell 5.1+, Windows 11 SDK headers (for probes). No extra tooling needed; probes run as native x64 PEs.
-- **Linux side via WSL**: `x86_64-w64-mingw32-gcc` (GCC 13-win32) available in the `Ubuntu` distro. Invoked as `wsl bash -c '...'`. All builds copy through `C:\Users\Jackson\AppData\Local\Temp\opencode` to avoid `/mnt/c` spaces/caching issues.
-- Project roots:
-  - Windows: `/path/to/ntpers-research`
-  - Linux (WSL): `/path/to/ntpers-research` (quote the spaces).
+- **Linux side via WSL**: `x86_64-w64-mingw32-gcc` (GCC 13-win32) available in the `Ubuntu` distro. Invoked as `wsl bash -c '...'`. All builds copy through the staging directory `%LOCALAPPDATA%\Temp\opencode` (`/mnt/c/Users/<you>/AppData/Local/Temp/opencode` from WSL) to avoid `/mnt/c` spaces/caching issues.
+
+## Environment variables
+
+| Variable | Meaning |
+|----------|---------|
+| `NTPERS_ROOT` | Repository root. Set it to the Windows path, or to the WSL path (`/mnt/c/...`) for the WSL commands below. `check_*.c` read the goldens from `$NTPERS_ROOT/tests/differential/golden/latest/` when the path relative to the current directory is not found. |
+| `NTPERS_STAGE_NT` (C macro) | NT path for the extra copies of probe JSON written by the `*_direct` probes on Windows. Set with `-DNTPERS_STAGE_NT=...`. The primary capture is stdout, so the default (`\??\mnt\share\.dodresult`) is fine when the copy fails. |
+
+## Syntax-check status
+
+Checked with the MSYS2 UCRT64 gcc (16.2.0):
+
+```sh
+gcc -fsyntax-only -Wall -Wextra -std=c11 -m64 -Isrc/ntdll -Isrc/loader -Isrc/kernel/nt -Isrc <file.c>
+```
+
+- `check_*.c`, `probes/*.c`, `tests/conformance/*.c` and `build/test_ntdll_pe.c` have no errors with these include directories.
+- Project headers: `nt_types.h` and `ntstatus.h` live in `src/ntdll`, and `pe_parse.h` in `src/loader`. `tests/conformance/test_nt_types.c` and `tests/differential/check_ntstatus.c` need `-Isrc/ntdll`. `tests/conformance/test_pe_parse.c` and `build/test_ntdll_pe.c` need `-Isrc/loader`.
+- Windows-specific headers: the probes include `<windows.h>` and `<winternl.h>` (mingw-w64 or Windows SDK). They do not build against glibc, so Linux needs a mingw-w64 cross toolchain. Under the MSYS2 mingw-w64 gcc they pass with warnings only: some probes re-declare NT structures and constants that `winternl.h` already defines, which gives "redefined" warnings. `tests/conformance/pe_fwd.c` and `pe_smoke.c` also include `<windows.h>`.
+- `check_*.c` and `tests/conformance/test_*.c` use only the C standard library and the project headers above.
 
 ## Building probes
 
@@ -51,7 +68,7 @@ Probes are plain C11, no CRT exotic deps, linked only against `ntdll.dll`/`kerne
 ```powershell
 # PowerShell -> WSL staging (handles spaces)
 Copy-Item tests\differential\probes\*.c -Destination $env:LOCALAPPDATA\Temp\opencode\ -Force
-wsl bash -c 'cp /mnt/c/Users/Jackson/AppData/Local/Temp/opencode/*.c /tmp/ && x86_64-w64-mingw32-gcc -O2 -m64 -o /tmp/probe_ntstatus.exe /tmp/probe_ntstatus.c && cp /tmp/probe_*.exe /mnt/c/Users/Jackson/AppData/Local/Temp/opencode/'
+wsl bash -c 'cp /mnt/c/Users/<you>/AppData/Local/Temp/opencode/*.c /tmp/ && x86_64-w64-mingw32-gcc -O2 -m64 -o /tmp/probe_ntstatus.exe /tmp/probe_ntstatus.c && cp /tmp/probe_*.exe /mnt/c/Users/<you>/AppData/Local/Temp/opencode/'
 Copy-Item $env:LOCALAPPDATA\Temp\opencode\probe*.exe -Destination tests\differential\build\ -Force
 ```
 
@@ -92,7 +109,7 @@ The same PE (`tests/differential/build/probe_*.exe`) is executed under the NT pe
 
 ```bash
 # in WSL, after booting ntpers
-"/path/to/ntpers-research/tests/differential/build/probe_ntstatus.exe" > /tmp/out.json
+"$NTPERS_ROOT/tests/differential/build/probe_ntstatus.exe" > /tmp/out.json
 # then diff
 diff -u tests/differential/golden/latest/probe_ntstatus.json /tmp/out.json
 ```
@@ -142,10 +159,10 @@ Same source, two build modes via `#ifdef NTPERS_VM`:
 # PowerShell -> WSL staging (handles spaces)
 Copy-Item tests\differential\probes\probe_sync_direct.c -Destination $env:LOCALAPPDATA\Temp\opencode\ -Force
 # WINDOWS build (GetProcAddress, correct SSN per host)
-wsl bash -c 'cp /mnt/c/Users/Jackson/AppData/Local/Temp/opencode/probe_sync_direct.c /tmp/probe_sync_direct.c && x86_64-w64-mingw32-gcc -mconsole -O2 -std=c11 -m64 -o /tmp/probe_sync_direct.exe /tmp/probe_sync_direct.c && cp /tmp/probe_sync_direct.exe /mnt/c/Users/Jackson/AppData/Local/Temp/opencode/probe_sync_direct.exe'
+wsl bash -c 'cp /mnt/c/Users/<you>/AppData/Local/Temp/opencode/probe_sync_direct.c /tmp/probe_sync_direct.c && x86_64-w64-mingw32-gcc -mconsole -O2 -std=c11 -m64 -o /tmp/probe_sync_direct.exe /tmp/probe_sync_direct.c && cp /tmp/probe_sync_direct.exe /mnt/c/Users/<you>/AppData/Local/Temp/opencode/probe_sync_direct.exe'
 Copy-Item $env:LOCALAPPDATA\Temp\opencode\probe_sync_direct.exe -Destination tests\differential\build\probe_sync_direct.exe -Force
 # VM build (raw syscalls, pinned SSNs)
-wsl bash -c 'cp /mnt/c/Users/Jackson/AppData/Local/Temp/opencode/probe_sync_direct.c /tmp/probe_sync_direct.c && x86_64-w64-mingw32-gcc -DNTPERS_VM -nostdlib -ffreestanding -fno-builtin -Wl,-e,_start -O2 -std=c11 -m64 -o /tmp/probe_sync_direct_vm.exe /tmp/probe_sync_direct.c && cp /tmp/probe_sync_direct_vm.exe /mnt/c/Users/Jackson/AppData/Local/Temp/opencode/probe_sync_direct_vm.exe'
+wsl bash -c 'cp /mnt/c/Users/<you>/AppData/Local/Temp/opencode/probe_sync_direct.c /tmp/probe_sync_direct.c && x86_64-w64-mingw32-gcc -DNTPERS_VM -nostdlib -ffreestanding -fno-builtin -Wl,-e,_start -O2 -std=c11 -m64 -o /tmp/probe_sync_direct_vm.exe /tmp/probe_sync_direct.c && cp /tmp/probe_sync_direct_vm.exe /mnt/c/Users/<you>/AppData/Local/Temp/opencode/probe_sync_direct_vm.exe'
 Copy-Item $env:LOCALAPPDATA\Temp\opencode\probe_sync_direct_vm.exe -Destination tests\differential\build\probe_sync_direct_vm.exe -Force
 ```
 
@@ -198,7 +215,7 @@ Keep old builds under `golden/<build>/`; do not delete them. `latest` is always 
 
 ## Troubleshooting
 
-- **`/mnt/c` copy invisible on Windows**: WSL's `/mnt/c` cache can lag. Always stage through `C:\Users\Jackson\AppData\Local\Temp\opencode` (visible to both sides) then `Copy-Item` via PowerShell.
+- **`/mnt/c` copy invisible on Windows**: WSL's `/mnt/c` cache can lag. Always stage through `%LOCALAPPDATA%\Temp\opencode` (visible to both sides) then `Copy-Item` via PowerShell.
 - **Probe prints non-JSON**: Ensure probe writes only JSON to stdout; use `fprintf(stderr, ...)` for diagnostics. The harness validates that output starts with `{`.
 - **Large `probe_sharemode.json` (2 MB) truncation**: Use `cmd /c '"exe" > "file"'` instead of PowerShell pipeline (`Out-String` truncates at 1000 chars). The harness does this correctly.
 - **GS inline asm errors**: `movl %gs:0x68, %k0` must use 32-bit tmp for `LastErrorValue`. See `probe_teb_peb.c` for the `uint32_t tmp` pattern.
