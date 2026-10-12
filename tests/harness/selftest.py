@@ -19,6 +19,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _paths import wsl_repo_root  # noqa: E402
+
 
 HARNESS = Path(__file__).resolve().with_name("dodrun.py")
 
@@ -492,7 +495,7 @@ def test_dualrun_wrapper_staleness_and_run_id(tmp: Path) -> None:
             env3["NTPERS_ALLOW_WRITE"] = "1"
             fres3 = pl.Path(__file__).resolve().parents[2] / "vm" / "freshness.sh"
             if _sys.platform == "win32":
-                wsl_root3 = "/path/to/ntpers-research"
+                wsl_root3 = wsl_repo_root()
                 subprocess.run(["wsl", "-d", "Ubuntu", "--", "bash", f"{wsl_root3}/vm/freshness.sh", "write"], capture_output=True, timeout=10, env=env3)
             else:
                 subprocess.run(["bash", str(fres3), "write"], capture_output=True, timeout=10, env=env3)
@@ -1047,7 +1050,7 @@ def test_freshness_missing_manifest_is_fail(tmp: Path) -> None:
     try:
         import platform as _pf
         if _pf.system() == "Windows":
-            wsl_root = "/path/to/ntpers-research"
+            wsl_root = wsl_repo_root()
             cmd = ["wsl", "-d", "Ubuntu", "--", "bash", f"{wsl_root}/vm/freshness.sh", "check"]
             proc = sp.run(cmd, capture_output=True, text=True, timeout=10)
         else:
@@ -1071,7 +1074,7 @@ def test_freshness_write_without_token_is_refused(tmp: Path) -> None:
     env = {k: v for k, v in __import__("os").environ.items()}
     env.pop("NTPERS_ALLOW_WRITE", None)
     if _pf.system() == "Windows":
-        wsl_root = "/path/to/ntpers-research"
+        wsl_root = wsl_repo_root()
         cmd = ["wsl", "-d", "Ubuntu", "--", "bash", "-c", f"cd {wsl_root} && freshness.sh write"]
         # Use bash -c with explicit path to avoid missing env
         cmd = ["wsl", "-d", "Ubuntu", "--", "bash", f"{wsl_root}/vm/freshness.sh", "write"]
@@ -1104,7 +1107,7 @@ def test_freshness_write_without_rebuild_is_refused(tmp: Path) -> None:
             env["NTPERS_ALLOW_WRITE"] = "1"
             import platform as _pf
             if _pf.system() == "Windows":
-                wsl_root = "/path/to/ntpers-research"
+                wsl_root = wsl_repo_root()
                 cmd = ["wsl", "-d", "Ubuntu", "--", "bash", f"{wsl_root}/vm/freshness.sh", "write"]
                 proc = sp.run(cmd, capture_output=True, text=True, timeout=10, env=env)
             else:
@@ -1143,7 +1146,7 @@ def test_initramfs_staleness_is_fail(tmp: Path) -> None:
         # freshness check should fail with initramfs stale
         import platform as _pf
         if _pf.system() == "Windows":
-            wsl_root = "/path/to/ntpers-research"
+            wsl_root = wsl_repo_root()
             cmd = ["wsl", "-d", "Ubuntu", "--", "bash", f"{wsl_root}/vm/freshness.sh", "check"]
             proc = sp.run(cmd, capture_output=True, text=True, timeout=10)
         else:
@@ -1177,7 +1180,7 @@ def test_initramfs_staleness_is_fail(tmp: Path) -> None:
             env = {k: v for k, v in _os2.environ.items()}
             env["NTPERS_ALLOW_WRITE"] = "1"
             if _pf.system() == "Windows":
-                wsl_root = "/path/to/ntpers-research"
+                wsl_root = wsl_repo_root()
                 _sp2.run(["wsl", "-d", "Ubuntu", "--", "bash", f"{wsl_root}/vm/freshness.sh", "write"], capture_output=True, timeout=10, env=env)
             else:
                 _sp2.run(["bash", str(freshness), "write"], capture_output=True, timeout=10, env=env)
@@ -1201,7 +1204,7 @@ def test_dll_staleness_is_fail(tmp: Path) -> None:
             fh.write(b"\x00")
         import platform as _pf
         if _pf.system() == "Windows":
-            wsl_root = "/path/to/ntpers-research"
+            wsl_root = wsl_repo_root()
             cmd = ["wsl", "-d", "Ubuntu", "--", "bash", f"{wsl_root}/vm/freshness.sh", "check"]
             proc = sp.run(cmd, capture_output=True, text=True, timeout=10)
         else:
@@ -1257,7 +1260,7 @@ def test_verifier_path_enforces_freshness(tmp: Path) -> None:
             env["NTPERS_ALLOW_WRITE"] = "1"
             import platform as _pf
             if _pf.system() == "Windows":
-                wsl_root = "/path/to/ntpers-research"
+                wsl_root = wsl_repo_root()
                 sp.run(["wsl", "-d", "Ubuntu", "--", "bash", f"{wsl_root}/vm/freshness.sh", "write"], capture_output=True, timeout=10, env=env)
             else:
                 sp.run(["bash", str(freshness), "write"], capture_output=True, timeout=10, env=env)
@@ -1330,7 +1333,7 @@ def test_golden_resolution_without_symlink(tmp: Path) -> None:
                 pass
         if had_latest:
             if is_windows:
-                wsl_root = "/path/to/ntpers-research"
+                wsl_root = wsl_repo_root()
                 sp.run(["wsl", "-d", "Ubuntu", "--", "bash", "-c", f"mv '{wsl_root}/tests/differential/golden/latest' '{wsl_root}/tests/differential/golden/latest.off.selftest'"], check=False)
             else:
                 latest.rename(backup_path)
@@ -1378,7 +1381,7 @@ def test_golden_resolution_without_symlink(tmp: Path) -> None:
     finally:
         if moved:
             if is_windows:
-                wsl_root = "/path/to/ntpers-research"
+                wsl_root = wsl_repo_root()
                 sp.run(["wsl", "-d", "Ubuntu", "--", "bash", "-c", f"mv '{wsl_root}/tests/differential/golden/latest.off.selftest' '{wsl_root}/tests/differential/golden/latest' 2>/dev/null || bash '{wsl_root}/vm/golden_latest.sh'"], capture_output=True)
             else:
                 try:
