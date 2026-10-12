@@ -5,6 +5,22 @@
  * mirror the kernel APIs the loader calls, so the *logic* of base selection,
  * section mapping, relocation, PEB/TEB construction and stack layout can be
  * exercised without booting a kernel.
+ *
+ * Signatures follow mainline Linux (the same shapes as the syntax stubs under
+ * tests/syntax/shim/linux/), e.g.
+ *     ssize_t kernel_read(struct file *file, void *buf, size_t count, loff_t *pos);
+ * pos is in/out: the read starts at *pos and *pos advances by the bytes read.
+ *
+ * TIF_NTABI and TIF_NTSUSPEND are NOT defined by this model. The loader
+ * (binfmt_pe.c) uses TIF_NTABI, so they must come from the kernel build, i.e.
+ * from the kernel patches in src/kernel/patches/. Verified against the patch
+ * set: 0001-nt-personality-dispatch.patch defines TIF_NTABI as 29 (in
+ * arch/x86/include/asm/thread_info.h). TIF_NTSUSPEND is not in any patch under
+ * src/kernel/patches/; the only value in the repo is 30, a fallback #define in
+ * src/kernel/nt/proc_thread.c and arch/x86/nt/proc_thread.c, and
+ * vm/rebuild_kdir.sh adds it. The 32/33 values in tests/syntax/shim/linux/
+ * thread_info.h are syntax-check placeholders only and must not be used.
+ * See docs/KNOWN-ISSUES.md.
  */
 
 #ifndef KSHIM_H
@@ -21,7 +37,12 @@
 #include <fcntl.h>
 #include <assert.h>
 #include <stdint.h>
+#include <signal.h>
 #include <sys/syscall.h>
+#include <linux/cred.h>
+
+/* Matches tests/syntax/shim/kernel_compat.h; the typedef may repeat. */
+typedef long long loff_t;
 
 /* pe_format.h defines u8/u16/u32/u64 in userspace.  Include it first so the
  * shim can use those names without redeclaring them. */
@@ -30,21 +51,37 @@
 /* -------------------------------------------------------------------------- */
 /* Minimal kernel types                                                       */
 /* -------------------------------------------------------------------------- */
+struct thread_struct {
+    unsigned short gsindex;
+    unsigned long gsbase;
+};
+
 struct task_struct {
     int pid;
     void *gsbase;
     int nt_abi;
+    struct mm_struct *mm;
+    struct thread_struct thread;
 };
 
 struct mm_struct {
     int pe_image;
     u64 mmap_base_hint;
+    unsigned long start_code, end_code;
+    unsigned long start_data, end_data;
+    unsigned long start_brk, brk;
+    unsigned long start_stack;
 };
+
+struct inode;
 
 struct file {
     int fd;
     u64 size;
+    struct inode *f_inode;
 };
+
+typedef unsigned short WCHAR;
 
 struct pt_regs {
     unsigned long cx;
@@ -58,6 +95,7 @@ struct linux_binprm {
     size_t buf_len;
     struct file *file;
     struct mm_struct *mm;
+    struct cred *cred;
     struct pt_regs *regs;
     /* test-only: argv/env passed via bprm for command-line tests */
     int argc;
@@ -70,7 +108,9 @@ struct linux_binprm {
 
 static inline struct task_struct *kshim_current_task(void)
 {
+    static struct mm_struct kshim_mm;
     static struct task_struct t = { .pid = 42, .gsbase = NULL, .nt_abi = 0 };
+    t.mm = &kshim_mm;
     return &t;
 }
 
@@ -111,6 +151,13 @@ static inline struct task_struct *kshim_current_task(void)
 #endif
 #ifndef MAP_DENYWRITE
 #define MAP_DENYWRITE       0x000800
+#endif
+
+#ifndef O_NONBLOCK
+#define O_NONBLOCK 04000
+#endif
+#ifndef O_NOFOLLOW
+#define O_NOFOLLOW 0400000
 #endif
 
 #define GFP_KERNEL 0
@@ -243,12 +290,14 @@ static inline void kshim_mapping_reset(void)
 }
 
 __attribute__((no_sanitize_address))
-static inline long kernel_read(struct file *f, u64 offset, void *buf, unsigned long count)
+static inline ssize_t kernel_read(struct file *f, void *buf, size_t count, loff_t *pos)
 {
+    ssize_t n;
     if (!f || f->fd < 0) return -1;
-    if (lseek(f->fd, (off_t)offset, SEEK_SET) < 0) return -errno;
-    ssize_t n = (ssize_t)syscall(SYS_read, f->fd, buf, count);
+    if (lseek(f->fd, (off_t)*pos, SEEK_SET) < 0) return -errno;
+    n = (ssize_t)syscall(SYS_read, f->fd, buf, count);
     if (n < 0) return -errno;
+    *pos += n;
     return n;
 }
 
@@ -377,9 +426,20 @@ static inline int set_user_gsbase(struct task_struct *task, unsigned long base)
     return 0;
 }
 
+/* Model of the kernel's NT personality entry. binfmt_pe.c defines its own
+ * nt_enter_personality() only when CONFIG_NT_PERSONALITY is off; it skips that
+ * definition under KSHIM_H so this one is the only definition in the test
+ * build. */
 static inline void nt_enter_personality(struct task_struct *task)
 {
     task->nt_abi = 1;
+}
+
+/* Model of force_sigsegv(int sig). The loader ignores the return value. */
+static inline int force_sigsegv(int sig)
+{
+    (void)sig;
+    return 0;
 }
 
 /* Misc */
