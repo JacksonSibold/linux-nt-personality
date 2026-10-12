@@ -64,7 +64,7 @@ all: test
 # Each fixture gets one rule below and is listed in FIX_EXES.
 FIX_SRC     := fixtures
 FIX_OUT     := $(OUT)/fixtures
-FIX_EXES    := $(FIX_OUT)/minimal.exe
+FIX_EXES    := $(FIX_OUT)/minimal.exe $(FIX_OUT)/exports.dll
 FIX_CFLAGS  := -std=c11 -O1 -fno-pic -fno-stack-protector -fno-ident -Wall -Wextra -Werror
 FIX_LDFLAGS := -fno-use-linker-plugin -nostdlib
 
@@ -87,6 +87,9 @@ $(REAL_TEST): $(REAL_OBJS)
 
 $(FIX_OUT)/minimal.exe: $(FIX_SRC)/minimal.c | $(FIX_OUT)
 	$(CC) $(FIX_CFLAGS) $(FIX_LDFLAGS) -Wl,-e,minimal_entry $< -o $@
+
+$(FIX_OUT)/exports.dll: $(FIX_SRC)/exports.c $(FIX_SRC)/exports.def | $(FIX_OUT)
+	$(CC) $(FIX_CFLAGS) $(FIX_LDFLAGS) -shared -Wl,-e,exports_entry $(FIX_SRC)/exports.c $(FIX_SRC)/exports.def -o $@
 
 $(FIX_OUT):
 	mkdir -p $(FIX_OUT)

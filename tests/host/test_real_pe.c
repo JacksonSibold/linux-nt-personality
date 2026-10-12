@@ -221,6 +221,13 @@ static pe_status_t take_rf(void *user, const pe_runtime_function_t *rf)
     return PE_OK;
 }
 
+static pe_status_t count_rf(void *user, const pe_runtime_function_t *rf)
+{
+    (void)rf;
+    ++*(unsigned *)user;
+    return PE_OK;
+}
+
 static void test_minimal_walkers(void)
 {
     real_image_t img;
@@ -259,6 +266,147 @@ static void test_minimal_walkers(void)
 }
 
 /* -------------------------------------------------------------------------- */
+/* (b) exports.dll: named, ordinal-only, DATA exports and forwarders          */
+/* -------------------------------------------------------------------------- */
+#define MAX_SEEN 16
+
+typedef struct seen_export {
+    u32 ordinal;
+    u32 rva;
+    int has_name;
+    char name[64];
+    int has_fwd;
+    char fwd[64];
+} seen_export_t;
+
+typedef struct export_log {
+    unsigned n;
+    seen_export_t e[MAX_SEEN];
+} export_log_t;
+
+static void copy_str(char *dst, size_t cap, const char *src, size_t len)
+{
+    size_t k = len < cap - 1 ? len : cap - 1;
+    memcpy(dst, src, k);
+    dst[k] = '\0';
+}
+
+static pe_status_t log_export(void *user, const pe_export_entry_t *e)
+{
+    export_log_t *log = user;
+    seen_export_t *s;
+    if (log->n >= MAX_SEEN)
+        return PE_ERR_CORRUPT;
+    s = &log->e[log->n++];
+    s->ordinal = e->ordinal;
+    s->rva = e->rva;
+    s->has_name = e->name != NULL;
+    if (e->name)
+        copy_str(s->name, sizeof s->name, e->name, e->name_len);
+    s->has_fwd = e->forwarder != NULL;
+    if (e->forwarder)
+        copy_str(s->fwd, sizeof s->fwd, e->forwarder, e->forwarder_len);
+    return PE_OK;
+}
+
+static void expect_export(const export_log_t *log, unsigned i,
+                          u32 ord, u32 rva, const char *name,
+                          const char *fwd)
+{
+    const seen_export_t *s;
+    if (i >= log->n) {
+        MT_EXPECT(i < log->n);
+        return;
+    }
+    s = &log->e[i];
+    MT_EXPECT_EQ(s->ordinal, ord);
+    if (!fwd)  /* a forwarder's RVA points at its string, not code */
+        MT_EXPECT_EQ(s->rva, rva);
+    MT_EXPECT_EQ(s->has_name, name != NULL);
+    if (name)
+        MT_EXPECT(strcmp(s->name, name) == 0);
+    MT_EXPECT_EQ(s->has_fwd, fwd != NULL);
+    if (fwd)
+        MT_EXPECT(strcmp(s->fwd, fwd) == 0);
+}
+
+static void test_exports_dll_validates(void)
+{
+    real_image_t img;
+    MT_ASSERT(real_load(&img, "exports.dll"));
+    MT_EXPECT_EQ(pe_validate(&img.ctx), PE_OK);
+    real_unload(&img);
+}
+
+/* Named exports come first in name-table order, then unnamed functions in
+ * ordinal order. Ordinals are biased by the directory's Base (1). */
+static void test_exports_dll_walk(void)
+{
+    real_image_t img;
+    export_log_t log;
+
+    MT_ASSERT(real_load(&img, "exports.dll"));
+    MT_ASSERT(pe_validate(&img.ctx) == PE_OK);
+
+    memset(&log, 0, sizeof log);
+    MT_ASSERT(pe_exports_walk(&img.ctx, log_export, &log) == PE_OK);
+    MT_EXPECT_EQ(log.n, 7);
+
+    expect_export(&log, 0, 1, 0x1000, "alpha_fn", NULL);
+    expect_export(&log, 1, 2, 0x1006, "beta_fn", NULL);
+    expect_export(&log, 2, 4, 0, "delta_fwd", "kernel32.HeapAlloc");
+    expect_export(&log, 3, 5, 0x2000, "exports_counter", NULL);
+    expect_export(&log, 4, 3, 0, "gamma_fwd", "ntdll.RtlAllocateHeap");
+    expect_export(&log, 5, 10, 0x100c, NULL, NULL);
+    expect_export(&log, 6, 11, 0, NULL, "ntdll.RtlFreeHeap");
+    real_unload(&img);
+}
+
+static void test_exports_dll_find(void)
+{
+    real_image_t img;
+    pe_export_entry_t e;
+
+    MT_ASSERT(real_load(&img, "exports.dll"));
+    MT_ASSERT(pe_validate(&img.ctx) == PE_OK);
+
+    MT_EXPECT_EQ(pe_export_find(&img.ctx, "alpha_fn", 8, &e), PE_OK);
+    MT_EXPECT_EQ(e.ordinal, 1);
+    MT_EXPECT_EQ(e.rva, 0x1000);
+    MT_EXPECT(e.forwarder == NULL);
+
+    MT_EXPECT_EQ(pe_export_find(&img.ctx, "gamma_fwd", 9, &e), PE_OK);
+    MT_EXPECT_EQ(e.ordinal, 3);
+    MT_ASSERT(e.forwarder != NULL);
+    MT_EXPECT_EQ(e.forwarder_len, 21);          /* "ntdll.RtlAllocateHeap" */
+    MT_EXPECT(memcmp(e.forwarder, "ntdll.RtlAllocateHeap", 21) == 0);
+
+    /* Exported by ordinal only: no name to find. */
+    MT_EXPECT_EQ(pe_export_find(&img.ctx, "hidden_fn", 9, &e), PE_ERR_NOT_FOUND);
+    MT_EXPECT_EQ(pe_export_find(&img.ctx, "no_such", 7, &e), PE_ERR_NOT_FOUND);
+    real_unload(&img);
+}
+
+static void test_exports_dll_directories(void)
+{
+    real_image_t img;
+    pe_data_directory_t d;
+    unsigned n = 0;
+
+    MT_ASSERT(real_load(&img, "exports.dll"));
+    MT_ASSERT(pe_validate(&img.ctx) == PE_OK);
+
+    MT_ASSERT(pe_directory_get(&img.ctx, IMAGE_DIRECTORY_ENTRY_EXPORT, &d) == PE_OK);
+    MT_EXPECT_EQ(d.rva, 0x6000);
+    MT_EXPECT_EQ(d.size, 0x100);
+
+    /* Four RUNTIME_FUNCTION entries, one per function that has code. */
+    MT_EXPECT_EQ(pe_exception_walk(&img.ctx, count_rf, &n), PE_OK);
+    MT_EXPECT_EQ(n, 4);
+    real_unload(&img);
+}
+
+/* -------------------------------------------------------------------------- */
 /* Runner                                                                     */
 /* -------------------------------------------------------------------------- */
 static const mt_case_t cases[] = {
@@ -268,6 +416,10 @@ static const mt_case_t cases[] = {
     MT_CASE(test_minimal_directories),
     MT_CASE(test_minimal_rva_translation),
     MT_CASE(test_minimal_walkers),
+    MT_CASE(test_exports_dll_validates),
+    MT_CASE(test_exports_dll_walk),
+    MT_CASE(test_exports_dll_find),
+    MT_CASE(test_exports_dll_directories),
 };
 
 int main(void)
