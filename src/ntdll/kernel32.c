@@ -550,8 +550,17 @@ DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms){
     return r;
 }
 DWORD WINAPI WaitForMultipleObjects(DWORD n, const HANDLE *hs, BOOL waitAll, DWORD ms){ (void)n;(void)hs;(void)waitAll;(void)ms; return 0; }
+__declspec(dllimport) extern NTSTATUS NtDuplicateObject(HANDLE, HANDLE, HANDLE, PHANDLE, ACCESS_MASK, ULONG, ULONG);
+/* K32-13: the target gets a handle to the same object, from NtDuplicateObject.
+ * OBJ_INHERIT is 0x2; DUPLICATE_CLOSE_SOURCE and DUPLICATE_SAME_ACCESS keep
+ * the Win32 values. */
 BOOL WINAPI DuplicateHandle(HANDLE srcP, HANDLE src, HANDLE dstP, HANDLE *dst, DWORD access, BOOL inh, DWORD opts){
-    (void)srcP;(void)src;(void)dstP;(void)dst;(void)access;(void)inh;(void)opts; SetLastError(0); if(dst) *dst=src; return 1;
+    HANDLE out = NULL;
+    NTSTATUS s = NtDuplicateObject(srcP, src, dstP, &out, access, inh ? 0x2 : 0, opts);
+    if (s != STATUS_SUCCESS) { SetLastErrorFromStatus(s); return 0; }
+    if (dst) *dst = out;
+    SetLastError(0);
+    return 1;
 }
 BOOL WINAPI GetHandleInformation(HANDLE h, DWORD *flags){ (void)h; if(flags) *flags=0; return 1; }
 DWORD WINAPI GetProcessHandleCount(HANDLE p, DWORD *cnt){ (void)p; if(cnt) *cnt=5; return 1; }
