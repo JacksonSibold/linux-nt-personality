@@ -74,7 +74,7 @@ row is corrected here.
 | File | start | now | Warnings (now) |
 |------|-------|-----|----------------|
 | `arch/x86/nt/dispatch.c` | FAIL | FAIL | 49 |
-| `arch/x86/nt/kernel_stubs.c` | FAIL | FAIL | 0 |
+| `arch/x86/nt/kernel_stubs.c` | FAIL | PASS | 0 |
 | `arch/x86/nt/mm.c` | FAIL | PASS | 4 |
 | `arch/x86/nt/nt_io.c` | PASS | PASS | 8 |
 | `arch/x86/nt/nt_services.c` | PASS | PASS | 17 |
@@ -143,8 +143,8 @@ row is corrected here.
   loader code, not model code, so they are left.
 - `src/kernel/fs/binfmt_pe_test.c` also pulls in `binfmt_pe.c` through
   `#include`, so the `binfmt_pe.c` errors above block it too.
-- `arch/x86/nt/kernel_stubs.c`: not C. The file is six bytes (`test` and CRLF),
-  committed that way. It is not deleted; the owner decides.
+- `arch/x86/nt/kernel_stubs.c`: fixed in 974db57 (record 0027). It was six
+  bytes (`test` and CRLF) and is now the NT banner translation unit.
 
 ## Defects fixed in this pass
 

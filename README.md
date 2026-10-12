@@ -14,7 +14,7 @@ Each statement links to the file it comes from. These are recorded results; they
 - **Architecture.** [docs/phase2/ARCHITECTURE-STATUS.md](docs/phase2/ARCHITECTURE-STATUS.md) rates 21 components named in the architecture document: 0 implemented, 14 partial, 1 stub, 6 missing.
 - **Static review.** [docs/review/INDEX.md](docs/review/INDEX.md) (read-only, 2026-10-12, nothing compiled or run) lists **137 findings** in four reports: 28 high, 43 medium, 60 low, 6 info. [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) uses the same totals. Of the 137, 36 are recorded as fixed, 5 partly fixed, 1 blocked, 4 need no change and 91 are open ([fix status](docs/review/INDEX.md#fix-status)). Decision records are indexed in [docs/decisions/INDEX.md](docs/decisions/INDEX.md).
 - **Modules.** Eleven module reference pages cover `src/kernel/nt/` ([docs/modules/INDEX.md](docs/modules/INDEX.md)). Known gaps per module are listed in [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md).
-- **Syntax check.** [tests/syntax/README.md](tests/syntax/README.md) records 32 of 37 kernel-facing files passing `gcc -fsyntax-only` against the userspace shims with MinGW gcc 16.2 (re-run 2026-10-12, same result). The five failures are two copies of `dispatch.c`, `binfmt_pe.c`, `binfmt_pe_test.c` and `kernel_stubs.c`, which is not C.
+- **Syntax check.** [tests/syntax/README.md](tests/syntax/README.md) records 32 of 37 kernel-facing files passing `gcc -fsyntax-only` against the userspace shims with MinGW gcc 16.2 (re-run 2026-10-12, same result). The five failures are two copies of `dispatch.c`, `kshim.c`, `binfmt_pe.c` and `binfmt_pe_test.c`.
 - **Build and boot.** No kernel build, VM boot or conformance run is recorded in this repository.
 
 ## Repository map
