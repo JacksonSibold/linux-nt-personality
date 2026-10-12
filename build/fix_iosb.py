@@ -19,10 +19,14 @@ accessors that are correct in both build modes and route every access through
 them. Reads of IoStatusBlock->Information have the same defect and are fixed
 too.
 """
+import os
 import re
 import sys
 
-PATH = "/root/ntpers/linux-6.18/arch/x86/nt/nt_io.c"
+# Linux 6.18 tree in WSL. NTPERS_LINUX overrides the default ~/ntpers/linux-6.18.
+LINUX_TREE = os.environ.get("NTPERS_LINUX") or os.path.join(
+    os.path.expanduser("~"), "ntpers", "linux-6.18")
+PATH = os.path.join(LINUX_TREE, "arch", "x86", "nt", "nt_io.c")
 
 HELPER = r"""
 /*
