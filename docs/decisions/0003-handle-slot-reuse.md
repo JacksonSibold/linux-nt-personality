@@ -1,6 +1,6 @@
 # 0003: Handle slot reuse and index exhaustion (H-2)
 
-Status: Proposed. Changes handle-table internals and needs an aliasing policy. Not implemented.
+Status: Accepted (option 1, FIFO quarantine). Implemented in d7adc94. The record's sketch did not cover the gap-slot pushes and unlinks in ObpCreateHandleAtIndex; those now maintain last_free and free_count. Option 2 (generation counter) is still open for the ABI review.
 Finding: `docs/review/kernel-nt.md` H-2 (Medium).
 Date: 2026-10-12
 

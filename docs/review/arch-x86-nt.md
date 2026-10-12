@@ -46,7 +46,7 @@ Most High items fall into four groups: information disclosure to user space (ker
 ## Build
 
 ### B-1 [High] kernel_stubs.c does not compile
-- **Status:** decision recorded in docs/decisions/0027-arch-kernel-stubs-file.md; not implemented (kernel source, out of scope for this batch).
+- **Status:** blocked. Decision 0027 needs an owner; see the note in that record.
 - `arch/x86/nt/kernel_stubs.c:1` contains only the token `test` followed by CRLF. `arch/x86/nt/Makefile:36` builds `kernel_stubs.o` whenever `CONFIG_NT_PERSONALITY` is set, so the build fails.
 - No `kernel_stubs.c` exists in `src/kernel/nt/`, so nothing overrides it.
 - Fix: delete the file and its Makefile line, or restore the intended content.
@@ -281,13 +281,13 @@ Checked and found correct in proc_thread.c: `NtQueryInformationProcess` class 0 
 - Fix: put the table in `nt_eprocess` and check the owner on every lookup.
 
 ### IO-4 [High] No access rights enforced on read, write, query, set, flush, or disposition
-- **Status:** decision recorded in docs/decisions/0023-arch-file-access-rights.md; not implemented (kernel source, out of scope for this batch).
+- **Status:** blocked. Decision 0023 needs an owner; see the note in that record.
 - `arch/x86/nt/nt_io.c:1890` (NtReadFile), `1962` (NtWriteFile), `2150` (NtQueryInformationFile), `2327` (NtSetInformationFile), `2416` (NtFlushBuffersFile): `ntio_handle_lookup(FileHandle, 0)` passes `required = 0`, so the granted access on the handle is never checked.
 - A handle opened with only `SYNCHRONIZE` can be written. `ntio_set_disposition` (`nt_io.c:2247-2257`) sets `delete_pending` without any `DELETE` check.
 - Fix: pass the right needed by each operation (`FILE_READ_DATA`, `FILE_WRITE_DATA | FILE_APPEND_DATA`, `FILE_READ_ATTRIBUTES`, `FILE_WRITE_ATTRIBUTES`, `DELETE`) to `ntio_handle_lookup`.
 
 ### IO-5 [High] FILE_SUPERSEDE deletes the existing file before the open can succeed
-- **Status:** decision recorded in docs/decisions/0024-arch-supersede-unlink-order.md; not implemented (kernel source, out of scope for this batch).
+- **Status:** blocked. Decision 0024 needs a revised patch sketch; see the note in that record.
 - `arch/x86/nt/nt_io.c:1106-1108` (kernel branch): `kshim_vfs_unlink(path)` runs in `ntio_apply_disposition` for `FILE_SUPERSEDE`. That function is called at `nt_io.c:1303`, before the share check (`1489`) and before the open succeeds.
 - If the share check or the open then fails, the original file has already been deleted.
 - Fix: open the existing file first and replace it only after success, or use a rename of the old inode into a temporary name that is removed on success.

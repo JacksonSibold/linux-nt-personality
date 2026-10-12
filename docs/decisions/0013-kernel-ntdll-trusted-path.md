@@ -1,6 +1,6 @@
 # 0013: ntdll is loaded from a world-writable path (K-5)
 
-Status: Proposed. Kernel source (`src/kernel/fs`). Recorded only in this batch, not implemented.
+Status: Accepted (options 1 and 2). Implemented in 13a4357.
 Finding: `docs/review/kernel-fs.md` K-5 (High).
 Date: 2026-10-12
 

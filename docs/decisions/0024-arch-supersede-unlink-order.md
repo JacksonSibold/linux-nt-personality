@@ -1,6 +1,6 @@
 # 0024: FILE_SUPERSEDE deletes the file before the open can succeed (arch IO-5)
 
-Status: Proposed. Arch source (`arch/x86/nt`). Recorded only in this batch, not implemented.
+Status: Proposed. Blocked/needs owner (see the note at the end). Not implemented.
 Finding: `docs/review/arch-x86-nt.md` IO-5 (High).
 Date: 2026-10-12
 
@@ -32,3 +32,12 @@ Option 1, provided nothing after the new point can fail. Otherwise option 2.
 ## Not verified
 
 Not built or run. The order of the share check and open within `nt_io.c` was taken from the review's line references.
+
+## Blocked/needs owner
+
+Not implemented. The patch sketch is incomplete. Two points in the record do not match the code:
+
+- The share check (`nt_io.c:1489`) runs after the open (`:1407`), not before it.
+- The `FILE_SUPERSEDE` path sets `O_CREAT | O_TRUNC` (`ntio_apply_disposition`, `:1101-1111`). The open therefore truncates the existing file before the share check. Moving the unlink alone still loses the contents when the share check fails.
+
+Needs an owner decision between option 2 (rename aside, unlink on success, rename back on failure) and dropping `O_TRUNC` for the superseded case with a truncate after success. Both change the open sequence.

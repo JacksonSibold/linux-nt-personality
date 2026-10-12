@@ -35,19 +35,19 @@ Most of the High items are memory-safety or exec-contract problems in the loader
 - Fix: require `nt_off + 24 + 88 <= n` (or `headers_size`), and require `size_opt >= 88` (preferably 240 for PE32+) before reading the optional header fields.
 
 ### K-3 [High] Sections are left writable and executable
-- **Status:** decision recorded in docs/decisions/0011-kernel-wx-sections.md; not implemented (kernel source, out of scope for this batch).
+- **Status:** blocked. Decision 0011 needs an owner; see the note in that record.
 - `src/kernel/fs/binfmt_pe.c:437-438` (`pe_map_sections`) and `712-713` (`pe_map_ntdll`): every section is mapped with `prot | PROT_WRITE`. Nothing in the file calls `mprotect`, `vm_mprotect`, or `mprotect_fixup` afterward, so code sections end up RWX and read-only data ends up writable.
 - The NT VAD is given the correct protection (`pe_nt_prot_from_chars` at 446-447 and 718-719), so the NT view and the real page tables disagree.
 - Fix: after copying section contents, change protection to `prot` under `mmap_write_lock(current->mm)` (for example via `vm_mprotect` or `mprotect_fixup`). Consider mapping with the final protection and copying through a kernel buffer where possible.
 
 ### K-4 [High] Error returns after begin_new_exec (point of no return)
-- **Status:** decision recorded in docs/decisions/0012-kernel-post-commit-exec-failure.md; not implemented (kernel source, out of scope for this batch).
+- **Status:** fixed in 8eac32c (decision 0012, option 2). Failures before `begin_new_exec` are unchanged.
 - `src/kernel/fs/binfmt_pe.c:906` calls `begin_new_exec()`. After that point the old mm is gone. The following failures still do `goto out` and return an error from `load_pe_binary`: `setup_arg_pages` (915), `pe_pick_base` (924), `pe_map_sections` (927), `pe_apply_relocs` (930), `pe_setup_stack` (933), `pe_build_process_parameters` (936), `pe_init_peb` (939), `pe_init_teb` (942), and the TEB range check (1028-1029).
 - The exec core cannot roll back a committed exec. Returning an error here leaves the task with a partially built or empty address space and a stale `bprm`.
 - Fix: move every fallible step before `begin_new_exec`, or, after commit, call `force_sigsegv(SIGSEGV)` and return 0, as `load_elf_binary` does for post-commit failures.
 
 ### K-5 [High] ntdll is loaded from a world-writable location with no trust checks
-- **Status:** decision recorded in docs/decisions/0013-kernel-ntdll-trusted-path.md; not implemented (kernel source, out of scope for this batch).
+- **Status:** fixed in 13a4357 (decision 0013, options 1 and 2).
 - `src/kernel/fs/binfmt_pe.c:622-631` (`pe_map_ntdll`): candidate paths are `/ntdll.dll`, `/windows/system32/ntdll.dll`, and `/tmp/ntdll.dll`. The file is opened with `filp_open(O_RDONLY)` and used with no owner, mode, or regular-file check.
 - If the first two are absent, any local user can create `/tmp/ntdll.dll`. Its `LdrInitializeThunk` then becomes the entry point of every PE process (lines 851-855, 952-953).
 - A FIFO at that path makes `filp_open` block inside exec (no `O_NONBLOCK`).
@@ -78,7 +78,7 @@ Most of the High items are memory-safety or exec-contract problems in the loader
 - Fix: free the nodes without unmapping them (for example a `pe_state_free_nodes` helper), and `kfree` the buffer before clearing the pointer.
 
 ### K-10 [Medium] ntmm_add_region() return values ignored
-- **Status:** decision recorded in docs/decisions/0014-kernel-ntmm-add-region-results.md; not implemented (kernel source, out of scope for this batch).
+- **Status:** fixed in 7729288 (decision 0014, option 1). A region conflict in the ntdll mapping is now fatal; other ntdll failures still fall back to the exe entry.
 - `src/kernel/fs/binfmt_pe.c:407`, `447`, `552`, `570`, `594`, `686`, `719`, `876`: each call is made under `#ifdef CONFIG_NT_PERSONALITY` and its `NTSTATUS` result is discarded.
 - `ntmm_add_region` can fail with `STATUS_CONFLICTING_ADDRESSES` or `STATUS_NO_MEMORY` (`arch/x86/nt/mm.c:1660-1686`). The NT VAD table then silently disagrees with the real mappings. See the arch report, M-1, for why the table is global and not reset.
 - Fix: check each result and fail the exec (before commit, see K-4) or at least log it.
@@ -89,13 +89,13 @@ Most of the High items are memory-safety or exec-contract problems in the loader
 - Fix: compare in `u64`, and cap `reloc_size` (for example to file size and a fixed maximum such as 16 MiB).
 
 ### K-12 [Low] Weak NtTerminateProcess ignores the handle; comment is wrong
-- **Status:** decision recorded in docs/decisions/0015-kernel-weak-terminate-process.md; not implemented (kernel source, out of scope for this batch).
+- **Status:** fixed in 83e3349 (decision 0015, option 1).
 - `src/kernel/fs/binfmt_pe.c:1043-1060`: the fallback definition calls `do_group_exit` on the caller for any handle value, including handles to other processes. The comment at 1044-1046 calls it a "strong override", but the definition is `__attribute__((weak))`.
 - The strong definition in `arch/x86/nt/proc_thread.c:1545` is used when that object is linked. If it is not, the fallback kills the caller.
 - Fix: make the fallback return `STATUS_NOT_IMPLEMENTED`, or honor the handle. Correct the comment.
 
 ### K-13 [Low] clear_user() return values ignored
-- **Status:** decision recorded in docs/decisions/0016-kernel-clear-user-return.md; not implemented (kernel source, out of scope for this batch).
+- **Status:** fixed in 419f675 (decision 0016, option 1). Copy and zeroing failures in the ntdll mapping are now fatal, not a fallback.
 - `src/kernel/fs/binfmt_pe.c:421`, `464`, `698`, `734`: a failed `clear_user` leaves the new mapping partly non-zero, which can leak bytes from the file's unused data into BSS.
 - Fix: check the return and fail with `-EFAULT`.
 

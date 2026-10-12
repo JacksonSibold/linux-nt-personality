@@ -1,6 +1,6 @@
 # 0016: clear_user() return values are ignored in the exec path (K-13)
 
-Status: Proposed. Kernel source (`src/kernel/fs`). Recorded only in this batch, not implemented.
+Status: Accepted (option 1). Implemented in 419f675. Behaviour change: -EFAULT from pe_map_ntdll is now fatal, which also covers the existing copy_to_user failures in that function.
 Finding: `docs/review/kernel-fs.md` K-13 (Low).
 Date: 2026-10-12
 

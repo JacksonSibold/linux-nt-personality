@@ -1,6 +1,6 @@
 # 0005: VAD state rollback on failed commit or decommit (M-4)
 
-Status: Proposed. Changes VAD update ordering under the MM lock. Not implemented.
+Status: Proposed. Blocked/needs owner (see the note at the end). Not implemented.
 Finding: `docs/review/kernel-nt.md` M-4 (Medium).
 Date: 2026-10-12
 
@@ -40,3 +40,7 @@ Option 1. It makes the mutation infallible, so no rollback is needed for the VAD
 ## Open questions
 
 - Whether a test-only fault-injection hook for `kshim_mmap_commit` and `nt_vad_split` is acceptable in the kernel build, or whether the test should be built only for `__KERNEL__ == 0`.
+
+## Blocked/needs owner
+
+Not implemented. Option 1 is not a small change. It needs a preallocated split-node array taken under `ntmm_lock`, a new `nt_vad_split_into` variant, and restore code for the commit and decommit paths, with the M-6 overflow fix folded in. None of that can be checked in this batch, because the kernel tests (`mm_test.c`, `tests/kernel-host`) are not run here. The empty rollback at `mm.c:1061-1075` is still in place.

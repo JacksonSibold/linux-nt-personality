@@ -1,6 +1,6 @@
 # 0012: Error returns after the point of no return in PE exec (K-4)
 
-Status: Proposed. Kernel source (`src/kernel/fs`). Recorded only in this batch, not implemented.
+Status: Accepted (option 2, with the TEB range check kept after commit). Implemented in 8eac32c. Failures before begin_new_exec are unchanged.
 Finding: `docs/review/kernel-fs.md` K-4 (High).
 Date: 2026-10-12
 

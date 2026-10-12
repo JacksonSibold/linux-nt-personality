@@ -1,6 +1,6 @@
 # 0023: No access rights enforced on file operations (arch IO-4)
 
-Status: Proposed. Arch source (`arch/x86/nt`). Recorded only in this batch, not implemented.
+Status: Proposed. Blocked/needs owner (see the note at the end). Not implemented.
 Finding: `docs/review/arch-x86-nt.md` IO-4 (High).
 Date: 2026-10-12
 
@@ -36,3 +36,7 @@ Option 1. Use the minimal right per information class (query and set classes dif
 ## Not verified
 
 Not built or run. The exact rights per class of `NtQueryInformationFile` and `NtSetInformationFile` should be checked against the NT documentation when implementing.
+
+## Blocked/needs owner
+
+Not implemented. `ntio_handle_lookup` returns NULL on a right mismatch (`nt_io.c:412-414`), and every caller maps NULL to `STATUS_INVALID_HANDLE`. The test plan expects `STATUS_ACCESS_DENIED`, so the status to return needs an owner decision. The right per information class also needs checking against the NT documentation, as the record says. Callers that open handles with restricted rights (for example `SYNCHRONIZE` only) would change behaviour, and nothing in this batch checks which callers do that.

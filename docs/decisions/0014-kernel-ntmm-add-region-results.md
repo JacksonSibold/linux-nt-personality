@@ -1,6 +1,6 @@
 # 0014: ntmm_add_region() results are ignored in the exec path (K-10)
 
-Status: Proposed. Kernel source (`src/kernel/fs`). Recorded only in this batch, not implemented.
+Status: Accepted (option 1). Implemented in 7729288. The ntdll site is fatal on a region conflict (and, see 0016, on -EFAULT).
 Finding: `docs/review/kernel-fs.md` K-10 (Medium).
 Date: 2026-10-12
 

@@ -1,6 +1,6 @@
 # 0011: Sections are mapped writable and executable (K-3)
 
-Status: Proposed. Kernel source (`src/kernel/fs`). Recorded only in this batch, not implemented.
+Status: Proposed. Blocked/needs owner (see the note at the end). Not implemented.
 Finding: `docs/review/kernel-fs.md` K-3 (High).
 Date: 2026-10-12
 
@@ -32,3 +32,7 @@ Option 1 now, so the page tables match the VAD. Decide option 3 separately.
 ## Not verified
 
 Not built or run. The kernel tree and its test harness are not part of this worktree.
+
+## Blocked/needs owner
+
+Not implemented. Option 1 calls an mm protection API (`mmap_write_lock` plus `vm_mprotect` or `mprotect_fixup`), and the signatures of those functions differ across kernel versions. The target kernel version is not settled in this tree, so the call cannot be checked against it. The failure path it depends on (0012) is now in place.

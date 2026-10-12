@@ -59,6 +59,7 @@ The code is careful about `copy_from_user` at most service entry points, and the
 - Fix: take an object reference inside the registry lock, add an owner or privilege check, and mask the granted access to what the caller asked for.
 
 ### H-2 [Medium] Closed handle slots are never reused, so a process runs out of indices
+- **Status:** partly fixed in d7adc94 (decision 0003, option 1, FIFO quarantine). Aliasing is narrowed, not removed. The generation counter (option 2) is still open for the ABI review.
 - `src/kernel/nt/handle.c:143-161`: the free-list path is disabled with `if (false && table->first_free != ...)`. Every allocation uses `high_water`, and `high_water` only increases.
 - Each L3 page (256 entries, about 6 KiB) stays allocated until `ObDestroyHandleTable`. A process that opens and closes about 16.7 million handles exhausts the 2^24 index space and gets `STATUS_INSUFFICIENT_RESOURCES`, with the memory still held.
 - The comment at `handle.c:359-375` justifies this as avoiding handle aliasing. Aliasing can instead be prevented with a generation counter in the entry.
@@ -75,6 +76,7 @@ The code is careful about `copy_from_user` at most service entry points, and the
 - Fix: make the section an object-manager object with a delete callback that releases `sec->backing`, and drop the reference when the last handle and last view are gone.
 
 ### M-4 [Medium] Failed commit or decommit leaves the VAD table and the real mapping out of step
+- **Status:** blocked. Decision 0005 needs an owner; see the note in that record.
 - `src/kernel/nt/mm.c:1061-1075`: the rollback after a failed `kshim_mmap_commit` is a no-op (the comment at `:1071` says "approximate; tests don't hit rollback path"). The VAD stays `MEM_COMMIT` while no pages are mapped. `NtQueryVirtualMemory` then reports committed memory that faults on access.
 - `mm.c:1205-1237` (`NtFreeVirtualMemory`, MEM_DECOMMIT): the loop splits and changes VADs to `MEM_RESERVE` while walking. The early return at `:1227` (`STATUS_INVALID_PARAMETER`) and the `nt_vad_split` failure at `:1219` leave earlier pieces already changed, with no undo.
 - Cross-reference: arch-x86-nt.md M-4 and M-5.

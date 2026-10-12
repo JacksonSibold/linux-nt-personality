@@ -1,6 +1,6 @@
 # 0027: kernel_stubs.c is not C and breaks the build (arch B-1)
 
-Status: Proposed. Build file in `arch/x86/nt`. Recorded only in this batch, not implemented.
+Status: Proposed. Blocked/needs owner (see the note at the end). Not implemented.
 Finding: `docs/review/arch-x86-nt.md` B-1 (High).
 Date: 2026-10-12
 
@@ -31,3 +31,7 @@ Option 1, after checking `git log --follow` on the file for any earlier content.
 ## Not verified
 
 Not built. The git history of the file was not checked for this record.
+
+## Blocked/needs owner
+
+Not implemented. The Makefile line is `arch/x86/nt/Makefile:18`, not line 36 as the record says. Deleting the file and that line alone is not safe: `docs/analysis/tree-divergence.md` section 4 says the `vm/kbuild.sh` and `vm/rebuild_kdir.sh` scripts write a generated `kernel_stubs.c` that defines `nt_banner_init`, and that their checks depend on it. The file has no earlier content in git history (only `5eb8026` touches it). The owner should choose between the tree-divergence recommendation (a real `kernel_stubs.c` that defines `nt_banner_init`, with the heredoc removed from both scripts) and this record's deletion.

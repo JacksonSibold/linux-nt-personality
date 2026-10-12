@@ -1,6 +1,6 @@
 # 0015: Weak NtTerminateProcess fallback kills the caller (K-12)
 
-Status: Proposed. Kernel source (`src/kernel/fs`). Recorded only in this batch, not implemented.
+Status: Accepted (option 1). Implemented in 83e3349.
 Finding: `docs/review/kernel-fs.md` K-12 (Low).
 Date: 2026-10-12
 
