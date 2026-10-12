@@ -373,7 +373,8 @@ static void* ldr_resolve_forwarder_body(const char *fwd_str) {
     if (!host) {
         // Try to map dependency on demand (handles kernelbase -> kernel32 forwarder before kernel32 mapped)
         size_t sz=0; void *b=NULL;
-        const char *cands[] = {"/tmp/", "/windows/system32/", "/", NULL};
+        /* MAIN-5: only the system directory; no root, /tmp or bare-name fallback. */
+        const char *cands[] = {"/windows/system32/", NULL};
         for (int c=0; cands[c]; c++) {
             char full[512]; size_t n=0;
             const char *pre=cands[c];
@@ -382,9 +383,6 @@ static void* ldr_resolve_forwarder_body(const char *fwd_str) {
             while (*pp && n<500) full[n++]=*pp++;
             full[n]='\0';
             if (ldr_nt_map_dll(full,&b,&sz)==STATUS_SUCCESS) { host=b; break; }
-        }
-        if (!host) {
-            if (ldr_nt_map_dll(dllname,&b,&sz)==STATUS_SUCCESS) host=b;
         }
         // Host found but not in loaded list – transient mapping is enough for forwarder; do not cache here to avoid needing add_loaded (static).
         (void)sz;
@@ -620,15 +618,15 @@ void NTAPI LdrInitializeThunk(void) {
                     dll_base = ntdll;
                     if (!dll_base) {
                         // Try to map ntdll from disk as fallback
-                        if (ldr_nt_map_dll("ntdll.dll", &dll_base, &dll_size)!=STATUS_SUCCESS &&
-                            ldr_nt_map_dll("/ntdll.dll", &dll_base, &dll_size)!=STATUS_SUCCESS) {
+                        /* MAIN-5: system directory only. */
+                        if (ldr_nt_map_dll("/windows/system32/ntdll.dll", &dll_base, &dll_size)!=STATUS_SUCCESS) {
                             continue;
                         }
                         add_loaded(dll_name, dll_base, dll_size);
                     }
                 } else {
-                    // Try candidates: /tmp/, /windows/system32/, /, direct
-                    const char *candidates[] = { "/tmp/", "/windows/system32/", "/", NULL };
+                    // MAIN-5: load from the system directory only (no bare name or root).
+                    const char *candidates[] = { "/windows/system32/", NULL };
                     int found=0;
                     for (int c=0; candidates[c]; c++) {
                         char full[512];
@@ -640,9 +638,7 @@ void NTAPI LdrInitializeThunk(void) {
                         full[n]=0;
                         if (ldr_nt_map_dll(full, &dll_base, &dll_size)==STATUS_SUCCESS) { found=1; break; }
                     }
-                    if (!found) {
-                        if (ldr_nt_map_dll(dll_name, &dll_base, &dll_size)!=STATUS_SUCCESS) continue;
-                    }
+                    if (!found) continue;
                     add_loaded(dll_name, dll_base, dll_size);
                     dbg_print("Ldr: mapped ");
                     dbg_print(dll_name);
@@ -671,13 +667,13 @@ void NTAPI LdrInitializeThunk(void) {
                                 if (!dep_base) {
                                     // Try to map dependency
                                     size_t dep_size=0;
-                                    const char *cands[] = { "/tmp/", "/windows/system32/", "/", NULL };
+                                    const char *cands[] = { "/windows/system32/", NULL }; /* MAIN-5 */
                                     int dfound=0;
                                     for (int cc=0;cands[cc];cc++){
                                         char full[512]; size_t nn=0; const char *pre=cands[cc]; while(*pre&&nn<500) full[nn++]=*pre++; const char *p=d_dll_name; while(*p&&nn<500) full[nn++]=*p++; full[nn]=0;
                                         if (ldr_nt_map_dll(full,&dep_base,&dep_size)==STATUS_SUCCESS){dfound=1;break;}
                                     }
-                                    if (!dfound) ldr_nt_map_dll(d_dll_name,&dep_base,&dep_size);
+                                    (void)dfound;
                                     if (dep_base) add_loaded(d_dll_name, dep_base, dep_size);
                                 }
                                 // Resolve IAT for this dependency import
