@@ -8,7 +8,13 @@ HARNESS := $(PROJ)/tests/harness/dodrun.py
 SELFTEST := $(PROJ)/tests/harness/selftest.py
 VALIDATE := $(PROJ)/build/validate_criteria.py
 
-.PHONY: all test conformance clean validate-criteria
+.PHONY: all test conformance clean validate-criteria ntstatus-table
+
+# Repository root, derived from this Makefile's location (independent of PROJ).
+ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
+NTSTATUS_SRC := src/ntdll/ntstatus_to_dos.c
+NTSTATUS_GEN := src/kernel/nt/gen_ntstatus_table.py
+NTSTATUS_INC := src/kernel/nt/ntstatus_table.inc
 
 # -----------------------------------------------------------------------------
 # all: build userspace components produced by other workstreams.
@@ -52,6 +58,16 @@ test:
 # -----------------------------------------------------------------------------
 conformance:
 	$(PYTHON) "$(HARNESS)"
+
+# -----------------------------------------------------------------------------
+# ntstatus-table: regenerate the kernel NTSTATUS->DOS table
+# (src/kernel/nt/ntstatus_table.inc) from the userspace source of truth.
+# Runs from the repository root so the header's source path is stable.
+# -----------------------------------------------------------------------------
+ntstatus-table: $(ROOT)/$(NTSTATUS_INC)
+
+$(ROOT)/$(NTSTATUS_INC): $(ROOT)/$(NTSTATUS_SRC) $(ROOT)/$(NTSTATUS_GEN)
+	cd "$(ROOT)" && $(PYTHON) "$(NTSTATUS_GEN)" --input "$(NTSTATUS_SRC)" --output "$(NTSTATUS_INC)"
 
 # -----------------------------------------------------------------------------
 # clean: remove generated reports and build artifacts we own.

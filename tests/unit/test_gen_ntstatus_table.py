@@ -10,8 +10,8 @@ import sys
 import tempfile
 import unittest
 
-SCRIPT = (pathlib.Path(__file__).resolve().parents[2]
-          / "src" / "kernel" / "nt" / "gen_ntstatus_table.py")
+REPO = pathlib.Path(__file__).resolve().parents[2]
+SCRIPT = REPO / "src" / "kernel" / "nt" / "gen_ntstatus_table.py"
 
 
 def table_source(entry_lines):
@@ -176,6 +176,22 @@ class GenNtstatusTableTests(unittest.TestCase):
                                  with_output=False)
         self.assertNotEqual(rc, 0)
 
+
+    def test_committed_inc_matches_generator_output(self):
+        # Drift guard: the tracked ntstatus_table.inc must be what the generator
+        # produces from the tracked userspace source. Line endings are compared
+        # after normalising CRLF, because autocrlf checkouts rewrite text files.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp) / "ntstatus_table.inc"
+            proc = subprocess.run(
+                [sys.executable, "src/kernel/nt/gen_ntstatus_table.py",
+                 "--input", "src/ntdll/ntstatus_to_dos.c",
+                 "--output", str(out)],
+                cwd=REPO, capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            committed = (REPO / "src" / "kernel" / "nt" / "ntstatus_table.inc").read_bytes()
+            self.assertEqual(out.read_bytes().replace(b"\r\n", b"\n"),
+                             committed.replace(b"\r\n", b"\n"))
 
 
 if __name__ == "__main__":
