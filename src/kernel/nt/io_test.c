@@ -843,6 +843,121 @@ TEST(query_set_info)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Case-insensitive resolution: component length limit                          */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * ntio_resolve_ci copies each path component into a NAME_MAX-byte buffer.
+ * A component of NAME_MAX (255) characters wrote its NUL one byte past the
+ * end, and nothing bounded longer ones. Lookup and create must both reject
+ * such a component with STATUS_OBJECT_NAME_INVALID before the copy.
+ */
+/*
+ * An over-long component gets STATUS_OBJECT_NAME_INVALID from the component
+ * check. A name of 260 or more characters hits the total-length check first
+ * and gets STATUS_NAME_TOO_LONG. Either one is a rejection.
+ */
+static bool long_name_rejected(NTSTATUS st)
+{
+	return st == STATUS_OBJECT_NAME_INVALID || st == STATUS_NAME_TOO_LONG;
+}
+
+/* Object attributes for an ASCII name of any length (make_obj_attr caps at PATH_MAX). */
+static OBJECT_ATTRIBUTES make_long_attr(const char *s, WCHAR *buf, UNICODE_STRING *us)
+{
+	OBJECT_ATTRIBUTES oa = { 0 };
+	size_t i, len = strlen(s);
+	for (i = 0; i < len; i++)
+		buf[i] = (WCHAR)(unsigned char)s[i];
+	us->Buffer = buf;
+	us->Length = (USHORT)(len * sizeof(WCHAR));
+	us->MaximumLength = us->Length;
+	oa.Length = sizeof(oa);
+	oa.ObjectName = us;
+	return oa;
+}
+
+TEST(ci_component_length_limit)
+{
+	char name[301];
+	WCHAR wname[301];
+	UNICODE_STRING us;
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	OBJECT_ATTRIBUTES oa;
+	LARGE_INTEGER alloc = { 0 };
+	NTSTATUS st;
+	size_t len;
+
+	reset_state();
+
+	/*
+	 * Lookup (FILE_OPEN). The root is empty so the joined linux path is
+	 * "/" + component, which fits the PATH_MAX buffer on hosts where
+	 * PATH_MAX is 260. FILE_OPEN only stats, so nothing is created.
+	 * 254 must not be rejected. 255 and 300 must be.
+	 */
+	kshim_set_root("");
+	for (len = 254; len <= 300; len += (len == 254) ? 1 : 45) {
+		memset(name, 'a', len);
+		name[len] = '\0';
+		oa = make_long_attr(name, wname, &us);
+		iosb.Information = 0;
+		st = nt_svc_NtCreateFile(&h, FILE_GENERIC_READ, &oa, &iosb, &alloc, 0,
+					 FILE_SHARE_READ, FILE_OPEN,
+					 FILE_NON_DIRECTORY_FILE, NULL, 0);
+		if (len == 254 ? st == STATUS_OBJECT_NAME_INVALID
+			       : len == 255 ? st != STATUS_OBJECT_NAME_INVALID
+			       : !long_name_rejected(st)) {
+			fprintf(stderr, "FAIL %s:%d: lookup len=%zu got 0x%08lx\n",
+				__FILE__, __LINE__, len, (long)st);
+			kshim_set_root(g_test_root);
+			g_fail++;
+			return;
+		}
+		if (NT_SUCCESS(st))
+			nt_svc_NtClose(h);
+	}
+	kshim_set_root(g_test_root);
+
+	/*
+	 * Create (FILE_CREATE) under the scratch root. A 300-character name is
+	 * rejected by the NT-layer converter before resolution. A 255-character
+	 * name needs room for root + "/" + name inside PATH_MAX, so it is run
+	 * only when that fits. On a 260-byte PATH_MAX it does not.
+	 */
+	if (strlen(g_test_root) + 1 + 255 < PATH_MAX) {
+		memset(name, 'a', 255);
+		name[255] = '\0';
+		oa = make_long_attr(name, wname, &us);
+		iosb.Information = 0;
+		st = nt_svc_NtCreateFile(&h, FILE_GENERIC_WRITE, &oa, &iosb, &alloc, 0,
+					 FILE_SHARE_READ, FILE_CREATE,
+					 FILE_NON_DIRECTORY_FILE, NULL, 0);
+		if (st != STATUS_OBJECT_NAME_INVALID) {
+			fprintf(stderr, "FAIL %s:%d: create len=255 got 0x%08lx\n",
+				__FILE__, __LINE__, (long)st);
+			g_fail++;
+			return;
+		}
+	}
+	memset(name, 'a', 300);
+	name[300] = '\0';
+	oa = make_long_attr(name, wname, &us);
+	iosb.Information = 0;
+	st = nt_svc_NtCreateFile(&h, FILE_GENERIC_WRITE, &oa, &iosb, &alloc, 0,
+				 FILE_SHARE_READ, FILE_CREATE,
+				 FILE_NON_DIRECTORY_FILE, NULL, 0);
+	if (!long_name_rejected(st)) {
+		fprintf(stderr, "FAIL %s:%d: create len=300 got 0x%08lx\n",
+			__FILE__, __LINE__, (long)st);
+		g_fail++;
+		return;
+	}
+	PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* Main                                                                         */
 /* -------------------------------------------------------------------------- */
 
@@ -863,6 +978,7 @@ int main(void)
 	RUN(iocp_completion_on_cancel);
 	RUN(delete_on_close);
 	RUN(query_set_info);
+	RUN(ci_component_length_limit);
 
 	printf("ntio tests: %d passed, %d failed\n", g_pass, g_fail);
 

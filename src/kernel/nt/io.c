@@ -807,7 +807,7 @@ static bool ntio_casefold_lookup(const char *dir, const char *component,
  * Apply case-insensitive re-resolution to a Linux path: for every component,
  * if the exact name does not exist but a case-insensitive match does, use it.
  */
-static void ntio_resolve_ci(char *path)
+static NTSTATUS ntio_resolve_ci(char *path)
 {
 	char resolved[PATH_MAX];
 	char component[NAME_MAX];
@@ -828,8 +828,12 @@ static void ntio_resolve_ci(char *path)
 
 	while (*p) {
 		size_t i = 0;
-		while (*p && *p != '/')
+		while (*p && *p != '/') {
+			/* Reject a component that would not leave room for its NUL. */
+			if (i + 1 >= NAME_MAX)
+				return STATUS_OBJECT_NAME_INVALID;
 			component[i++] = *p++;
+		}
 		component[i] = '\0';
 		if (i == 0) {
 			if (*p == '/')
@@ -868,6 +872,7 @@ static void ntio_resolve_ci(char *path)
 	}
 
 	memcpy(path, resolved, rlen + 1);
+	return STATUS_SUCCESS;
 }
 #else
 /* Kernel: case-insensitive lookup via dcache iteration. */
@@ -898,10 +903,10 @@ static bool ntio_casefold_lookup(const char *dir, const char *component,
 	return found;
 }
 
-static void ntio_resolve_ci(char *path)
+static NTSTATUS ntio_resolve_ci(char *path)
 {
 	char *resolved = kmalloc(PATH_MAX, GFP_KERNEL);
-	if (!resolved) return;
+	if (!resolved) return STATUS_NO_MEMORY;
 	char component[NAME_MAX];
 	const char *p;
 	size_t rlen = 0;
@@ -915,8 +920,14 @@ static void ntio_resolve_ci(char *path)
 	}
 	while (*p) {
 		size_t i = 0;
-		while (*p && *p != '/')
+		while (*p && *p != '/') {
+			/* Reject a component that would not leave room for its NUL. */
+			if (i + 1 >= NAME_MAX) {
+				kfree(resolved);
+				return STATUS_OBJECT_NAME_INVALID;
+			}
 			component[i++] = *p++;
+		}
 		component[i] = '\0';
 		if (i == 0) {
 			if (*p == '/') p++;
@@ -930,7 +941,7 @@ static void ntio_resolve_ci(char *path)
 		if (kern_path(resolved, LOOKUP_FOLLOW, &check) != 0) {
 			char fold[NAME_MAX];
 			char *parent = kmalloc(PATH_MAX, GFP_KERNEL);
-			if (!parent) { kfree(resolved); return; }
+			if (!parent) { kfree(resolved); return STATUS_NO_MEMORY; }
 			size_t plen = rlen - i;
 			if (plen == 0) {
 				parent[0] = '/';
@@ -956,6 +967,7 @@ static void ntio_resolve_ci(char *path)
 	}
 	memcpy(path, resolved, rlen + 1);
 	kfree(resolved);
+	return STATUS_SUCCESS;
 }
 #endif
 
@@ -1070,7 +1082,9 @@ NTSTATUS ntio_resolve_path(POBJECT_ATTRIBUTES __user obj_attr, char *linux_path,
 	kfree(k_buf);
 
 	/* Case-insensitive re-resolution for existing paths. */
-	ntio_resolve_ci(linux_path);
+	status = ntio_resolve_ci(linux_path);
+	if (!NT_SUCCESS(status))
+		return status;
 
 	/* Check whether the resolved path is a directory. */
 #ifndef __KERNEL__
