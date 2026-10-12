@@ -993,7 +993,7 @@ static NTSTATUS ldr_map_and_load(winldr_ctx_t *ctx,
 
     size_t base_len = strlen(mod->base_name_ansi);
     WCHAR *wbase = (WCHAR*)malloc((base_len + 1) * sizeof(WCHAR));
-    if (!wbase) { free(wname); goto fail; }
+    if (!wbase) goto fail; /* fail frees FullDllName.Buffer, which is wname (LDR-9) */
     ldr_ascii_to_wcs(mod->base_name_ansi, wbase, base_len + 1);
     ldr_set_unicode_string(&mod->entry.BaseDllName, wbase,
                            (USHORT)(base_len * sizeof(WCHAR)));
