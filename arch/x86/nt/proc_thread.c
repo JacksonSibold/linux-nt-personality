@@ -1388,8 +1388,11 @@ NTSTATUS nt_svc_NtSuspendThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount
     pr_debug("NtSuspendThread: tid=%lu prev=%lu new=%lu\n", thr->tid, prev, prev+1);
     atomic_inc(&thr->suspend_count);
     if (prev == 0) {
+        /* find_vpid() and pid_task() require the RCU read lock (P-7). */
+        rcu_read_lock();
         tsk = pid_task(find_vpid(thr->tid), PIDTYPE_PID);
         if (tsk) set_tsk_thread_flag(tsk, TIF_NTSUSPEND);
+        rcu_read_unlock();
     }
     spin_unlock(&thr->lock);
     return STATUS_SUCCESS;
@@ -1431,8 +1434,10 @@ NTSTATUS nt_svc_NtResumeThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount)
     atomic_dec(&thr->suspend_count);
     cur = prev - 1;
     if (cur == 0) {
+        rcu_read_lock();
         tsk = pid_task(find_vpid(thr->tid), PIDTYPE_PID);
         if (tsk) clear_tsk_thread_flag(tsk, TIF_NTSUSPEND);
+        rcu_read_unlock();
         wake_up(&thr->suspend_wq);
     }
     spin_unlock(&thr->lock);
@@ -1515,8 +1520,10 @@ NTSTATUS nt_svc_NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus)
         pr_err("NtTerminateThread: abandoning for thr %p tid %lu\n", thr, thr->tid);
         nt_abandon_owned_mutants(thr->sync_thread);
     }
+    rcu_read_lock();
     tsk = pid_task(find_vpid(thr->tid), PIDTYPE_PID);
     if (tsk) wake_up_process(tsk);
+    rcu_read_unlock();
     return STATUS_SUCCESS;
 }
 
