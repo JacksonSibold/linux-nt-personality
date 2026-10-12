@@ -1,0 +1,70 @@
+# Module: object (Object Manager)
+
+Sources: `src/kernel/nt/object.c`, `src/kernel/nt/object.h`
+Related: `handle.c` (per-process handle table), `nt_obj.c` (NT service wrappers, not covered here), `proc_thread.c`.
+
+## Purpose
+
+Implements the NT object manager model: object headers with a reference count and a separate handle count, typed objects via `struct nt_object_type` callbacks, a global `\` namespace built from directories and symbolic links, and name lookup with optional case-insensitive matching. Process and thread objects (`struct nt_eprocess`, `struct nt_ethread`) are declared here and created through this module.
+
+## Public API (object.h)
+
+Object manager lifecycle and creation:
+
+- `NTSTATUS ObInitObjectManager(void)` - create the root and well-known directories and register the built-in types.
+- `void ObCleanupObjectManager(void)` - tear down the namespace.
+- `NTSTATUS ObCreateObjectType(const char *name, const struct nt_object_type_ops *ops, struct nt_object_type **out_type)` - declared only; **no definition exists in the tree** (see Known gaps).
+- `NTSTATUS ObRegisterObjectType(struct nt_object_type *type)` - add a type to the type list (`object.c`).
+- `NTSTATUS ObCreateObject(struct nt_object_type *type, POBJECT_ATTRIBUTES attrs, SIZE_T body_size, struct nt_object_header **out_hdr, void **out_body)` - allocate header and body as one contiguous block.
+- `NTSTATUS ObInsertObject(struct nt_object_header *obj, POBJECT_ATTRIBUTES attrs, ACCESS_MASK access, struct nt_eprocess *proc, PHANDLE out_handle)` - insert into the namespace (if named) and create a handle in `proc`.
+- `NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj)` - drop the permanent flag so the name is removed when unreferenced.
+
+Reference counting and lookup:
+
+- `void ObReferenceObject(struct nt_object_header *obj)` / `void ObDereferenceObject(struct nt_object_header *obj)` - adjust `ref_count`; the last drop runs `delete_obj` and frees the block.
+- `NTSTATUS ObReferenceObjectByName(PUNICODE_STRING path, struct nt_object_type *type, KPROCESSOR_MODE mode, ACCESS_MASK access, struct nt_object_header **out)` - resolve a path and take a reference.
+- `NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs, struct nt_object_type *type, KPROCESSOR_MODE mode, ACCESS_MASK access, struct nt_eprocess *proc, PHANDLE out_handle)` - resolve a path and create a handle.
+- `NTSTATUS ObpIncrementHandleCount(struct nt_object_header *obj)` / `void ObpDecrementHandleCount(struct nt_object_header *obj, HANDLE handle)` - maintain `handle_count` (called from `handle.c`).
+- `struct nt_object_header *ObpLookupDirectoryEntry(struct nt_directory *dir, const UNICODE_STRING *comp)` - single-component lookup, for `handle.c` use.
+
+Namespace roots:
+
+- `ObGetRootDirectory`, `ObGetDosDevicesDirectory`, `ObGetBaseNamedObjects`, `ObGetDeviceDirectory`, `ObGetKnownDllsDirectory`, `ObGetSessionsDirectory` - return the header of the corresponding directory.
+- `const UNICODE_STRING *ObGetObjectName(struct nt_object_header *obj)` and `struct nt_object_type *ObGetObjectType(struct nt_object_header *obj)` - accessors.
+
+Process and thread objects:
+
+- `ObCreateProcessObject`, `ObCreateThreadObject` - allocate the process or thread object.
+- `ObDestroyProcessObject`, `ObDestroyThreadObject` - destroy them.
+- `ObFindProcessByHeader`, `ObFindProcessByPid`, `ObFindThreadByHeader`, `ObFindThreadByTid` - lookups.
+- `ObRegisterThread`, `ObUnregisterThread` - add or remove a thread from the registry.
+- `ObForEachThreadOfProcess(proc, fn, ctx)` - iterate threads of a process.
+- `ObSuspendProcessThreads`, `ObResumeProcessThreads`, `ObTerminateProcessThreads(proc, status)` - bulk thread control.
+
+Inline helpers in the header: `nt_object_body`, `nt_body_to_header` (body pointer to header by fixed offset), `nt_object_is_directory`.
+
+## Key data structures
+
+- `struct nt_object_header` - `type`, `ref_count` and `handle_count` (atomic64), `parent_dir`, `name` (UNICODE_STRING), `security_descriptor`, `flags`, `body`, `type_link`, and the flags `is_permanent`, `is_exclusive`, `exclusive_owned`. The body is allocated directly after the header.
+- `struct nt_object_type` - `list`, `name`, `ops` (`delete_obj`, `close`, `parse`, `okay_to_close`), `pool_tag`. Built-in types: `nt_directory_type`, `nt_symlink_type`, `nt_process_type`, `nt_thread_type`, `nt_test_type`. Other modules add `nt_key_type` (registry), event/mutant/semaphore/file types (`nt_obj.c`).
+- `struct nt_directory` - `rwlock_t lock` and `entries` list of `struct nt_dir_entry` (name, object pointer, link).
+- `struct nt_symlink` - `target` UNICODE_STRING.
+- `struct nt_eprocess` - object header pointer, `handle_table`, `pid`, `name`, image path (narrow and wide), `peb`, lock and exit wait (spinlock in kernel, pthread mutex and cond in the shim), `ref_ext`.
+- `struct nt_ethread` - header, owning process, `tid`, TEB, stack bounds, suspend state, and a lock and wait queues (kernel and shim variants).
+
+## Invariants and locking (as implemented)
+
+- Callback contract (object.h): `delete_obj` must tear down type-specific state but must not free the header; the object manager frees the header-plus-body block after it returns.
+- Header and body share one allocation; `nt_body_to_header` relies on that layout.
+- Directory bodies are protected by `rwlock_t`. `object.c` takes `write_lock`/`write_unlock` on them at several sites. `object.c` also uses `spin_lock`/`spin_unlock` at about 15 sites; I did not map each one to a field.
+- Names are duplicated into owned buffers (`nt_dup_unicodestring`). Lengths must be a multiple of `sizeof(WCHAR)`, otherwise `STATUS_OBJECT_NAME_INVALID`. Buffers are NUL-terminated.
+- Name comparison is ASCII-only: `nt_toupper` maps only `a`-`z`.
+- Each process and thread object guards its state with a lock: a `spinlock_t` in the kernel build, a `pthread_mutex_t` in the shim.
+
+## Known gaps (evident in code)
+
+- `ObCreateObjectType` is declared in `object.h` but has no definition anywhere under `src/kernel/nt/`. Callers can only use `ObRegisterObjectType` with a statically defined type.
+- Case-insensitive comparison is ASCII-only. `object.c:31` says full Unicode case folding is not implemented.
+- A symbolic link in a middle path component is not followed. `object.c:426-429` returns `STATUS_OBJECT_PATH_NOT_FOUND` in that case. A symlink is resolved only when it is the final component (`object.c:400`, via `ObpResolveSymlink`).
+- The `ops.parse` hook is consulted during lookup (`object.c:364`). Only `registry.c` sets it in this tree (`registry_parse`), so no generic parse routine is provided here.
+- Object security descriptors are carried in the header, but enforcement is not wired here. The security module's `se_access_check` has no call sites outside its own tests (see `security.md`).
