@@ -2136,7 +2136,7 @@ NTSTATUS nt_svc_NtQueryInformationFile(HANDLE FileHandle,
 	if (Length > 0 && !access_ok(FileInformation, Length))
 		return STATUS_ACCESS_VIOLATION;
 	if (Length > 0) {
-		kbuf = kmalloc(Length, GFP_KERNEL);
+		kbuf = kzalloc(Length, GFP_KERNEL);
 		if (!kbuf)
 			return STATUS_NO_MEMORY;
 	}
