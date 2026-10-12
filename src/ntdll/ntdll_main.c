@@ -265,6 +265,8 @@ static NTSTATUS ldr_nt_map_dll(const char *path, void **out_base, size_t *out_si
                 u32 reloc_rva = ldr_load_u32((unsigned char*)hdr + oh_off + 112 + 5*8);
                 u32 reloc_size = ldr_load_u32((unsigned char*)hdr + oh_off + 112 + 5*8 + 4);
                 if (reloc_rva && reloc_size) {
+                    /* MAIN-2: the directory must lie inside the image. */
+                    if (!pe_range_fits(reloc_rva, reloc_size, size_image)) { NtClose(h); return STATUS_INVALID_IMAGE_FORMAT; }
                     unsigned char *reloc = (unsigned char*)img_base + reloc_rva;
                     u32 cursor=0;
                     while (cursor+8 <= reloc_size) {
@@ -280,6 +282,8 @@ static NTSTATUS ldr_nt_map_dll(const char *path, void **out_base, size_t *out_si
                             u16 off2 = entry & 0xFFF;
                             if (type==0) continue;
                             if (type!=10) { NtClose(h); return STATUS_INVALID_IMAGE_FORMAT; }
+                            /* MAIN-2: the 8-byte target must lie inside the image. */
+                            if (!pe_range_fits((unsigned long long)page_rva + off2, 8, size_image)) { NtClose(h); return STATUS_INVALID_IMAGE_FORMAT; }
                             u64 *p = (u64*)((unsigned char*)img_base + page_rva + off2);
                             *p += delta;
                         }

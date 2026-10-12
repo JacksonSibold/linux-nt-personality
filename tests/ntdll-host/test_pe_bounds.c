@@ -47,6 +47,15 @@ static void reloc_target_past_image_rejected(void)
     MT_EXPECT(!pe_range_fits(0xFFF9ULL, 8, image));
 }
 
+/* MAIN-2: the relocation directory itself must lie inside the image, and an
+ * 8-byte DIR64 target at the last valid offset must still be accepted. */
+static void reloc_directory_must_fit_image(void)
+{
+    MT_EXPECT(pe_range_fits(0x9000, 0x200, 0x10000));
+    MT_EXPECT(!pe_range_fits(0xFFF0, 0x200, 0x10000));
+    MT_EXPECT(pe_range_fits(0xFFF0, 0x10, 0x10000));
+}
+
 /* An offset near 2^64 must not wrap to a small value. */
 static void range_no_wrap(void)
 {
@@ -78,6 +87,7 @@ static const mt_case_t cases[] = {
     { "range_exact_fit", range_exact_fit },
     { "range_empty_and_zero_limit", range_empty_and_zero_limit },
     { "reloc_target_past_image_rejected", reloc_target_past_image_rejected },
+    { "reloc_directory_must_fit_image", reloc_directory_must_fit_image },
     { "range_no_wrap", range_no_wrap },
     { "copy_len_is_min_of_raw_and_virtual", copy_len_is_min_of_raw_and_virtual },
     { "copy_len_zero_virtual_uses_raw", copy_len_zero_virtual_uses_raw },
