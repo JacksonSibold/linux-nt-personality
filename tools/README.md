@@ -76,6 +76,32 @@ python3 tools/check_syscall_tables.py --selftest   # built-in fixture
 Exit status: `0` all copies agree, `1` at least one mismatch (each printed as
 `FAIL [kind] path: detail`), `2` usage error. Standard library only.
 
+## service_inventory.py
+
+Classifies the handler of every system service in
+`src/kernel/nt/nt_service_list.h` by scanning `src/kernel/nt/*.c`. Each
+service gets one class, first rule that applies:
+
+- `IMPLEMENTED`: a strong `nt_svc_<Name>` definition with a real body.
+- `STUB-NOT-IMPLEMENTED`: a strong definition whose body only returns
+  `STATUS_NOT_IMPLEMENTED` or `STATUS_NOT_SUPPORTED` (void casts allowed).
+- `WEAK-FALLBACK`: only a `__attribute__((weak))` definition exists. A strong
+  definition in another file overrides it, as the linker does.
+- `MISSING`: no definition; the table entry is NULL.
+
+Test sources (`*_test.c`) and prototypes are ignored. Comments and string
+literals are removed before the body is read.
+
+```
+python3 tools/service_inventory.py                 # counts on stdout
+python3 tools/service_inventory.py --markdown --out docs/status/SERVICES.md
+python3 tools/service_inventory.py --selftest      # built-in fixtures
+```
+
+Exit status: `0` success, `1` a source cannot be read or the selftest fails,
+`2` usage error. CI regenerates `docs/status/SERVICES.md` and fails when the
+committed file differs. The unit tests are in `tests/unit/test_service_inventory.py`.
+
 ## ntstatus_lookup.py
 
 Looks up NTSTATUS values by symbolic name, hex or decimal. It reads
