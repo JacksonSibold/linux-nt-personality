@@ -23,12 +23,8 @@
 /* Forward from arch/x86/nt */
 static struct linux_binfmt pe_format;
 #ifdef CONFIG_NT_PERSONALITY
-#ifdef CONFIG_NT_PERSONALITY
 #include "../../arch/x86/nt/nt_internal.h"
 extern int ntmm_add_region(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long);
-#else
-static inline void nt_enter_personality(struct task_struct *tsk) { (void)tsk; }
-#endif
 #else
 static inline void nt_enter_personality(struct task_struct *tsk) { (void)tsk; }
 #endif
