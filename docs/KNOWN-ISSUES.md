@@ -6,8 +6,11 @@ static review ([docs/review/INDEX.md](review/INDEX.md)). It is a summary.
 Each linked page has the details and line references. The project is an
 incomplete research prototype (see the top-level [README](../README.md)).
 Fix status below comes from the "Fix status" sections and per-finding status
-lines in the review reports, as of 2026-10-12. Nothing was compiled, run, or
-re-tested to confirm those fixes.
+lines in the review reports, as of 2026-10-12. The fixes were not built in a
+kernel tree and were not run. On 2026-10-12 the unit suite (303 tests) passed,
+and the syntax check passed 32 of 37 files
+([tests/syntax/README.md](../tests/syntax/README.md)). Decision records and their
+status are indexed in [docs/decisions/INDEX.md](decisions/INDEX.md).
 
 ## Gaps by module
 
@@ -32,6 +35,11 @@ re-tested to confirm those fixes.
   `i2_test.c`.
 - The table has no growth limit beyond its 2^24 index space, even though the
   header describes memory-based growth.
+- Closed slots go to the tail of a FIFO free list and are reused only after more
+  than `HANDLE_QUARANTINE` other slots have been freed (`d7adc94`, record 0003
+  option 1). Handle values still have no generation
+  counter (option 2 is open), so a stale handle can refer to a reused slot.
+  The header comment at `handle.c:22` still describes the old LIFO free list.
 
 ### io ([modules/io.md](modules/io.md))
 
@@ -39,8 +47,11 @@ re-tested to confirm those fixes.
   calls, so completion appears to run inline.
 - Stdin is not backed in the shim build and returns `STATUS_END_OF_FILE`.
 - Generic file mapping is "simplified".
-- `nt_svc_NtClose` is defined three times. Which definition links depends on
-  the build, and that was not traced.
+- `nt_svc_NtClose` has four definitions in `src/kernel/nt`: `io.c:2467` (weak,
+  kernel), `io.c:2506` and `nt_obj.c:762` (both non-kernel and strong), and
+  `nt_obj.c:1086` (kernel). Two strong definitions in one non-kernel link would
+  conflict. `tests/kernel-host` works around this with `objcopy`. The build that
+  links each one was not traced.
 - Share enforcement exists only in the kernel. Non-NT opens are not blocked.
 - The NT-to-Linux path translation (`\??`, `\Device`) was not traced in full.
 - The kernel wrappers target a specific kernel version (6.18 API changes), and
@@ -142,12 +153,16 @@ re-tested to confirm those fixes.
   `tests/syntax/shim/linux/thread_info.h`: those are syntax-check placeholders.
   See the header comment in `src/kernel/fs/kshim.h`.
 - `src/kernel/fs/binfmt_pe_test.c` does not compile yet. It calls loader
-  helpers that do not exist in the repo (`pe_build_command_line`,
+  helpers that were never written in any commit (`pe_build_command_line`,
   `pe_build_environment`, `pe_utf8_to_utf16`, `pe_prot_to_mmap`), uses
   `PPEB`, `PTEB`, `RTL_USER_PROCESS_PARAMETERS` and `pe_load_state.pe`, none of
-  which are defined, and `binfmt_pe.c` reads `inode->i_mode` and calls
-  `i_uid_read`, which the shared fs stub does not declare. The userspace
-  model's kernel API signatures are fixed; the rest needs loader or stub changes.
+  which are defined. Record
+  [0028](decisions/0028-binfmt-pe-test-missing-helpers.md) (status Proposed)
+  lists the options. `binfmt_pe.c` reads `inode->i_mode` and calls
+  `i_uid_read()`; the syntax-check shim `tests/syntax/shim/linux/fs.h` now
+  declares both (`5304c09`), so that part no longer blocks the check. The
+  userspace model's kernel API signatures are fixed; the rest needs loader or
+  stub changes.
 - `src/kernel/nt/kshim.c` depends on glibc `st_atim`. The file now uses
   `KSHIM_STAT_*` macros, which fall back to `st_atime` on non-Linux builds.
   The Linux branch is not compiled on this machine.
@@ -158,7 +173,9 @@ The review ([review/INDEX.md](review/INDEX.md)) covers four areas: the PE
 parser (`src/loader`), the kernel PE loader (`src/kernel/fs`), the NT
 personality (`arch/x86/nt`), and the NT kernel objects (`src/kernel/nt`). It
 found 28 high, 43 medium, 60 low and 6 info findings. Nothing was compiled or
-run. The most important ones, with their fix status, are:
+run. The most important ones are listed below with their fix status. Line
+numbers are from the review snapshot (`5eb8026`) and have moved after later
+fixes; the review reports have the current references:
 
 1. **Out-of-bounds read on a crafted PE.** The `e_lfanew` bounds check in
    `src/kernel/fs/binfmt_pe.c` wrapped in u32 (lines 181 and 639). Fixed in
@@ -166,8 +183,8 @@ run. The most important ones, with their fix status, are:
    [review/kernel-fs.md](review/kernel-fs.md) (K-1).
 2. **Kernel pointer used as a section handle.** `NtCreateSection` returns the
    object address to user space, and `NtMapViewOfSection` dereferences the
-   value it is given (`arch/x86/nt/mm.c:1540`, `:1549`). Open: it needs a real
-   object-table handle and a type-checked lookup. See
+   value it is given (`arch/x86/nt/mm.c:1540`, `:1549`). Open (records 0001 and
+   0021): it needs a real object-table handle and a type-checked lookup. See
    [review/arch-x86-nt.md](review/arch-x86-nt.md) (M-2) and
    [review/kernel-nt.md](review/kernel-nt.md) (M-1).
 3. **Heap over-read in rename.** `FileNameLength` was not checked, so a rename
@@ -184,20 +201,26 @@ Other high-priority items from the same review:
 - Any process can open and terminate any other by ID, with no access check
   (`proc_thread.c:1589-1592`, arch P-1). Open: needs an access policy.
 - Sections can be writable and executable with no `mprotect` (`binfmt_pe.c:438`,
-  `713`, kernel-fs K-3). Open.
-- Exec returns errors after the point of no return (`binfmt_pe.c:906-942`,
-  kernel-fs K-4). Open.
+  `713`, kernel-fs K-3). Blocked: record [0011](decisions/0011-kernel-wx-sections.md)
+  needs an owner decision.
+- Exec returned errors after the point of no return (`binfmt_pe.c:906-942`,
+  kernel-fs K-4). Fixed in 8eac32c (record 0012). Failures before
+  `begin_new_exec` are unchanged.
 
 Cross-cutting problems the review flags:
 
 - The kernel loader does not use the hardened parser in
   `src/loader/pe_parse.c` (loader L-0). Open.
 - The build may not be reproducible. `arch/x86/nt/kernel_stubs.c` is not C
-  (arch B-1), and the two `mm.c` copies differ (arch B-3). The arch-to-src
-  port is tracked in [analysis/tree-divergence.md](analysis/tree-divergence.md).
-  Open for `mm.c` and `kernel_stubs.c`.
+  (arch B-1, blocked: record [0027](decisions/0027-arch-kernel-stubs-file.md)),
+  and the two `mm.c` copies still differ in about 120 changed lines (arch B-3,
+  open). The arch-to-src port is tracked in
+  [analysis/tree-divergence.md](analysis/tree-divergence.md).
 - There is no access control on handles and processes (arch IO-3, IO-4, P-1;
-  kernel-nt IO-2, P-1). Open.
+  kernel-nt IO-2, P-1). Open. `NtReadFile` and `NtWriteFile` now check
+  `FILE_READ_DATA` and `FILE_WRITE_DATA` (or `FILE_APPEND_DATA`) in
+  `src/kernel/nt` (kernel-nt IO-1, fixed in 1d160e8 and 80b6fea). The arch
+  copy of those checks is not covered by that fix.
 
 The review's suggested order of work is in
 [review/INDEX.md](review/INDEX.md#suggested-order).
