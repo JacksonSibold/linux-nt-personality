@@ -6,6 +6,11 @@
  * the kernel command line, writes the script exit status back to the
  * share, and powers the VM off cleanly.
  *
+ * With dodtransport=initrd-serial on the command line (VM_TRANSPORT=initrd-serial,
+ * docs/vm/TRANSPORTS.md) there is no 9p mount: the payload is packed at /mnt/share in
+ * the initramfs, and after the result is written the framed emitter
+ * /emit-results.sh prints the .dodresult/ files on the serial console.
+ *
  * This init deliberately does NOT depend on the host distro
  * initramfs-tools; it is compiled and packaged by vm/mkinitramfs.sh.
  */
@@ -27,6 +32,8 @@
 #define RESULT_SUBDIR ".dodresult"
 #define RESULT_FILE RESULT_SUBDIR "/result.exitcode"
 #define DEFAULT_TEST "/mnt/share/vmtests/smoke.sh"
+/* initrd-serial transport: framed result emitter, packed at the initramfs root. */
+#define EMIT_SCRIPT "/emit-results.sh"
 
 static void die(const char *msg)
 {
@@ -170,6 +177,34 @@ static void write_result(int code)
     sync();
 }
 
+/* True when runvm.sh asked for VM_TRANSPORT=initrd-serial (dodtransport= on the cmdline). */
+static int transport_is_initrd_serial(void)
+{
+    char buf[4096];
+    const char *value = get_cmdline_value("dodtransport", buf, sizeof(buf));
+    return value && strcmp(value, "initrd-serial") == 0;
+}
+
+/* initrd-serial: print the result files as framed base64 on the console.
+ * The emitter is a shell script with busybox applets (vm/emit-results.sh).
+ * Its stdout is inherited, so it lands on the serial log. */
+static void run_emit(void)
+{
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "init: fork for emit failed\n");
+        return;
+    }
+    if (pid == 0) {
+        execl("/bin/sh", "sh", EMIT_SCRIPT, SHARE_MOUNT, (char *)NULL);
+        _exit(127);
+    }
+    int status;
+    if (waitpid(pid, &status, 0) < 0)
+        fprintf(stderr, "init: waitpid for emit failed\n");
+}
+
 int main(int argc, char *argv[])
 {
     (void)argc; (void)argv;
@@ -191,11 +226,19 @@ int main(int argc, char *argv[])
     // Enable dynamic debug for binfmt_pe (pr_debug demoted) - must be after debugfs mount
     enable_dynamic_debug();
 
-    /* The QEMU 9p virtfs share.  Tag must match runvm.sh. */
+    int serial = transport_is_initrd_serial();
     mkdir_p(SHARE_MOUNT);
-    if (mount("share", SHARE_MOUNT, "9p", 0,
-              "trans=virtio,version=9p2000.L") != 0) {
-        die("failed to mount 9p share");
+    if (serial) {
+        /* initrd-serial: the payload is packed into the initramfs at /mnt/share
+         * (vm/mkinitramfs.sh), so there is no 9p mount.  Results go to the same
+         * .dodresult/ and are framed on the console by run_emit() below. */
+        mkdir_p(SHARE_MOUNT "/" RESULT_SUBDIR);
+    } else {
+        /* The QEMU 9p virtfs share.  Tag must match runvm.sh. */
+        if (mount("share", SHARE_MOUNT, "9p", 0,
+                  "trans=virtio,version=9p2000.L") != 0) {
+            die("failed to mount 9p share");
+        }
     }
     // Try again after 9p mount (in case debugfs was delayed)
     enable_dynamic_debug();
@@ -206,6 +249,7 @@ int main(int argc, char *argv[])
     if (!test_path || !*test_path)
         test_path = (char *)DEFAULT_TEST;
 
+    printf("init: transport: %s\n", serial ? "initrd-serial" : "9p");
     printf("init: running test script: %s\n", test_path);
     fflush(stdout);
 
@@ -215,6 +259,9 @@ int main(int argc, char *argv[])
     fflush(stdout);
 
     write_result(code);
+
+    if (serial)
+        run_emit();
 
     power_off();
     return 0; /* never reached */

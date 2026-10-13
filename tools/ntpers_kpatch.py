@@ -65,6 +65,7 @@ AUDIT_H = "include/uapi/linux/audit.h"
 ELF_EM_H = "include/uapi/linux/elf-em.h"
 SCHED_H = "include/linux/sched.h"
 FORK_C = "kernel/fork.c"
+EXIT_C = "kernel/exit.c"
 KCONFIG = "arch/x86/Kconfig"
 KBUILD = "arch/x86/Kbuild"
 FS_MAKEFILE = "fs/Makefile"
@@ -465,6 +466,14 @@ def build_plan(project):
         "#ifdef CONFIG_NT_PERSONALITY\n\ttsk->nt_thread = NULL;\n#endif\n",
         "tsk->nt_thread = NULL", "clear nt_thread after the task copy",
         gap="G5"))
+    # Abandon the exiting task's owned mutants (arch/x86/nt/dispatch.c). Without this a thread
+    # that returns normally never releases its mutants, so waiters see a live owner.
+    edits.append(InsertEdit(
+        eid(), EXIT_C,
+        r"^void __noreturn do_exit\(long code\)\n\{\n",
+        "#ifdef CONFIG_NT_PERSONALITY\n\textern void nt_thread_exit_abandon(void);\n"
+        "\tnt_thread_exit_abandon();\n#endif\n",
+        "nt_thread_exit_abandon", "abandon owned mutants at task exit", gap="G5"))
 
     # 8. Syscall dispatch (BUILD-RECIPE 5i, G6): one form, the NT branch in
     # do_syscall_64() after add_random_kstack_offset().

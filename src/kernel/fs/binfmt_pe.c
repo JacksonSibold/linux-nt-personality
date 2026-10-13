@@ -27,6 +27,7 @@ static struct linux_binfmt pe_format;
 #ifdef CONFIG_NT_PERSONALITY
 #include "../../arch/x86/nt/nt_internal.h"
 extern int ntmm_add_region(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long);
+extern void ntmm_reset(void);
 extern int ntio_install_std_file(struct file *filp, u64 *out_handle);
 #else
 #ifndef KSHIM_H /* the userspace model (kshim.h) provides its own */
@@ -1042,6 +1043,18 @@ static int load_pe_binary(struct linux_binprm *bprm)
 
     /* begin_new_exec consumed bprm->mm (exec_mmap); update state to new mm */
     state.mm = current->mm;
+
+#ifdef CONFIG_NT_PERSONALITY
+    /*
+     * The kernel keeps one NT VAD map for the address space it maps PEs into (ntmm_global_space).
+     * begin_new_exec has just replaced the old address space, so the regions of the previous
+     * image must go too. Without this, the next PE's header map at the same image base fails
+     * ntmm_add_region (STATUS_CONFLICTING_ADDRESSES, reported as -EADDRNOTAVAIL) and the exec
+     * is killed with SIGSEGV after commit. Seen when several PEs run in one boot (the
+     * differential probes, tools/linux-env/probes-initramfs.sh).
+     */
+    ntmm_reset();
+#endif
     /* bprm->mm is now NULL; keep state.file/bprm for mapping helpers
      * (kernel_read uses state.file which is still valid)
      */

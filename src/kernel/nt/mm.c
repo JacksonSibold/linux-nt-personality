@@ -2487,6 +2487,11 @@ static NTSTATUS nt_create_file_section(PHANDLE SectionHandle, ACCESS_MASK Desire
     } else {
         size = file_size;
     }
+    /* An empty file (EOF 0) maps at its NtCreateFile AllocationSize, whether the caller gave no
+     * maximum or an explicit 0. Golden probe_section_direct sec_file_commit (explicit &0) succeeds
+     * on a zero-EOF file with a 64 KB allocation and maps 65536 bytes. */
+    if (size == 0 && file_size == 0 && file->alloc_size > 0)
+        size = file->alloc_size;
     if (size == 0) { st = STATUS_MAPPED_FILE_SIZE_ZERO; goto out_put; }
     if (size > file_size) {
         if (!nt_protect_writable(SectionPageProtection)) { st = STATUS_SECTION_TOO_BIG; goto out_put; }

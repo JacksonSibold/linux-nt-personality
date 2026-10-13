@@ -514,7 +514,7 @@ Verdicts:
   and 1 FAIL: `test_artifact_identity_stamping` ("bzImage sha256 sidecar missing"),
   a build product that is absent from this worktree. Not fixed.
 - `python tests/harness/dodrun.py` narrowed to DOD-SEC-A008 (scratch criteria file,
-  scratch reports): **DOD-SEC-A008 PASS** (stdout `DOD-SEC-A008: 0 violation(s)`).
+  scratch reports): **DOD-SEC-A008 PASS** (bundle `docs/status/bundles/dodrun-DOD-SEC-A008-20261013T062406Z.json`, stdout `DOD-SEC-A008: 0 violation(s)`).
   The process exit 1 comes from the tier gate (the narrowed run has no P1 or P2
   criteria), not from the criterion. Recorded in `docs/status/CRITERIA-PROGRESS.md`.
 - DOD-DRV-B003 and DOD-EVI-B006 are not registered and remain open (section 9.1).

@@ -5,6 +5,16 @@
  * counting, name lookup, and handle integration.
  *
  * Reference: Windows Internals 7th ed., ch. 3; WRK Ob* sources.
+ *
+ * Locks (outermost first):
+ *   ob_ns_lock        namespace; a directory's lock is taken under it.
+ *   dir->lock         one directory's entry list.
+ *   ob_sd_lock        security descriptor replace and copy (leaf).
+ *   ob_type_lock      type list, ObRegisterObjectType (leaf).
+ * No lock is taken while holding a leaf. Object flags: OBJ_PERMANENT is
+ * changed with atomic_or/atomic_andnot and read with atomic_read, with no
+ * lock. OBJ_EXCLUSIVE and is_exclusive are fixed before publication (see
+ * ObpInsertDirectoryEntry).
  */
 
 #include "object.h"
@@ -249,6 +259,11 @@ struct nt_object_type nt_test_type = {
     .pool_tag = 0,
 };
 
+/* Type list lock. ObRegisterObjectType runs on every create of a type-bound
+ * object (for example NtCreateSection), so the duplicate check and the insert
+ * are one critical section. This is a leaf lock: nothing else is taken under
+ * it, and ob_ns_lock is never taken under it. */
+static rwlock_t ob_type_lock;
 static struct list_head ob_type_list;
 
 /* -------------------------------------------------------------------------- */
@@ -343,14 +358,14 @@ static NTSTATUS ObpInsertDirectoryEntry(struct nt_directory *dir,
     obj->parent_dir = dir;
     /* Header name points to the entry's name buffer (freed with the entry). */
     obj->name = de->name;
+    /* OBJ_EXCLUSIVE is fixed at creation. Derive is_exclusive here, before
+     * the entry is published, and never write it again: the handle paths
+     * read it without a lock. */
+    obj->is_exclusive = (atomic_read(&obj->flags) & OBJ_EXCLUSIVE) != 0;
     list_add_tail(&de->link, &dir->entries);
     write_unlock(&dir->lock);
     OB_TEST_PAUSE("insert", obj);
     write_unlock(&ob_ns_lock);
-    if (obj->flags & OBJ_PERMANENT)
-        obj->is_permanent = true;
-    if (obj->flags & OBJ_EXCLUSIVE)
-        obj->is_exclusive = true;
     return STATUS_SUCCESS;
 }
 
@@ -582,8 +597,7 @@ NTSTATUS ObCreateObject(struct nt_object_type *type,
     hdr->name.Length = 0;
     hdr->name.MaximumLength = 0;
     hdr->parent_dir = NULL;
-    hdr->flags = 0;
-    hdr->is_permanent = false;
+    atomic_set(&hdr->flags, 0);
     hdr->is_exclusive = false;
     hdr->exclusive_owned = false;
     /* attrs->SecurityDescriptor is not consumed here: the object never
@@ -592,7 +606,7 @@ NTSTATUS ObCreateObject(struct nt_object_type *type,
     hdr->security_descriptor = NULL;
     hdr->security_descriptor_length = 0;
     if (attrs)
-        hdr->flags = attrs->Attributes & OBJ_VALID_ATTRIBUTES;
+        atomic_set(&hdr->flags, (int)(attrs->Attributes & OBJ_VALID_ATTRIBUTES));
     *out_hdr = hdr;
     if (out_body)
         *out_body = hdr->body;
@@ -950,10 +964,6 @@ NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs,
         ObDereferenceObject(obj);
         return STATUS_SHARING_VIOLATION;
     }
-    if (obj->flags & OBJ_EXCLUSIVE) {
-        /* First open of an exclusive object marks it */
-        obj->is_exclusive = true;
-    }
     struct nt_eprocess *target = proc ? proc : kshim_current_process();
     if (!target) { ObDereferenceObject(obj); return STATUS_INVALID_PARAMETER; }
     ULONG hattr = 0;
@@ -994,8 +1004,7 @@ NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj)
     if (!obj) return STATUS_INVALID_PARAMETER;
     /* Clear the flags first: removing from the directory may drop the last
      * reference and free obj. */
-    obj->flags &= ~OBJ_PERMANENT;
-    obj->is_permanent = false;
+    atomic_andnot(OBJ_PERMANENT, &obj->flags);
     ObpRemoveFromDirectory(obj);
     return STATUS_SUCCESS;
 }
@@ -1003,8 +1012,7 @@ NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj)
 NTSTATUS ObMakePermanentObject(struct nt_object_header *obj)
 {
     if (!obj) return STATUS_INVALID_PARAMETER;
-    obj->flags |= OBJ_PERMANENT;
-    obj->is_permanent = true;
+    atomic_or(OBJ_PERMANENT, &obj->flags);
     return STATUS_SUCCESS;
 }
 
@@ -1643,13 +1651,19 @@ static NTSTATUS ObpCreateWellKnownDirectory(const WCHAR *name, struct nt_object_
 NTSTATUS ObRegisterObjectType(struct nt_object_type *type)
 {
     if (!type) return STATUS_INVALID_PARAMETER;
-    /* Avoid double-add: check if already in list */
+    /* Avoid double-add: check and insert under ob_type_lock, so two threads
+     * registering the same type cannot both insert it. */
     struct list_head *pos;
+    write_lock(&ob_type_lock);
     for (pos = ob_type_list.next; pos != &ob_type_list; pos = pos->next) {
         struct nt_object_type *t = list_entry(pos, struct nt_object_type, list);
-        if (t == type) return STATUS_SUCCESS;
+        if (t == type) {
+            write_unlock(&ob_type_lock);
+            return STATUS_SUCCESS;
+        }
     }
     list_add(&type->list, &ob_type_list);
+    write_unlock(&ob_type_lock);
     return STATUS_SUCCESS;
 }
 
@@ -1664,6 +1678,7 @@ NTSTATUS ObInitObjectManager(void)
     if (ob_initialized) return STATUS_SUCCESS;
     spin_lock_init(&ob_sd_lock);
     rwlock_init(&ob_ns_lock);
+    rwlock_init(&ob_type_lock);
     INIT_LIST_HEAD(&ob_type_list);
     list_add(&nt_directory_type.list, &ob_type_list);
     list_add(&nt_symlink_type.list, &ob_type_list);
@@ -1684,8 +1699,7 @@ NTSTATUS ObInitObjectManager(void)
     INIT_LIST_HEAD(&ob_root_hdr.type_link);
     INIT_LIST_HEAD(&ob_root_dir.entries);
     rwlock_init(&ob_root_dir.lock);
-    ob_root_hdr.flags = OBJ_PERMANENT;
-    ob_root_hdr.is_permanent = true;
+    atomic_set(&ob_root_hdr.flags, OBJ_PERMANENT);
 
     st = ObpCreateWellKnownDirectory((const WCHAR *)u"??", &ob_dosdevices_hdr);
     if (!NT_SUCCESS(st)) return st;

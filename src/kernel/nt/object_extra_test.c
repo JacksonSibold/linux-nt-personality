@@ -150,11 +150,11 @@ TEST(make_permanent_requires_privilege)
     ASSERT_STATUS(insert_named(proc, "\\BaseNamedObjects\\PermA", &h), STATUS_SUCCESS);
     struct nt_object_header *hdr = NULL;
     ASSERT_STATUS(ObReferenceObjectByHandle(proc, h, NULL, KernelMode, 0, &hdr, NULL), STATUS_SUCCESS);
-    ASSERT((hdr->flags & OBJ_PERMANENT) == 0);
+    ASSERT((atomic_read(&hdr->flags) & OBJ_PERMANENT) == 0);
     ObDereferenceObject(hdr);
 
     ASSERT_STATUS(nt_svc_NtMakePermanentObject(h), STATUS_PRIVILEGE_NOT_HELD);
-    ASSERT(!(hdr->flags & OBJ_PERMANENT));
+    ASSERT(!(atomic_read(&hdr->flags) & OBJ_PERMANENT));
 
     ObCloseHandle(proc, h);
     ObDestroyProcessObject(proc);
@@ -175,16 +175,14 @@ TEST(make_permanent_with_privilege)
 
     struct nt_object_header *hdr = NULL;
     ASSERT_STATUS(ObReferenceObjectByHandle(proc, h, NULL, KernelMode, 0, &hdr, NULL), STATUS_SUCCESS);
-    ASSERT((hdr->flags & OBJ_PERMANENT) != 0);
-    ASSERT(hdr->is_permanent);
+    ASSERT((atomic_read(&hdr->flags) & OBJ_PERMANENT) != 0);
     ObDereferenceObject(hdr);
 
     /* Idempotent, and NtMakeTemporaryObject clears it again. */
     ASSERT_STATUS(nt_svc_NtMakePermanentObject(h), STATUS_SUCCESS);
     ASSERT_STATUS(nt_svc_NtMakeTemporaryObject(h), STATUS_SUCCESS);
     ASSERT_STATUS(ObReferenceObjectByHandle(proc, h, NULL, KernelMode, 0, &hdr, NULL), STATUS_SUCCESS);
-    ASSERT((hdr->flags & OBJ_PERMANENT) == 0);
-    ASSERT(!hdr->is_permanent);
+    ASSERT((atomic_read(&hdr->flags) & OBJ_PERMANENT) == 0);
     ObDereferenceObject(hdr);
 
     ObCloseHandle(proc, h);

@@ -411,6 +411,9 @@ struct nt_file_object {
 	ACCESS_MASK granted_access;
 	ULONG share_access;
 	ULONG create_options;
+	/* AllocationSize given to NtCreateFile (0 if none, or for an open). A section over an empty
+	 * file maps at this size; see mmf_section in mm.c. */
+	LONGLONG alloc_size;
 	bool synchronous;
 	bool delete_on_close;
 	bool delete_pending;

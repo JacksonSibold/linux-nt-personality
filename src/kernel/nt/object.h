@@ -159,10 +159,12 @@ struct nt_object_header {
     atomic64_t              handle_count;
     struct nt_directory    *parent_dir;
     UNICODE_STRING          name;
-    ULONG                   flags;
+    /* OBJ_* attribute bits. Atomic because OBJ_PERMANENT is set and cleared
+     * after publication (ObMakeTemporaryObject / ObMakePermanentObject) and
+     * readers do not take ob_ns_lock. Use atomic_read and atomic_or/andnot. */
+    atomic_t                flags;
     void                   *body;
     struct list_head        type_link;
-    bool                    is_permanent;
     bool                    is_exclusive;
     bool                    exclusive_owned;
     /* Owned self-relative security descriptor copy, NULL when the object has

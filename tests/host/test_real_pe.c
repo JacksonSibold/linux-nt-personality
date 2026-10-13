@@ -18,6 +18,31 @@
 
 #define FIX_DIR "out/fixtures/"
 
+/* Layout profile. Section RVAs and sizes, the import/exception/export directory
+ * RVAs, SizeOfImage and the RUNTIME_FUNCTION end/unwind offsets depend on the
+ * linker, so each fixture toolchain has its own set of expected values:
+ *   default                      MSYS2 gcc 16.2 / binutils 2.47 (Windows host)
+ *   REAL_PE_LAYOUT_DEBIAN_MINGW  Debian 12 x86_64-w64-mingw32-gcc 12.2 / binutils 2.40
+ * The Debian values were read with objdump -h and -p on the same fixtures, and
+ * pe_parse agrees with objdump on every one of them. A third toolchain needs its
+ * own profile. Only the layout constants differ; the export names, ordinals and
+ * function RVAs are the same in both profiles. */
+#if defined(REAL_PE_LAYOUT_DEBIAN_MINGW)
+#define LAYOUT_MIN_SIZE_OF_IMAGE   0x6000
+#define LAYOUT_MIN_IMPORT_RVA      0x5000
+#define LAYOUT_MIN_EXCEPTION_RVA   0x3000
+#define LAYOUT_MIN_RF_END          0x1011
+#define LAYOUT_MIN_RF_UNWIND       0x4000
+#define LAYOUT_EXP_DIR_RVA         0x5000
+#else
+#define LAYOUT_MIN_SIZE_OF_IMAGE   0x7000
+#define LAYOUT_MIN_IMPORT_RVA      0x6000
+#define LAYOUT_MIN_EXCEPTION_RVA   0x4000
+#define LAYOUT_MIN_RF_END          0x1009
+#define LAYOUT_MIN_RF_UNWIND       0x5000
+#define LAYOUT_EXP_DIR_RVA         0x6000
+#endif
+
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -97,7 +122,7 @@ static void test_minimal_headers(void)
     MT_EXPECT_EQ(img.ctx.image_base, 0x140000000ULL);
     MT_EXPECT_EQ(img.ctx.section_alignment, 0x1000);
     MT_EXPECT_EQ(img.ctx.file_alignment, 0x200);
-    MT_EXPECT_EQ(img.ctx.size_of_image, 0x7000);
+    MT_EXPECT_EQ(img.ctx.size_of_image, LAYOUT_MIN_SIZE_OF_IMAGE);
     MT_EXPECT_EQ(img.ctx.size_of_headers, 0x400);
     MT_EXPECT_EQ(img.ctx.subsystem, 3);                 /* IMAGE_SUBSYSTEM_WINDOWS_CUI */
     MT_EXPECT_EQ(img.ctx.num_data_directories, 16);
@@ -110,6 +135,15 @@ static void test_minimal_sections(void)
     real_image_t img;
     pe_section_view_t v;
     u16 n = 0;
+#if defined(REAL_PE_LAYOUT_DEBIAN_MINGW)
+    static const struct { const char *name; u32 va, vsize, raw, rawsize; } want[] = {
+        { ".text",  0x1000, 0x40, 0x400, 0x200 },
+        { ".data",  0x2000, 0x10, 0x600, 0x200 },
+        { ".pdata", 0x3000, 0x0c, 0x800, 0x200 },
+        { ".xdata", 0x4000, 0x04, 0xa00, 0x200 },
+        { ".idata", 0x5000, 0x18, 0xc00, 0x200 },
+    };
+#else
     static const struct { const char *name; u32 va, vsize, raw, rawsize; } want[] = {
         { ".text",  0x1000, 0x10, 0x400, 0x200 },
         { ".data",  0x2000, 0x10, 0x600, 0x200 },
@@ -118,6 +152,7 @@ static void test_minimal_sections(void)
         { ".xdata", 0x5000, 0x04, 0xc00, 0x200 },
         { ".idata", 0x6000, 0x18, 0xe00, 0x200 },
     };
+#endif
 
     MT_ASSERT(real_load(&img, "minimal.exe"));
     MT_ASSERT(pe_validate(&img.ctx) == PE_OK);
@@ -149,11 +184,11 @@ static void test_minimal_directories(void)
 
     /* ld emits an all-zero import descriptor for a nostdlib image. */
     MT_ASSERT(pe_directory_get(&img.ctx, IMAGE_DIRECTORY_ENTRY_IMPORT, &d) == PE_OK);
-    MT_EXPECT_EQ(d.rva, 0x6000);
+    MT_EXPECT_EQ(d.rva, LAYOUT_MIN_IMPORT_RVA);
     MT_EXPECT_EQ(d.size, 0x18);
 
     MT_ASSERT(pe_directory_get(&img.ctx, IMAGE_DIRECTORY_ENTRY_EXCEPTION, &d) == PE_OK);
-    MT_EXPECT_EQ(d.rva, 0x4000);
+    MT_EXPECT_EQ(d.rva, LAYOUT_MIN_EXCEPTION_RVA);
     MT_EXPECT_EQ(d.size, 0x0c);
 
     MT_ASSERT(pe_directory_get(&img.ctx, IMAGE_DIRECTORY_ENTRY_BASERELOC, &d) == PE_OK);
@@ -214,8 +249,8 @@ static pe_status_t take_rf(void *user, const pe_runtime_function_t *rf)
     unsigned *n = user;
     if (*n == 0) {
         MT_EXPECT_EQ(rf->begin, 0x1000);
-        MT_EXPECT_EQ(rf->end, 0x1009);
-        MT_EXPECT_EQ(rf->unwind, 0x5000);
+        MT_EXPECT_EQ(rf->end, LAYOUT_MIN_RF_END);
+        MT_EXPECT_EQ(rf->unwind, LAYOUT_MIN_RF_UNWIND);
     }
     ++*n;
     return PE_OK;
@@ -397,7 +432,7 @@ static void test_exports_dll_directories(void)
     MT_ASSERT(pe_validate(&img.ctx) == PE_OK);
 
     MT_ASSERT(pe_directory_get(&img.ctx, IMAGE_DIRECTORY_ENTRY_EXPORT, &d) == PE_OK);
-    MT_EXPECT_EQ(d.rva, 0x6000);
+    MT_EXPECT_EQ(d.rva, LAYOUT_EXP_DIR_RVA);
     MT_EXPECT_EQ(d.size, 0x100);
 
     /* Four RUNTIME_FUNCTION entries, one per function that has code. */

@@ -878,8 +878,9 @@ NTSTATUS NtCreateKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess,
         dup_us(&leaf,&e->name);
         write_lock(&parentKey->lock);
         list_add_tail(&e->link,&parentKey->subkeys);
-        write_unlock(&parentKey->lock);
+        /* Under the lock: concurrent creators and value writers also set it (LNX-10). */
         parentKey->last_write_time.QuadPart = (LONGLONG)now_100ns();
+        write_unlock(&parentKey->lock);
         ObDereferenceObject(hdr); // drop creator ref; handle + parent list hold refs
         *KeyHandle = h;
         if (Disposition) *Disposition = REG_CREATED_NEW_KEY;
@@ -1374,13 +1375,13 @@ NTSTATUS NtDeleteValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName) {
     }
     if (!target) { write_unlock(&k->lock); mutex_unlock(&k->persist_lock); ObDereferenceObject(hdr); return STATUS_OBJECT_NAME_NOT_FOUND; }
     list_del(&target->link);
+    k->last_write_time.QuadPart=(LONGLONG)now_100ns();
     write_unlock(&k->lock);
     persist_delete_value(k, ValueName);
     mutex_unlock(&k->persist_lock);
     if (target->name.Buffer) kfree(target->name.Buffer);
     if (target->data) kfree(target->data);
     kfree(target);
-    k->last_write_time.QuadPart=(LONGLONG)now_100ns();
     ObDereferenceObject(hdr);
     return STATUS_SUCCESS;
 }

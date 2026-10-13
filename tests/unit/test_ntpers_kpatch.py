@@ -72,6 +72,9 @@ def make_tree(root, tif_addr32_bit=28, elf_em_extra=None):
            "{\n\tstruct task_struct *tsk;\n\tint err;\n\n"
            "\terr = arch_dup_task_struct(tsk, orig);\n"
            "\tif (err)\n\t\tgoto free_tsk;\n\treturn tsk;\n}\n")
+    _write(root, "kernel/exit.c",
+           "void __noreturn do_exit(long code)\n{\n"
+           "\tstruct task_struct *tsk = current;\n\n\tcode = code;\n}\n")
     _write(root, "arch/x86/include/asm/thread_info.h",
            "#ifndef _ASM_X86_THREAD_INFO_H\n#define _ASM_X86_THREAD_INFO_H\n"
            "#define TIF_BLOCKSTEP\t\t25\t/* set when we want DEBUGCTLMSR_BTF */\n"
@@ -155,6 +158,7 @@ class FullPlanTest(unittest.TestCase):
         self.assertIn("late_initcall(nt_banner_initcall);",
                       (t / "arch/x86/nt/kernel_stubs.c").read_text())
         self.assertIn("tsk->nt_thread = NULL;", (t / "kernel/fork.c").read_text())
+        self.assertIn("nt_thread_exit_abandon();", (t / "kernel/exit.c").read_text())
         self.assertIn("*nt_thread;", (t / "include/linux/sched.h").read_text())
         self.assertIn('source "arch/x86/Kconfig.nt"', (t / "arch/x86/Kconfig").read_text())
         self.assertIn("obj-$(CONFIG_NT_PERSONALITY) += nt/", (t / "arch/x86/Kbuild").read_text())

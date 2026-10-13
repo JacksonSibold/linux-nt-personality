@@ -18,6 +18,16 @@ export TEMP   := $(TEMP_DIR)
 export TMPDIR := $(shell cygpath -u "$(TEMP_DIR)")
 endif
 
+# KHOST_OS selects the host shim. windows: the UCRT shim (shim/*.c, ws2_32,
+# VirtualAlloc-based mmap). linux: glibc provides the POSIX names, so the shim is
+# shim/linux (a prelude plus the scratch-root hook) and no ws2_32 is linked.
+# Detected from uname; override on the command line if needed.
+ifneq (,$(filter Windows_NT,$(OS))$(filter MINGW% MSYS% CYGWIN%,$(UNAME_S)))
+KHOST_OS ?= windows
+else
+KHOST_OS ?= linux
+endif
+
 CC      := gcc
 NT      := ../../src/kernel/nt
 NTDLL   := ../../src/ntdll
@@ -35,6 +45,19 @@ BUILD   := build
 COV_FLAGS :=
 COV_LIBS  :=
 endif
+# SANITIZE=address (ASan+UBSan) or SANITIZE=thread (TSan): sanitizer builds in
+# build-asan/ or build-tsan/, so the plain objects are never mixed with them.
+# Linux gcc only; the MSYS2 gcc on the development machine has no libasan/libtsan.
+SANITIZE ?=
+ifeq ($(SANITIZE),address)
+BUILD    := build-asan
+SAN_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+else ifeq ($(SANITIZE),thread)
+BUILD    := build-tsan
+SAN_FLAGS := -fsanitize=thread -fno-omit-frame-pointer
+else
+SAN_FLAGS :=
+endif
 NTSTATUS_INC := $(BUILD)/ntstatus_table.inc
 
 # OPT defaults to -O0. Use OPT=-O2 with a separate BUILD=... directory to
@@ -46,14 +69,25 @@ OPT     := -O0
 endif
 WARN    := -Wall -Wextra -Wuninitialized
 DEPFLAGS := -MMD -MP
-CFLAGS  := -std=gnu11 -g $(OPT) $(WARN) $(DEPFLAGS) $(COV_FLAGS) -DUSERSPACE_KSHIM \
-           -include $(SHIM)/khost_prelude.h \
-           -iquote $(NT) -iquote $(LOADER) -iquote $(BUILD) -I$(SHIM)
-LDLIBS  := -lpthread -lws2_32 $(COV_LIBS)
-LDFLAGS := -fno-use-linker-plugin $(COV_FLAGS)
-
+ifeq ($(KHOST_OS),linux)
+PRELUDE   := $(SHIM)/linux/khost_prelude.h
+SHIM_INC  := -I$(SHIM)/linux
+HOST_LIBS := -lpthread
+# Host-only POSIX pieces on Linux: the scratch-root hook only (see shim/linux/).
+SHIM_OBJS := $(BUILD)/khost_linux.o
+else
+PRELUDE   := $(SHIM)/khost_prelude.h
+SHIM_INC  := -I$(SHIM)
+HOST_LIBS := -lpthread -lws2_32
 # Host-only POSIX primitives (see shim/).
 SHIM_OBJS := $(BUILD)/mman_win.o $(BUILD)/posix_host.o $(BUILD)/posix_raw.o
+endif
+
+CFLAGS  := -std=gnu11 -g $(OPT) $(WARN) $(DEPFLAGS) $(COV_FLAGS) $(SAN_FLAGS) -DUSERSPACE_KSHIM \
+           -include $(PRELUDE) \
+           -iquote $(NT) -iquote $(LOADER) -iquote $(BUILD) $(SHIM_INC)
+LDLIBS  := $(HOST_LIBS) $(COV_LIBS)
+LDFLAGS := -fno-use-linker-plugin $(COV_FLAGS) $(SAN_FLAGS)
 
 # Test programs and the module objects each one links against.
 TESTS := port_test job_test security_extra_test object_test object_extra_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test system_test process_params_test handle_inherit_test proc_create_args_test image_plan_test image_reloc_test debugobj_test
@@ -156,9 +190,14 @@ $(BUILD)/ntstatus_kernel.o: $(NTSTATUS_INC)
 $(BUILD)/nt_obj_weak.o: $(BUILD)/nt_obj.o
 	objcopy --weaken-symbol=nt_svc_NtClose $< $@
 
+# Linux scratch-root hook (shim/linux/khost_linux.c).
+$(BUILD)/khost_linux.o: $(SHIM)/linux/khost_linux.c | $(BUILD)
+	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -c $< -o $@
+
 # Shim self-test: plain host C against the shim, without the module prelude.
+# On Linux it includes the glibc sys/mman.h, so it checks the real kernel's mmap.
 $(BUILD)/mman_test.o: $(SHIM)/mman_test.c | $(BUILD)
-	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -I$(SHIM) -c $< -o $@
+	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -D_GNU_SOURCE $(SHIM_INC) -c $< -o $@
 
 $(BUILD)/mman_test.exe: $(BUILD)/mman_test.o $(SHIM_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)

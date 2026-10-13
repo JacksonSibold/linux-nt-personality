@@ -41,6 +41,8 @@ verdict and does not change it.
   whose `/init` runs `/tests_kernel/minimal.exe`, prints the status, and powers off. It boots with
   `tools/linux-env/boot-m0-host.ps1` (host QEMU, `-kernel`, TCG, `-nic none`). `vm/check_m0.sh` and
   `vm/test_m0.sh` were **not** run; their result file is written to the 9p share.
+  Later, `VM_TRANSPORT=initrd-serial` and `tools/linux-env/run-vm.ps1` ran the same M0 payload
+  through the repository's own test script and collector; see `docs/vm/TRANSPORTS.md`.
 - **Test binary.** `tests/kernel/bin/minimal.exe` built in the guest with `x86_64-w64-mingw32-gcc`
   (PE32+, x86-64). The guest copy of the repo was LF-normalised before the build.
 - **Config base.** tinyconfig with the required list, not defconfig (`BASE` in the script; BUILD-RECIPE G19).

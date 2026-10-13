@@ -340,3 +340,39 @@ sh tools/static_analyze.sh FILE...       # specific files
 ```
 
 Always exits `0`. CI runs it as an informational step.
+
+## vm_serial_collect.py
+
+Host side of the `initrd-serial` VM transport. It rebuilds the guest's
+`.dodresult/` files from a serial log. The guest emits each file as a frame
+(`@@NTPERS-FILE <path> <size> <sha256>@@`, base64 body, `@@END@@`) between
+`@@NTPERS-EMIT-BEGIN@@` and `@@NTPERS-EMIT-END@@`. Each frame is written only
+when its size, sha256 and base64 body agree. Kernel log lines outside frames
+are ignored, and noise inside a frame is skipped and counted. Nothing is
+written on any error.
+
+```
+python3 tools/vm_serial_collect.py --log SERIAL.log --out SHARE_DIR
+python3 -m unittest discover -s tests/unit -p "test_vm_serial_collect.py"
+```
+
+Exit status: `0` verified and written, `1` a frame failed verification, `2`
+usage or I/O error, `3` the emit did not complete (no end marker). See
+[docs/vm/TRANSPORTS.md](../docs/vm/TRANSPORTS.md).
+
+## vm_initrd_pack.py
+
+Builds a gzip newc initramfs with the standard library only, for hosts without
+`cpio` (the Windows host). It passes a base archive through unchanged, adds
+host trees (`--add SRC=DEST`) and symlinks (`--link NAME=TARGET`), converts CRLF
+in `.sh` files, and writes deterministic output. It refuses a payload over
+`--max-kb` (default 32768 KiB uncompressed).
+
+```
+python3 tools/vm_initrd_pack.py --base BASE.cpio.gz --out OUT.cpio.gz \
+    --add tools/linux-env/init-serial.sh=init --add vm=mnt/share/vm --link bin/base64=busybox
+```
+
+Exit status: `0` written, `1` size cap or missing source, `2` usage or a bad
+archive. The dry run that used it is recorded in
+[docs/vm/TRANSPORTS.md](../docs/vm/TRANSPORTS.md).

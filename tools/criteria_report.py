@@ -22,6 +22,7 @@ Standard library only.
 """
 import argparse
 import json
+import os
 import re
 import sys
 from collections import Counter, OrderedDict
@@ -40,6 +41,9 @@ ASSESSMENT_RE = re.compile(r"^(DOD-[A-Z]+-[AB]\d{3}):[ \t]*\n[ \t]+verdict:[ \t]
 REGISTRY_RE = re.compile(r"^  (DOD-[A-Z]+-[AB]\d{3}):[ \t]*$", re.MULTILINE)
 # Reviewed NONE/PARTIAL/FULL verdicts (criteria_evidence_map.py) in matrix wording.
 VERDICT_WORDS = {"FULL": "implemented", "PARTIAL": "partial", "NONE": "not demonstrated"}
+BUNDLE_DIR = REPO / "docs" / "status" / "bundles"
+BUNDLE_GLOB = "dodrun-*.json"
+STATUS_DIR = REPO / "docs" / "status"
 ASSESSMENT_LINK = "CRITERIA-EVIDENCE.md"
 REGISTRY_LINK = "../../tests/harness/registry.yaml"
 BOUNDARY_LINK = "../policy/CLAIM-BOUNDARY.md"
@@ -63,6 +67,37 @@ def load_registered(path=REGISTRY_PATH):
     except OSError:
         return set()
     return set(REGISTRY_RE.findall(text))
+
+
+def load_dodrun_results(paths):
+    """Map criterion ID to {'state', 'file'} from dodrun results documents.
+
+    tests/harness/dodrun.py writes one results document per run: a JSON object whose
+    "results" list holds one {"id", "state", ...} record per criterion. Files are read
+    in the order given, so a later file replaces an earlier record for the same ID.
+    Raises ValueError when a file is unreadable or does not have that shape.
+    """
+    found = {}
+    for path in paths:
+        path = Path(path)
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"cannot read dodrun results {path}: {exc}")
+        results = doc.get("results") if isinstance(doc, dict) else None
+        if not isinstance(results, list):
+            raise ValueError(f"{path} has no 'results' list")
+        for rec in results:
+            if not (isinstance(rec, dict) and isinstance(rec.get("id"), str)
+                    and isinstance(rec.get("state"), str)):
+                raise ValueError(f"{path} has a result without a string 'id' and 'state'")
+            found[rec["id"]] = {"state": rec["state"], "file": path}
+    return found
+
+
+def find_bundles(directory=BUNDLE_DIR):
+    """The committed dodrun results documents, oldest first. Empty when none exist."""
+    return sorted(Path(directory).glob(BUNDLE_GLOB))
 
 
 def load_criteria(path=CRITERIA_PATH):
@@ -93,13 +128,19 @@ def read_readme_count(path=README_PATH):
     return {"passing": int(m.group(1)), "total": int(m.group(2)), "source": "README.md"}
 
 
-def status_of(entry):
+def status_of(entry, results=None):
+    """The dodrun state of the criterion when a result file holds one, else the recorded status."""
+    if results and entry["id"] in results:
+        return results[entry["id"]]["state"].lower()
     raw = (entry.get("status") or "").strip()
     return "unknown" if raw in PLACEHOLDER_STATUSES else raw
 
 
-def verdict_of(cid, dependency, assessed):
-    """Matrix verdict: a reviewed assessment when one exists, else gated or not assessed."""
+def verdict_of(cid, dependency, assessed, results=None):
+    """Matrix verdict: the dodrun state when a result file holds one, else a reviewed assessment,
+    else gated or not assessed. A recorded run is newer evidence than a review."""
+    if results and cid in results:
+        return f"dodrun {results[cid]['state'].lower()}"
     if cid in assessed:
         return assessed[cid]
     if dependency == "EXT-GATED":
@@ -107,9 +148,15 @@ def verdict_of(cid, dependency, assessed):
     return "not assessed"
 
 
-def evidence_of(cid, assessed, registered):
-    """Local link to the record that says what is known about the row. No row links a bundle:
-    the repository holds none."""
+def evidence_of(cid, assessed, registered, results=None):
+    """Local link to the record that says what is known about the row. A dodrun result links
+    its results document (the link text names the path from the repository root, which is
+    how the docs lint finds a bundle); it is unsigned, so the row says so."""
+    if results and cid in results:
+        target = Path(results[cid]["file"])
+        from_repo = Path(os.path.relpath(target, REPO)).as_posix()
+        from_status = Path(os.path.relpath(target, STATUS_DIR)).as_posix()
+        return f"[{from_repo}]({from_status}); unsigned"
     if cid in assessed:
         return f"[assessment]({ASSESSMENT_LINK}); no bundle"
     if cid in registered:
@@ -124,9 +171,10 @@ def owner_of(dependency):
     return "project owner"
 
 
-def build_rows(criteria, assessed=None, registered=None):
+def build_rows(criteria, assessed=None, registered=None, results=None):
     assessed = assessed or {}
     registered = registered or set()
+    results = results or {}
     rows = []
     for c in criteria:
         dep = c["dependency_class"]
@@ -136,9 +184,9 @@ def build_rows(criteria, assessed=None, registered=None):
             ("description", " ".join(str(c["criterion"]).split())),
             ("tier", c["tier"]),
             ("dependency_class", dep),
-            ("status", status_of(c)),
-            ("verdict", verdict_of(c["id"], dep, assessed)),
-            ("evidence", evidence_of(c["id"], assessed, registered)),
+            ("status", status_of(c, results)),
+            ("verdict", verdict_of(c["id"], dep, assessed, results)),
+            ("evidence", evidence_of(c["id"], assessed, registered, results)),
             ("owner", owner_of(dep)),
         ]))
     return rows
@@ -276,6 +324,9 @@ def main(argv=None):
     fmt.add_argument("--json", action="store_true", help="emit JSON")
     fmt.add_argument("--markdown", action="store_true", help="emit Markdown")
     parser.add_argument("--out", help="write output to this file instead of stdout")
+    parser.add_argument("--results", action="append", type=Path, metavar="PATH",
+                        help="dodrun results JSON to read statuses from (repeatable; "
+                             "default: docs/status/bundles/dodrun-*.json)")
     parser.add_argument("--selftest", action="store_true", help="run built-in checks and exit")
     args = parser.parse_args(argv)
 
@@ -287,7 +338,13 @@ def main(argv=None):
     except (OSError, ValueError) as exc:  # bad JSON, wrong shape, duplicate id, unreadable
         print(f"criteria_report: error: cannot load {CRITERIA_PATH}: {exc}", file=sys.stderr)
         return 1
-    rows = build_rows(criteria, load_assessments(ASSESSMENTS_PATH), load_registered(REGISTRY_PATH))
+    try:
+        results = load_dodrun_results(args.results or find_bundles())
+    except ValueError as exc:
+        print(f"criteria_report: error: {exc}", file=sys.stderr)
+        return 1
+    rows = build_rows(criteria, load_assessments(ASSESSMENTS_PATH), load_registered(REGISTRY_PATH),
+                      results)
     summary = summarize(rows, read_readme_count(README_PATH))
 
     if args.json:

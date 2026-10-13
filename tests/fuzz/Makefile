@@ -24,19 +24,31 @@ else
 EXE_SUFFIX :=
 endif
 
+# SANITIZE=1: AddressSanitizer and UBSan, built into out-asan/ so the plain and
+# sanitized objects never mix. Needs libasan/libubsan (Linux gcc has them; the
+# MSYS2 gcc on the development machine does not).
+#   make -C tests/fuzz SANITIZE=1 smoke
+SANITIZE ?= 0
+
 CC      := gcc
 SRC     := ../../src/loader
 HOST    := ../host
+ifeq ($(SANITIZE),1)
+OUT     := out-asan
+SAN_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+else
 OUT     := out
+SAN_FLAGS :=
+endif
 SEEDS   := $(OUT)/seeds
 FUZZ    := $(OUT)/fuzz_pe$(EXE_SUFFIX)
 ITERS   ?= 2000
 SEED    ?= 1
 FILE    ?=
-LDFLAGS := -fno-use-linker-plugin
+LDFLAGS := -fno-use-linker-plugin $(SAN_FLAGS)
 
 CPPFLAGS := -I$(SRC) -I$(HOST)
-CFLAGS   := -std=c11 -g -O1 -Wall -Wextra -Werror
+CFLAGS   := -std=c11 -g -O1 -Wall -Wextra -Werror $(SAN_FLAGS)
 
 OBJS := $(OUT)/fuzz_pe.o $(OUT)/fuzz_plat.o $(OUT)/pe_parse.o $(OUT)/pe_image.o
 

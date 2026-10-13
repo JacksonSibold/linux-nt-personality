@@ -1,0 +1,5 @@
+# Scripts run inside the Linux guest and under sh/python: keep LF in the working tree.
+*.sh text eol=lf
+*.py text eol=lf
+tools/linux-env/** text eol=lf
+vm/** text eol=lf

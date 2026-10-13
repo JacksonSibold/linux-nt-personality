@@ -119,3 +119,19 @@ Stale record, left as dated: the DOD-DRV-B003 and DOD-EVI-B006 rows in
 `docs/status/CRITERIA-EVIDENCE.md` (review dated 2026-10-12) say the boundary document is
 missing and that `lint_evi_b006` is unwired. Neither is true on this branch. The source of those
 rows is `tools/criteria_evidence_assessments.yaml`, a reviewer's file, and was not edited.
+
+## dodrun verdicts (recorded 2026-10-13)
+
+This section supersedes the registry and run notes above it for the three criteria in the table
+below, which now have registry entries and recorded results.
+
+Each verdict is the `state` that `tests/harness/dodrun.py` wrote for one criterion. Every run
+was narrowed with a scratch criteria file that holds only that criterion, and `--no-gate-exit`.
+The linked bundle is the results document dodrun wrote, copied unchanged. A later run for the
+same criterion replaces its record in `tools/criteria_report.py`.
+
+| Criterion | dodrun state | Bundle |
+|-----------|--------------|--------|
+| DOD-DRV-B003 | PASS | [docs/status/bundles/dodrun-DOD-DRV-B003-20261013T062552Z.json](bundles/dodrun-DOD-DRV-B003-20261013T062552Z.json) |
+| DOD-SEC-A008 | PASS | [docs/status/bundles/dodrun-DOD-SEC-A008-20261013T062406Z.json](bundles/dodrun-DOD-SEC-A008-20261013T062406Z.json) |
+| DOD-EVI-B006 | PASS | [docs/status/bundles/dodrun-DOD-EVI-B006-20261013T063013Z.json](bundles/dodrun-DOD-EVI-B006-20261013T063013Z.json) |

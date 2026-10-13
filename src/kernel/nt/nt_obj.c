@@ -827,7 +827,7 @@ NTSTATUS nt_svc_NtQueryObject(HANDLE Handle, ULONG ObjectInformationClass,
         }
         if (ReturnLength) *ReturnLength = needed;
         OBJECT_BASIC_INFORMATION *bi = (OBJECT_BASIC_INFORMATION*)ObjectInformation;
-        bi->Attributes = hdr->flags;
+        bi->Attributes = (ULONG)atomic_read(&hdr->flags);
         bi->GrantedAccess = granted;
         bi->HandleCount = (ULONG)atomic64_read(&hdr->handle_count);
         bi->PointerCount = (ULONG)atomic64_read(&hdr->ref_count);
@@ -1159,7 +1159,7 @@ NTSTATUS nt_svc_NtQueryObject(unsigned long a0, unsigned long a1, unsigned long 
             }
             if (!access_ok(ObjectInformation, needed)) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
             OBJECT_BASIC_INFORMATION kbi;
-            kbi.Attributes = hdr->flags;
+            kbi.Attributes = (ULONG)atomic_read(&hdr->flags);
             kbi.GrantedAccess = granted;
             kbi.HandleCount = (ULONG)atomic64_read(&hdr->handle_count);
             kbi.PointerCount = (ULONG)atomic64_read(&hdr->ref_count);

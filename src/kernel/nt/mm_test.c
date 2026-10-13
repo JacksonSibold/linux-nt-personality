@@ -768,6 +768,40 @@ static int test_file_section_zero_length_rejected(void) {
     return 1;
 }
 
+/* NtCreateFile with an AllocationSize and no data: the file is empty (EOF 0), but NT maps
+ * a default-size section at the allocation size (golden probe_section_direct: a 64 KB
+ * allocation maps 65536 bytes). The section extends the file to that size. */
+static int test_file_section_uses_allocation_size(void) {
+    static WCHAR wbuf[256];
+    const char *name = "alloc.bin";
+    size_t i, len = strlen(name);
+    UNICODE_STRING us;
+    OBJECT_ATTRIBUTES oa;
+    IO_STATUS_BLOCK iosb;
+    LARGE_INTEGER alloc;
+    HANDLE fh = NULL, sec = NULL;
+    for (i = 0; i < len && i < 255; i++) wbuf[i] = (WCHAR)(unsigned char)name[i];
+    us.Buffer = wbuf;
+    us.Length = (USHORT)(len * sizeof(WCHAR));
+    us.MaximumLength = us.Length;
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(oa);
+    oa.ObjectName = &us;
+    memset(&iosb, 0, sizeof(iosb));
+    alloc.QuadPart = 65536;
+    ASSERT(nt_svc_NtCreateFile(&fh, FILE_READ_DATA | FILE_WRITE_DATA, &oa, &iosb, &alloc, 0,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OVERWRITE_IF,
+                               FILE_NON_DIRECTORY_FILE, NULL, 0) == STATUS_SUCCESS,
+           "create empty file with a 64 KB allocation");
+    ASSERT(mmf_section(fh, &sec, PAGE_READWRITE, 0) == STATUS_SUCCESS,
+           "default-size section uses the allocation size");
+    ASSERT(sec != NULL, "section handle returned");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close allocation-size section");
+    ASSERT(mmf_host_size(name) == 65536, "section extended the file to the allocation size");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close allocation-size file");
+    return 1;
+}
+
 /* A view and its section outlive the file handle: the section keeps its own
  * reference, and the file still reaches disk. A closed handle cannot make a new
  * section. */
@@ -1352,7 +1386,11 @@ static int test_section_wrong_type_rejected(void) {
  * OBJECT_TYPE_MISMATCH and leaves the caller's handle at its sentinel. */
 static NTSTATUS mm_section_oa(OBJECT_ATTRIBUTES *oa, UNICODE_STRING *us, const WCHAR *name) {
     us->Buffer = (WCHAR *)name;
-    us->Length = (USHORT)(wcslen(name) * sizeof(WCHAR));
+    /* Count 16-bit units by hand: the libc wcslen takes wchar_t, which is 32 bits on Linux (LNX-08). */
+    size_t units = 0;
+    while (name[units])
+        units++;
+    us->Length = (USHORT)(units * sizeof(WCHAR));
     us->MaximumLength = us->Length;
     memset(oa, 0, sizeof(*oa));
     oa->Length = sizeof(*oa);
@@ -1361,7 +1399,8 @@ static NTSTATUS mm_section_oa(OBJECT_ATTRIBUTES *oa, UNICODE_STRING *us, const W
 }
 
 static int test_section_name_held_by_other_type(void) {
-    static const WCHAR name[] = L"\\BaseNamedObjects\\SecOverTest";
+    /* u"": char16_t is 16 bits on every host; L"" is 32 bits on Linux (LNX-08). */
+    static const WCHAR name[] = u"\\BaseNamedObjects\\SecOverTest";
     struct nt_object_header *hdr = NULL;
     void *body = NULL;
     OBJECT_ATTRIBUTES oa; UNICODE_STRING us;
@@ -1384,7 +1423,7 @@ static int test_section_name_held_by_other_type(void) {
 /* Same type: the second named section gets the holder's handle with
  * NAME_COLLISION (the SYNC-3 policy). */
 static int test_section_same_type_collision_reopens(void) {
-    static const WCHAR name[] = L"\\BaseNamedObjects\\SecSameType";
+    static const WCHAR name[] = u"\\BaseNamedObjects\\SecSameType";
     OBJECT_ATTRIBUTES oa; UNICODE_STRING us;
     mm_section_oa(&oa, &us, name);
     LARGE_INTEGER sz; sz.QuadPart = 0x2000;
@@ -2983,6 +3022,7 @@ int main(void) {
     RUN_TEST(test_file_section_cow_does_not_modify_file);
     RUN_TEST(test_file_section_access_by_protection);
     RUN_TEST(test_file_section_zero_length_rejected);
+    RUN_TEST(test_file_section_uses_allocation_size);
     RUN_TEST(test_file_section_handle_closed_keeps_view);
     RUN_TEST(test_file_section_offset_alignment);
     RUN_TEST(test_file_section_query_file_attribute);

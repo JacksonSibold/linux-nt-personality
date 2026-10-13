@@ -166,6 +166,44 @@ if false && command -v perf >/dev/null 2>&1; then
     ln -sf busybox "${WORK}/bin/strings" 2>/dev/null || true
 fi
 
+# --- Transport payload (VM_TRANSPORT=initrd-serial only) ---
+# With 9p the test scripts and binaries come from the share at runtime, and nothing here
+# changes. With initrd-serial the payload directories are packed at the same paths under
+# /mnt/share, the framed emitter goes to /emit-results.sh, and the applets it needs are
+# linked. The payload is size-capped: the kernel unpacks the whole initramfs into RAM.
+VM_TRANSPORT="${VM_TRANSPORT:-9p}"
+case "${VM_TRANSPORT}" in
+    9p|initrd-serial) ;;
+    *) echo "mkinitramfs: VM_TRANSPORT must be 9p or initrd-serial (got ${VM_TRANSPORT})" >&2; exit 2 ;;
+esac
+if [ "${VM_TRANSPORT}" = "initrd-serial" ]; then
+    VM_PAYLOAD_DIRS="${VM_PAYLOAD_DIRS:-vm build/probes}"
+    VM_PAYLOAD_MAX_KB="${VM_PAYLOAD_MAX_KB:-32768}"
+    for d in ${VM_PAYLOAD_DIRS}; do
+        if [ ! -d "${PROJECT_ROOT}/${d}" ]; then
+            echo "mkinitramfs: payload dir ${d} not present, skipped"
+            continue
+        fi
+        mkdir -p "${WORK}/mnt/share/${d}"
+        cp -R "${PROJECT_ROOT}/${d}/." "${WORK}/mnt/share/${d}/"
+        rm -rf "${WORK}/mnt/share/${d}/.dodresult"
+        rm -f "${WORK}/mnt/share/${d}"/initramfs.*  # previous build outputs, never payload
+        echo "Added payload /mnt/share/${d}"
+    done
+    mkdir -p "${WORK}/mnt/share/.dodresult"
+    PAYLOAD_KB="$(du -sk "${WORK}/mnt/share" | awk '{print $1}')"
+    echo "Payload size: ${PAYLOAD_KB} KiB uncompressed (cap ${VM_PAYLOAD_MAX_KB} KiB, VM_PAYLOAD_MAX_KB)"
+    if [ "${PAYLOAD_KB}" -gt "${VM_PAYLOAD_MAX_KB}" ]; then
+        echo "mkinitramfs: payload ${PAYLOAD_KB} KiB exceeds cap ${VM_PAYLOAD_MAX_KB} KiB; narrow VM_PAYLOAD_DIRS" >&2
+        exit 1
+    fi
+    cp "${SCRIPT_DIR}/emit-results.sh" "${WORK}/emit-results.sh"
+    chmod 755 "${WORK}/emit-results.sh"
+    for applet in base64 sha256sum find sort cut tr wc; do
+        ln -sf busybox "${WORK}/bin/${applet}"
+    done
+fi
+
 # --- Identity stamping: embed source digest into initramfs ---
 # Deterministic ordering: this embeds OVERALL into the cpio (WORK/ntpers.digest) atomically
 # with the archive build, and also writes sidecars. When called from kbuild/rebuild_kdir,

@@ -75,10 +75,43 @@ static void removed_veh_no_longer_runs(void)
     MT_EXPECT(d == ExceptionContinueSearch);
 }
 
+#ifndef __MINGW32__
+#include "ntstatus.h"
+#include <signal.h>
+#include <ucontext.h>
+
+/* A SIGSEGV from a plain Linux process must map to STATUS_ACCESS_VIOLATION with
+ * the fault address in ExceptionInformation[1]. A plain process has no TEB and
+ * %gs has base 0, so the guard-page check must not read %gs:0x30 (LNX-05). A
+ * read there faults inside the handler. */
+static void sigsegv_maps_access_violation_without_teb(void)
+{
+    siginfo_t si;
+    ucontext_t uc;
+    EXCEPTION_RECORD rec;
+    CONTEXT ctx;
+
+    memset(&si, 0, sizeof si);
+    memset(&uc, 0, sizeof uc);
+    si.si_signo = SIGSEGV;
+    si.si_code = SEGV_MAPERR;
+    si.si_addr = (void *)0x1234;
+    uc.uc_mcontext.gregs[REG_RIP] = 0x401000;
+    signal_to_exception(SIGSEGV, &si, &uc, &rec, &ctx);
+    /* ExceptionCode is unsigned; STATUS_ACCESS_VIOLATION is a negative int. */
+    MT_EXPECT_EQ((unsigned long)rec.ExceptionCode, (unsigned long)(ULONG)STATUS_ACCESS_VIOLATION);
+    MT_EXPECT_EQ(rec.NumberParameters, 2);
+    MT_EXPECT_EQ(rec.ExceptionInformation[1], 0x1234);
+}
+#endif
+
 static const mt_case_t cases[] = {
     { "veh_continue_execution_stops_dispatch", veh_continue_execution_stops_dispatch },
     { "veh_continue_search_keeps_searching", veh_continue_search_keeps_searching },
     { "removed_veh_no_longer_runs", removed_veh_no_longer_runs },
+#ifndef __MINGW32__
+    { "sigsegv_maps_access_violation_without_teb", sigsegv_maps_access_violation_without_teb },
+#endif
 };
 
 int main(void)

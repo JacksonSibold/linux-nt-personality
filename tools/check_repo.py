@@ -107,6 +107,10 @@ def check_file(root, rel, failures):
             # Some compile errors (for example a NUL byte) carry no line number.
             where = f"line {exc.lineno}: " if exc.lineno else ""
             failures.append(("py-compile", rel, f"{where}{exc.msg}"))
+        except ValueError as exc:
+            # Python 3.11 and older raise ValueError (not SyntaxError) for a NUL
+            # byte in source; 3.12+ raises SyntaxError. Report both the same way.
+            failures.append(("py-compile", rel, str(exc)))
 
     crlf = data.count(b"\r\n")
     bare_lf = data.count(b"\n") - crlf

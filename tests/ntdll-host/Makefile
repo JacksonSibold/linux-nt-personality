@@ -77,7 +77,10 @@ $(info ntdll-host: sanitizers unavailable, building without them)
 endif
 
 CPPFLAGS := -I$(SRC) -I$(LOADER)
-CFLAGS   := -std=c11 -g $(OPT_LEVEL) -Wall -Wextra -Werror $(COV_FLAGS) $(SAN_FLAGS)
+# _GNU_SOURCE: except.c and the headers it shares with the tests need siginfo_t,
+# sigaction and ucontext REG_* on glibc. Under -std=c11 they are hidden unless it is
+# defined before the first system header, which minitest.h's stdio.h already is.
+CFLAGS   := -std=c11 -g $(OPT_LEVEL) -Wall -Wextra -Werror -D_GNU_SOURCE $(COV_FLAGS) $(SAN_FLAGS)
 
 TESTS    := test_ntstatus_to_dos test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure test_ldr_sched test_k32_module_pure test_k32_io_pure test_k32_file_pure
 TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
@@ -176,6 +179,13 @@ $(OUT)/%.o: $(SRC)/%.c | $(OUT)
 
 $(OUT)/test_%.o: test_%.c minitest.h | $(OUT)
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+# ntdll_runtime.c replaces malloc, calloc and free for the whole process. ASan
+# interposes the same symbols with its own allocator and aborts on the
+# calloc-overflow case that test_runtime checks (LNX-06), so these objects are
+# built without sanitizers. The test source is the same in both builds.
+NOSAN_CFLAGS := $(filter-out -fsanitize% -fno-sanitize%,$(CFLAGS))
+$(OUT)/ntdll_runtime.o $(OUT)/test_runtime.o $(OUT)/test_runtime$(EXE_SUFFIX): CFLAGS := $(NOSAN_CFLAGS)
 
 # The runtime test calls calloc and malloc by name. Without -fno-builtin gcc
 # treats them as built-ins and the overflow checks are not exercised.

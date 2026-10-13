@@ -2106,6 +2106,21 @@ void nt_abandon_owned_mutants(struct nt_thread *thread)
     }
 }
 
+/* Called from do_exit() for every task exit (kpatch: kernel/exit.c). A thread that returns
+ * normally, or calls NtTerminateThread on itself, must abandon the mutants it owns. Nothing
+ * else does that in the kernel build: nt_exit_personality is not called from do_exit, and it
+ * also destroys the process handle table, which other threads of the process still use. Only
+ * the sync thread's mutant list is released here; the sync thread struct itself is left
+ * allocated because waiters can still reference it through the global thread list. */
+void nt_thread_exit_abandon(void)
+{
+    struct nt_thread *thr = nt_current_thread();
+    if (!thr)
+        return;
+    nt_abandon_owned_mutants(thr);
+    nt_set_current_thread(NULL);
+}
+
 /* ---- wait engine core ---- */
 NTSTATUS nt_wait_for_multiple_objects(ULONG count,
                                       struct nt_dispatcher_header **objects,

@@ -1,0 +1,70 @@
+{
+  "run_id": "20261013T063013Z",
+  "project_root": "C:\\Users\\Jackson\\repos\\ntpers-regentries",
+  "criteria_file": "C:\\Users\\Jackson\\AppData\\Local\\Temp\\ntn\\evi\\criteria.json",
+  "registry_file": "C:\\Users\\Jackson\\repos\\ntpers-regentries\\tests\\harness\\registry.yaml",
+  "previous_run": null,
+  "summary": {
+    "total": 1,
+    "counts": {
+      "PASS": 1,
+      "FAIL": 0,
+      "ERROR": 0,
+      "TIMEOUT": 0,
+      "SKIP": 0,
+      "UNIMPLEMENTED": 0,
+      "GATED": 0,
+      "BLOCKED-ON-GOLDEN": 0
+    },
+    "tier_summary": {
+      "P0": {
+        "total": 0,
+        "passed": 0,
+        "pass_rate": 0.0,
+        "gate": 1.0,
+        "gate_met": false
+      },
+      "P1": {
+        "total": 1,
+        "passed": 1,
+        "pass_rate": 1.0,
+        "gate": 0.98,
+        "gate_met": true
+      },
+      "P2": {
+        "total": 0,
+        "passed": 0,
+        "pass_rate": 0.0,
+        "gate": 0.85,
+        "gate_met": false
+      },
+      "P3": {
+        "total": 0,
+        "passed": 0,
+        "pass_rate": 0.0,
+        "gate": null,
+        "gate_met": true
+      }
+    }
+  },
+  "regressions": [],
+  "improvements": [],
+  "gates_met": false,
+  "harness_integrity": {
+    "positive_control": "PASS",
+    "reason": "positive controls PASS/FAIL/UNIMPLEMENTED verified"
+  },
+  "results": [
+    {
+      "id": "DOD-EVI-B006",
+      "tier": "P1",
+      "dependency_class": "SELF",
+      "state": "PASS",
+      "exit_code": 0,
+      "stdout": "DOD-EVI-B006: 0 violation(s)\n",
+      "stderr": "",
+      "duration_seconds": 0.419067,
+      "note": ""
+    }
+  ]
+}

@@ -8,6 +8,12 @@
  * access-violation read/write flag).
  */
 
+#ifndef __MINGW32__
+/* REG_* indices, mcontext_t.gregs and siginfo_t/sigaction are glibc
+ * extensions behind feature macros. Must come before any system header. */
+#define _GNU_SOURCE 1
+#endif
+
 #include "except.h"
 #include "except_pure.h"
 #include "unwind.h"
@@ -170,42 +176,12 @@ void context_to_ucontext(PCONTEXT ctx, void *uc_void) {
 
 /* ---------------- Signal -> Exception mapping ---------------- */
 
+/* Guard-page hits are not detected on this user-mode path. The VAD and kshim
+ * guard tables exist only in the kernel build, and the Windows TEB stack limits
+ * (%gs:0x30) exist only where a TEB is installed; a plain Linux process has
+ * neither, and reading %gs there faults (LNX-05). Every fault is therefore
+ * reported as an access violation here. */
 static int is_guard_page_hit(void *addr) {
-    // Ground truth: probe_exception guard_page returns STATUS_GUARD_PAGE_VIOLATION (0x80000001) with info0=1.
-    // In shim, guard pages are tracked via g_nt_mm VAD guard flag or kshim_guard for heap.
-    // Check if fault address falls within a VAD that is marked guard.
-    if (!addr) return 0;
-#ifndef __MINGW32__
-    // Try to query via NtQueryVirtualMemory if available? For shim, check g_nt_mm.
-    extern struct nt_mm g_nt_mm;
-    extern int g_nt_mm_initialized;
-    if (g_nt_mm_initialized) {
-        // We need to avoid including mm.h here; do a weak check via kshim_guard.
-        // Fallback: check kshim_guard active range.
-        extern struct kshim_guard_state kshim_guard;
-        if (kshim_guard.active && addr >= kshim_guard.guard_base && (char*)addr < (char*)kshim_guard.guard_base + kshim_guard.guard_size) {
-            return 1;
-        }
-        // Also check VAD: we can attempt to call NtQueryVirtualMemory via mm.c helper if linked?
-        // For now, also treat any fault where si_addr is page-aligned guard allocation as guard.
-        // Use mincore to see if page is PROT_NONE but with guard flag? Not reliable, so we approximate:
-        // If fault address is within 4096 of a known guard, treat as guard.
-    }
-    // Additional heuristic: fault address near stack guard page (stack limit). Check via TEB StackLimit?
-    // For ntpers shim, VirtualAlloc with PAGE_GUARD sets kshim_guard, so above check catches heap guard.
-    // For real stack guard, the fault would be near current stack pointer; we can check if addr is within one page of StackLimit.
-    {
-        uint64_t teb=0;
-        __asm__ volatile("movq %%gs:0x30, %0" : "=r"(teb));
-        if (teb) {
-            uint64_t limit = *(uint64_t*)(teb + 0x10);
-            uint64_t base = *(uint64_t*)(teb + 0x08);
-            uintptr_t a = (uintptr_t)addr;
-            if (a >= limit && a < limit + 4096) return 1;
-            if (a >= base - 4096 && a < base) return 1; // stack overflow near base? Actually stack grows down, guard near limit
-        }
-    }
-#endif
     (void)addr;
     return 0;
 }
@@ -542,7 +518,7 @@ void _NtRaiseException(PEXCEPTION_RECORD rec, PCONTEXT ctx, int firstChance) {
 }
 
 #ifndef __MINGW32__
-NTSTATUS NtRaiseException(PEXCEPTION_RECORD rec, PCONTEXT ctx, ULONG FirstChance) {
+NTSTATUS NtRaiseException(PEXCEPTION_RECORD rec, PCONTEXT ctx, BOOLEAN FirstChance) {
     _NtRaiseException(rec, ctx, (int)FirstChance);
     return STATUS_SUCCESS;
 }

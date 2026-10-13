@@ -23,7 +23,7 @@ python tools/check_doc_links.py
 python tools/update_doc_counts.py --check
 ```
 
-- `tests/unit` holds <!-- counts:unit_modules:begin -->32<!-- counts:unit_modules:end --> test modules (<!-- counts:unit_tests:begin -->703<!-- counts:unit_tests:end --> `test_` functions). They cover the scripts in
+- `tests/unit` holds <!-- counts:unit_modules:begin -->34<!-- counts:unit_modules:end --> test modules (<!-- counts:unit_tests:begin -->749<!-- counts:unit_tests:end --> `test_` functions). They cover the scripts in
   `build/` (`fix_gsbase.py`, `fix_iosb.py`, `gen_ntdll_def.py`, `gen_stubs.py`,
   `merge_dod.py`, `validate_criteria.py`), `tools/` (`check_doc_links.py`, `check_repo.py`,
   `coverage_report.py`, `criteria_report.py`, `ntstatus_lookup.py`, `pe_info.py`,

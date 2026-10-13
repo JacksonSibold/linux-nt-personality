@@ -210,6 +210,88 @@ class MatrixColumnTests(unittest.TestCase):
             self.assertEqual(criteria_report.load_registered(p), {"DOD-AA-A001"})
 
 
+def dodrun_doc(*records):
+    """A minimal dodrun results document holding the given (id, state) records."""
+    return {"run_id": "20261013T000000Z", "summary": {}, "gates_met": False,
+            "results": [{"id": cid, "state": state, "tier": "P1"} for cid, state in records]}
+
+
+class DodrunResultTests(unittest.TestCase):
+
+    def write(self, tmp, name, doc):
+        path = pathlib.Path(tmp) / name
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        return path
+
+    def test_reads_state_per_criterion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = self.write(tmp, "dodrun-a.json", dodrun_doc(("DOD-AA-A001", "PASS")))
+            found = criteria_report.load_dodrun_results([p])
+            self.assertEqual(found, {"DOD-AA-A001": {"state": "PASS", "file": p}})
+
+    def test_later_file_replaces_earlier_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = self.write(tmp, "dodrun-1.json", dodrun_doc(("DOD-AA-A001", "FAIL")))
+            new = self.write(tmp, "dodrun-2.json", dodrun_doc(("DOD-AA-A001", "PASS")))
+            found = criteria_report.load_dodrun_results([old, new])
+            self.assertEqual(found["DOD-AA-A001"]["state"], "PASS")
+
+    def test_harness_integrity_record_with_no_results_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = self.write(tmp, "dodrun-x.json", {"results": [], "harness_integrity": {}})
+            self.assertEqual(criteria_report.load_dodrun_results([p]), {})
+
+    def test_document_without_results_list_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = self.write(tmp, "dodrun-x.json", {"summary": {}})
+            with self.assertRaises(ValueError):
+                criteria_report.load_dodrun_results([p])
+
+    def test_record_without_id_or_state_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = self.write(tmp, "dodrun-x.json", {"results": [{"id": "DOD-AA-A001"}]})
+            with self.assertRaises(ValueError):
+                criteria_report.load_dodrun_results([p])
+
+    def test_unreadable_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                criteria_report.load_dodrun_results([pathlib.Path(tmp) / "missing.json"])
+
+    def test_find_bundles_is_empty_for_missing_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(criteria_report.find_bundles(pathlib.Path(tmp) / "none"), [])
+
+    def test_find_bundles_sorts_oldest_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write(tmp, "dodrun-b.json", dodrun_doc())
+            self.write(tmp, "dodrun-a.json", dodrun_doc())
+            self.write(tmp, "other.json", dodrun_doc())
+            names = [p.name for p in criteria_report.find_bundles(pathlib.Path(tmp))]
+            self.assertEqual(names, ["dodrun-a.json", "dodrun-b.json"])
+
+    def test_dodrun_state_becomes_status_and_verdict(self):
+        results = {"DOD-AA-A001": {"state": "PASS", "file": DOC.parent / "bundles" / "x.json"}}
+        rows = criteria_report.build_rows([entry("DOD-AA-A001"), entry("DOD-AA-A002")], results=results)
+        self.assertEqual(rows[0]["status"], "pass")
+        self.assertEqual(rows[0]["verdict"], "dodrun pass")
+        self.assertEqual(rows[1]["status"], "unknown")
+        self.assertEqual(rows[1]["verdict"], "not assessed")
+
+    def test_dodrun_row_links_its_results_document(self):
+        target = REPO / "docs" / "status" / "bundles" / "x.json"
+        results = {"DOD-AA-A001": {"state": "FAIL", "file": target}}
+        self.assertEqual(criteria_report.evidence_of("DOD-AA-A001", {}, set(), results),
+                         "[docs/status/bundles/x.json](bundles/x.json); unsigned")
+
+    def test_dodrun_result_wins_over_assessment(self):
+        results = {"DOD-AA-A001": {"state": "PASS", "file": DOC.parent / "bundles" / "x.json"}}
+        rows = criteria_report.build_rows([entry("DOD-AA-A001")],
+                                          assessed={"DOD-AA-A001": "partial"}, results=results)
+        self.assertEqual(rows[0]["verdict"], "dodrun pass")
+        self.assertIn("(bundles/x.json)", rows[0]["evidence"])
+
+
 class SelftestTests(unittest.TestCase):
 
     def test_selftest_passes(self):
@@ -257,8 +339,12 @@ class RealDataTests(unittest.TestCase):
 
     def test_generated_doc_is_current(self):
         readme = criteria_report.read_readme_count(REPO / "README.md")
-        summary = criteria_report.summarize(self.rows, readme)
-        expected = criteria_report.render_markdown(self.rows, summary)
+        results = criteria_report.load_dodrun_results(criteria_report.find_bundles())
+        rows = criteria_report.build_rows(
+            self.criteria, criteria_report.load_assessments(),
+            criteria_report.load_registered(), results)
+        summary = criteria_report.summarize(rows, readme)
+        expected = criteria_report.render_markdown(rows, summary)
         self.assertTrue(DOC.exists(), "docs/status/CRITERIA.md missing; regenerate it")
         self.assertEqual(DOC.read_text(encoding="utf-8"), expected)
 

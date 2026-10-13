@@ -101,6 +101,9 @@ static inline int atomic_inc_return(atomic_t *v) { return atomic_fetch_add(&v->c
 static inline int atomic_dec_return(atomic_t *v) { return atomic_fetch_sub(&v->counter, 1) - 1; }
 static inline int atomic_dec_and_test(atomic_t *v) { return atomic_fetch_sub(&v->counter, 1) == 1; }
 static inline int atomic_add_return(atomic_t *v, int a) { return atomic_fetch_add(&v->counter, a) + a; }
+/* Bit ops, same argument order as linux/atomic.h (value first). */
+static inline void atomic_or(int i, atomic_t *v) { atomic_fetch_or(&v->counter, i); }
+static inline void atomic_andnot(int i, atomic_t *v) { atomic_fetch_and(&v->counter, ~i); }
 
 struct kref { atomic_t refcount; };
 static inline void kref_init(struct kref *kref) { atomic_set(&kref->refcount, 1); }

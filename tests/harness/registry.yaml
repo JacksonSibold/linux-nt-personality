@@ -225,3 +225,21 @@ tests:
   DOD-SEC-A008:
     command: ["python3", "tools/docs_lint.py", "--policy", "--criterion", "DOD-SEC-A008"]
     timeout: 60
+
+  # DOD-DRV-B003: claim boundary for third-party drivers. The check is the docs lint
+  # rule for this criterion (tools/docs_lint.py --criterion DOD-DRV-B003): the
+  # no-third-party-.sys statement must appear in CLAIM-BOUNDARY, README and the
+  # capability matrix, a hardware-support claim must name an API subset and device
+  # class, and an affirmed third-party or gated driver claim needs a section 11 waiver.
+  DOD-DRV-B003:
+    command: ["python3", "tools/docs_lint.py", "--policy", "--criterion", "DOD-DRV-B003"]
+    timeout: 60
+
+  # DOD-EVI-B006: capability matrix and claim lint. The check is the docs lint rule for
+  # this criterion (tools/docs_lint.py --criterion DOD-EVI-B006): the matrix in
+  # CRITERIA.md has ID, tier, verdict and evidence columns, every evidence link resolves
+  # locally, gated rows name an owner, and a pass claim names a bundle that exists in the tree.
+  # The lint checks that a linked bundle file exists; it does not verify a signature.
+  DOD-EVI-B006:
+    command: ["python3", "tools/docs_lint.py", "--policy", "--criterion", "DOD-EVI-B006"]
+    timeout: 60

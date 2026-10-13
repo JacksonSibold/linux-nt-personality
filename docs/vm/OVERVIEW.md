@@ -203,6 +203,10 @@ failures can be explained.
 | `TIMEOUT` | `boot_smoke.sh` | 120 |
 | `NTPERS_ALLOW_WRITE` | `freshness.sh write` (must be 1) | unset |
 | `SHELLCHECK_SEVERITY` | `lint.sh` | `error` |
+| `VM_TRANSPORT` | `runvm.sh`, `mkinitramfs.sh`, `init.c` build | `9p` (or `initrd-serial`; see [TRANSPORTS.md](TRANSPORTS.md)) |
+| `VM_PAYLOAD_DIRS` | `mkinitramfs.sh` (initrd-serial) | `vm build/probes` |
+| `VM_PAYLOAD_MAX_KB` | `mkinitramfs.sh` (initrd-serial) | 32768 |
+| `PYTHON` | `runvm.sh` (initrd-serial collector) | `python3` |
 
 ## Files written by the scripts
 

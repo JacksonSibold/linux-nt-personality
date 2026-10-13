@@ -46,9 +46,10 @@ Commands below use `$NTPERS_ROOT`, the repository root as a WSL path (for exampl
 - `kernel-config-ntpers` - Known-good `.config` with all required options. If `make clean` deletes `.config`, `kbuild.sh` restores this file.
 - `kbuild.sh` - Sanctioned build script (see above).
 - `preflight.sh` - Pre-work sanity check (see above).
-- `runvm.sh` - Boots the kernel in QEMU with 9p share (used by `tests/kernel` harness).
-- `mkinitramfs.sh` - Builds the initramfs from `init.c` and PE probes.
-- `init.c` - Guest init that runs `M0` and other tests.
+- `runvm.sh` - Boots the kernel in QEMU with 9p share (used by `tests/kernel` harness). `--transport initrd-serial` (or `VM_TRANSPORT=initrd-serial`) uses the serial console instead; see [docs/vm/TRANSPORTS.md](../docs/vm/TRANSPORTS.md).
+- `mkinitramfs.sh` - Builds the initramfs from `init.c` and PE probes. With `VM_TRANSPORT=initrd-serial` it also packs the payload directories under `/mnt/share`.
+- `init.c` - Guest init that runs `M0` and other tests. In `initrd-serial` mode it prints the results with `emit-results.sh`.
+- `emit-results.sh` - Guest-side framed emitter for `initrd-serial` (busybox applets only). The host side is `tools/vm_serial_collect.py`.
 
 ## Why This Exists
 

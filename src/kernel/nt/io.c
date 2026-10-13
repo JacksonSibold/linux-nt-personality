@@ -1402,7 +1402,7 @@ static NTSTATUS ntio_open_file(PHANDLE __user FileHandle, POBJECT_ATTRIBUTES __u
 			       ACCESS_MASK DesiredAccess, ULONG ShareAccess,
 			       ULONG CreateDisposition, ULONG CreateOptions,
 			       PIO_STATUS_BLOCK __user IoStatusBlock,
-			       bool is_open_call)
+			       bool is_open_call, LONGLONG alloc_size)
 {
 	char path[PATH_MAX];
 	bool want_dir = false, resolved_dir = false;
@@ -1647,6 +1647,7 @@ static NTSTATUS ntio_open_file(PHANDLE __user FileHandle, POBJECT_ATTRIBUTES __u
 	file->granted_access = ntio_map_generic_access(DesiredAccess);
 	file->share_access = ShareAccess;
 	file->create_options = CreateOptions;
+	file->alloc_size = is_open_call ? 0 : alloc_size;
 	file->synchronous = !!(CreateOptions & (FILE_SYNCHRONOUS_IO_ALERT |
 						FILE_SYNCHRONOUS_IO_NONALERT));
 	file->delete_on_close = !!(CreateOptions & FILE_DELETE_ON_CLOSE);
@@ -1709,6 +1710,25 @@ static NTSTATUS ntio_open_file(PHANDLE __user FileHandle, POBJECT_ATTRIBUTES __u
 	return STATUS_SUCCESS;
 }
 
+/* Reads the caller's AllocationSize. In the kernel the pointer is user memory: a direct
+ * dereference faults under SMAP (permissions violation), so it goes through copy_from_user. */
+static NTSTATUS ntio_read_alloc_size(PLARGE_INTEGER AllocationSize, LONGLONG *out)
+{
+	LARGE_INTEGER a;
+
+	*out = 0;
+	if (!AllocationSize)
+		return STATUS_SUCCESS;
+#ifdef __KERNEL__
+	if (!access_ok(AllocationSize, sizeof(a)) || copy_from_user(&a, AllocationSize, sizeof(a)))
+		return STATUS_ACCESS_VIOLATION;
+#else
+	a = *AllocationSize;
+#endif
+	*out = a.QuadPart;
+	return STATUS_SUCCESS;
+}
+
 NTSTATUS nt_svc_NtCreateFile(PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
 			     POBJECT_ATTRIBUTES ObjectAttributes,
 			     PIO_STATUS_BLOCK IoStatusBlock,
@@ -1720,14 +1740,18 @@ NTSTATUS nt_svc_NtCreateFile(PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
 			     PVOID EaBuffer,
 			     ULONG EaLength)
 {
-	(void)AllocationSize;
+	LONGLONG alloc = 0;
+	NTSTATUS ast = ntio_read_alloc_size(AllocationSize, &alloc);
+
 	(void)FileAttributes;
 	(void)EaBuffer;
 	(void)EaLength;
+	if (!NT_SUCCESS(ast))
+		return ast;
 
 	return ntio_open_file(FileHandle, ObjectAttributes, DesiredAccess,
 			      ShareAccess, CreateDisposition, CreateOptions,
-			      IoStatusBlock, false);
+			      IoStatusBlock, false, alloc);
 }
 
 NTSTATUS nt_svc_NtOpenFile(PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
@@ -1738,7 +1762,7 @@ NTSTATUS nt_svc_NtOpenFile(PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
 {
 	return ntio_open_file(FileHandle, ObjectAttributes, DesiredAccess,
 			      ShareAccess, FILE_OPEN, OpenOptions,
-			      IoStatusBlock, true);
+			      IoStatusBlock, true, 0);
 }
 
 /* -------------------------------------------------------------------------- */

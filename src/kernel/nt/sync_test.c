@@ -52,7 +52,7 @@ static void join_thread(thread_wrap_t *w) {
 /* helper structs */
 struct waiter_arg_ev { struct nt_event *ev; atomic_int *c; };
 struct waiter_arg_keyed { struct nt_keyed_event *k; void *key; atomic_int *w; struct nt_thread *thr; };
-struct waiter_arg_addr { volatile uint32_t *addr; uint32_t cmp; atomic_int *w; struct nt_thread *thr; };
+struct waiter_arg_addr { volatile uint32_t *addr; uint32_t cmp; atomic_int *w; struct nt_thread *thr; atomic_int *done; };
 struct wait_all_arg { struct nt_dispatcher_header **objs; ULONG cnt; atomic_int *done; struct nt_thread *thr; };
 struct release_arg { struct nt_mutant *m; NTSTATUS *out; struct nt_thread *thr; };
 
@@ -289,6 +289,7 @@ static void *addr_waiter_fn(void *a){
     LARGE_INTEGER to=rel_ms(800);
     NTSTATUS s=nt_wait_on_address((void*)pa->addr,&cmp,4,&to);
     if(s==STATUS_SUCCESS) atomic_fetch_add(pa->w,1);
+    if(pa->done) atomic_store(pa->done,1);
     return NULL;
 }
 TEST(wait_on_address) {
@@ -296,7 +297,7 @@ TEST(wait_on_address) {
     volatile uint32_t val=42;
     atomic_int woke=0; atomic_init(&woke,0);
     thread_wrap_t tw; ASSERT_STATUS(nt_thread_create(&tw.thr),STATUS_SUCCESS);
-    struct waiter_arg_addr arg={(volatile uint32_t*)&val,42,&woke,tw.thr};
+    struct waiter_arg_addr arg={(volatile uint32_t*)&val,42,&woke,tw.thr,NULL};
     tw.fn=addr_waiter_fn; tw.arg=&arg;
     pthread_create(&tw.pt,NULL,wrap_entry,&tw);
     usleep(100000);
@@ -310,7 +311,7 @@ TEST(wait_on_address) {
     val=100;
     atomic_int woke_all=0; atomic_init(&woke_all,0);
     const int N=3; thread_wrap_t tws[N]; struct waiter_arg_addr args[N];
-    for(int i=0;i<N;i++){ ASSERT_STATUS(nt_thread_create(&tws[i].thr),STATUS_SUCCESS); args[i].addr=&val; args[i].cmp=100; args[i].w=&woke_all; args[i].thr=tws[i].thr; tws[i].fn=addr_waiter_fn; tws[i].arg=&args[i]; pthread_create(&tws[i].pt,NULL,wrap_entry,&tws[i]); }
+    for(int i=0;i<N;i++){ ASSERT_STATUS(nt_thread_create(&tws[i].thr),STATUS_SUCCESS); args[i].addr=&val; args[i].cmp=100; args[i].w=&woke_all; args[i].thr=tws[i].thr; args[i].done=NULL; tws[i].fn=addr_waiter_fn; tws[i].arg=&args[i]; pthread_create(&tws[i].pt,NULL,wrap_entry,&tws[i]); }
     usleep(100000);
     nt_wake_by_address_all((void*)&val);
     for(int i=0;i<N;i++){ pthread_join(tws[i].pt,NULL); nt_thread_destroy(tws[i].thr); }
@@ -746,11 +747,16 @@ int main(void){
                 val = (uint32_t)i;
                 /* Single waiter should be woken by WakeByAddressSingle when compare matches */
                 thread_wrap_t tw; nt_thread_create(&tw.thr);
-                struct waiter_arg_addr arg={(volatile uint32_t*)&val, (uint32_t)i, &wakes, tw.thr};
+                atomic_int done; atomic_init(&done,0);
+                struct waiter_arg_addr arg={(volatile uint32_t*)&val, (uint32_t)i, &wakes, tw.thr, &done};
                 tw.fn=addr_waiter_fn; tw.arg=&arg;
                 pthread_create(&tw.pt,NULL,wrap_entry,&tw);
-                usleep(2000);
-                nt_wake_by_address_single((void*)&val);
+                /* A wake with no queued waiter is lost (Windows semantics), and the
+                 * waiter may not be queued after a fixed 2 ms sleep on a loaded
+                 * host (emulated guests, LNX-09). Repeat the wake until the waiter
+                 * has returned; a wake after that point would find no waiter. */
+                do { usleep(1000); nt_wake_by_address_single((void*)&val); }
+                while(!atomic_load(&done));
                 pthread_join(tw.pt,NULL); nt_thread_destroy(tw.thr);
                 if(atomic_load(&wakes) != i+1){ fprintf(stderr,"FAIL woa extended %d got %d\n", i, atomic_load(&wakes)); g_fail++; break; }
             }

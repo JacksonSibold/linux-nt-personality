@@ -81,7 +81,7 @@ MANDATORY_KEYS = {
     "probe_path": ["tests"],
     "probe_path_direct": ["tests"],
     "probe_sync": ["tests"],
-    "probe_sync_direct": ["tests"],
+    "probe_sync_direct": ["events", "mutant", "semaphore", "wait_multiple"],
     "probe_section": ["tests"],
     "probe_process_thread": ["process_info"],
     "probe_process_thread_direct": ["process_info"],

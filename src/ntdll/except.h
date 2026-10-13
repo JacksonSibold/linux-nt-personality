@@ -8,6 +8,9 @@
 #include "nt_types.h"
 #include "unwind.h"
 #ifndef __MINGW32__
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1  /* siginfo_t and ucontext REG_* under -std=c11 */
+#endif
 #include <signal.h>
 #else
 typedef struct { int dummy; } siginfo_t;

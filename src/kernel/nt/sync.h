@@ -100,9 +100,12 @@ struct nt_thread {
     struct list_head  owned_mutants;
     bool              dying;
 };
-extern struct nt_thread *nt_current_thread_ptr;
-static inline struct nt_thread *nt_current_thread(void) { return nt_current_thread_ptr; }
-static inline void nt_set_current_thread(struct nt_thread *t) { nt_current_thread_ptr = t; }
+/* Per task, not process-wide: the sync thread lives on the task (task_struct.nt_thread,
+ * CONFIG_NT_PERSONALITY). A single global here made every thread share one sync thread,
+ * so one thread's exit abandoned another thread's mutants (probe_sync_direct expects
+ * WAIT_ABANDONED for the mutant whose owner exited, and saw 0). */
+static inline struct nt_thread *nt_current_thread(void) { return (struct nt_thread *)current->nt_thread; }
+static inline void nt_set_current_thread(struct nt_thread *t) { current->nt_thread = t; }
 #endif
 
 NTSTATUS nt_thread_create(struct nt_thread **out);

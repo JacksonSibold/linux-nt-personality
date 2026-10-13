@@ -3,12 +3,19 @@
 #
 # Usage:
 #   ./vm/runvm.sh --test <guest-script-path> [--share <host-dir>] \
-#                 [--timeout <seconds>] [--log <serial.log>]
+#                 [--timeout <seconds>] [--log <serial.log>] \
+#                 [--transport 9p|initrd-serial]
 #
 # The guest script is executed by /init inside the initramfs.  The guest
 # writes its exit code to <share>/.dodresult/result.exitcode; this script
 # reads it back and exits with the same code.  A missing result file means
 # TIMEOUT or a guest-side crash.
+#
+# Transports (docs/vm/TRANSPORTS.md):
+#   9p            (default) the share is a QEMU virtfs mount at /mnt/share.
+#   initrd-serial the payload is packed into the initramfs at /mnt/share, and
+#                 results come back framed on the serial log.  tools/vm_serial_collect.py
+#                 rebuilds <share>/.dodresult/ from that log.  Needs no 9p and no KVM.
 #
 # Requirements:
 #   - qemu-system-x86_64 with KVM support
@@ -27,6 +34,8 @@ INITRD="${INITRD:-${PROJECT_ROOT}/vm/initramfs.cpio.gz}"
 TEST_SCRIPT="/mnt/share/vmtests/smoke.sh"
 SHARE_DIR="${PROJECT_ROOT}"
 TIMEOUT_SEC="${VM_TIMEOUT:-120}"
+VM_TRANSPORT="${VM_TRANSPORT:-9p}"
+PYTHON="${PYTHON:-python3}"
 LOG_FILE=""
 RUN_ID=""
 
@@ -40,6 +49,7 @@ Options:
   --timeout <secs>   Hard timeout in seconds (default: ${TIMEOUT_SEC})
   --log <file>       Serial console log file (default: auto-generated in share/.dodresult/)
   --run-id <id>      Per-run nonce for staleness protection (optional)
+  --transport <t>    9p or initrd-serial (default: \$VM_TRANSPORT, currently ${VM_TRANSPORT})
   -h, --help         Show this help
 EOF
 }
@@ -56,12 +66,19 @@ while [[ $# -gt 0 ]]; do
             LOG_FILE="$2"; shift 2 ;;
         --run-id)
             RUN_ID="$2"; shift 2 ;;
+        --transport)
+            VM_TRANSPORT="$2"; shift 2 ;;
         -h|--help)
             usage; exit 0 ;;
         *)
             echo "ERROR: unknown option $1" >&2; usage; exit 2 ;;
     esac
 done
+
+case "${VM_TRANSPORT}" in
+    9p|initrd-serial) ;;
+    *) echo "ERROR: VM_TRANSPORT must be 9p or initrd-serial (got ${VM_TRANSPORT})" >&2; exit 2 ;;
+esac
 
 if [[ ! -e "${BZIMAGE}" ]]; then
     echo "ERROR: kernel bzImage not found: ${BZIMAGE}" >&2
@@ -104,6 +121,7 @@ echo "runvm: test=${TEST_SCRIPT}"
 echo "runvm: share=${SHARE_DIR}"
 echo "runvm: timeout=${TIMEOUT_SEC}s"
 echo "runvm: log=${LOG_FILE}"
+echo "runvm: transport=${VM_TRANSPORT}"
 
 # Kernel command line.  The initramfs /init reads dodtest= to pick the script.
 # S2: SMAP enabled - all NT syscalls now use copy_from_user/copy_to_user
@@ -118,17 +136,34 @@ APPEND=(
 if [[ -n "${RUN_ID}" ]]; then
     APPEND+=("dodrunid=${RUN_ID}")
 fi
+if [[ "${VM_TRANSPORT}" == "initrd-serial" ]]; then
+    APPEND+=("dodtransport=initrd-serial")
+fi
+
+# The 9p transport keeps its exact arguments.  initrd-serial has no virtfs, and it
+# takes -cpu max when /dev/kvm is not usable (TCG-only hosts).
+if [[ "${VM_TRANSPORT}" == "9p" ]]; then
+    SHARE_ARGS=(-virtfs "local,path=${SHARE_DIR},mount_tag=share,security_model=none")
+    CPU_ARGS=(-cpu host)
+else
+    SHARE_ARGS=()
+    if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+        CPU_ARGS=(-cpu host)
+    else
+        CPU_ARGS=(-cpu max)
+    fi
+fi
 
 QEMU_ARGS=(
     -accel kvm -accel tcg
-    -cpu host
+    ${CPU_ARGS[@]+"${CPU_ARGS[@]}"}
     -m 4G
     -smp 4
     -nographic
     -kernel "${BZIMAGE}"
     -initrd "${INITRD}"
     -append "${APPEND[*]}"
-    -virtfs "local,path=${SHARE_DIR},mount_tag=share,security_model=none"
+    ${SHARE_ARGS[@]+"${SHARE_ARGS[@]}"}
     -serial "file:${LOG_FILE}"
     -device "virtio-rng-pci"
 )
@@ -144,6 +179,20 @@ set +e
     qemu-system-x86_64 "${QEMU_ARGS[@]}"
 QEMU_RC=$?
 set -e
+
+if [[ "${VM_TRANSPORT}" == "initrd-serial" ]]; then
+    # Rebuild <share>/.dodresult/ from the serial log.  Exit 3 means the guest did not
+    # finish its emit (timeout, crash); it falls through to the TIMEOUT / ERROR paths below
+    # exactly as a missing 9p result would.  Exit 1 or 2 is a transport failure, never a result.
+    set +e
+    "${PYTHON}" "${PROJECT_ROOT}/tools/vm_serial_collect.py" --log "${LOG_FILE}" --out "${SHARE_DIR}"
+    COLLECT_RC=$?
+    set -e
+    if [[ "${COLLECT_RC}" -eq 1 || "${COLLECT_RC}" -eq 2 ]]; then
+        echo "runvm: ERROR serial transport verification failed (collector rc ${COLLECT_RC}); log=${LOG_FILE}" >&2
+        exit 1
+    fi
+fi
 
 GUEST_RC=""
 # Poll for 9p result file visibility with bounded timeout (fix 0.5s race -- S1 vm_execution false positive)

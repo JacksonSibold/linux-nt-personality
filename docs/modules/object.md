@@ -18,7 +18,7 @@ Lifecycle and creation:
 - `NTSTATUS ObCreateObject(struct nt_object_type *type, POBJECT_ATTRIBUTES attrs, SIZE_T body_size, struct nt_object_header **out_hdr, void **out_body)` - allocates header and body as one block. It validates `Attributes` against `OBJ_VALID_ATTRIBUTES`. It does not consume `attrs->SecurityDescriptor` (see below).
 - `NTSTATUS ObInsertObject(struct nt_object_header *obj, POBJECT_ATTRIBUTES attrs, ACCESS_MASK access, struct nt_eprocess *proc, PHANDLE out_handle)` - inserts a named object into the namespace and creates a handle in `proc`.
 - `NTSTATUS ObInsertOrOpenNamedObject(...)` - create-or-open rules: type mismatch, `STATUS_OBJECT_NAME_COLLISION`, `OBJ_OPENIF` giving `STATUS_OBJECT_NAME_EXISTS` with a handle, `STATUS_OBJECT_PATH_NOT_FOUND` for a missing parent.
-- `NTSTATUS ObMakeTemporaryObject` / `ObMakePermanentObject` - set or clear `is_permanent`. The privilege check (`SeCreatePermanentPrivilege`) is in `nt_obj.c`.
+- `NTSTATUS ObMakeTemporaryObject` / `ObMakePermanentObject` - set or clear `OBJ_PERMANENT` in `flags`. The privilege check (`SeCreatePermanentPrivilege`) is in `nt_obj.c`.
 - `NTSTATUS ObCreateDirectoryObject(...)` and `ObCreateSymbolicLinkObject(...)` - build a directory or link object not yet in the namespace. The link copies its target.
 - `NTSTATUS ObSetObjectSecurityDescriptor(struct nt_object_header *obj, const void *sd, ULONG length)` (`object.c:764` onward) - attaches a copy of a self-relative descriptor; NULL clears it. The replace runs under `ob_sd_lock`.
 - `NTSTATUS ObCopyObjectSecurityDescriptor(struct nt_object_header *obj, void **out, ULONG *out_len)` (`object.c:~787`) - returns a heap copy (NULL when there is none). The caller frees it with `kfree`.
@@ -47,7 +47,7 @@ Each service has a typed definition in the userspace branch (before the `#else` 
 
 ## Key data structures
 
-- `struct nt_object_header` (`object.h`) - `type`, `ref_count` and `handle_count` (atomic64), `parent_dir`, `name` (UNICODE_STRING), `flags`, `body`, `type_link`, the flags `is_permanent`, `is_exclusive` and `exclusive_owned`, and `security_descriptor` (`object.h:170`) with `security_descriptor_length`. The descriptor is an owned, self-relative copy, or NULL. The body is allocated directly after the header.
+- `struct nt_object_header` (`object.h`) - `type`, `ref_count` and `handle_count` (atomic64), `parent_dir`, `name` (UNICODE_STRING), `flags` (atomic), `body`, `type_link`, the flags `is_exclusive` and `exclusive_owned`, and `security_descriptor` (`object.h:170`) with `security_descriptor_length`. The descriptor is an owned, self-relative copy, or NULL. The body is allocated directly after the header.
 - `struct nt_object_type` - `list`, `name`, `ops` (`delete_obj`, `close`, `parse`, `okay_to_close`) and `pool_tag`.
 - Built-in types, all listed by `ObInitObjectManager` (`object.c:1557` to `:1562`): `nt_directory_type` (`:172`), `nt_symlink_type` (`:178`), `nt_process_type` (`:184`), `nt_thread_type` (`:190`), `nt_token_type` (`:205`, named `"Token"`), and `nt_test_type` (`:211`, a test type). Other modules register their own types with `ObRegisterObjectType`: `nt_key_type` (`registry.c:465`), the event, mutant, semaphore and file types (`nt_obj.c:126` to `:129`), and `nt_section_type` (`mm.c:1749`, named `"Section"`, registered on first use at `mm.c:1863`, `:1981` and `:2028`).
 - Token object body: `struct nt_token_body` (`object.h:145`) holds one `ACCESS_TOKEN` reference. Its delete callback is `token_delete` (`object.c:196`). See `security.md`.
@@ -61,14 +61,18 @@ Each service has a typed definition in the userspace branch (before the `#else` 
 - Callback contract (`object.h`): `delete_obj` tears down type-specific state but does not free the header. The object manager frees the header-plus-body block afterwards.
 - Header and body share one allocation. `nt_body_to_header` depends on that layout.
 - Directory bodies are protected by `rwlock_t`. Other object-manager state uses `spinlock_t` in the kernel build and pthread primitives in the shim.
+- `hdr->flags` is an `atomic_t` (`object.h`). `OBJ_PERMANENT` is set and cleared with `atomic_or` and `atomic_andnot` (`ObMakePermanentObject`, `ObMakeTemporaryObject`). Every reader uses `atomic_read`, so no reader needs `ob_ns_lock` to see a consistent word. Other bits are written only at creation, before the object is published.
+- The type list (`ob_type_list`) is protected by `ob_type_lock`, a leaf rwlock. `ObRegisterObjectType` runs on every create of a type-bound object (`NtCreateSection` calls it each time), so the duplicate check and the insert are one write-locked section.
+- Lock order: `ob_ns_lock`, then a directory's lock. `ob_sd_lock` and `ob_type_lock` are leaves.
+- `is_exclusive` is derived from `OBJ_EXCLUSIVE` inside `ObpInsertDirectoryEntry`, under `ob_ns_lock` and before the directory entry is published. It is never written after that, so `ObOpenObjectByName` and the handle count paths read it without a lock.
 - Names are duplicated into owned buffers (`nt_dup_unicodestring`). Lengths must be a multiple of `sizeof(WCHAR)`, otherwise `STATUS_OBJECT_NAME_INVALID`. Buffers are NUL-terminated.
 - Name comparison is ASCII-only: `nt_toupper` maps only `a` to `z`.
 - A descriptor is replaced under `ob_sd_lock`, a file-scope spinlock. Readers copy it with `ObCopyObjectSecurityDescriptor`, so a replace never frees a buffer in use.
-- `ObCreateObject` clears `security_descriptor` and `is_permanent`. It does not read `OBJECT_ATTRIBUTES.SecurityDescriptor`, because the object never borrows a caller buffer of unknown length. A descriptor is attached only with `ObSetObjectSecurityDescriptor`, so a creation-time descriptor is not applied.
+- `ObCreateObject` clears `security_descriptor`. It does not read `OBJECT_ATTRIBUTES.SecurityDescriptor`, because the object never borrows a caller buffer of unknown length. A descriptor is attached only with `ObSetObjectSecurityDescriptor`, so a creation-time descriptor is not applied.
 
 ## Known gaps (evident in code)
 
-- **Permanence has no effect.** `is_permanent` is set when an object with `OBJ_PERMANENT` is linked into a directory (`ObpInsertDirectoryEntry`, `object.c:304`) and by `ObMakePermanentObject` (`object.c:916`). It is never read. The only reader is `object_extra_test.c`. A named object is not removed from the namespace when its last handle closes. Changing that would change the lifetime of every named object. (Owner decision, see `docs/OWNER-DECISIONS.md`.)
+- **Permanence has no effect.** `OBJ_PERMANENT` is set and cleared in `flags` by `ObMakePermanentObject` and `ObMakeTemporaryObject`. No code outside `object_extra_test.c` reads it. The `is_permanent` mirror was removed (it was written after publication and only tested). A named object is not removed from the namespace when its last handle closes. Changing that would change the lifetime of every named object. (Owner decision, see `docs/OWNER-DECISIONS.md`.)
 - `ObCreateObjectType` is declared but not defined. Only `ObRegisterObjectType` with a static type works.
 - `NtQueryDirectoryObject` uses an index as its context. If entries are inserted or removed between calls, a listing can skip or repeat entries.
 - `NtQueryObject` class `ObjectTypesInformation` is `STATUS_INVALID_INFO_CLASS`.

@@ -91,6 +91,16 @@ FIX_LDFLAGS := -fno-use-linker-plugin -nostdlib
 REAL_TEST := $(OUT)/test_real_pe$(EXE_SUFFIX)
 REAL_OBJS := $(OUT)/pe_parse.o $(OUT)/test_real_pe.o
 
+# Layout profile for test_real_pe.c (see the comment there). The MSYS2 host keeps
+# the default profile (binutils 2.47). Other hosts cross-build the fixtures with
+# Debian's mingw gcc (binutils 2.40), which has its own expected layout.
+ifeq ($(EXE_SUFFIX),.exe)
+REAL_PROFILE_DEF :=
+else
+REAL_PROFILE_DEF := -DREAL_PE_LAYOUT_DEBIAN_MINGW=1
+endif
+$(OUT)/test_real_pe.o: CFLAGS += $(REAL_PROFILE_DEF)
+
 ifeq ($(HAVE_FIX_CC),yes)
 REAL_RUN := $(REAL_TEST) $(FIX_EXES)
 else
