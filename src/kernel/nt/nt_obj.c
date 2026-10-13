@@ -301,6 +301,30 @@ void nt_handle_table_destroy_for_proc(struct nt_eprocess *proc)
 /* Object creation helpers                                                */
 /* ------------------------------------------------------------------ */
 
+/* ObInsertObject reported NAME_COLLISION after the lookup in
+ * nt_create_event_internal missed: another creator took the name in between,
+ * or the name is held by another type. Open the event that holds the name, so
+ * the caller gets a valid handle with NAME_COLLISION, as the lookup path does.
+ * If the name is not an event, return the lookup's status and no handle. */
+static NTSTATUS nt_open_event_after_collision(struct nt_eprocess *proc,
+                                              ACCESS_MASK desired_access,
+                                              POBJECT_ATTRIBUTES oa,
+                                              PHANDLE out_handle)
+{
+    struct nt_object_header *existing = NULL;
+    NTSTATUS st = ObReferenceObjectByName(oa->ObjectName, &nt_event_type, UserMode, desired_access, &existing);
+    if (!NT_SUCCESS(st)) return st;
+    ULONG hattr = 0;
+    if (oa->Attributes & OBJ_INHERIT) hattr |= OBJ_INHERIT;
+    if (oa->Attributes & OBJ_PROTECT_FROM_CLOSE) hattr |= OBJ_PROTECT_FROM_CLOSE;
+    HANDLE h = NULL;
+    st = ObCreateHandle(proc, existing, desired_access, hattr, &h);
+    ObDereferenceObject(existing);
+    if (!NT_SUCCESS(st)) return st;
+    *out_handle = h;
+    return STATUS_OBJECT_NAME_COLLISION;
+}
+
 static NTSTATUS nt_create_event_internal(struct nt_eprocess *proc,
                                          ACCESS_MASK desired_access,
                                          POBJECT_ATTRIBUTES oa,
@@ -343,11 +367,10 @@ static NTSTATUS nt_create_event_internal(struct nt_eprocess *proc,
     ntobj_header_init(&ev->header, NT_OBJ_EVENT, initial_state ? 1 : 0, event_type == NotificationEvent);
 
     st = ObInsertObject(hdr, oa, desired_access, proc, out_handle);
-    if (!NT_SUCCESS(st)) {
-        ObDereferenceObject(hdr);
-        return st;
-    }
     ObDereferenceObject(hdr);
+    if (st == STATUS_OBJECT_NAME_COLLISION)
+        return nt_open_event_after_collision(proc, desired_access, oa, out_handle);
+    if (!NT_SUCCESS(st)) return st;
     return STATUS_SUCCESS;
 }
 
