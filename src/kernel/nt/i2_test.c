@@ -34,6 +34,7 @@ NTSTATUS nt_svc_NtResetEvent(HANDLE EventHandle, PLONG PreviousState);
 NTSTATUS nt_svc_NtReleaseMutant(HANDLE MutantHandle, PLONG PreviousCount);
 NTSTATUS nt_svc_NtReleaseSemaphore(HANDLE SemaphoreHandle, LONG ReleaseCount, PLONG PreviousCount);
 NTSTATUS nt_svc_NtRtlNtStatusToDosError(NTSTATUS Status, ULONG *DosError);
+NTSTATUS nt_svc_NtQuerySystemTime(PLARGE_INTEGER SystemTime);
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +44,7 @@ NTSTATUS nt_svc_NtRtlNtStatusToDosError(NTSTATUS Status, ULONG *DosError);
 #include <pthread.h>
 #include <unistd.h>
 #include <stdatomic.h>
+#include <time.h>
 
 static int g_pass=0, g_fail=0;
 #define TEST(name) static void test_##name(void)
@@ -340,6 +342,23 @@ TEST(ntstatus_dos_spot) {
 }
 
 /* --------------------------------------------------------------- */
+/* NtQuerySystemTime: 100 ns units since 1601-01-01 UTC            */
+/* --------------------------------------------------------------- */
+TEST(query_system_time) {
+    LARGE_INTEGER t;
+    ASSERT_STATUS(nt_svc_NtQuerySystemTime(NULL), STATUS_ACCESS_VIOLATION);
+    time_t s0 = time(NULL);
+    ASSERT_STATUS(nt_svc_NtQuerySystemTime(&t), STATUS_SUCCESS);
+    time_t s1 = time(NULL);
+    /* 1601-01-01 to 1970-01-01 is 11644473600 s; Unix seconds must lie in [s0, s1]. */
+    LONGLONG unix100 = t.QuadPart - 116444736000000000LL;
+    ASSERT(t.QuadPart > 116444736000000000LL);
+    ASSERT(unix100 >= (LONGLONG)s0 * 10000000LL);
+    ASSERT(unix100 < ((LONGLONG)s1 + 1) * 10000000LL);
+    PASS();
+}
+
+/* --------------------------------------------------------------- */
 /* Handle table lifetime: created on first use, destroyed on exit   */
 /* --------------------------------------------------------------- */
 TEST(handle_table_lifetime) {
@@ -372,6 +391,7 @@ int main(void) {
     RUN(duplicate_access);
     RUN(query_invalid);
     RUN(ntstatus_dos_spot);
+    RUN(query_system_time);
     RUN(handle_table_lifetime);
     printf("I2 tests: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) return 1;

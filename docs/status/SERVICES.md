@@ -10,16 +10,16 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 74 |
+| IMPLEMENTED | 75 |
 | STUB-NOT-IMPLEMENTED | 3 |
 | WEAK-FALLBACK | 0 |
-| MISSING | 94 |
+| MISSING | 93 |
 
 ## By area
 
 | Area | Total | IMPLEMENTED | STUB-NOT-IMPLEMENTED | WEAK-FALLBACK | MISSING |
 |---|---:|---:|---:|---:|---:|
-| system | 10 | 6 | 0 | 0 | 4 |
+| system | 10 | 7 | 0 | 0 | 3 |
 | process-thread | 43 | 20 | 2 | 0 | 21 |
 | memory | 19 | 4 | 0 | 0 | 15 |
 | io | 30 | 7 | 0 | 0 | 23 |
@@ -37,7 +37,7 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | 0x0167 | `NtQuerySystemInformationEx` | 6 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
 | 0x01b2 | `NtSetSystemInformation` | 3 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
 | 0x0031 | `NtQueryPerformanceCounter` | 2 | IMPLEMENTED | `src/kernel/nt/nt_services.c` |
-| 0x005a | `NtQuerySystemTime` | 1 | MISSING |  |
+| 0x005a | `NtQuerySystemTime` | 1 | IMPLEMENTED | `src/kernel/nt/nt_services.c` |
 | 0x0034 | `NtDelayExecution` | 2 | IMPLEMENTED | `src/kernel/nt/nt_obj.c` |
 | 0x0046 | `NtYieldExecution` | 0 | MISSING |  |
 | 0x01b8 | `NtSetTimerResolution` | 3 | MISSING |  |
