@@ -9,6 +9,7 @@
 #include <string.h>
 #include <wchar.h>
 #include <assert.h>
+#include <stddef.h>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -326,7 +327,7 @@ static void test_delete_and_enum(void){
    u32 path bytes, path (UTF-16LE), u32 value count, then per value:
    u32 name bytes, name, u32 type, u32 data length, data. */
 static size_t snap_read(unsigned char *buf, size_t cap){
-    char path[PATH_MAX];
+    char path[2 * PATH_MAX];
     snprintf(path, sizeof(path), "%s/nt_registry/hive_snapshot.bin", g_kshim_root);
     int fd = open(path, O_RDONLY);
     if (fd < 0) return 0;
@@ -413,6 +414,33 @@ static void test_flush_snapshot(void){
     PASS();
 }
 
+/* Test 13: deleting a subkey removes it from its parent's list and namespace. */
+static void test_delete_nested(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1000,"regnest");
+    struct nt_ethread *thr=make_thread(proc,1);
+    UNICODE_STRING pus; make_us(&pus,"\\Registry\\User\\Software\\ntpers_nest_probe",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES poa=make_oa(&pus);
+    HANDLE hp=NULL; ULONG disp=0;
+    ASSERT_STATUS(NtCreateKey(&hp, KEY_ALL_ACCESS, &poa, 0, NULL, 0, &disp), STATUS_SUCCESS);
+    UNICODE_STRING cus; make_us(&cus,"\\Registry\\User\\Software\\ntpers_nest_probe\\child",wbuf2,sizeof(wbuf2));
+    OBJECT_ATTRIBUTES coa=make_oa(&cus);
+    HANDLE hc=NULL;
+    ASSERT_STATUS(NtCreateKey(&hc, KEY_ALL_ACCESS, &coa, 0, NULL, 0, &disp), STATUS_SUCCESS);
+    ASSERT_STATUS(NtDeleteKey(hc), STATUS_SUCCESS);
+
+    unsigned char buf[256]; ULONG rlen=0;
+    ASSERT_STATUS(NtEnumerateKey(hp, 0, KeyBasicInformation, buf, sizeof(buf), &rlen), STATUS_NO_MORE_ENTRIES);
+    HANDLE h2=NULL;
+    ASSERT_STATUS(NtOpenKey(&h2, KEY_READ, &coa), STATUS_OBJECT_NAME_NOT_FOUND);
+    ASSERT_STATUS(NtDeleteKey(hp), STATUS_SUCCESS);
+
+    ObCloseHandle(proc,hc); ObCloseHandle(proc,hp);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
 int main(void){
     printf("registry shim tests starting\n");
     ntreg_init();
@@ -428,6 +456,7 @@ int main(void){
         {test_wow64,"wow64"},
         {test_delete_and_enum,"delete_and_enum"},
         {test_flush_snapshot,"flush_snapshot"},
+        {test_delete_nested,"delete_nested"},
     };
     for(size_t i=0;i<sizeof(tests)/sizeof(tests[0]);i++){
         printf(" RUN %s\n",tests[i].name);

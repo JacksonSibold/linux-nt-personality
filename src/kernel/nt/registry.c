@@ -943,7 +943,8 @@ NTSTATUS NtDeleteKey(HANDLE KeyHandle) {
     if (slash>0) {
         UNICODE_STRING parent; parent.Buffer=k->full_path.Buffer; parent.Length=(USHORT)(slash*sizeof(WCHAR)); parent.MaximumLength=parent.Length;
         struct nt_object_header *phdr=NULL;
-        if (NT_SUCCESS(ObReferenceObjectByName(&parent, NULL, UserMode,0,&phdr))) {
+        /* registry_find_key walks key objects; ObReferenceObjectByName does not */
+        if (NT_SUCCESS(registry_find_key(&parent, &phdr))) {
             if (phdr->type==&nt_key_type) {
                 struct nt_key *pk=(struct nt_key*)nt_object_body(phdr);
                 write_lock(&pk->lock);
