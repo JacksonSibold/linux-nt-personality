@@ -120,6 +120,10 @@ NTSTATUS NtDuplicateObject(struct nt_eprocess *src_proc,
 #define DUPLICATE_SAME_ACCESS           0x00000002UL
 
 NTSTATUS ObInheritHandles(struct nt_eprocess *src, struct nt_eprocess *dst);
+/* Copies the OBJ_INHERIT entries of src into dst at the same indices, all or
+ * nothing (see handle.c). *copied, if not NULL, receives the copy count. */
+NTSTATUS ObInheritHandleTable(struct nt_handle_table *src, struct nt_handle_table *dst,
+                              u32 *copied);
 
 NTSTATUS ObpCreateHandleAtIndex(struct nt_handle_table *table,
                                  struct nt_object_header *obj,

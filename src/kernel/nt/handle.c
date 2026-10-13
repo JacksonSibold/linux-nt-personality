@@ -595,38 +595,95 @@ NTSTATUS NtDuplicateObject(struct nt_eprocess *src_proc,
     return STATUS_SUCCESS;
 }
 
-NTSTATUS ObInheritHandles(struct nt_eprocess *src, struct nt_eprocess *dst)
+/* Undoes one copy made by ObInheritHandleTable: frees the slot in dst and
+ * releases the reference and handle count the copy took. Called with the source
+ * table locked. The source entry still holds its own reference, so the object
+ * cannot be freed here, and no type callback runs: the copy was never visible. */
+static void ht_undo_copy(struct nt_handle_table *dst, u32 idx)
 {
-    u32 idx;
-    if (!src || !dst) return STATUS_INVALID_PARAMETER;
-    if (!src->handle_table || !dst->handle_table) return STATUS_INVALID_HANDLE;
-    struct nt_handle_table *src_table = src->handle_table;
-    /* Iterate over snapshot of high_water; need to hold src lock while iterating? We'll copy entries under lock per index. */
-    for (idx = 1; idx < src_table->high_water; idx++) {
-        struct nt_handle_entry *e;
-        /* Need to lock src to read entry safely */
-        spin_lock(&src_table->lock);
-        e = ht_entry(src_table, idx, false);
-        if (!e || e->free || !(e->attr & HANDLE_FLAG_INHERIT)) {
-            spin_unlock(&src_table->lock);
+    struct nt_handle_entry *e;
+    struct nt_object_header *obj;
+
+    spin_lock(&dst->lock);
+    e = ht_entry(dst, idx, false);
+    KASSERT(e && !e->free);
+    obj = e->obj;
+    e->free = true;
+    e->obj = NULL;
+    e->granted_access = 0;
+    e->attr = 0;
+    e->next_free = HANDLE_INVALID_FREE;
+    if (dst->last_free != HANDLE_INVALID_FREE) {
+        struct nt_handle_entry *te = ht_entry(dst, dst->last_free, false);
+        KASSERT(te);
+        te->next_free = idx;
+    } else {
+        dst->first_free = idx;
+    }
+    dst->last_free = idx;
+    dst->free_count++;
+    dst->num_handles--;
+    spin_unlock(&dst->lock);
+
+    ObpDecrementHandleCount(obj, NULL);
+    ObDereferenceObject(obj);
+}
+
+/*
+ * Copies every inheritable entry of src into dst at the same index, with the
+ * same granted access, so the child sees the parent's handle values. Only
+ * HANDLE_FLAG_INHERIT is carried over: PROTECT_FROM_CLOSE is not. Each copy takes
+ * one reference and one handle count, as ObCreateHandle does. *copied (optional)
+ * receives the number of copies on success.
+ *
+ * All or nothing: if a copy fails (a slot in dst is already in use, or a page
+ * cannot be allocated), the copies made by this call are undone and the error is
+ * returned. src stays locked for the whole walk, so the set of inheritable
+ * entries cannot change under the undo. The lock order is src, then dst. dst
+ * must not be locked by anyone else, which holds for a table being built for a
+ * new process.
+ */
+NTSTATUS ObInheritHandleTable(struct nt_handle_table *src, struct nt_handle_table *dst,
+                              u32 *copied)
+{
+    NTSTATUS st = STATUS_SUCCESS;
+    u32 idx, done = 0, fail_idx = 0;
+
+    if (copied) *copied = 0;
+    if (!src || !dst || src == dst) return STATUS_INVALID_PARAMETER;
+
+    spin_lock(&src->lock);
+    for (idx = 1; idx < src->high_water; idx++) {
+        struct nt_handle_entry *e = ht_entry(src, idx, false);
+        if (!e || e->free || !(e->attr & HANDLE_FLAG_INHERIT))
             continue;
+        /* ObpCreateHandleAtIndex takes the object reference and handle count. */
+        st = ObpCreateHandleAtIndex(dst, e->obj, e->granted_access, OBJ_INHERIT, idx, NULL);
+        if (!NT_SUCCESS(st)) {
+            fail_idx = idx;
+            break;
         }
-        struct nt_object_header *obj = e->obj;
-        ACCESS_MASK acc = e->granted_access;
-        /* Keep obj ref while unlocking */
-        ObReferenceObject(obj);
-        /* Also increment handle count for the new reference that inheritance will claim? The ObpCreateHandleAtIndex will increment again, so we need to not double counts here.
-         * Instead, let ObpCreateHandleAtIndex do the ref/handle increment.
-         */
-        spin_unlock(&src_table->lock);
-        /* Create at same index in dst; if collision, skip */
-        NTSTATUS st = ObpCreateHandleAtIndex(dst->handle_table, obj, acc, OBJ_INHERIT, idx, NULL);
-        ObDereferenceObject(obj); /* drop the extra ref we took; ObpCreate took its own */
-        if (!NT_SUCCESS(st) && st != STATUS_OBJECT_NAME_COLLISION) {
-            return st;
+        done++;
+    }
+
+    if (!NT_SUCCESS(st)) {
+        for (u32 i = 1; i < fail_idx; i++) {
+            struct nt_handle_entry *e = ht_entry(src, i, false);
+            if (e && !e->free && (e->attr & HANDLE_FLAG_INHERIT))
+                ht_undo_copy(dst, i);
         }
     }
-    return STATUS_SUCCESS;
+    spin_unlock(&src->lock);
+
+    if (NT_SUCCESS(st) && copied) *copied = done;
+    return st;
+}
+
+NTSTATUS ObInheritHandles(struct nt_eprocess *src, struct nt_eprocess *dst)
+{
+    if (!src || !dst) return STATUS_INVALID_PARAMETER;
+    if (!src->handle_table || !dst->handle_table) return STATUS_INVALID_HANDLE;
+    return ObInheritHandleTable(src->handle_table, dst->handle_table, NULL);
 }
 
 ULONG ObHandleTableCount(struct nt_handle_table *table)

@@ -55,10 +55,10 @@ LDFLAGS := -fno-use-linker-plugin $(COV_FLAGS)
 SHIM_OBJS := $(BUILD)/mman_win.o $(BUILD)/posix_host.o $(BUILD)/posix_raw.o
 
 # Test programs and the module objects each one links against.
-TESTS := security_extra_test object_test object_extra_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test system_test process_params_test
+TESTS := security_extra_test object_test object_extra_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test system_test process_params_test handle_inherit_test
 
 # Tests kept in this directory (not in src/kernel/nt). Their sources are $(t).c here.
-LOCAL_TESTS := handle_edge_test registry_ops_test process_params_test
+LOCAL_TESTS := handle_edge_test registry_ops_test process_params_test handle_inherit_test
 
 # Concurrency stress programs (see README.md "Stress tests"). Run by "stress",
 # never by "check". Sources are in this directory, like LOCAL_TESTS.
@@ -83,6 +83,7 @@ i2_test_OBJS          := security object handle nt_obj nt_services sync proc_thr
 system_test_OBJS        := security object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
 handle_edge_test_OBJS := security object handle kshim
 process_params_test_OBJS :=
+handle_inherit_test_OBJS := security object handle kshim
 registry_ops_test_OBJS := security registry object handle nt_obj sync kshim
 stress_handle_test_OBJS := security object handle kshim
 stress_object_test_OBJS := security object handle kshim
