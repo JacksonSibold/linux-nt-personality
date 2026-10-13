@@ -20,7 +20,7 @@ Option 1, as one design with UNW-2, since both need the same pass. Option 2 as a
 ## Patch sketch
 
 - `except.c`: after a handler accepts, walk the frames and call each `__finally` in order; reuse `RtlUnwindExWrapper` as the entry.
-- The unwind data reads depend on the bounds work in record 0057.
+- The unwind data reads depend on the bounds work in record 0062.
 
 ## Test plan
 
