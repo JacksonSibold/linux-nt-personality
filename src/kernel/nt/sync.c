@@ -2477,3 +2477,72 @@ NTSTATUS nt_svc_NtOpenTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR 
     if (NT_SUCCESS(st) && copy_to_user(TimerHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
     return st;
 }
+
+/* Resolve a timer handle to its body; the caller drops *hdr with ObDereferenceObject. */
+static NTSTATUS timer_ref(struct nt_eprocess *proc, HANDLE h, struct nt_timer **out_t,
+                          struct nt_object_header **out_hdr)
+{
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = ObReferenceObjectByHandle(proc, h, &nt_timer_type, UserMode, 0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    *out_t = (struct nt_timer *)nt_object_body(hdr);
+    *out_hdr = hdr;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS nt_svc_NtSetTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                           ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                           ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    HANDLE TimerHandle = (HANDLE)a0;
+    PLARGE_INTEGER DueTime = (PLARGE_INTEGER)a1;
+    void (*TimerApcRoutine)(void *) = (void (*)(void *))a2;
+    void *TimerContext = (void *)a3;
+    /* ResumeTimer: timers here are never suspended, so there is nothing to resume. */
+    LONG Period = (LONG)a5;
+    PBOOLEAN PreviousState = (PBOOLEAN)a6;
+    (void)a4; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (!DueTime) return STATUS_INVALID_PARAMETER;
+    if (!access_ok(DueTime, sizeof(LARGE_INTEGER))) return STATUS_ACCESS_VIOLATION;
+    LARGE_INTEGER due;
+    if (copy_from_user(&due, DueTime, sizeof(due))) return STATUS_ACCESS_VIOLATION;
+    if (Period < 0) return STATUS_INVALID_PARAMETER;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    struct nt_timer *t = NULL;
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = timer_ref(proc, TimerHandle, &t, &hdr);
+    if (!NT_SUCCESS(st)) return st;
+    BOOLEAN prev = 0;
+    st = nt_cancel_timer(t, &prev);   /* stop any earlier arming and read the old state */
+    if (NT_SUCCESS(st)) st = nt_set_timer(t, &due, Period, TimerApcRoutine, TimerContext);
+    if (NT_SUCCESS(st) && PreviousState) {
+        if (!access_ok(PreviousState, sizeof(BOOLEAN)) || copy_to_user(PreviousState, &prev, sizeof(prev)))
+            st = STATUS_ACCESS_VIOLATION;
+    }
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+NTSTATUS nt_svc_NtCancelTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                              ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                              ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    HANDLE TimerHandle = (HANDLE)a0;
+    PBOOLEAN CurrentState = (PBOOLEAN)a1;
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    struct nt_timer *t = NULL;
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = timer_ref(proc, TimerHandle, &t, &hdr);
+    if (!NT_SUCCESS(st)) return st;
+    BOOLEAN cur = 0;
+    st = nt_cancel_timer(t, &cur);
+    if (NT_SUCCESS(st) && CurrentState) {
+        if (!access_ok(CurrentState, sizeof(BOOLEAN)) || copy_to_user(CurrentState, &cur, sizeof(cur)))
+            st = STATUS_ACCESS_VIOLATION;
+    }
+    ObDereferenceObject(hdr);
+    return st;
+}

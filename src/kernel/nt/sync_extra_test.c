@@ -18,12 +18,19 @@ NTSTATUS nt_svc_NtCreateTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PT
 NTSTATUS nt_svc_NtOpenTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
                             ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
                             ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
+NTSTATUS nt_svc_NtSetTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                           ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                           ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
+NTSTATUS nt_svc_NtCancelTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                              ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                              ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
 #include <stdatomic.h>
+#include <stdint.h>
 
 static int g_pass = 0, g_fail = 0;
 #define TEST(name) static void test_##name(void)
@@ -76,6 +83,26 @@ static NTSTATUS t_create_timer(HANDLE *h, ACCESS_MASK acc, POBJECT_ATTRIBUTES oa
 static NTSTATUS t_open_timer(HANDLE *h, ACCESS_MASK acc, POBJECT_ATTRIBUTES oa) {
     return nt_svc_NtOpenTimer((ULONG_PTR)h, acc, (ULONG_PTR)oa, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 }
+
+static NTSTATUS t_set_timer(HANDLE h, LARGE_INTEGER *due, void (*apc)(void *), void *ctx,
+                            LONG period, BOOLEAN *prev) {
+    return nt_svc_NtSetTimer((ULONG_PTR)h, (ULONG_PTR)due, (ULONG_PTR)apc, (ULONG_PTR)ctx,
+                             0, (ULONG_PTR)period, (ULONG_PTR)prev, 0, 0, 0, 0, 0);
+}
+static NTSTATUS t_cancel_timer(HANDLE h, BOOLEAN *cur) {
+    return nt_svc_NtCancelTimer((ULONG_PTR)h, (ULONG_PTR)cur, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+}
+/* Wait through the wait engine directly: the handle-level single-object
+ * wait in nt_obj.c does not accept timers. */
+static NTSTATUS t_wait_handle(HANDLE h, LARGE_INTEGER *timeout) {
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = ObReferenceObjectByHandle(kshim_current_process(), h, NULL, UserMode, 0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    st = nt_wait_for_single_object((struct nt_dispatcher_header *)nt_object_body(hdr), 0, timeout);
+    ObDereferenceObject(hdr);
+    return st;
+}
+static LARGE_INTEGER rel100(int64_t ms) { LARGE_INTEGER li; li.QuadPart = -ms * 10000LL; return li; }
 
 /* ------------------------------------------------------------------ */
 /* NtCreateTimer                                                        */
@@ -156,6 +183,77 @@ TEST(open_timer_type_mismatch) {
     PASS();
 }
 
+/* ------------------------------------------------------------------ */
+/* NtSetTimer / NtCancelTimer                                           */
+/* ------------------------------------------------------------------ */
+TEST(set_timer_fires_and_reports_previous) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, NotificationTimer), STATUS_SUCCESS);
+    LARGE_INTEGER due = rel100(50);
+    BOOLEAN prev = 1;
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, 0, &prev), STATUS_SUCCESS);
+    ASSERT(prev == 0);
+    LARGE_INTEGER wait = rel100(3000);
+    ASSERT_STATUS(t_wait_handle(h, &wait), STATUS_WAIT_0);
+    /* Still signalled: a notification timer stays set until it is set again. */
+    LARGE_INTEGER poll = rel100(0);
+    ASSERT_STATUS(t_wait_handle(h, &poll), STATUS_WAIT_0);
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, 0, &prev), STATUS_SUCCESS);
+    ASSERT(prev == 1);
+    PASS();
+}
+
+TEST(set_timer_bad_arguments) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, SynchronizationTimer), STATUS_SUCCESS);
+    LARGE_INTEGER due = rel100(10);
+    ASSERT_STATUS(t_set_timer(h, NULL, NULL, NULL, 0, NULL), STATUS_INVALID_PARAMETER);
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, -1, NULL), STATUS_INVALID_PARAMETER);
+    ASSERT_STATUS(t_set_timer(NULL, &due, NULL, NULL, 0, NULL), STATUS_INVALID_HANDLE);
+    PASS();
+}
+
+TEST(set_timer_wrong_type) {
+    reset_ob();
+    HANDLE ev = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&ev, 0x1F0003, NULL, NotificationEvent, 0), STATUS_SUCCESS);
+    LARGE_INTEGER due = rel100(10);
+    ASSERT_STATUS(t_set_timer(ev, &due, NULL, NULL, 0, NULL), STATUS_OBJECT_TYPE_MISMATCH);
+    PASS();
+}
+
+TEST(cancel_timer_before_fire) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, NotificationTimer), STATUS_SUCCESS);
+    LARGE_INTEGER due = rel100(400);
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, 0, NULL), STATUS_SUCCESS);
+    BOOLEAN cur = 1;
+    ASSERT_STATUS(t_cancel_timer(h, &cur), STATUS_SUCCESS);
+    ASSERT(cur == 0);
+    LARGE_INTEGER wait = rel100(700);
+    ASSERT_STATUS(t_wait_handle(h, &wait), STATUS_TIMEOUT);
+    PASS();
+}
+
+TEST(cancel_timer_reports_signalled) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, NotificationTimer), STATUS_SUCCESS);
+    LARGE_INTEGER due = rel100(20);
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, 0, NULL), STATUS_SUCCESS);
+    LARGE_INTEGER wait = rel100(3000);
+    ASSERT_STATUS(t_wait_handle(h, &wait), STATUS_WAIT_0);
+    BOOLEAN cur = 0;
+    ASSERT_STATUS(t_cancel_timer(h, &cur), STATUS_SUCCESS);
+    ASSERT(cur == 1);
+    /* CurrentState is optional. */
+    ASSERT_STATUS(t_cancel_timer(h, NULL), STATUS_SUCCESS);
+    PASS();
+}
+
 int main(void) {
     printf("sync extra tests starting\n");
     ObInitObjectManager();
@@ -164,6 +262,11 @@ int main(void) {
     RUN(open_timer_by_name);
     RUN(open_timer_bad_arguments);
     RUN(open_timer_type_mismatch);
+    RUN(set_timer_fires_and_reports_previous);
+    RUN(set_timer_bad_arguments);
+    RUN(set_timer_wrong_type);
+    RUN(cancel_timer_before_fire);
+    RUN(cancel_timer_reports_signalled);
     printf("sync extra tests: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) return 1;
     ObCleanupObjectManager();
