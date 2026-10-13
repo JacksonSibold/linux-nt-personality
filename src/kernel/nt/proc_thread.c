@@ -1287,7 +1287,7 @@ NTSTATUS nt_svc_NtCreateThreadEx(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess
     /* Register handle in caller's table (Windows creates handle in caller
      * regardless of target process). */
     st = ObCreateHandle(cur_proc, thr->obj, 0x1FFFFF, 0, &h);
-    pr_info("W1_INSTR: ObCreateHandle for tid %lu handle=%p st=0x%x\n", (unsigned long)thr->tid, h, st);
+    NT_TRACE("W1_INSTR: ObCreateHandle for tid %lu handle=%p st=0x%x\n", (unsigned long)thr->tid, h, st);
     if (!NT_SUCCESS(st)) { nt_free_teb_stack_kernel(thr); ObDestroyThreadObject(thr); return st; }
 
     /* Prepare clone args - share VM so NT threads are Linux threads (TIDs) */
@@ -1336,25 +1336,25 @@ NTSTATUS nt_svc_NtCreateThreadEx(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess
         thr->teb->ClientId.UniqueThread = (HANDLE)(ULONG_PTR)thr->tid;
 
         /* W1_INSTR: log TIF before and after set, and before wake */
-        pr_info("W1_INSTR: child creation parent pid=%d TIF_NTABI parent=%d child pid=%d child TIF before set=%d\n", current->pid, test_thread_flag(TIF_NTABI), pid, test_tsk_thread_flag(child, TIF_NTABI));
+        NT_TRACE("W1_INSTR: child creation parent pid=%d TIF_NTABI parent=%d child pid=%d child TIF before set=%d\n", current->pid, test_thread_flag(TIF_NTABI), pid, test_tsk_thread_flag(child, TIF_NTABI));
         /* Wire GS base for child - same helper binfmt_pe uses for initial thread */
         nt_write_gsbase(child, thr->teb_base);
         set_tsk_thread_flag(child, TIF_NTABI);
-        pr_info("W1_INSTR: after set_tsk_thread_flag child pid=%d TIF_NTABI=%d gsbase=0x%lx\n", pid, test_tsk_thread_flag(child, TIF_NTABI), (unsigned long)thr->teb_base);
+        NT_TRACE("W1_INSTR: after set_tsk_thread_flag child pid=%d TIF_NTABI=%d gsbase=0x%lx\n", pid, test_tsk_thread_flag(child, TIF_NTABI), (unsigned long)thr->teb_base);
 
         /* Set child's user registers to RtlUserThreadStart trampoline */
         nt_setup_child_regs(child, thr, StartRoutine, Argument);
-        pr_info("W1_INSTR: after nt_setup_child_regs child pid=%d TIF_NTABI=%d regs ip=0x%lx sp=0x%lx\n", pid, test_tsk_thread_flag(child, TIF_NTABI), (unsigned long)task_pt_regs(child)->ip, (unsigned long)task_pt_regs(child)->sp);
+        NT_TRACE("W1_INSTR: after nt_setup_child_regs child pid=%d TIF_NTABI=%d regs ip=0x%lx sp=0x%lx\n", pid, test_tsk_thread_flag(child, TIF_NTABI), (unsigned long)task_pt_regs(child)->ip, (unsigned long)task_pt_regs(child)->sp);
 
         /* If CREATE_SUSPENDED, set TIF_NTSUSPEND on child so its first return to user blocks */
         if (suspended) {
             set_tsk_thread_flag(child, TIF_NTSUSPEND);
         }
-        pr_info("W1_INSTR: before wake_up_new_task child pid=%d TIF_NTABI=%d TIF_NTSUSPEND=%d\n", pid, test_tsk_thread_flag(child, TIF_NTABI), test_tsk_thread_flag(child, TIF_NTSUSPEND));
+        NT_TRACE("W1_INSTR: before wake_up_new_task child pid=%d TIF_NTABI=%d TIF_NTSUSPEND=%d\n", pid, test_tsk_thread_flag(child, TIF_NTABI), test_tsk_thread_flag(child, TIF_NTSUSPEND));
 
         /* Now wake the child - it will start at the trampoline with correct TIF */
         wake_up_new_task(child);
-        pr_info("W1_INSTR: after wake_up_new_task child pid=%d TIF_NTABI=%d\n", pid, test_tsk_thread_flag(child, TIF_NTABI));
+        NT_TRACE("W1_INSTR: after wake_up_new_task child pid=%d TIF_NTABI=%d\n", pid, test_tsk_thread_flag(child, TIF_NTABI));
 
         /* Store task pointer for suspend/resume target lookup (via tid) and for exit path.
          * We keep task ref until thread exit drops it. Use thr->task if field exists;
@@ -1369,14 +1369,14 @@ NTSTATUS nt_svc_NtCreateThreadEx(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess
     /* ObCreateThreadObject has already registered thr. */
     ObDereferenceObject(thr->obj); /* drop creator ref - now owned by handle + registry */
 
-    pr_info("W1_INSTR: copy_to_user handle %p to %p\n", h, ThreadHandle);
+    NT_TRACE("W1_INSTR: copy_to_user handle %p to %p\n", h, ThreadHandle);
     if (copy_to_user(ThreadHandle, &h, sizeof(h))) {
-        pr_info("W1_INSTR: copy_to_user failed handle %p\n", h);
+        NT_TRACE("W1_INSTR: copy_to_user failed handle %p\n", h);
         ObCloseHandle(cur_proc, h);
         /* child is already running; let it exit via termination path */
         return STATUS_ACCESS_VIOLATION;
     }
-    pr_info("W1_INSTR: NtCreateThreadEx success handle %p tid %lu\n", h, (unsigned long)thr->tid);
+    NT_TRACE("W1_INSTR: NtCreateThreadEx success handle %p tid %lu\n", h, (unsigned long)thr->tid);
     return STATUS_SUCCESS;
 }
 
@@ -1416,25 +1416,25 @@ NTSTATUS nt_svc_NtSuspendThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount
     if (!proc) return STATUS_INVALID_PARAMETER;
     st = ObReferenceObjectByHandle(proc, ThreadHandle, &nt_thread_type, UserMode, 0, &hdr, NULL);
     if (!NT_SUCCESS(st)) {
-        pr_info("W1_INSTR: NtSuspendThread handle=%p ObReference failed 0x%x\n", ThreadHandle, st);
+        NT_TRACE("W1_INSTR: NtSuspendThread handle=%p ObReference failed 0x%x\n", ThreadHandle, st);
         return STATUS_INVALID_HANDLE;
     }
     thr = ObFindThreadByHeader(hdr);
     ObDereferenceObject(hdr);
     if (!thr) {
-        pr_info("W1_INSTR: NtSuspendThread handle=%p thr not found\n", ThreadHandle);
+        NT_TRACE("W1_INSTR: NtSuspendThread handle=%p thr not found\n", ThreadHandle);
         return STATUS_INVALID_HANDLE;
     }
-    pr_info("W1_INSTR: NtSuspendThread handle=%p tid=%lu terminated=%d suspend_count=%d\n", ThreadHandle, (unsigned long)thr->tid, thr->terminated, atomic_read(&thr->suspend_count));
+    NT_TRACE("W1_INSTR: NtSuspendThread handle=%p tid=%lu terminated=%d suspend_count=%d\n", ThreadHandle, (unsigned long)thr->tid, thr->terminated, atomic_read(&thr->suspend_count));
     spin_lock(&thr->lock);
-    if (thr->terminated) { pr_info("W1_INSTR: NtSuspendThread tid=%lu terminated true, returning THREAD_IS_TERMINATING\n", (unsigned long)thr->tid); spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
+    if (thr->terminated) { NT_TRACE("W1_INSTR: NtSuspendThread tid=%lu terminated true, returning THREAD_IS_TERMINATING\n", (unsigned long)thr->tid); spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
     prev = (ULONG)atomic_read(&thr->suspend_count);
     if (prev >= NT_MAX_SUSPEND_COUNT) { spin_unlock(&thr->lock); return STATUS_SUSPEND_COUNT_EXCEEDED; }
     if (PreviousSuspendCount) {
         if (!access_ok(PreviousSuspendCount, sizeof(*PreviousSuspendCount))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
         if (copy_to_user(PreviousSuspendCount, &prev, sizeof(prev))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
     }
-    pr_info("NtSuspendThread: tid=%lu prev=%lu new=%lu\n", thr->tid, prev, prev+1);
+    NT_TRACE("NtSuspendThread: tid=%lu prev=%lu new=%lu\n", thr->tid, prev, prev+1);
     atomic_inc(&thr->suspend_count);
     if (prev == 0) {
         tsk = pid_task(find_vpid(thr->tid), PIDTYPE_PID);
@@ -1458,25 +1458,25 @@ NTSTATUS nt_svc_NtResumeThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount)
     if (!proc) return STATUS_INVALID_PARAMETER;
     st = ObReferenceObjectByHandle(proc, ThreadHandle, &nt_thread_type, UserMode, 0, &hdr, NULL);
     if (!NT_SUCCESS(st)) {
-        pr_info("W1_INSTR: NtSuspendThread handle=%p ObReference failed 0x%x\n", ThreadHandle, st);
+        NT_TRACE("W1_INSTR: NtSuspendThread handle=%p ObReference failed 0x%x\n", ThreadHandle, st);
         return STATUS_INVALID_HANDLE;
     }
     thr = ObFindThreadByHeader(hdr);
     ObDereferenceObject(hdr);
     if (!thr) {
-        pr_info("W1_INSTR: NtSuspendThread handle=%p thr not found\n", ThreadHandle);
+        NT_TRACE("W1_INSTR: NtSuspendThread handle=%p thr not found\n", ThreadHandle);
         return STATUS_INVALID_HANDLE;
     }
-    pr_info("W1_INSTR: NtSuspendThread handle=%p tid=%lu terminated=%d suspend_count=%d\n", ThreadHandle, (unsigned long)thr->tid, thr->terminated, atomic_read(&thr->suspend_count));
+    NT_TRACE("W1_INSTR: NtSuspendThread handle=%p tid=%lu terminated=%d suspend_count=%d\n", ThreadHandle, (unsigned long)thr->tid, thr->terminated, atomic_read(&thr->suspend_count));
     spin_lock(&thr->lock);
-    if (thr->terminated) { pr_info("W1_INSTR: NtSuspendThread tid=%lu terminated true, returning THREAD_IS_TERMINATING\n", (unsigned long)thr->tid); spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
+    if (thr->terminated) { NT_TRACE("W1_INSTR: NtSuspendThread tid=%lu terminated true, returning THREAD_IS_TERMINATING\n", (unsigned long)thr->tid); spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
     prev = (ULONG)atomic_read(&thr->suspend_count);
     if (PreviousSuspendCount) {
         if (!access_ok(PreviousSuspendCount, sizeof(*PreviousSuspendCount))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
         if (copy_to_user(PreviousSuspendCount, &prev, sizeof(prev))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
     }
     if (prev == 0) { spin_unlock(&thr->lock); return STATUS_SUCCESS; }
-    pr_info("NtResumeThread: tid=%lu prev=%lu new=%lu\n", thr->tid, prev, prev-1);
+    NT_TRACE("NtResumeThread: tid=%lu prev=%lu new=%lu\n", thr->tid, prev, prev-1);
     atomic_dec(&thr->suspend_count);
     cur = prev - 1;
     if (cur == 0) {
@@ -1558,10 +1558,10 @@ NTSTATUS nt_svc_NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus)
     wake_up(&thr->exit_wq);
     wake_up(&thr->suspend_wq);
     spin_unlock(&thr->lock);
-    pr_err("NtTerminateThread: thr %p tid %lu sync_thread %p tid %lu\n", thr, thr->tid, thr->sync_thread, thr->sync_thread?thr->sync_thread->tid:0);
+    NT_TRACE_ERR("NtTerminateThread: thr %p tid %lu sync_thread %p tid %lu\n", thr, thr->tid, thr->sync_thread, thr->sync_thread?thr->sync_thread->tid:0);
     if (thr->sync_thread) {
         extern void nt_abandon_owned_mutants(struct nt_thread *);
-        pr_err("NtTerminateThread: abandoning for thr %p tid %lu\n", thr, thr->tid);
+        NT_TRACE_ERR("NtTerminateThread: abandoning for thr %p tid %lu\n", thr, thr->tid);
         nt_abandon_owned_mutants(thr->sync_thread);
     }
     tsk = pid_task(find_vpid(thr->tid), PIDTYPE_PID);
