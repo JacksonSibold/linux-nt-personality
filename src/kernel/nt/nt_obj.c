@@ -567,8 +567,9 @@ NTSTATUS nt_svc_NtDuplicateObject(HANDLE SourceProcessHandle, HANDLE SourceHandl
                                   HANDLE TargetProcessHandle, PHANDLE TargetHandle,
                                   ACCESS_MASK DesiredAccess, ULONG HandleAttributes, ULONG Options)
 {
-    if (!TargetHandle) return STATUS_INVALID_PARAMETER;
-    *TargetHandle = NULL;
+    /* TargetHandle is optional (NT). Without it the duplicate is closed again, so
+     * only the effects of Options (DUPLICATE_CLOSE_SOURCE) remain. */
+    if (TargetHandle) *TargetHandle = NULL;
 
     struct nt_eprocess *cur = kshim_current_process();
     if (!cur) return STATUS_INVALID_PARAMETER;
@@ -613,7 +614,10 @@ NTSTATUS nt_svc_NtDuplicateObject(HANDLE SourceProcessHandle, HANDLE SourceHandl
     /* Delegate to handle.c's NtDuplicateObject which implements access narrowing, SAME_ACCESS, CLOSE_SOURCE */
     HANDLE nh = NULL;
     NTSTATUS st = NtDuplicateObject(src_proc, SourceHandle, dst_proc, &nh, DesiredAccess, HandleAttributes, Options);
-    if (NT_SUCCESS(st)) *TargetHandle = nh;
+    if (NT_SUCCESS(st)) {
+        if (TargetHandle) *TargetHandle = nh;
+        else ObCloseHandle(dst_proc, nh);
+    }
     return st;
 }
 

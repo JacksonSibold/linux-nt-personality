@@ -1009,6 +1009,48 @@ TEST(query_handle_flags)
 }
 
 /* -------------------------------------------------------------------------- */
+/* 9. NtDuplicateObject with an optional TargetHandle                          */
+/* -------------------------------------------------------------------------- */
+
+NTSTATUS nt_svc_NtDuplicateObject(HANDLE SourceProcessHandle, HANDLE SourceHandle,
+                                  HANDLE TargetProcessHandle, PHANDLE TargetHandle,
+                                  ACCESS_MASK DesiredAccess, ULONG HandleAttributes, ULONG Options);
+
+TEST(duplicate_null_target)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(381, "dupnull");
+    ASSERT(proc != NULL);
+    HANDLE h = NULL;
+    ASSERT_STATUS(insert_named(proc, "\\BaseNamedObjects\\DupNullObj", &h), STATUS_SUCCESS);
+
+    struct nt_object_header *hdr = NULL;
+    ASSERT_STATUS(ObReferenceObjectByHandle(proc, h, NULL, KernelMode, 0, &hdr, NULL), STATUS_SUCCESS);
+    long long before = atomic64_read(&hdr->handle_count);
+    ObDereferenceObject(hdr);
+
+    /* TargetHandle is optional: the duplicate is made and closed again, so no
+     * handle is returned and the handle count is unchanged. */
+    ASSERT_STATUS(nt_svc_NtDuplicateObject(NtCurrentProcess(), h, NtCurrentProcess(), NULL,
+                                           0, 0, DUPLICATE_SAME_ACCESS), STATUS_SUCCESS);
+    ASSERT_STATUS(ObReferenceObjectByHandle(proc, h, NULL, KernelMode, 0, &hdr, NULL), STATUS_SUCCESS);
+    ASSERT(atomic64_read(&hdr->handle_count) == before);
+    ObDereferenceObject(hdr);
+
+    /* With DUPLICATE_CLOSE_SOURCE the source is closed even without a target. */
+    ASSERT_STATUS(nt_svc_NtDuplicateObject(NtCurrentProcess(), h, NtCurrentProcess(), NULL,
+                                           0, 0, DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE), STATUS_SUCCESS);
+    ASSERT_STATUS(ObReferenceObjectByHandle(proc, h, NULL, KernelMode, 0, &hdr, NULL), STATUS_INVALID_HANDLE);
+
+    /* A bad source is still an error. */
+    ASSERT_STATUS(nt_svc_NtDuplicateObject(NtCurrentProcess(), NULL, NtCurrentProcess(), NULL,
+                                           0, 0, DUPLICATE_SAME_ACCESS), STATUS_INVALID_HANDLE);
+
+    teardown(proc);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* main                                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -1019,6 +1061,7 @@ int main(void)
     RUN(make_permanent_with_privilege);
     RUN(make_permanent_bad_handle);
     RUN(make_permanent_no_token);
+    RUN(duplicate_null_target);
     RUN(query_handle_flags);
     RUN(query_symlink_target);
     RUN(query_symlink_too_small_and_access);
