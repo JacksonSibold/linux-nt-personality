@@ -21,6 +21,7 @@ endif
 CC      := gcc
 NT      := ../../src/kernel/nt
 NTDLL   := ../../src/ntdll
+LOADER  := ../../src/loader
 SHIM    := shim
 # COVERAGE=1: gcov instrumentation, -O0, objects in build-cov/ so the
 # instrumented and plain builds never share .o files. See tools/c_coverage.sh.
@@ -47,7 +48,7 @@ WARN    := -Wall -Wextra -Wuninitialized
 DEPFLAGS := -MMD -MP
 CFLAGS  := -std=gnu11 -g $(OPT) $(WARN) $(DEPFLAGS) $(COV_FLAGS) -DUSERSPACE_KSHIM \
            -include $(SHIM)/khost_prelude.h \
-           -iquote $(NT) -iquote $(BUILD) -I$(SHIM)
+           -iquote $(NT) -iquote $(LOADER) -iquote $(BUILD) -I$(SHIM)
 LDLIBS  := -lpthread -lws2_32 $(COV_LIBS)
 LDFLAGS := -fno-use-linker-plugin $(COV_FLAGS)
 
@@ -55,10 +56,10 @@ LDFLAGS := -fno-use-linker-plugin $(COV_FLAGS)
 SHIM_OBJS := $(BUILD)/mman_win.o $(BUILD)/posix_host.o $(BUILD)/posix_raw.o
 
 # Test programs and the module objects each one links against.
-TESTS := security_extra_test object_test object_extra_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test system_test process_params_test handle_inherit_test proc_create_args_test
+TESTS := security_extra_test object_test object_extra_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test system_test process_params_test handle_inherit_test proc_create_args_test image_plan_test
 
 # Tests kept in this directory (not in src/kernel/nt). Their sources are $(t).c here.
-LOCAL_TESTS := handle_edge_test registry_ops_test process_params_test handle_inherit_test proc_create_args_test
+LOCAL_TESTS := handle_edge_test registry_ops_test process_params_test handle_inherit_test proc_create_args_test image_plan_test
 
 # Concurrency stress programs (see README.md "Stress tests"). Run by "stress",
 # never by "check". Sources are in this directory, like LOCAL_TESTS.
@@ -75,7 +76,7 @@ sync_test_OBJS        := security sync kshim object handle nt_obj
 sync_extra_test_OBJS  := security object handle nt_obj sync kshim
 security_extra_test_OBJS      := security object handle kshim
 security_test_OBJS    := security object handle kshim
-mm_test_OBJS          := mm security object handle kshim io iocp nt_obj_weak sync
+mm_test_OBJS          := mm security object handle kshim io iocp nt_obj_weak sync pe_parse
 registry_test_OBJS    := security registry object handle nt_obj sync kshim
 io_test_OBJS          := security io object handle iocp nt_obj_weak sync kshim
 proc_thread_test_OBJS := security proc_thread object handle nt_obj sync nt_services kshim
@@ -85,6 +86,7 @@ handle_edge_test_OBJS := security object handle kshim
 process_params_test_OBJS :=
 handle_inherit_test_OBJS := security object handle kshim
 proc_create_args_test_OBJS :=
+image_plan_test_OBJS := pe_parse
 registry_ops_test_OBJS := security registry object handle nt_obj sync kshim
 stress_handle_test_OBJS := security object handle kshim
 stress_object_test_OBJS := security object handle kshim
@@ -117,6 +119,16 @@ $(BUILD)/mman_win.o: $(SHIM)/mman_win.c | $(BUILD)
 # Module sources from src/kernel/nt.
 $(BUILD)/%.o: $(NT)/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# The PE parser from src/loader, built plain (no kernel prelude), like tests/host.
+$(BUILD)/pe_parse.o: $(LOADER)/pe_parse.c $(LOADER)/pe_parse.h $(LOADER)/pe_format.h | $(BUILD)
+	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -I$(LOADER) -c $< -o $@
+
+# Real PE fixtures built by tests/host (MinGW). image_plan_test reads them as
+# bytes and never runs them. Built before the checks so the fixture tests run.
+HOST_FIX := ../host/out/fixtures/minimal.exe ../host/out/fixtures/exports.dll
+$(HOST_FIX):
+	$(MAKE) -C ../host $(patsubst ../host/%,%,$@)
 
 # ntstatus_kernel.c includes ntstatus_table.inc, generated from the userspace
 # table in src/ntdll/ntstatus_to_dos.c. gen_ntstatus_table.py is the canonical
@@ -173,13 +185,13 @@ RUN_TESTS = fail=0; for t in $(1); do \
 	  echo "$$t rc=$$rc"; [ $$rc -eq 0 ] || fail=1; \
 	done; exit $$fail
 
-check: all
+check: all $(HOST_FIX)
 	@$(call RUN_TESTS,$(TESTS) $(SHIM_TESTS),$(SYNC_CHECK_ITERATIONS))
 
-check-quick: all
+check-quick: all $(HOST_FIX)
 	@$(call RUN_TESTS,$(QUICK_TESTS) $(SHIM_TESTS),$(SYNC_CHECK_ITERATIONS))
 
-check-full: all
+check-full: all $(HOST_FIX)
 	@$(call RUN_TESTS,$(TESTS) $(SHIM_TESTS),$(SYNC_FULL_ITERATIONS))
 
 # Concurrency stress (not part of check). Each STRESS_TESTS program runs once

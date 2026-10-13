@@ -212,12 +212,18 @@ struct kshim_section_backing { int fd; size_t size; void *mem; struct file *file
 /* Section object                                                             */
 /* -------------------------------------------------------------------------- */
 
+/* Layout plan of a SEC_IMAGE section (src/kernel/nt/image_plan.h, userspace only). */
+struct ip_plan;
+
 struct nt_section {
     ULONG                   attributes;   /* SEC_* */
     SIZE_T                  size;
     ULONG                   page_protection;
     int                     is_file;
     struct kshim_section_backing backing;
+    /* SEC_IMAGE only: the plan that the section's views are built from. Owned
+     * by the section and freed in nt_section_delete. NULL for other sections. */
+    struct ip_plan         *image;
 };
 
 /* A section is an object-manager object. Its body is struct nt_section and its

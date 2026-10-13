@@ -18,6 +18,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include "image_plan.h"
 #else
 #include <linux/slab.h>
 #include <linux/mm.h>
@@ -1731,6 +1732,8 @@ NTSTATUS NtMmHandleGuardFault(PVOID Address) {
 static void nt_section_delete(struct nt_object_header *hdr)
 {
     struct nt_section *sec = (struct nt_section *)nt_object_body(hdr);
+    /* A SEC_IMAGE section owns its layout plan (kernel: always NULL). */
+    if (sec->image) { kfree(sec->image); sec->image = NULL; }
 #ifndef __KERNEL__
     if (sec->backing.fd >= 0) close(sec->backing.fd);
     if (sec->backing.mem) kshim_munmap(sec->backing.mem, sec->backing.size);
@@ -1878,6 +1881,128 @@ out_put:
     return st;
 }
 
+/* Largest PE file a SEC_IMAGE section reads into memory to plan. The planner
+ * needs the whole file; the mapping then copies the bytes from the section's fd. */
+#define NT_IMAGE_MAX_FILE (64ULL * 1024ULL * 1024ULL)
+
+#ifdef __KERNEL__
+/* The kernel build does not create image sections. Its mapping would need the
+ * per-section helpers that binfmt_pe uses at exec time, and those are not
+ * reused here (process-creation milestone M6). */
+static NTSTATUS nt_create_image_section(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                                        POBJECT_ATTRIBUTES ObjectAttributes,
+                                        ULONG SectionPageProtection, ULONG AllocationAttributes,
+                                        HANDLE FileHandle) {
+    (void)SectionHandle; (void)DesiredAccess; (void)ObjectAttributes;
+    (void)SectionPageProtection; (void)AllocationAttributes; (void)FileHandle;
+    return STATUS_NOT_IMPLEMENTED;
+}
+#else
+/* Planner status to NT status. A 32-bit image is named by the planner
+ * (IP_ERR_PE32), but its NT status, STATUS_INVALID_IMAGE_WIN_32, is not defined
+ * in this tree and its value is not confirmed, so it is refused as an invalid
+ * format for now. */
+static NTSTATUS ip_status_to_nt(ip_status_t s) {
+    switch (s) {
+    case IP_OK:                   return STATUS_SUCCESS;
+    case IP_ERR_PARAM:            return STATUS_INVALID_PARAMETER;
+    case IP_ERR_UNSUPPORTED_ALIGN: return STATUS_NOT_IMPLEMENTED;
+    case IP_ERR_PE32:
+    case IP_ERR_FORMAT:
+    case IP_ERR_ALIGN:
+    case IP_ERR_LAYOUT:
+    case IP_ERR_RAW_RANGE:
+    case IP_ERR_BASE:
+    default:                      return STATUS_INVALID_IMAGE_FORMAT;
+    }
+}
+
+/* Page protection of a planner segment as the NT protection constant. */
+static ULONG ip_win32_protect(u32 prot) {
+    switch (prot) {
+    case IP_PROT_READONLY:          return PAGE_READONLY;
+    case IP_PROT_EXECUTE:           return PAGE_EXECUTE;
+    case IP_PROT_EXECUTE_READ:      return PAGE_EXECUTE_READ;
+    case IP_PROT_WRITECOPY:         return PAGE_WRITECOPY;
+    case IP_PROT_EXECUTE_WRITECOPY: return PAGE_EXECUTE_WRITECOPY;
+    case IP_PROT_NOACCESS:
+    default:                        return PAGE_NOACCESS;
+    }
+}
+
+/* Creates a SEC_IMAGE section from a PE file (userspace). The whole file is read
+ * once and planned (image_plan.h). The section keeps the plan and its own fd on
+ * the file. A file that is not a 64-bit PE image is refused before a section
+ * object exists. The page protection is checked for validity only: views of an
+ * image take their protections from its sections. */
+static NTSTATUS nt_create_image_section(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                                        POBJECT_ATTRIBUTES ObjectAttributes,
+                                        ULONG SectionPageProtection, ULONG AllocationAttributes,
+                                        HANDLE FileHandle) {
+    struct nt_object_header *hdr = NULL;
+    struct nt_section *sec = NULL;
+    struct nt_file_object *file = NULL;
+    struct ip_plan *plan = NULL;
+    unsigned char *img = NULL;
+    LONGLONG file_size = 0;
+    size_t done = 0;
+    void *obj;
+    ip_status_t ips;
+    NTSTATUS st;
+    (void)SectionPageProtection;
+
+    /* An image section names a file, so no file is a parameter error. */
+    if (!FileHandle) return STATUS_INVALID_PARAMETER;
+    obj = ntio_handle_peek(FileHandle);
+    if (!obj) return STATUS_INVALID_HANDLE;
+    if (*(ULONG *)obj != NTIO_FILE_MAGIC) return STATUS_OBJECT_TYPE_MISMATCH;
+    file = (struct nt_file_object *)ntio_handle_lookup(FileHandle, FILE_READ_DATA);
+    if (!file) return STATUS_ACCESS_DENIED;
+
+    if (file->is_directory) { st = STATUS_INVALID_FILE_FOR_SECTION; goto out_put; }
+    st = ntio_file_section_size(file, &file_size);
+    if (!NT_SUCCESS(st)) goto out_put;
+    if (file_size == 0) { st = STATUS_MAPPED_FILE_SIZE_ZERO; goto out_put; }
+    if ((unsigned long long)file_size > NT_IMAGE_MAX_FILE) { st = STATUS_SECTION_TOO_BIG; goto out_put; }
+
+    img = kmalloc((size_t)file_size, GFP_KERNEL);
+    if (!img) { st = STATUS_NO_MEMORY; goto out_put; }
+    while (done < (size_t)file_size) {
+        ssize_t n = pread(file->filp->fd, img + done, (size_t)file_size - done, (off_t)done);
+        if (n <= 0) { st = STATUS_IO_DEVICE_ERROR; goto out_free; }
+        done += (size_t)n;
+    }
+    plan = kzalloc(sizeof(*plan), GFP_KERNEL);
+    if (!plan) { st = STATUS_NO_MEMORY; goto out_free; }
+    ips = ip_plan_build(img, (size_t)file_size, plan);
+    if (ips != IP_OK) { st = ip_status_to_nt(ips); goto out_plan; }
+
+    ObRegisterObjectType(&nt_section_type);
+    st = ObCreateObject(&nt_section_type, ObjectAttributes, sizeof(*sec), &hdr, (void **)&sec);
+    if (!NT_SUCCESS(st)) goto out_plan;
+    /* From here the section owns the plan; nt_section_delete frees it. */
+    sec->backing.fd = -1;
+    sec->image = plan;
+    plan = NULL;
+    sec->is_file = 1;
+    sec->attributes = AllocationAttributes | SEC_FILE;
+    sec->page_protection = SectionPageProtection;
+    sec->size = (SIZE_T)sec->image->size_of_image;
+    st = nt_section_attach_file(&sec->backing, file);
+    if (NT_SUCCESS(st))
+        st = ObInsertObject(hdr, ObjectAttributes, DesiredAccess, kshim_current_process(), SectionHandle);
+    ObDereferenceObject(hdr);
+
+out_plan:
+    if (plan) kfree(plan);
+out_free:
+    if (img) kfree(img);
+out_put:
+    ntio_file_put(file);
+    return st;
+}
+#endif
+
 NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
                          POBJECT_ATTRIBUTES ObjectAttributes,
                          PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
@@ -1888,10 +2013,11 @@ NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
     NTSTATUS st;
     if (!SectionHandle) return STATUS_INVALID_PARAMETER;
     if (!ntmm_protection_valid(SectionPageProtection)) return STATUS_INVALID_PAGE_PROTECTION;
-    /* SEC_IMAGE is refused with or without a file. It needs image sections, a
-     * separate milestone (process-creation M6). Until then it must not be mapped
-     * as plain data. */
-    if (AllocationAttributes & SEC_IMAGE) return STATUS_NOT_IMPLEMENTED;
+    /* SEC_IMAGE builds an image section from the file. It is never mapped as
+     * plain data. The kernel build refuses it (see nt_create_image_section). */
+    if (AllocationAttributes & SEC_IMAGE)
+        return nt_create_image_section(SectionHandle, DesiredAccess, ObjectAttributes,
+                                       SectionPageProtection, AllocationAttributes, FileHandle);
     if (FileHandle)
         return nt_create_file_section(SectionHandle, DesiredAccess, ObjectAttributes, MaximumSize,
                                       SectionPageProtection, AllocationAttributes, FileHandle);
@@ -1920,6 +2046,129 @@ NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
     return st;
 }
 
+#ifndef __KERNEL__
+/* Maps a whole image section (userspace). The whole SizeOfImage goes at one
+ * base: the preferred base when it is free, else the first free hole. If the
+ * base is not the preferred one, a relocatable image returns
+ * STATUS_IMAGE_NOT_AT_BASE and is NOT relocated: applying base relocations is
+ * not built (a documented gap, docs/modules/mm.md). A non-relocatable image
+ * cannot move, so it fails with STATUS_CONFLICTING_ADDRESSES.
+ * Each segment has its own VAD (MEM_IMAGE, with the planner's protection), so a
+ * query sees the header and every section. The bytes are copied from the file
+ * here, so every view is private: a write never reaches the file. */
+static NTSTATUS nt_map_image_view(struct nt_section *sec, PVOID *BaseAddress,
+                                  PLARGE_INTEGER SectionOffset, PSIZE_T ViewSize) {
+    struct nt_mm *mm = &g_nt_mm;
+    const struct ip_plan *plan = sec->image;
+    struct nt_vad *ins[IP_MAX_SECTIONS + 1];
+    ULONG_PTR base, size;
+    u32 i, k, count = 0;
+    NTSTATUS st = STATUS_SUCCESS;
+
+    if (!plan) return STATUS_INVALID_PARAMETER;
+    /* An image maps whole: no offset, and a view size of 0 or at least SizeOfImage. */
+    if (SectionOffset && SectionOffset->QuadPart != 0) return STATUS_INVALID_PARAMETER;
+    size = (ULONG_PTR)plan->size_of_image;
+    if (*ViewSize != 0 && *ViewSize < size) return STATUS_INVALID_VIEW_SIZE;
+    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
+
+    ntmm_lock(mm);
+    if (*BaseAddress == NULL) {
+        base = (ULONG_PTR)plan->preferred_base;
+        if (!ntmm_range_free(mm, base, base + size)) {
+            base = ntmm_find_hole_bottom_up(mm, size, NTMM_ALLOC_GRANULARITY);
+            if (base == 0) { ntmm_unlock(mm); return STATUS_NO_MEMORY; }
+        }
+    } else {
+        base = ntmm_round_down((ULONG_PTR)*BaseAddress, NTMM_ALLOC_GRANULARITY);
+        if ((u64)base >= IP_USER_LIMIT || (u64)size > IP_USER_LIMIT - (u64)base) {
+            ntmm_unlock(mm);
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (!ntmm_range_free(mm, base, base + size)) { ntmm_unlock(mm); return STATUS_CONFLICTING_ADDRESSES; }
+    }
+    if ((u64)base != plan->preferred_base) {
+        if (!plan->relocatable) { ntmm_unlock(mm); return STATUS_CONFLICTING_ADDRESSES; }
+        st = STATUS_IMAGE_NOT_AT_BASE;
+    }
+
+    for (i = 0; i < plan->num_segments; i++) {
+        const ip_segment_t *s = &plan->seg[i];
+        ULONG prot = ip_win32_protect(s->prot);
+        struct nt_vad *vad = nt_vad_new(base + s->rva, base + s->rva + s->size, MEM_COMMIT,
+                                        prot, prot, base, MEM_IMAGE);
+        if (!vad) break;
+        vad->section = sec;
+        nt_section_ref(sec);    /* the VAD's own reference, dropped by nt_vad_free */
+        vad->section_offset = s->file_offset;
+        nt_list_insert(mm, vad);
+        ins[count++] = vad;
+    }
+    ntmm_unlock(mm);
+    if (count != plan->num_segments) {
+        ntmm_lock(mm);
+        for (k = 0; k < count; k++) nt_list_remove(mm, ins[k]);
+        ntmm_unlock(mm);
+        for (k = 0; k < count; k++) nt_vad_free(ins[k]);
+        return STATUS_NO_MEMORY;
+    }
+
+    /* Host pages. One commit covers the whole image, zero-filled. The host
+     * shim cannot commit a sub-range of a 64 KiB reservation, so the sections
+     * are not committed one by one. Each segment's file bytes are copied in, its
+     * zero tail is cleared explicitly (the commit may reuse older pages), and its
+     * final protection is set. The gaps between segments get no access. */
+    if (kshim_mmap_commit((void *)base, (size_t)size, PROT_READ | PROT_WRITE) != 0) {
+        ntmm_lock(mm);
+        for (k = 0; k < count; k++) nt_list_remove(mm, ins[k]);
+        ntmm_unlock(mm);
+        for (k = 0; k < count; k++) nt_vad_free(ins[k]);
+        return STATUS_NO_MEMORY;
+    }
+    for (i = 0; i < plan->num_segments; i++) {
+        const ip_segment_t *s = &plan->seg[i];
+        unsigned char *dst = (unsigned char *)(base + s->rva);
+        size_t done = 0;
+        NTSTATUS fail = STATUS_SUCCESS;
+        while (done < s->file_size) {
+            ssize_t n = pread(sec->backing.fd, dst + done, s->file_size - done,
+                              (off_t)(s->file_offset + done));
+            if (n <= 0) { fail = STATUS_IN_PAGE_ERROR; break; }
+            done += (size_t)n;
+        }
+        if (NT_SUCCESS(fail)) {
+            memset(dst + s->file_size, 0, s->zero_size);
+            if (kshim_mprotect(dst, s->size, ntmm_prot_to_linux(ip_win32_protect(s->prot))) != 0)
+                fail = STATUS_NO_MEMORY;
+        }
+        if (!NT_SUCCESS(fail)) {
+            ntmm_lock(mm);
+            for (k = 0; k < count; k++) nt_list_remove(mm, ins[k]);
+            ntmm_unlock(mm);
+            kshim_munmap((void *)base, (size_t)size);
+            for (k = 0; k < count; k++) nt_vad_free(ins[k]);
+            return fail;
+        }
+    }
+    /* Segments are in RVA order, header first, so any gap is between the
+     * running end and the next segment, or after the last one. */
+    {
+        u32 cur = 0;
+        for (i = 0; i < plan->num_segments; i++) {
+            const ip_segment_t *s = &plan->seg[i];
+            if (s->rva > cur) kshim_mprotect((void *)(base + cur), s->rva - cur, PROT_NONE);
+            if (s->rva + s->size > cur) cur = s->rva + s->size;
+        }
+        if (cur < plan->size_of_image)
+            kshim_mprotect((void *)(base + cur), plan->size_of_image - cur, PROT_NONE);
+    }
+
+    *BaseAddress = (PVOID)base;
+    *ViewSize = (SIZE_T)size;
+    return st;
+}
+#endif
+
 /* Maps a view of an open section. The caller holds a reference to sec. */
 static NTSTATUS nt_map_view_of_section(struct nt_section *sec, PVOID *BaseAddress,
                                        PLARGE_INTEGER SectionOffset, PSIZE_T ViewSize,
@@ -1927,6 +2176,11 @@ static NTSTATUS nt_map_view_of_section(struct nt_section *sec, PVOID *BaseAddres
     struct nt_mm *mm = &g_nt_mm;
     ULONG_PTR offset = 0, base = 0, actual_size = 0;
     int commit;
+#ifndef __KERNEL__
+    /* An image section maps as a whole image, with its own rules. */
+    if (sec->attributes & SEC_IMAGE)
+        return nt_map_image_view(sec, BaseAddress, SectionOffset, ViewSize);
+#endif
     if (SectionOffset) offset = (ULONG_PTR)SectionOffset->QuadPart;
     /* A shared writable view writes to the file, so the section must be writable. */
     if (sec->is_file && nt_protect_writable(Win32Protect) && !nt_protect_writable(sec->page_protection))
