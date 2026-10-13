@@ -27,6 +27,9 @@ jobs:
       - name: host-test
         run: make -C tests/host CC=gcc test
 
+      - name: fuzz smoke (PE parser)
+        run: make -C tests/fuzz CC=gcc smoke
+
       - name: static-analysis (informational)
         continue-on-error: true
         run: sh tools/static_analyze.sh
