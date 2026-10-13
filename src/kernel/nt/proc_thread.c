@@ -2110,6 +2110,120 @@ static NTSTATUS pt_thread_post_tid_alert(struct nt_ethread *thr)
 }
 
 /* ------------------------------------------------------------------ */
+/* NtContinue, NtContinueEx, NtRaiseException (both branches)          */
+/* ------------------------------------------------------------------ */
+
+/* ContextFlags bits a CONTEXT may carry on amd64: CONTEXT_AMD64 plus the
+ * sub-flags 0x01..0x80 (CONTROL .. KERNEL_CET, nt_types.h). */
+#define PT_CONTEXT_FLAG_MASK (CONTEXT_AMD64 | 0x000000FFL)
+
+/* KCONTINUE_ARGUMENT, as NtContinueEx reads it: only ContinueFlags, the first
+ * USHORT, is used here. Its layout beyond that is not confirmed by this code. */
+#define PT_KCONTINUE_FLAG_TEST_ALERT 0x0001
+
+/* Copy a CONTEXT in from the caller and check it. NULL or unreadable is an
+ * access violation. NT aligns CONTEXT to 16 bytes, so an unaligned pointer is
+ * STATUS_DATATYPE_MISALIGNMENT. ContextFlags must carry CONTEXT_AMD64 and no bit
+ * outside PT_CONTEXT_FLAG_MASK, else STATUS_INVALID_PARAMETER. */
+static NTSTATUS pt_copy_context_in(PCONTEXT user, CONTEXT *dst)
+{
+    if (!user) return STATUS_ACCESS_VIOLATION;
+    if (((ULONG_PTR)user & 0xF) != 0) return STATUS_DATATYPE_MISALIGNMENT;
+    if (!access_ok(user, sizeof(*dst)) || copy_from_user(dst, user, sizeof(*dst)))
+        return STATUS_ACCESS_VIOLATION;
+    if ((dst->ContextFlags & CONTEXT_AMD64) != CONTEXT_AMD64) return STATUS_INVALID_PARAMETER;
+    if (dst->ContextFlags & (ULONG)~PT_CONTEXT_FLAG_MASK) return STATUS_INVALID_PARAMETER;
+    return STATUS_SUCCESS;
+}
+
+/* Shared by NtContinue and NtContinueEx. In NT a successful continue resumes the
+ * thread with the context and does not return. Here:
+ *
+ *  Shim: TestAlert first consumes a pending alert (the sync thread's alerted
+ *        flag). If one was consumed, the call returns STATUS_ALERTED and the
+ *        context is NOT recorded. Otherwise the copied context is recorded in
+ *        pending_continue and the call returns STATUS_SUCCESS. Nothing consumes
+ *        the record yet: the shim has no CPU state to restore.
+ *  Kernel: the argument is validated and then STATUS_NOT_IMPLEMENTED is
+ *        returned. Applying the context needs the calling task's trap frame,
+ *        which this build does not rewrite. */
+static NTSTATUS pt_continue_common(PCONTEXT ContextRecord, BOOLEAN test_alert)
+{
+    CONTEXT in;
+    NTSTATUS st;
+#ifdef __KERNEL__
+    st = pt_copy_context_in(ContextRecord, &in);
+    if (!NT_SUCCESS(st)) return st;
+    (void)test_alert;
+    return STATUS_NOT_IMPLEMENTED;
+#else
+    struct nt_ethread *cur = PT_CUR_THREAD();
+    struct nt_thread *sync;
+    if (!cur) return STATUS_INVALID_HANDLE;
+    st = pt_copy_context_in(ContextRecord, &in);
+    if (!NT_SUCCESS(st)) return st;
+    spin_lock(&cur->lock);
+    if (cur->terminated) {
+        spin_unlock(&cur->lock);
+        return STATUS_THREAD_IS_TERMINATING;
+    }
+    sync = cur->sync_thread;
+    spin_unlock(&cur->lock);
+    if (test_alert && sync && nt_thread_consume_alert(sync))
+        return STATUS_ALERTED;
+    spin_lock(&cur->lock);
+    cur->pending_continue = in;
+    cur->pending_continue_valid = true;
+    spin_unlock(&cur->lock);
+    return STATUS_SUCCESS;
+#endif
+}
+
+/* NtContinue(ContextRecord, TestAlert). See pt_continue_common. */
+NTSTATUS nt_svc_NtContinue(PCONTEXT ContextRecord, BOOLEAN TestAlert)
+{
+    return pt_continue_common(ContextRecord, TestAlert ? TRUE : FALSE);
+}
+
+/* NtContinueEx(ContextRecord, ContinueArgument). The argument is read as a
+ * KCONTINUE_ARGUMENT whose first USHORT is ContinueFlags; bit 0
+ * (PT_KCONTINUE_FLAG_TEST_ALERT) asks for the TestAlert behaviour. A NULL or
+ * unreadable argument is an access violation. */
+NTSTATUS nt_svc_NtContinueEx(PCONTEXT ContextRecord, PVOID ContinueArgument)
+{
+    USHORT flags = 0;
+    if (!ContinueArgument) return STATUS_ACCESS_VIOLATION;
+    if (!access_ok(ContinueArgument, sizeof(flags)) ||
+        copy_from_user(&flags, ContinueArgument, sizeof(flags)))
+        return STATUS_ACCESS_VIOLATION;
+    return pt_continue_common(ContextRecord, (flags & PT_KCONTINUE_FLAG_TEST_ALERT) != 0);
+}
+
+/* NtRaiseException(ExceptionRecord, ContextRecord, FirstChance). The record and
+ * the context are validated (NULL or unreadable is an access violation, the
+ * context follows the NtContinue rules). Then STATUS_NOT_IMPLEMENTED is
+ * returned: this build has no exception delivery queue. In NT the kernel would
+ * push the record and context onto the user stack and redirect the thread to
+ * KiUserExceptionDispatcher. The dispatch that exists in this codebase is in
+ * user mode, src/ntdll/except.c: _NtRaiseException runs RtlDispatchException
+ * in-process and calls UnhandledExceptionFilter when nothing handles the
+ * exception. That path never enters the kernel, so this service does not
+ * reach it. FirstChance is not used. */
+NTSTATUS nt_svc_NtRaiseException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord, BOOLEAN FirstChance)
+{
+    EXCEPTION_RECORD rec;
+    CONTEXT ctx;
+    NTSTATUS st;
+    (void)FirstChance;
+    if (!ExceptionRecord) return STATUS_ACCESS_VIOLATION;
+    if (!access_ok(ExceptionRecord, sizeof(rec)) || copy_from_user(&rec, ExceptionRecord, sizeof(rec)))
+        return STATUS_ACCESS_VIOLATION;
+    st = pt_copy_context_in(ContextRecord, &ctx);
+    if (!NT_SUCCESS(st)) return st;
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+/* ------------------------------------------------------------------ */
 /* NtSetInformationProcess (shared by the shim and kernel branches)    */
 /* ------------------------------------------------------------------ */
 

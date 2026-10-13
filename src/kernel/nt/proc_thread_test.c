@@ -624,6 +624,80 @@ static void test_wait_for_alert_by_thread_id(void){
     PASS();
 }
 
+/* ---- NtContinue, NtContinueEx, NtRaiseException (shim branch). The shim records
+ * the continue context on the thread; it has no CPU state to resume, so
+ * NtContinue returns STATUS_SUCCESS after recording. A pending alert consumed
+ * by TestAlert returns STATUS_ALERTED and records nothing. NtRaiseException
+ * validates and then returns STATUS_NOT_IMPLEMENTED: this build has no dispatch
+ * queue. ---- */
+NTSTATUS nt_svc_NtContinue(PCONTEXT ContextRecord, BOOLEAN TestAlert);
+NTSTATUS nt_svc_NtContinueEx(PCONTEXT ContextRecord, PVOID ContinueArgument);
+NTSTATUS nt_svc_NtRaiseException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord, BOOLEAN FirstChance);
+
+typedef struct { USHORT ContinueFlags; } PT_TEST_CONTINUE_ARG;
+
+static void test_continue_and_raise(void){
+    setup_proc();
+    struct nt_ethread *cur=kshim_current_thread();
+    struct nt_thread *cursync=NULL;
+    CONTEXT ctx __attribute__((aligned(16)));
+    CONTEXT ctx2 __attribute__((aligned(16)));
+    EXCEPTION_RECORD rec;
+    PT_TEST_CONTINUE_ARG arg;
+    ASSERT(nt_thread_create(&cursync)==STATUS_SUCCESS);
+    cur->sync_thread=cursync;
+    memset(&ctx,0,sizeof(ctx)); memset(&ctx2,0,sizeof(ctx2)); memset(&rec,0,sizeof(rec));
+    ctx.ContextFlags=CONTEXT_FULL; ctx.Rip=0x1234;
+    ctx2.ContextFlags=CONTEXT_FULL; ctx2.Rip=0x9999;
+    /* Argument validation: NULL is an access violation, an unaligned CONTEXT is
+     * a misalignment, and ContextFlags must carry CONTEXT_AMD64 and no unknown bits */
+    ASSERT(nt_svc_NtContinue(NULL,FALSE)==STATUS_ACCESS_VIOLATION);
+    ASSERT(nt_svc_NtContinue((PCONTEXT)((char*)&ctx+8),FALSE)==STATUS_DATATYPE_MISALIGNMENT);
+    ctx2.ContextFlags=0;
+    ASSERT(nt_svc_NtContinue(&ctx2,FALSE)==STATUS_INVALID_PARAMETER);
+    ctx2.ContextFlags=CONTEXT_AMD64|0x100;
+    ASSERT(nt_svc_NtContinue(&ctx2,FALSE)==STATUS_INVALID_PARAMETER);
+    ASSERT(!cur->pending_continue_valid);
+    ctx2.ContextFlags=CONTEXT_FULL; ctx2.Rip=0x9999;
+    /* Valid context, no alert: recorded and STATUS_SUCCESS */
+    ASSERT(nt_svc_NtContinue(&ctx,FALSE)==STATUS_SUCCESS);
+    ASSERT(cur->pending_continue_valid && cur->pending_continue.Rip==0x1234);
+    /* TestAlert with no pending alert: recorded as well */
+    ASSERT(nt_svc_NtContinue(&ctx2,TRUE)==STATUS_SUCCESS);
+    ASSERT(cur->pending_continue.Rip==0x9999);
+    /* TestAlert with a pending alert: consumed, STATUS_ALERTED, nothing recorded */
+    ctx2.Rip=0x7777;
+    ASSERT(nt_svc_NtAlertThread(NtCurrentThread())==STATUS_SUCCESS);
+    ASSERT(nt_svc_NtContinue(&ctx2,TRUE)==STATUS_ALERTED);
+    ASSERT(!nt_thread_alert_pending(cursync));
+    ASSERT(cur->pending_continue.Rip==0x9999);
+    /* NtContinueEx: the argument's ContinueFlags bit 0 is TestAlert */
+    ASSERT(nt_svc_NtContinueEx(NULL,&arg)==STATUS_ACCESS_VIOLATION);
+    ASSERT(nt_svc_NtContinueEx(&ctx,NULL)==STATUS_ACCESS_VIOLATION);
+    arg.ContinueFlags=0;
+    ASSERT(nt_svc_NtContinueEx(&ctx,&arg)==STATUS_SUCCESS);
+    ASSERT(cur->pending_continue.Rip==0x1234);
+    ASSERT(nt_svc_NtAlertThread(NtCurrentThread())==STATUS_SUCCESS);
+    arg.ContinueFlags=1;
+    ASSERT(nt_svc_NtContinueEx(&ctx2,&arg)==STATUS_ALERTED);
+    ASSERT(!nt_thread_alert_pending(cursync));
+    /* Terminated thread refuses */
+    pthread_mutex_lock(&cur->lock); cur->terminated=true; pthread_mutex_unlock(&cur->lock);
+    ASSERT(nt_svc_NtContinue(&ctx,FALSE)==STATUS_THREAD_IS_TERMINATING);
+    pthread_mutex_lock(&cur->lock); cur->terminated=false; pthread_mutex_unlock(&cur->lock);
+    /* NtRaiseException: NULL record or context is an access violation, bad
+     * flags are invalid, and a valid pair is validated then not implemented */
+    ASSERT(nt_svc_NtRaiseException(NULL,&ctx,FALSE)==STATUS_ACCESS_VIOLATION);
+    ASSERT(nt_svc_NtRaiseException(&rec,NULL,FALSE)==STATUS_ACCESS_VIOLATION);
+    ctx2.ContextFlags=0;
+    ASSERT(nt_svc_NtRaiseException(&rec,&ctx2,TRUE)==STATUS_INVALID_PARAMETER);
+    ASSERT(nt_svc_NtRaiseException(&rec,&ctx,TRUE)==STATUS_NOT_IMPLEMENTED);
+    cur->pending_continue_valid=false;
+    cur->sync_thread=NULL;
+    nt_thread_destroy(cursync);
+    PASS();
+}
+
 /* ---- NtSetInformationProcess: priority classes (ProcessBasePriority 5,
  * ProcessPriorityClass 18). Set-only base priority; the class is set/query. ---- */
 #define PT_TEST_PROC_QUERY 0x0400   /* PROCESS_QUERY_INFORMATION */
@@ -899,6 +973,7 @@ int main(void){
     RUN(test_alert_resume_thread);
     RUN(test_alert_satisfies_alertable_wait);
     RUN(test_wait_for_alert_by_thread_id);
+    RUN(test_continue_and_raise);
     RUN(test_process_terminate_twice);
     RUN(test_open_bad_cid);
     RUN(test_set_process_base_priority);
