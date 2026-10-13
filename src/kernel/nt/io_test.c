@@ -79,7 +79,9 @@ static void setup_root(void)
 			 "/tmp/ntio_test_%d", (int)getpid());
 		/* Removed at exit, pass or fail (KEEP_SCRATCH=1 keeps it).
 		 * A caller-supplied NTIO_TEST_ROOT is never removed. */
+#ifdef KHOST_SCRATCH_CLEANUP
 		khost_scratch_arm_cleanup(g_test_root);
+#endif
 	}
 	kshim_set_root(g_test_root);
 
