@@ -86,8 +86,16 @@ Every other class, including `ProcessForegroundInformation` (25) and `ProcessWx8
 
 ### Alerts
 
-- One flag. `pt_thread_post_alert` (`proc_thread.c:2073`) sets the alert on the thread's sync record (`nt_thread_alert(thr->sync_thread)`). The sync record is the flag that alertable waits test (`sync.c`, `nt_obj.c:2109`) and that `NtTestAlert` (`iocp.c:767`) consumes. A thread with no sync record gets `STATUS_NO_MEMORY`. A terminated thread gets `STATUS_THREAD_IS_TERMINATING`.
-- `NtAlertThread` and `NtAlertThreadByThreadId` (unknown id: `STATUS_INVALID_CID`) post the alert. `NtAlertResumeThread` resumes as `NtResumeThread` does, then posts it.
+- One alertable flag. `pt_thread_post_alert` (`proc_thread.c:2073`) sets the alert on the thread's sync record (`nt_thread_alert(thr->sync_thread)`). The sync record is the flag that alertable waits test (`sync.c`, `nt_obj.c:2109`) and that `NtTestAlert` (`iocp.c:767`) consumes. A thread with no sync record gets `STATUS_NO_MEMORY`. A terminated thread gets `STATUS_THREAD_IS_TERMINATING`.
+- `NtAlertThread` posts the alertable flag (unknown handle: `STATUS_INVALID_HANDLE`). `NtAlertResumeThread` resumes as `NtResumeThread` does, then posts it.
+- `NtAlertThreadByThreadId` (unknown id: `STATUS_INVALID_CID`) sets the by-thread-id token instead (`nt_thread_tid_alert`). It does not set the alertable flag. A terminated thread gets `STATUS_THREAD_IS_TERMINATING`, and a missing sync record `STATUS_NO_MEMORY`, as for the flag.
+- `NtWaitForAlertByThreadId(Address, Timeout)` waits for that token. It returns `STATUS_ALERTED` when it consumes the token and `STATUS_TIMEOUT` when the timeout expires. `Address` is unused. The wait is not alertable: `NtAlertThread` does not end it.
+
+### Continue and raise
+
+- `NtContinue(CONTEXT*, TestAlert)` and `NtContinueEx(CONTEXT*, KCONTINUE_ARGUMENT*)` validate the CONTEXT: NULL or unreadable is `STATUS_ACCESS_VIOLATION`, a pointer not 16-byte aligned is `STATUS_DATATYPE_MISALIGNMENT`, and ContextFlags must carry `CONTEXT_AMD64` with no bit outside 0xFF. The shim copies the context into `nt_ethread.pending_continue` (`object.h`) and returns `STATUS_SUCCESS`. TestAlert, or bit 0 of `ContinueFlags` for `NtContinueEx`, first consumes a pending alert: then the call returns `STATUS_ALERTED` and nothing is recorded. Nothing consumes the recorded context, because the shim has no CPU state to restore. The kernel build validates and returns `STATUS_NOT_IMPLEMENTED`.
+- `NtContinueEx` reads only `ContinueFlags`, the first `USHORT` of the argument. The rest of that layout is not confirmed here.
+- `NtRaiseException(EXCEPTION_RECORD*, CONTEXT*, FirstChance)` validates both arguments and returns `STATUS_NOT_IMPLEMENTED`. The only dispatch in the tree runs in user mode: `_NtRaiseException` in `src/ntdll/except.c` calls `RtlDispatchException` in-process and `UnhandledExceptionFilter` when nothing handles the exception. The kernel has no path into it.
 - The kernel delay path honours an alert only when the wait is alertable. The kernel wait paths are not run on the host.
 
 ## Invariants and locking (as implemented)

@@ -149,8 +149,10 @@ what the loader mapped, as well as what the NT calls mapped. See
   the current-process handle is accepted (`mm.c:1605`).
 - `NtAllocateVirtualMemoryEx` is `NtAllocateVirtualMemory` when no extended
   parameters are given. Any extended parameter returns `STATUS_NOT_SUPPORTED`.
-- Not implemented: `NtLockVirtualMemory` and `NtUnlockVirtualMemory` (need a page-lock
-  primitive in kshim), and `NtCreateSectionEx`, `NtMapViewOfSectionEx` and
+- `NtLockVirtualMemory` and `NtUnlockVirtualMemory` lock pages on the host
+  (`kshim_mlock`, which is `VirtualLock` in the host shim) and keep the locked runs per
+  address space. The kernel build returns `STATUS_NOT_SUPPORTED`.
+- Not implemented: `NtCreateSectionEx`, `NtMapViewOfSectionEx` and
   `NtUnmapViewOfSectionEx` have no service entry, so their dispatch slots are NULL.
   `NtCreateSection`, `NtOpenSection`, `NtMapViewOfSection`, `NtUnmapViewOfSection`
   and `NtQuerySection` have `nt_svc_` wrappers in `mm.c` (typed in the userspace

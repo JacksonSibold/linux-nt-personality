@@ -19,6 +19,8 @@ Thread state:
 - `void nt_thread_clear_alert(struct nt_thread *t)` - clears both flags.
 - `bool nt_thread_alert_pending(struct nt_thread *t)` - reads `alerted` without changing it.
 - `bool nt_thread_consume_alert(struct nt_thread *t)` - reads `alerted` and clears it. `NtTestAlert` (`iocp.c:773`) and the alertable waits in `nt_obj.c` (`:2109`, `:2126`) use it.
+- `void nt_thread_tid_alert(struct nt_thread *t)` - sets `tid_alert_token` and wakes a waiter. This is the by-thread-id token from `NtAlertThreadByThreadId`. It is separate from `alerted`.
+- `NTSTATUS nt_thread_wait_tid_alert(struct nt_thread *t, LARGE_INTEGER *timeout)` - waits until the token is set (consumes it, `STATUS_ALERTED`) or the timeout expires (`STATUS_TIMEOUT`). A NULL timeout waits forever and a zero timeout polls. The shim uses a `pthread_cond_t` on the thread lock; the kernel uses a wait queue, which is not run on the host.
 
 Object creation and release: `nt_create_event`, `nt_create_mutant`, `nt_create_semaphore`, `nt_create_timer`, `nt_create_keyed_event`, and the matching `nt_put_*` functions that drop a reference and free at zero.
 

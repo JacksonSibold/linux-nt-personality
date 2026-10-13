@@ -39,12 +39,12 @@ hybrid, the first strong definition in file order decides the class.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 57 |
+| IMPLEMENTED | 63 |
 | STUB-NOT-IMPLEMENTED | 0 |
 | REFUSES | 0 |
 | WEAK-FALLBACK | 0 |
 | UNREACHABLE-WRAPPER-MISSING | 0 |
-| MISSING | 31 |
+| MISSING | 25 |
 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 77 |
 | IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 2 |
 | REFUSES (userspace) / IMPLEMENTED (kernel) | 1 |
@@ -55,8 +55,8 @@ hybrid, the first strong definition in file order decides the class.
 | Area | Total | IMPLEMENTED | STUB-NOT-IMPLEMENTED | REFUSES | WEAK-FALLBACK | UNREACHABLE-WRAPPER-MISSING | MISSING | hybrid |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | system | 10 | 2 | 0 | 0 | 0 | 0 | 0 | 8 |
-| process-thread | 43 | 8 | 0 | 0 | 0 | 0 | 15 | 20 |
-| memory | 19 | 8 | 0 | 0 | 0 | 0 | 5 | 6 |
+| process-thread | 43 | 12 | 0 | 0 | 0 | 0 | 11 | 20 |
+| memory | 19 | 10 | 0 | 0 | 0 | 0 | 3 | 6 |
 | io | 30 | 24 | 0 | 0 | 0 | 0 | 0 | 6 |
 | sync | 32 | 15 | 0 | 0 | 0 | 0 | 0 | 17 |
 | security | 10 | 0 | 0 | 0 | 0 | 0 | 1 | 9 |
@@ -102,7 +102,7 @@ hybrid, the first strong definition in file order decides the class.
 | 0x01c8 | `NtTestAlert` | 0 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
 | 0x0045 | `NtQueueApcThread` | 5 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
 | 0x016b | `NtQueueApcThreadEx` | 6 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
-| 0x01d8 | `NtWaitForAlertByThreadId` | 2 | MISSING |  |
+| 0x01d8 | `NtWaitForAlertByThreadId` | 2 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
 | 0x0019 | `NtQueryInformationProcess` | 5 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/proc_thread.c` |
 | 0x001c | `NtSetInformationProcess` | 4 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
 | 0x0025 | `NtQueryInformationThread` | 5 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/proc_thread.c` |
@@ -111,9 +111,9 @@ hybrid, the first strong definition in file order decides the class.
 | 0x0030 | `NtOpenProcessTokenEx` | 4 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
 | 0x0024 | `NtOpenThreadToken` | 4 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
 | 0x002f | `NtOpenThreadTokenEx` | 5 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
-| 0x0043 | `NtContinue` | 2 | MISSING |  |
-| 0x00a3 | `NtContinueEx` | 2 | MISSING |  |
-| 0x016d | `NtRaiseException` | 3 | MISSING |  |
+| 0x0043 | `NtContinue` | 2 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
+| 0x00a3 | `NtContinueEx` | 2 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
+| 0x016d | `NtRaiseException` | 3 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
 | 0x016e | `NtRaiseHardError` | 6 | REFUSES (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_services.c` |
 | 0x00a8 | `NtCreateDebugObject` | 4 | MISSING |  |
 | 0x00d2 | `NtDebugActiveProcess` | 2 | MISSING |  |
@@ -139,8 +139,8 @@ hybrid, the first strong definition in file order decides the class.
 | 0x003f | `NtReadVirtualMemory` | 5 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x003a | `NtWriteVirtualMemory` | 5 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x00f0 | `NtFlushVirtualMemory` | 4 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
-| 0x0113 | `NtLockVirtualMemory` | 4 | MISSING |  |
-| 0x01d3 | `NtUnlockVirtualMemory` | 4 | MISSING |  |
+| 0x0113 | `NtLockVirtualMemory` | 4 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
+| 0x01d3 | `NtUnlockVirtualMemory` | 4 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x004a | `NtCreateSection` | 7 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/mm.c` |
 | 0x00c2 | `NtCreateSectionEx` | 9 | MISSING |  |
 | 0x0037 | `NtOpenSection` | 3 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/mm.c` |
