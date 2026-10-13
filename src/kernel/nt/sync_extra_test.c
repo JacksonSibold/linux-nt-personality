@@ -215,6 +215,28 @@ TEST(open_timer_type_mismatch) {
 }
 
 /* ------------------------------------------------------------------ */
+/* NtCreateEvent over a name held by another type                        */
+/* ------------------------------------------------------------------ */
+/* The create path looks the name up by type, misses, and then inserts. The
+ * insert reports NAME_COLLISION and the path used to return that status without
+ * setting its handle, so the service copied an uninitialised value to the caller.
+ * Two creators racing on a new name take the same branch. A mutant holding the
+ * name makes the type lookup miss deterministically. Windows answers with
+ * OBJECT_TYPE_MISMATCH here, and so must this. */
+TEST(create_event_name_held_by_mutant) {
+    reset_ob();
+    UNICODE_STRING us;
+    make_us(&us, "\\BaseNamedObjects\\ExtEvOverMutant", wbuf1, sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, OBJ_CASE_INSENSITIVE);
+    HANDLE m = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateMutant(&m, 0x1F0003, &oa, 0), STATUS_SUCCESS);
+    HANDLE ev = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&ev, 0x1F0003, &oa, NotificationEvent, 0), STATUS_OBJECT_TYPE_MISMATCH);
+    ASSERT(ev == NULL);
+    PASS();
+}
+
+/* ------------------------------------------------------------------ */
 /* NtSetTimer / NtCancelTimer                                           */
 /* ------------------------------------------------------------------ */
 TEST(set_timer_fires_and_reports_previous) {
@@ -669,6 +691,7 @@ int main(void) {
     RUN(open_timer_by_name);
     RUN(open_timer_bad_arguments);
     RUN(open_timer_type_mismatch);
+    RUN(create_event_name_held_by_mutant);
     RUN(set_timer_fires_and_reports_previous);
     RUN(set_timer_int64_min_due_does_not_fire);
     RUN(set_timer_bad_arguments);
