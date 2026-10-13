@@ -1459,6 +1459,112 @@ TEST(delete_and_full_attributes)
 	PASS();
 }
 
+/* Byte-range locks: conflicts between open handles, shared and exclusive
+ * rules, read/write enforcement, exact-match unlock, and release on close. */
+TEST(byte_range_locks)
+{
+	HANDLE h1 = NULL, h2 = NULL;
+	IO_STATUS_BLOCK iosb;
+	LARGE_INTEGER off, len;
+	char data[128], buf[16];
+	ULONG i;
+
+	reset_state();
+	for (i = 0; i < sizeof(data); i++)
+		data[i] = 'a';
+	ASSERT(write_file_at("lock.txt", data));
+	ASSERT_STATUS(open_test_file("lock.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h1),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(open_test_file("lock.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h2),
+		      STATUS_SUCCESS);
+
+	/* h1 takes an exclusive lock on [0,10). */
+	off.QuadPart = 0;
+	len.QuadPart = 10;
+	ASSERT_STATUS(nt_svc_NtLockFile(h1, NULL, NULL, NULL, &iosb, &off, &len,
+					7, 1, 1), STATUS_SUCCESS);
+
+	/* h2 is refused where it overlaps, and granted where it does not. */
+	off.QuadPart = 5;
+	len.QuadPart = 10;
+	ASSERT_STATUS(nt_svc_NtLockFile(h2, NULL, NULL, NULL, &iosb, &off, &len,
+					8, 1, 1), STATUS_LOCK_NOT_GRANTED);
+	off.QuadPart = 10;
+	ASSERT_STATUS(nt_svc_NtLockFile(h2, NULL, NULL, NULL, &iosb, &off, &len,
+					8, 1, 1), STATUS_SUCCESS);
+
+	/* Reads and writes by h2 inside h1's exclusive range are blocked. */
+	off.QuadPart = 0;
+	ASSERT_STATUS(nt_svc_NtReadFile(h2, NULL, NULL, NULL, &iosb, buf, 4,
+					&off, NULL), STATUS_FILE_LOCK_CONFLICT);
+	ASSERT_STATUS(nt_svc_NtWriteFile(h2, NULL, NULL, NULL, &iosb, buf, 4,
+					 &off, NULL), STATUS_FILE_LOCK_CONFLICT);
+	/* h1 may read and write its own locked range. */
+	ASSERT_STATUS(nt_svc_NtReadFile(h1, NULL, NULL, NULL, &iosb, buf, 4,
+					&off, NULL), STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtWriteFile(h1, NULL, NULL, NULL, &iosb, buf, 4,
+					 &off, NULL), STATUS_SUCCESS);
+
+	/* Unlock must match offset, length and key exactly. */
+	off.QuadPart = 0;
+	len.QuadPart = 9;
+	ASSERT_STATUS(nt_svc_NtUnlockFile(h1, &iosb, &off, &len, 7),
+		      STATUS_RANGE_NOT_LOCKED);
+	len.QuadPart = 10;
+	ASSERT_STATUS(nt_svc_NtUnlockFile(h1, &iosb, &off, &len, 99),
+		      STATUS_RANGE_NOT_LOCKED);
+	ASSERT_STATUS(nt_svc_NtUnlockFile(h2, &iosb, &off, &len, 7),
+		      STATUS_RANGE_NOT_LOCKED);
+	ASSERT_STATUS(nt_svc_NtUnlockFile(h1, &iosb, &off, &len, 7), STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtUnlockFile(h1, &iosb, &off, &len, 7),
+		      STATUS_RANGE_NOT_LOCKED);
+	ASSERT_STATUS(nt_svc_NtReadFile(h2, NULL, NULL, NULL, &iosb, buf, 4,
+					&off, NULL), STATUS_SUCCESS);
+
+	/* Shared locks: readers share, a writer by another handle is blocked. */
+	off.QuadPart = 100;
+	len.QuadPart = 10;
+	ASSERT_STATUS(nt_svc_NtLockFile(h1, NULL, NULL, NULL, &iosb, &off, &len,
+					1, 1, 0), STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtLockFile(h2, NULL, NULL, NULL, &iosb, &off, &len,
+					1, 1, 1), STATUS_LOCK_NOT_GRANTED);
+	ASSERT_STATUS(nt_svc_NtLockFile(h2, NULL, NULL, NULL, &iosb, &off, &len,
+					1, 1, 0), STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtReadFile(h2, NULL, NULL, NULL, &iosb, buf, 4,
+					&off, NULL), STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtWriteFile(h2, NULL, NULL, NULL, &iosb, buf, 4,
+					 &off, NULL), STATUS_FILE_LOCK_CONFLICT);
+	ASSERT_STATUS(nt_svc_NtUnlockFile(h2, &iosb, &off, &len, 1), STATUS_SUCCESS);
+
+	/* Invalid ranges. */
+	off.QuadPart = 0;
+	len.QuadPart = 0;
+	ASSERT_STATUS(nt_svc_NtLockFile(h1, NULL, NULL, NULL, &iosb, &off, &len,
+					1, 1, 1), STATUS_INVALID_PARAMETER);
+	off.QuadPart = -1;
+	len.QuadPart = 4;
+	ASSERT_STATUS(nt_svc_NtLockFile(h1, NULL, NULL, NULL, &iosb, &off, &len,
+					1, 1, 1), STATUS_INVALID_PARAMETER);
+	ASSERT_STATUS(nt_svc_NtLockFile(NULL, NULL, NULL, NULL, &iosb, &off, &len,
+					1, 1, 1), STATUS_INVALID_HANDLE);
+
+	/* Closing h1 releases its locks: h2 can now take the range it blocked. */
+	off.QuadPart = 0;
+	len.QuadPart = 10;
+	ASSERT_STATUS(nt_svc_NtLockFile(h1, NULL, NULL, NULL, &iosb, &off, &len,
+					7, 1, 1), STATUS_SUCCESS);
+	nt_svc_NtClose(h1);
+	ASSERT_STATUS(nt_svc_NtLockFile(h2, NULL, NULL, NULL, &iosb, &off, &len,
+					8, 1, 1), STATUS_SUCCESS);
+
+	nt_svc_NtClose(h2);
+	PASS();
+}
+
 /* NtOpenIoCompletion: names are not registered by NtCreateIoCompletion in
  * this build, so every name lookup misses. The NULL object-attributes case
  * is rejected before any lookup. */
@@ -1567,6 +1673,7 @@ int main(void)
 	RUN(flush_buffers_ex);
 	RUN(cancel_io_no_pending);
 	RUN(delete_and_full_attributes);
+	RUN(byte_range_locks);
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);
 

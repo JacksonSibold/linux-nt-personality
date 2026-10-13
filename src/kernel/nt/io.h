@@ -436,6 +436,18 @@ NTSTATUS nt_svc_NtDeleteFile(POBJECT_ATTRIBUTES ObjectAttributes);
 NTSTATUS nt_svc_NtQueryFullAttributesFile(POBJECT_ATTRIBUTES ObjectAttributes,
 					  PFILE_NETWORK_OPEN_INFORMATION FileInformation);
 
+NTSTATUS nt_svc_NtLockFile(HANDLE FileHandle, HANDLE Event,
+			   PVOID ApcRoutine, PVOID ApcContext,
+			   PIO_STATUS_BLOCK IoStatusBlock,
+			   PLARGE_INTEGER ByteOffset, PLARGE_INTEGER Length,
+			   ULONG Key, BOOLEAN FailImmediately,
+			   BOOLEAN ExclusiveLock);
+
+NTSTATUS nt_svc_NtUnlockFile(HANDLE FileHandle,
+			     PIO_STATUS_BLOCK IoStatusBlock,
+			     PLARGE_INTEGER ByteOffset, PLARGE_INTEGER Length,
+			     ULONG Key);
+
 NTSTATUS nt_svc_NtQueryEaFile(HANDLE FileHandle,
 			      PIO_STATUS_BLOCK IoStatusBlock,
 			      PVOID Buffer, ULONG Length,

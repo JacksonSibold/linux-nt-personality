@@ -572,10 +572,91 @@ ULONG ntio_pointer_count_for_file(struct nt_file_object *f)
 /* File object reference counting                                               */
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* Byte-range locks                                                             */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * A byte-range lock belongs to the file object that took it. It is keyed by
+ * file identity (share_dev, share_ino), so separate opens of one file see each
+ * other's locks. The owner's locks are dropped when the file object is
+ * released. A conflicting request is refused at once: waiting for a lock is
+ * not supported.
+ */
+struct ntio_byte_lock {
+	struct nt_file_object *owner;
+	dev_t dev;
+	ino_t ino;
+	LONGLONG start;
+	LONGLONG length;
+	ULONG key;
+	bool exclusive;
+	struct list_head entry;
+};
+
+static LIST_HEAD(ntio_lock_list);
+static spinlock_t ntio_lock_mutex;
+
+static void ntio_lock_init(void)
+{
+	spin_lock_init(&ntio_lock_mutex);
+	INIT_LIST_HEAD(&ntio_lock_list);
+}
+
+/*
+ * True if a request by another file object conflicts with a held lock. A
+ * request conflicts with an overlapping held lock when either is exclusive.
+ * Reads pass exclusive_request FALSE; writes pass TRUE, so a write is blocked
+ * by a shared lock held by another file object as well as an exclusive one.
+ * Caller holds ntio_lock_mutex.
+ */
+static bool ntio_lock_conflicts(struct nt_file_object *file, dev_t dev, ino_t ino,
+				LONGLONG start, LONGLONG length, bool exclusive_request)
+{
+	struct ntio_byte_lock *l;
+
+	list_for_each_entry(l, &ntio_lock_list, entry) {
+		if (l->owner == file || l->dev != dev || l->ino != ino)
+			continue;
+		if (!(l->start < start + length && start < l->start + l->length))
+			continue;
+		if (l->exclusive || exclusive_request)
+			return true;
+	}
+	return false;
+}
+
+static bool ntio_io_blocked_by_lock(struct nt_file_object *file, LONGLONG pos,
+				    ULONG len, bool is_write)
+{
+	bool blocked;
+
+	spin_lock(&ntio_lock_mutex);
+	blocked = ntio_lock_conflicts(file, file->share_dev, file->share_ino,
+				      pos, (LONGLONG)len, is_write);
+	spin_unlock(&ntio_lock_mutex);
+	return blocked;
+}
+
+static void ntio_locks_drop_owner(struct nt_file_object *file)
+{
+	struct ntio_byte_lock *l, *tmp;
+
+	spin_lock(&ntio_lock_mutex);
+	list_for_each_entry_safe(l, tmp, &ntio_lock_list, entry) {
+		if (l->owner == file) {
+			list_del(&l->entry);
+			kfree(l);
+		}
+	}
+	spin_unlock(&ntio_lock_mutex);
+}
+
 static void ntio_file_release(struct kref *ref)
 {
 	struct nt_file_object *file = container_of(ref, struct nt_file_object, ref);
 
+	ntio_locks_drop_owner(file);
 	if (file->iocp) {
 		ntio_iocp_disassociate(&file->iocp);
 	}
@@ -617,6 +698,7 @@ static void ntio_share_init(void)
 {
 	spin_lock_init(&ntio_share_mutex);
 	ntio_reset_share_registry();
+	ntio_lock_init();
 }
 
 void ntio_share_lock(void)
@@ -1668,6 +1750,8 @@ static NTSTATUS ntio_do_read(struct nt_file_object *file, PVOID __user Buffer,
 		*out_info = 0;
 		return STATUS_SUCCESS;
 	}
+	if (ntio_io_blocked_by_lock(file, pos, Length, false))
+		return STATUS_FILE_LOCK_CONFLICT;
 
 #ifdef __KERNEL__
 	if (!access_ok(Buffer, Length))
@@ -1759,6 +1843,8 @@ static NTSTATUS ntio_do_write(struct nt_file_object *file, PVOID __user Buffer,
 		*out_info = 0;
 		return STATUS_SUCCESS;
 	}
+	if (ntio_io_blocked_by_lock(file, pos, Length, true))
+		return STATUS_FILE_LOCK_CONFLICT;
 
 #ifdef __KERNEL__
 	if (!access_ok(Buffer, Length))
@@ -3194,6 +3280,139 @@ NTSTATUS nt_svc_NtQueryFullAttributesFile(POBJECT_ATTRIBUTES ObjectAttributes,
 	if (copy_to_user(FileInformation, &ni, sizeof(ni)))
 		return STATUS_ACCESS_VIOLATION;
 	return STATUS_SUCCESS;
+}
+
+
+/* Read a LARGE_INTEGER argument into a plain value. */
+static NTSTATUS ntio_read_large(PLARGE_INTEGER __user p, LONGLONG *out)
+{
+#ifdef __KERNEL__
+	LARGE_INTEGER v;
+
+	if (!access_ok(p, sizeof(v)) || copy_from_user(&v, p, sizeof(v)))
+		return STATUS_ACCESS_VIOLATION;
+	*out = v.QuadPart;
+#else
+	*out = p->QuadPart;
+#endif
+	return STATUS_SUCCESS;
+}
+
+#define NTIO_MAX_LOCK_OFFSET ((LONGLONG)0x7fffffffffffffffLL)
+
+/*
+ * NtLockFile. The lock is refused with STATUS_LOCK_NOT_GRANTED when it
+ * conflicts with a lock held through another file object. FailImmediately is
+ * accepted, but waiting is not supported, so a conflict is always refused.
+ */
+NTSTATUS nt_svc_NtLockFile(HANDLE FileHandle, HANDLE Event,
+			   PVOID ApcRoutine, PVOID ApcContext,
+			   PIO_STATUS_BLOCK __user IoStatusBlock,
+			   PLARGE_INTEGER __user ByteOffset,
+			   PLARGE_INTEGER __user Length,
+			   ULONG Key, BOOLEAN FailImmediately,
+			   BOOLEAN ExclusiveLock)
+{
+	struct nt_file_object *file;
+	struct ntio_byte_lock *lock;
+	LONGLONG start = 0, len = 0;
+	NTSTATUS status;
+
+	(void)Event;
+	(void)ApcRoutine;
+	(void)ApcContext;
+	(void)FailImmediately;
+
+	if (!IoStatusBlock || !ByteOffset || !Length)
+		return STATUS_ACCESS_VIOLATION;
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb(IoStatusBlock, STATUS_INVALID_HANDLE);
+
+	status = ntio_read_large(ByteOffset, &start);
+	if (NT_SUCCESS(status))
+		status = ntio_read_large(Length, &len);
+	if (NT_SUCCESS(status) &&
+	    (start < 0 || len <= 0 || start > NTIO_MAX_LOCK_OFFSET - len))
+		status = STATUS_INVALID_PARAMETER;
+	if (!NT_SUCCESS(status)) {
+		ntio_file_put(file);
+		return ntio_complete_iosb(IoStatusBlock, status);
+	}
+
+	lock = kzalloc(sizeof(*lock), GFP_KERNEL);
+	if (!lock) {
+		ntio_file_put(file);
+		return ntio_complete_iosb(IoStatusBlock, STATUS_NO_MEMORY);
+	}
+	lock->owner = file;
+	lock->dev = file->share_dev;
+	lock->ino = file->share_ino;
+	lock->start = start;
+	lock->length = len;
+	lock->key = Key;
+	lock->exclusive = ExclusiveLock != 0;
+
+	spin_lock(&ntio_lock_mutex);
+	if (ntio_lock_conflicts(file, lock->dev, lock->ino, start, len,
+				lock->exclusive)) {
+		status = STATUS_LOCK_NOT_GRANTED;
+	} else {
+		list_add_tail(&lock->entry, &ntio_lock_list);
+		lock = NULL;
+		status = STATUS_SUCCESS;
+	}
+	spin_unlock(&ntio_lock_mutex);
+	if (lock)
+		kfree(lock);
+
+	ntio_file_put(file);
+	return ntio_complete_iosb(IoStatusBlock, status);
+}
+
+/*
+ * NtUnlockFile. The offset, length and key must match a lock held by this file
+ * object exactly, or the call returns STATUS_RANGE_NOT_LOCKED.
+ */
+NTSTATUS nt_svc_NtUnlockFile(HANDLE FileHandle,
+			     PIO_STATUS_BLOCK __user IoStatusBlock,
+			     PLARGE_INTEGER __user ByteOffset,
+			     PLARGE_INTEGER __user Length,
+			     ULONG Key)
+{
+	struct nt_file_object *file;
+	struct ntio_byte_lock *l, *tmp;
+	LONGLONG start = 0, len = 0;
+	NTSTATUS status;
+
+	if (!IoStatusBlock || !ByteOffset || !Length)
+		return STATUS_ACCESS_VIOLATION;
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb(IoStatusBlock, STATUS_INVALID_HANDLE);
+
+	status = ntio_read_large(ByteOffset, &start);
+	if (NT_SUCCESS(status))
+		status = ntio_read_large(Length, &len);
+	if (NT_SUCCESS(status) && (start < 0 || len <= 0))
+		status = STATUS_INVALID_PARAMETER;
+	if (NT_SUCCESS(status)) {
+		status = STATUS_RANGE_NOT_LOCKED;
+		spin_lock(&ntio_lock_mutex);
+		list_for_each_entry_safe(l, tmp, &ntio_lock_list, entry) {
+			if (l->owner == file && l->start == start &&
+			    l->length == len && l->key == Key) {
+				list_del(&l->entry);
+				kfree(l);
+				status = STATUS_SUCCESS;
+				break;
+			}
+		}
+		spin_unlock(&ntio_lock_mutex);
+	}
+
+	ntio_file_put(file);
+	return ntio_complete_iosb(IoStatusBlock, status);
 }
 
 
