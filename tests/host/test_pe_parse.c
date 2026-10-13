@@ -1038,6 +1038,88 @@ static void test_export_find_long_key_not_found(void)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Walker RVAs must lie below SizeOfImage (fuzzer finding L-15)               */
+/* -------------------------------------------------------------------------- */
+/* A relocation block whose page RVA is outside the image would make a loader
+ * write outside the mapped image.  Found by tests/fuzz (synth_reloc seed). */
+static void test_relocs_block_rva_outside_image_rejected(void)
+{
+    static const uint32_t pages[2] = { 0x3000, 0x8C001000u };
+    uint8_t img[IMG_CAP];
+
+    for (unsigned i = 0; i < 2; ++i) {
+        loaded_t L;
+        walk_stats_t st;
+
+        img_build_valid(img);
+        img_add_reloc(img);
+        img_w32(img, 0x700, pages[i]);           /* block VirtualAddress */
+        if (!load(&L, img, IMG_LEN)) { MT_EXPECT(0); return; }
+
+        memset(&st, 0, sizeof st);
+        MT_EXPECT_EQ(pe_validate(&L.ctx), PE_OK);
+        MT_EXPECT_EQ(pe_relocs_walk(&L.ctx, cb_reloc, &st), PE_ERR_CORRUPT);
+        MT_EXPECT_EQ(st.relocs, 0);
+        unload(&L);
+    }
+}
+
+/* RUNTIME_FUNCTION addresses must lie below SizeOfImage.  EndAddress is
+ * exclusive, so exactly SizeOfImage is allowed for it and nothing above. */
+static void test_exception_rva_outside_image_rejected(void)
+{
+    static const struct { uint32_t off, val; pe_status_t want; } cases[] = {
+        { 0x720, 0x3000, PE_ERR_CORRUPT },   /* BeginAddress at SizeOfImage  */
+        { 0x724, 0x3001, PE_ERR_CORRUPT },   /* EndAddress past SizeOfImage  */
+        { 0x728, 0x3000, PE_ERR_CORRUPT },   /* UnwindInfoAddress at image end */
+        { 0x724, 0x3000, PE_OK },            /* EndAddress == SizeOfImage    */
+    };
+    uint8_t img[IMG_CAP];
+
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        loaded_t L;
+        walk_stats_t st;
+
+        img_build_valid(img);
+        img_add_exception(img);
+        img_w32(img, cases[i].off, cases[i].val);
+        if (!load(&L, img, IMG_LEN)) { MT_EXPECT(0); return; }
+
+        memset(&st, 0, sizeof st);
+        MT_EXPECT_EQ(pe_validate(&L.ctx), PE_OK);
+        MT_EXPECT_EQ(pe_exception_walk(&L.ctx, cb_exc, &st), cases[i].want);
+        unload(&L);
+    }
+}
+
+/* An export function RVA at or above SizeOfImage is corrupt; one below it is
+ * accepted. */
+static void test_export_function_rva_outside_image_rejected(void)
+{
+    exp_layout_t L = exp_plan(1, 0, 16);
+    uint8_t *b = exp_image(&L, 1, 0);
+    pe_context_t ctx;
+    exp_seen_t seen;
+
+    if (!b) { MT_EXPECT(0); return; }
+
+    exp_set_func(b, &L, 0, L.size_of_image);
+    MT_EXPECT_EQ(pe_context_init(&ctx, b, L.len), PE_OK);
+    MT_EXPECT_EQ(pe_validate(&ctx), PE_OK);
+    memset(&seen, 0, sizeof seen);
+    MT_EXPECT_EQ(pe_exports_walk(&ctx, cb_exp_keep, &seen), PE_ERR_CORRUPT);
+    MT_EXPECT_EQ(seen.count, 0);
+
+    exp_set_func(b, &L, 0, L.size_of_image - 1);
+    MT_EXPECT_EQ(pe_context_init(&ctx, b, L.len), PE_OK);
+    MT_EXPECT_EQ(pe_validate(&ctx), PE_OK);
+    memset(&seen, 0, sizeof seen);
+    MT_EXPECT_EQ(pe_exports_walk(&ctx, cb_exp_keep, &seen), PE_OK);
+    MT_EXPECT_EQ(seen.count, 1);
+    free(b);
+}
+
+/* -------------------------------------------------------------------------- */
 /* Accessor branches: bounds, byte order, fixed-size readers, directories     */
 /* -------------------------------------------------------------------------- */
 static void test_check_read_bounds(void)
@@ -1318,6 +1400,9 @@ static const mt_case_t cases[] = {
     MT_CASE(test_export_find_unsorted_falls_back),
     MT_CASE(test_export_find_long_key_not_found),
     MT_CASE(test_relocs_reserved_type_rejected),
+    MT_CASE(test_relocs_block_rva_outside_image_rejected),
+    MT_CASE(test_exception_rva_outside_image_rejected),
+    MT_CASE(test_export_function_rva_outside_image_rejected),
     MT_CASE(test_fuzzed_images_do_not_crash),
     MT_CASE(test_check_read_bounds),
     MT_CASE(test_little_endian_loaders),
