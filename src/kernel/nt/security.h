@@ -612,6 +612,23 @@ typedef enum _TOKEN_INFORMATION_CLASS {
     TokenIntegrityLevel = 25
 } TOKEN_INFORMATION_CLASS;
 
+typedef GENERIC_MAPPING *PGENERIC_MAPPING;
+typedef ACCESS_MASK *PACCESS_MASK;
+
+/* Privilege structures (winnt.h) */
+typedef struct _TOKEN_PRIVILEGES {
+    ULONG               PrivilegeCount;
+    LUID_AND_ATTRIBUTES Privileges[1];
+} TOKEN_PRIVILEGES, *PTOKEN_PRIVILEGES;
+
+typedef struct _PRIVILEGE_SET {
+    ULONG               PrivilegeCount;
+    ULONG               Control;
+    LUID_AND_ATTRIBUTES Privilege[1];
+} PRIVILEGE_SET, *PPRIVILEGE_SET;
+
+#define PRIVILEGE_SET_ALL_NECESSARY 1
+
 /* -------------------------------------------------------------------------- */
 /* Token API                                                                  */
 /* -------------------------------------------------------------------------- */

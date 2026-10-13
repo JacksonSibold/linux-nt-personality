@@ -780,6 +780,239 @@ TEST(duplicate_token_rights_and_arguments)
 }
 
 /* -------------------------------------------------------------------------- */
+/* NtAdjustPrivilegesToken, NtPrivilegeCheck, NtAccessCheck                   */
+/* -------------------------------------------------------------------------- */
+
+NTSTATUS nt_svc_NtAdjustPrivilegesToken(HANDLE TokenHandle, BOOLEAN DisableAllPrivileges,
+                                        PTOKEN_PRIVILEGES NewState, ULONG BufferLength,
+                                        PTOKEN_PRIVILEGES PreviousState, PULONG ReturnLength);
+NTSTATUS nt_svc_NtPrivilegeCheck(HANDLE ClientToken, PPRIVILEGE_SET RequiredPrivileges,
+                                 PBOOLEAN Result);
+NTSTATUS nt_svc_NtAccessCheck(PVOID SecurityDescriptor, HANDLE ClientToken,
+                              ACCESS_MASK DesiredAccess, PGENERIC_MAPPING GenericMapping,
+                              PPRIVILEGE_SET PrivilegeSet, PULONG PrivilegeSetLength,
+                              PACCESS_MASK GrantedAccess, PNTSTATUS AccessStatus);
+
+/* Token with privilege 20 (debug) disabled and privilege 5 enabled. */
+static ACCESS_TOKEN *make_priv_token(const char *user_sid)
+{
+    PSID u = make_sid(user_sid);
+    LUID_AND_ATTRIBUTES pv[2];
+    ACCESS_TOKEN *tok = NULL;
+    if (!u) return NULL;
+    pv[0].Luid.LowPart = SE_DEBUG_PRIVILEGE; pv[0].Luid.HighPart = 0; pv[0].Attributes = 0;
+    pv[1].Luid.LowPart = 5; pv[1].Luid.HighPart = 0;
+    pv[1].Attributes = SE_PRIVILEGE_ENABLED;
+    tok = token_create_primary(u, NULL, 0, pv, 2, NULL, NULL, NULL, NULL, 0);
+    sid_free(u);
+    return tok;
+}
+
+static ULONG priv_attr_of(HANDLE h, ULONG luid_low)
+{
+    unsigned char buf[256];
+    ULONG ret = 0;
+    ULONG n, i;
+    LUID_AND_ATTRIBUTES *pv;
+    if (query_token(h, TokenPrivileges, buf, sizeof(buf), &ret) != STATUS_SUCCESS) return 0xFFFFFFFFUL;
+    n = *(ULONG *)buf;
+    pv = (LUID_AND_ATTRIBUTES *)(buf + offsetof(struct tp_hdr, Privileges));
+    for (i = 0; i < n; i++)
+        if (pv[i].Luid.LowPart == luid_low) return pv[i].Attributes;
+    return 0xFFFFFFFEUL;
+}
+
+TEST(adjust_privileges_enable_disable)
+{
+    struct nt_eprocess *caller = make_current_process_as("adj_caller", "S-1-5-21-0-0-0-1000");
+    ASSERT(caller != NULL);
+    ACCESS_TOKEN *tok = make_priv_token("S-1-5-21-0-0-0-1000");
+    ASSERT(tok != NULL);
+    HANDLE h = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, tok, TOKEN_ALL_ACCESS, 0, &h), STATUS_SUCCESS);
+    token_dereference(tok);
+    ULONG dbg = SE_DEBUG_PRIVILEGE, pagefile = 5; /* privilege 5 starts enabled */
+
+    /* Enable the debug privilege: all assigned. */
+    struct { ULONG n; LUID_AND_ATTRIBUTES p[1]; } ns;
+    ns.n = 1; ns.p[0].Luid.LowPart = dbg; ns.p[0].Luid.HighPart = 0; ns.p[0].Attributes = SE_PRIVILEGE_ENABLED;
+    ASSERT_STATUS(nt_svc_NtAdjustPrivilegesToken(h, FALSE, (PTOKEN_PRIVILEGES)&ns, sizeof(ns), NULL, NULL),
+                  STATUS_SUCCESS);
+    ASSERT(priv_attr_of(h, dbg) == SE_PRIVILEGE_ENABLED);
+
+    /* Disable it again. BufferLength is the PreviousState size: too small
+     * gives BUFFER_TOO_SMALL with the required length, and nothing changes. */
+    struct { ULONG n; LUID_AND_ATTRIBUTES p[1]; } ns2, prev;
+    ns2.n = 1; ns2.p[0].Luid.LowPart = dbg; ns2.p[0].Luid.HighPart = 0; ns2.p[0].Attributes = 0;
+    ULONG need = 0;
+    ASSERT_STATUS(nt_svc_NtAdjustPrivilegesToken(h, FALSE, (PTOKEN_PRIVILEGES)&ns2, 4,
+                                                 (PTOKEN_PRIVILEGES)&prev, &need), STATUS_BUFFER_TOO_SMALL);
+    ASSERT(need == offsetof(struct tp_hdr, Privileges) + sizeof(LUID_AND_ATTRIBUTES));
+    ASSERT(priv_attr_of(h, dbg) == SE_PRIVILEGE_ENABLED);
+
+    /* Large enough: the change applies and PreviousState holds the old value (enabled). */
+    ASSERT_STATUS(nt_svc_NtAdjustPrivilegesToken(h, FALSE, (PTOKEN_PRIVILEGES)&ns2, sizeof(prev),
+                                                 (PTOKEN_PRIVILEGES)&prev, &need), STATUS_SUCCESS);
+    ASSERT(priv_attr_of(h, dbg) == 0);
+    ASSERT(prev.n == 1 && prev.p[0].Luid.LowPart == dbg);
+    ASSERT(prev.p[0].Attributes == SE_PRIVILEGE_ENABLED);
+
+    /* Disable a present privilege and name an absent one: NOT_ALL_ASSIGNED,
+     * the present one is still changed. */
+    struct { ULONG n; LUID_AND_ATTRIBUTES p[2]; } ns3;
+    ns3.n = 2;
+    ns3.p[0].Luid.LowPart = pagefile; ns3.p[0].Luid.HighPart = 0; ns3.p[0].Attributes = 0;
+    ns3.p[1].Luid.LowPart = 99; ns3.p[1].Luid.HighPart = 0; ns3.p[1].Attributes = SE_PRIVILEGE_ENABLED;
+    ASSERT_STATUS(nt_svc_NtAdjustPrivilegesToken(h, FALSE, (PTOKEN_PRIVILEGES)&ns3, sizeof(ns3), NULL, NULL),
+                  STATUS_NOT_ALL_ASSIGNED);
+    ASSERT(priv_attr_of(h, pagefile) == 0);
+
+    /* DisableAllPrivileges clears every enable bit. */
+    ASSERT_STATUS(nt_svc_NtAdjustPrivilegesToken(h, TRUE, NULL, 0, NULL, NULL), STATUS_SUCCESS);
+    ASSERT(priv_attr_of(h, dbg) == 0);
+    ASSERT(priv_attr_of(h, pagefile) == 0);
+
+    /* A NULL NewState without DisableAll is an invalid parameter. */
+    ASSERT_STATUS(nt_svc_NtAdjustPrivilegesToken(h, FALSE, NULL, 0, NULL, NULL), STATUS_INVALID_PARAMETER);
+    ASSERT_STATUS(ObCloseHandle(caller, h), STATUS_SUCCESS);
+    ObDestroyProcessObject(caller);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(adjust_privileges_needs_adjust_right)
+{
+    struct nt_eprocess *caller = make_current_process_as("adj_rights", "S-1-5-21-0-0-0-1000");
+    ASSERT(caller != NULL);
+    ACCESS_TOKEN *tok = make_priv_token("S-1-5-21-0-0-0-1000");
+    ASSERT(tok != NULL);
+    HANDLE h = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, tok, TOKEN_QUERY, 0, &h), STATUS_SUCCESS);
+    token_dereference(tok);
+    ASSERT_STATUS(nt_svc_NtAdjustPrivilegesToken(h, TRUE, NULL, 0, NULL, NULL), STATUS_ACCESS_DENIED);
+    ASSERT_STATUS(ObCloseHandle(caller, h), STATUS_SUCCESS);
+    ObDestroyProcessObject(caller);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(privilege_check_all_and_any)
+{
+    struct nt_eprocess *caller = make_current_process_as("pchk", "S-1-5-21-0-0-0-1000");
+    ASSERT(caller != NULL);
+    ACCESS_TOKEN *tok = make_priv_token("S-1-5-21-0-0-0-1000");
+    ASSERT(tok != NULL);
+    HANDLE h = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, tok, TOKEN_QUERY, 0, &h), STATUS_SUCCESS);
+    token_dereference(tok);
+    BOOLEAN result = 0;
+
+    /* Enabled privilege alone: TRUE. */
+    struct { ULONG n; ULONG ctl; LUID_AND_ATTRIBUTES p[2]; } rq;
+    rq.n = 1; rq.ctl = 1 /* PRIVILEGE_SET_ALL_NECESSARY */;
+    rq.p[0].Luid.LowPart = 5; rq.p[0].Luid.HighPart = 0; rq.p[0].Attributes = 0;
+    ASSERT_STATUS(nt_svc_NtPrivilegeCheck(h, (PPRIVILEGE_SET)&rq, &result), STATUS_SUCCESS);
+    ASSERT(result == TRUE);
+
+    /* Enabled and disabled together: ALL_NECESSARY is FALSE, ANY is TRUE. */
+    rq.n = 2; rq.ctl = 1;
+    rq.p[1].Luid.LowPart = SE_DEBUG_PRIVILEGE; rq.p[1].Luid.HighPart = 0; rq.p[1].Attributes = 0;
+    ASSERT_STATUS(nt_svc_NtPrivilegeCheck(h, (PPRIVILEGE_SET)&rq, &result), STATUS_SUCCESS);
+    ASSERT(result == FALSE);
+    rq.ctl = 0;
+    ASSERT_STATUS(nt_svc_NtPrivilegeCheck(h, (PPRIVILEGE_SET)&rq, &result), STATUS_SUCCESS);
+    ASSERT(result == TRUE);
+
+    /* Disabled privilege alone is FALSE even when held. */
+    rq.n = 1; rq.ctl = 1;
+    rq.p[0].Luid.LowPart = SE_DEBUG_PRIVILEGE; rq.p[0].Luid.HighPart = 0;
+    ASSERT_STATUS(nt_svc_NtPrivilegeCheck(h, (PPRIVILEGE_SET)&rq, &result), STATUS_SUCCESS);
+    ASSERT(result == FALSE);
+
+    ASSERT_STATUS(ObCloseHandle(caller, h), STATUS_SUCCESS);
+    ObDestroyProcessObject(caller);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+/* Builds a self-relative SD with one allow ACE for user_sid, mask allow_mask. */
+static void *make_allow_sd(const char *user_sid, ACCESS_MASK allow_mask, ULONG *out_len)
+{
+    PSID u = make_sid(user_sid);
+    PACL dacl = acl_create(256);
+    ULONG idx = 0;
+    SECURITY_DESCRIPTOR *sd;
+    void *buf = NULL;
+    ULONG len = 0;
+    if (!u || !dacl) return NULL;
+    acl_add_allowed_ace(dacl, allow_mask, 0, u, &idx);
+    sd = sd_create_absolute(u, NULL, dacl, NULL, SE_DACL_PRESENT);
+    if (sd && sd_to_self_relative(sd, &buf, &len) == STATUS_SUCCESS) {
+        *out_len = len;
+    } else {
+        buf = NULL;
+    }
+    sd_free(sd);
+    acl_free(dacl);
+    sid_free(u);
+    return buf;
+}
+
+TEST(access_check_self_relative_sd)
+{
+    struct nt_eprocess *caller = make_current_process_as("acc_caller", "S-1-5-21-0-0-0-1000");
+    ASSERT(caller != NULL);
+    ACCESS_TOKEN *tok = make_user_token("S-1-5-21-0-0-0-1000");
+    ASSERT(tok != NULL);
+    HANDLE h = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, tok, TOKEN_QUERY, 0, &h), STATUS_SUCCESS);
+    token_dereference(tok);
+
+    /* SD allows the caller's user 0x1 only; the mapping sends GENERIC_READ to 0x1. */
+    ULONG sdlen = 0;
+    void *sdbuf = make_allow_sd("S-1-5-21-0-0-0-1000", 0x1, &sdlen);
+    ASSERT(sdbuf != NULL && sdlen > 0);
+    GENERIC_MAPPING gm = { 0x1, 0x2, 0x4, 0x7 };
+    ACCESS_MASK granted = 0xDEAD;
+    NTSTATUS access_status = 0x12345678;
+
+    ASSERT_STATUS(nt_svc_NtAccessCheck(sdbuf, h, 0x1, &gm, NULL, NULL, &granted, &access_status),
+                  STATUS_SUCCESS);
+    ASSERT(access_status == STATUS_SUCCESS && granted == 0x1);
+
+    ASSERT_STATUS(nt_svc_NtAccessCheck(sdbuf, h, 0x80000000UL /* GENERIC_READ */, &gm, NULL, NULL,
+                                       &granted, &access_status), STATUS_SUCCESS);
+    ASSERT(access_status == STATUS_SUCCESS && granted == 0x1);
+
+    /* Right not allowed: AccessStatus is ACCESS_DENIED and nothing is granted. */
+    ASSERT_STATUS(nt_svc_NtAccessCheck(sdbuf, h, 0x2, &gm, NULL, NULL, &granted, &access_status),
+                  STATUS_SUCCESS);
+    ASSERT(access_status == STATUS_ACCESS_DENIED && granted == 0);
+
+    /* The privilege-set output needs its header: a shorter length is BUFFER_TOO_SMALL. */
+    ULONG psl = 1;
+    ASSERT_STATUS(nt_svc_NtAccessCheck(sdbuf, h, 0x1, &gm, NULL, &psl, &granted, &access_status),
+                  STATUS_BUFFER_TOO_SMALL);
+    ASSERT(psl == offsetof(PRIVILEGE_SET, Privilege));
+
+    /* A token without TOKEN_QUERY cannot be used as the client token. */
+    ACCESS_TOKEN *tok2 = make_user_token("S-1-5-21-0-0-0-1000");
+    ASSERT(tok2 != NULL);
+    HANDLE hn = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, tok2, TOKEN_DUPLICATE, 0, &hn), STATUS_SUCCESS);
+    token_dereference(tok2);
+    ASSERT_STATUS(nt_svc_NtAccessCheck(sdbuf, hn, 0x1, &gm, NULL, NULL, &granted, &access_status),
+                  STATUS_ACCESS_DENIED);
+    ASSERT_STATUS(ObCloseHandle(caller, hn), STATUS_SUCCESS);
+
+    kfree(sdbuf);
+    ASSERT_STATUS(ObCloseHandle(caller, h), STATUS_SUCCESS);
+    ObDestroyProcessObject(caller);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* Driver                                                                     */
 /* -------------------------------------------------------------------------- */
 int main(void)
@@ -804,6 +1037,10 @@ int main(void)
     RUN(duplicate_is_independent_of_source);
     RUN(duplicate_effective_only);
     RUN(duplicate_token_rights_and_arguments);
+    RUN(adjust_privileges_enable_disable);
+    RUN(adjust_privileges_needs_adjust_right);
+    RUN(privilege_check_all_and_any);
+    RUN(access_check_self_relative_sd);
     printf("security extra tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
