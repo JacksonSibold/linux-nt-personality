@@ -1399,6 +1399,27 @@ static int test_allocate_ex(void) {
     return 1;
 }
 
+/* A range whose base is in the top page of the address space must be refused
+ * before rounding: round_up(base + size) wraps to 0, the walk below it then
+ * does nothing, and the call used to return success for an unmapped range. */
+static int test_top_of_space_range_refused(void) {
+    ULONG_PTR top_base = ~(ULONG_PTR)0 - 0x7FF;   /* base is 0x800 below the top */
+    PVOID pb = (PVOID)top_base;
+    SIZE_T ps = 0x10;
+    ULONG old = 0;
+    NTSTATUS st = NtProtectVirtualMemory((HANDLE)-1, &pb, &ps, PAGE_READWRITE, &old);
+    ASSERT(st == STATUS_INVALID_PARAMETER, "protect top-of-space range 0x%lx", (unsigned long)st);
+
+    pb = (PVOID)top_base;
+    ps = 0x10;
+    IO_STATUS_BLOCK iosb;
+    iosb.DUMMYUNIONNAME.Status = 0xdead;
+    st = NtFlushVirtualMemory((HANDLE)-1, &pb, &ps, &iosb);
+    ASSERT(st == STATUS_INVALID_PARAMETER, "flush top-of-space range 0x%lx", (unsigned long)st);
+    ntmm_reset();
+    return 1;
+}
+
 int main(void) {
     printf("=== ntmm tests ===\n");
     if (!mm_setup_objects()) {
@@ -1434,6 +1455,7 @@ int main(void) {
     RUN_TEST(test_rw_virtual_memory);
     RUN_TEST(test_flush_virtual_memory);
     RUN_TEST(test_allocate_ex);
+    RUN_TEST(test_top_of_space_range_refused);
     ntmm_reset();
     ObDestroyProcessObject(g_mm_proc);
     ObCleanupObjectManager();

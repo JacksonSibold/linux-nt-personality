@@ -2481,7 +2481,7 @@ NTSTATUS nt_svc_NtCreateTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PT
     HANDLE h = NULL;
     st = timer_create_internal(proc, DesiredAccess, oa, TimerType, &h);
     if (NT_SUCCESS(st) || st == STATUS_OBJECT_NAME_COLLISION) {
-        if (copy_to_user(TimerHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+        if (copy_to_user(TimerHandle, &h, sizeof(h))) { ObCloseHandle(proc, h); return STATUS_ACCESS_VIOLATION; }
     }
     return st;
 }
@@ -2508,7 +2508,7 @@ NTSTATUS nt_svc_NtOpenTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR 
     if (!NT_SUCCESS(st)) return st;
     HANDLE h = NULL;
     st = sync_open_named(&h, DesiredAccess, oa, &nt_timer_type, proc);
-    if (NT_SUCCESS(st) && copy_to_user(TimerHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+    if (NT_SUCCESS(st) && copy_to_user(TimerHandle, &h, sizeof(h))) { ObCloseHandle(proc, h); return STATUS_ACCESS_VIOLATION; }
     return st;
 }
 
@@ -2553,6 +2553,11 @@ NTSTATUS nt_svc_NtSetTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a
         ObDereferenceObject(hdr);
         return STATUS_NOT_IMPLEMENTED;
     }
+    /* Probe the output before the timer changes, so a bad pointer fails without arming. */
+    if (PreviousState && !access_ok(PreviousState, sizeof(BOOLEAN))) {
+        ObDereferenceObject(hdr);
+        return STATUS_ACCESS_VIOLATION;
+    }
     BOOLEAN prev = 0;
     st = nt_cancel_timer(t, &prev);   /* stop any earlier arming and read the old state */
     if (NT_SUCCESS(st)) st = nt_set_timer(t, &due, Period, TimerApcRoutine, TimerContext);
@@ -2577,6 +2582,11 @@ NTSTATUS nt_svc_NtCancelTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PT
     struct nt_object_header *hdr = NULL;
     NTSTATUS st = timer_ref(proc, TimerHandle, &t, &hdr);
     if (!NT_SUCCESS(st)) return st;
+    /* Probe the output before the timer is cancelled, so a bad pointer fails without cancelling. */
+    if (CurrentState && !access_ok(CurrentState, sizeof(BOOLEAN))) {
+        ObDereferenceObject(hdr);
+        return STATUS_ACCESS_VIOLATION;
+    }
     BOOLEAN cur = 0;
     st = nt_cancel_timer(t, &cur);
     if (NT_SUCCESS(st) && CurrentState) {
@@ -2796,7 +2806,7 @@ NTSTATUS nt_svc_NtCreateKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULO
     HANDLE h = NULL;
     st = keyed_create_internal(proc, DesiredAccess, oa, &h);
     if (NT_SUCCESS(st) || st == STATUS_OBJECT_NAME_COLLISION) {
-        if (copy_to_user(KeyedEventHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+        if (copy_to_user(KeyedEventHandle, &h, sizeof(h))) { ObCloseHandle(proc, h); return STATUS_ACCESS_VIOLATION; }
     }
     return st;
 }
@@ -2823,7 +2833,7 @@ NTSTATUS nt_svc_NtOpenKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG
     if (!NT_SUCCESS(st)) return st;
     HANDLE h = NULL;
     st = sync_open_named(&h, DesiredAccess, oa, &nt_keyed_event_type, proc);
-    if (NT_SUCCESS(st) && copy_to_user(KeyedEventHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+    if (NT_SUCCESS(st) && copy_to_user(KeyedEventHandle, &h, sizeof(h))) { ObCloseHandle(proc, h); return STATUS_ACCESS_VIOLATION; }
     return st;
 }
 
