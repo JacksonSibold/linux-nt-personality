@@ -10,17 +10,17 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 117 |
+| IMPLEMENTED | 120 |
 | STUB-NOT-IMPLEMENTED | 2 |
 | WEAK-FALLBACK | 0 |
-| MISSING | 52 |
+| MISSING | 49 |
 
 ## By area
 
 | Area | Total | IMPLEMENTED | STUB-NOT-IMPLEMENTED | WEAK-FALLBACK | MISSING |
 |---|---:|---:|---:|---:|---:|
-| system | 10 | 8 | 0 | 0 | 2 |
-| process-thread | 43 | 24 | 2 | 0 | 17 |
+| system | 10 | 10 | 0 | 0 | 0 |
+| process-thread | 43 | 25 | 2 | 0 | 16 |
 | memory | 19 | 8 | 0 | 0 | 11 |
 | io | 30 | 24 | 0 | 0 | 6 |
 | sync | 32 | 32 | 0 | 0 | 0 |
@@ -40,8 +40,8 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | 0x005a | `NtQuerySystemTime` | 1 | IMPLEMENTED | `src/kernel/nt/nt_services.c` |
 | 0x0034 | `NtDelayExecution` | 2 | IMPLEMENTED | `src/kernel/nt/nt_obj.c` |
 | 0x0046 | `NtYieldExecution` | 0 | IMPLEMENTED | `src/kernel/nt/sync.c` |
-| 0x01b8 | `NtSetTimerResolution` | 3 | MISSING |  |
-| 0x0168 | `NtQueryTimerResolution` | 3 | MISSING |  |
+| 0x01b8 | `NtSetTimerResolution` | 3 | IMPLEMENTED | `src/kernel/nt/nt_services.c` |
+| 0x0168 | `NtQueryTimerResolution` | 3 | IMPLEMENTED | `src/kernel/nt/nt_services.c` |
 | 0x01db | `NtRtlNtStatusToDosError` | 2 | IMPLEMENTED | `src/kernel/nt/ntstatus_kernel.c` |
 
 ## Area: process-thread
@@ -79,7 +79,7 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | 0x0043 | `NtContinue` | 2 | MISSING |  |
 | 0x00a3 | `NtContinueEx` | 2 | MISSING |  |
 | 0x016d | `NtRaiseException` | 3 | MISSING |  |
-| 0x016e | `NtRaiseHardError` | 6 | MISSING |  |
+| 0x016e | `NtRaiseHardError` | 6 | IMPLEMENTED | `src/kernel/nt/nt_services.c` |
 | 0x00a8 | `NtCreateDebugObject` | 4 | MISSING |  |
 | 0x00d2 | `NtDebugActiveProcess` | 2 | MISSING |  |
 | 0x00d3 | `NtDebugContinue` | 3 | MISSING |  |
