@@ -189,6 +189,56 @@ class RefusalClassTest(unittest.TestCase):
         self.assertEqual(si.body_class(" return STATUS_SUCCESS; "), si.IMPLEMENTED)
 
 
+class ClassRefusalTest(unittest.TestCase):
+    """STATUS_INVALID_INFO_CLASS is a REFUSES status only for a body that refuses
+    every class: the final return is unconditional and every earlier statement is
+    a validation return. Any dispatch on the class makes the body IMPLEMENTED."""
+
+    def test_bare_invalid_info_class_refuses_every_class(self):
+        self.assertEqual(si.refusal_class(" return STATUS_INVALID_INFO_CLASS; "), si.REFUSES)
+
+    def test_void_cast_invalid_info_class_refuses_every_class(self):
+        self.assertEqual(si.refusal_class(
+            " (void)a; (void)b; return STATUS_INVALID_INFO_CLASS; "), si.REFUSES)
+
+    def test_validated_invalid_info_class_refuses_every_class(self):
+        self.assertEqual(si.refusal_class(
+            " if (!a) return STATUS_INVALID_PARAMETER; return STATUS_INVALID_INFO_CLASS; "),
+            si.REFUSES)
+
+    def test_class_dispatch_is_not_a_refusal(self):
+        self.assertIsNone(si.refusal_class(
+            " switch (c) { case 1: return STATUS_SUCCESS; default: return STATUS_INVALID_INFO_CLASS; } "))
+
+    def test_conditional_invalid_info_class_is_not_a_refusal(self):
+        self.assertIsNone(si.refusal_class(
+            " if (c == 1) return STATUS_INVALID_INFO_CLASS; return STATUS_SUCCESS; "))
+
+    def test_invalid_info_class_is_not_a_stub(self):
+        self.assertNotEqual(si.refusal_class(" return STATUS_INVALID_INFO_CLASS; "), si.STUB)
+
+    def test_fixture_refuse_all_classes_is_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            make_tree(root, "NT_SERVICE(0x001c, NtSetInformationProcess, 4)\n", {
+                "proc.c": "NTSTATUS nt_svc_NtSetInformationProcess(HANDLE a, ULONG b, PVOID c, ULONG d)\n"
+                          "{\n    (void)a; (void)c; (void)d;\n    return STATUS_INVALID_INFO_CLASS;\n}\n",
+            })
+            rows = quiet(si.run_inventory, root)
+        self.assertEqual([r["status"] for r in rows], [si.REFUSES])
+
+    def test_fixture_class_dispatch_is_implemented(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            make_tree(root, "NT_SERVICE(0x001c, NtSetInformationProcess, 4)\n", {
+                "proc.c": "NTSTATUS nt_svc_NtSetInformationProcess(HANDLE a, ULONG b, PVOID c, ULONG d)\n"
+                          "{\n    switch (b) {\n    case 5: return STATUS_SUCCESS;\n"
+                          "    default: return STATUS_INVALID_INFO_CLASS;\n    }\n}\n",
+            })
+            rows = quiet(si.run_inventory, root)
+        self.assertEqual([r["status"] for r in rows], [si.IMPLEMENTED])
+
+
 class BranchLabelTest(unittest.TestCase):
     def test_kernel_conditions(self):
         self.assertEqual(si.kernel_branch_labels("ifdef", "__KERNEL__"), (si.KERNEL, si.USERSPACE))

@@ -21,11 +21,15 @@ prototypes (no body) are ignored. Each service gets one class:
                         STATUS_INVALID_HANDLE, STATUS_INVALID_ADDRESS, followed
                         by exactly one `return R;` with R one of
                         STATUS_NOT_IMPLEMENTED, STATUS_NOT_SUPPORTED,
-                        STATUS_INVALID_DEVICE_REQUEST, STATUS_ACCESS_DENIED.
-                        Any other statement (a conditional refusal, a
-                        STATUS_SUCCESS path, a loop) makes the body IMPLEMENTED.
-                        A bare return of the two stub statuses is STUB, not
-                        REFUSES; every other refusal body is REFUSES.
+                        STATUS_INVALID_DEVICE_REQUEST, STATUS_ACCESS_DENIED, or
+                        STATUS_INVALID_INFO_CLASS. The last status is accepted
+                        only in that shape: it is then a refusal of every class
+                        (the class argument is never tested; the validation
+                        returns refuse earlier, and nothing can succeed). Any
+                        other statement (a switch on the class, a conditional
+                        refusal, a STATUS_SUCCESS path, a loop) makes the body
+                        IMPLEMENTED. A bare return of the two stub statuses is
+                        STUB, not REFUSES; every other refusal body is REFUSES.
   WEAK-FALLBACK         only a `__attribute__((weak))` definition exists, so
                         the table entry is the weak fallback
   UNREACHABLE-WRAPPER-MISSING
@@ -93,6 +97,10 @@ HYBRID_SEP = " / "
 
 STUB_STATUSES = ("STATUS_NOT_IMPLEMENTED", "STATUS_NOT_SUPPORTED")
 REFUSAL_STATUSES = STUB_STATUSES + ("STATUS_INVALID_DEVICE_REQUEST", "STATUS_ACCESS_DENIED")
+# Final-return status that refuses every class. It counts as a refusal only in
+# the shape refusal_class() accepts (no statement but validation returns before
+# it), so a body that dispatches on the class is never REFUSES because of it.
+CLASS_REFUSAL_STATUS = "STATUS_INVALID_INFO_CLASS"
 VALIDATION_STATUSES = ("STATUS_INVALID_PARAMETER", "STATUS_INVALID_HANDLE", "STATUS_INVALID_ADDRESS")
 
 SERVICE_RE = re.compile(
@@ -192,7 +200,7 @@ def refusal_class(body):
     if not stmts:
         return None
     last = RETURN_RE.match(stmts[-1])
-    if not last or last.group(1) not in REFUSAL_STATUSES:
+    if not last or last.group(1) not in REFUSAL_STATUSES + (CLASS_REFUSAL_STATUS,):
         return None
     for stmt in stmts[:-1]:
         check = VALIDATION_RE.match(stmt)
@@ -663,6 +671,10 @@ def selftest():
           is None, "refuses: validation status must be in the validation set")
     check(refusal_class(" return STATUS_INVALID_DEVICE_REQUEST; ") == REFUSES, "refuses: bare device")
     check(refusal_class(" return STATUS_SUCCESS; ") is None, "refuses: success")
+    check(refusal_class(" return STATUS_INVALID_INFO_CLASS; ") == REFUSES,
+          "refuses: bare invalid info class refuses every class")
+    check(refusal_class(" switch (c) { default: return STATUS_INVALID_INFO_CLASS; } ") is None,
+          "refuses: class dispatch is not a refusal")
     check(norm_name("NtQueryDirectoryObject") == norm_name("nt_query_directory_object_internal"),
           "norm: internal suffix and underscores")
     check(kernel_branch_labels("ifdef", " __KERNEL__ ") == (KERNEL, USERSPACE), "branch: ifdef")
