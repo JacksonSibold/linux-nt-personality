@@ -10,10 +10,13 @@
  */
 
 #include "mm.h"
+#include "object.h"
+#include "handle.h"
 #ifndef __KERNEL__
 #include <limits.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <unistd.h>
 #else
 #include <linux/slab.h>
 #include <linux/mm.h>
@@ -261,6 +264,24 @@ static struct nt_vad *nt_vad_new(ULONG_PTR start, ULONG_PTR end, ULONG state,
     return vad;
 }
 
+/* Section objects (ADR 0001). A VAD with vad->section set holds one object
+ * reference. Every copy of the pointer takes its own reference at the copy, so
+ * each VAD's release below is balanced. */
+static void nt_section_ref(struct nt_section *sec) {
+    ObReferenceObject(nt_body_to_header(sec));
+}
+
+static void nt_section_unref(struct nt_section *sec) {
+    ObDereferenceObject(nt_body_to_header(sec));
+}
+
+/* Frees a VAD and drops the section reference it holds. */
+static void nt_vad_free(struct nt_vad *vad) {
+    if (!vad) return;
+    if (vad->section) nt_section_unref(vad->section);
+    kfree(vad);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Userspace shim: sorted doubly-linked list                                  */
 /* -------------------------------------------------------------------------- */
@@ -357,6 +378,7 @@ static struct nt_vad *nt_vad_split(struct nt_mm *mm, struct nt_vad *vad,
         left->guard = vad->guard;
         left->write_watch = vad->write_watch;
         left->section = vad->section;
+        if (left->section) nt_section_ref(left->section);
         left->section_offset = vad->section_offset;
         /* Insert left before vad */
         left->list_prev = vad->list_prev;
@@ -376,6 +398,7 @@ static struct nt_vad *nt_vad_split(struct nt_mm *mm, struct nt_vad *vad,
         right->guard = vad->guard;
         right->write_watch = vad->write_watch;
         right->section = vad->section;
+        if (right->section) nt_section_ref(right->section);
         if (vad->section)
             right->section_offset = vad->section_offset + (split_end - vad->start);
         else
@@ -560,6 +583,7 @@ static struct nt_vad *nt_vad_split(struct nt_mm *mm, struct nt_vad *vad,
         left->guard = vad->guard;
         left->write_watch = vad->write_watch;
         left->section = vad->section;
+        if (left->section) nt_section_ref(left->section);
         left->section_offset = vad->section_offset;
         ULONG_PTR old_start = vad->start;
         nt_vad_remove(mm, vad);
@@ -570,12 +594,12 @@ static struct nt_vad *nt_vad_split(struct nt_mm *mm, struct nt_vad *vad,
             vad->start = old_start;
             if (vad->section) vad->section_offset -= (split - old_start);
             nt_vad_insert(mm, vad);
-            kfree(left);
+            nt_vad_free(left);
             return NULL;
         }
         if (nt_vad_insert(mm, vad) != 0) {
             nt_vad_remove(mm, left);
-            kfree(left);
+            nt_vad_free(left);
             vad->start = old_start;
             if (vad->section) vad->section_offset -= (split - old_start);
             nt_vad_insert(mm, vad);
@@ -591,6 +615,7 @@ static struct nt_vad *nt_vad_split(struct nt_mm *mm, struct nt_vad *vad,
         right->guard = vad->guard;
         right->write_watch = vad->write_watch;
         right->section = vad->section;
+        if (right->section) nt_section_ref(right->section);
         if (vad->section)
             right->section_offset = vad->section_offset + (split_end - vad->start);
         else
@@ -598,7 +623,7 @@ static struct nt_vad *nt_vad_split(struct nt_mm *mm, struct nt_vad *vad,
         vad->end = split_end;
         if (nt_vad_insert(mm, right) != 0) {
             vad->end = old_end;
-            kfree(right);
+            nt_vad_free(right);
             return NULL;
         }
         if (right->end > mm->highest_vad)
@@ -695,7 +720,7 @@ static void nt_coalesce_all(struct nt_mm *mm)
         if (cur->state == MEM_RESERVE && cur->end == next->start && nt_vad_attrs_match(cur, next)) {
             cur->end = next->end;
             rb_erase(next_n, &mm->vad_root);
-            kfree(next);
+            nt_vad_free(next);
             /* stay at cur, check new next */
         } else {
             n = next_n;
@@ -729,7 +754,7 @@ void ntmm_destroy(struct nt_mm *mm) {
         if (cur->state != MEM_FREE) {
             kshim_munmap((void *)cur->start, (size_t)(cur->end - cur->start));
         }
-        kfree(cur);
+        nt_vad_free(cur);
         cur = next;
     }
     mm->vad_head = NULL;
@@ -741,7 +766,7 @@ void ntmm_destroy(struct nt_mm *mm) {
         struct rb_node *next = rb_next(n);
         struct nt_vad *vad = rb_entry(n, struct nt_vad, rb);
         rb_erase(n, &mm->vad_root);
-        kfree(vad);
+        nt_vad_free(vad);
         n = next;
     }
     mm->vad_root.rb_node = NULL;
@@ -904,7 +929,7 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
             ntmm_lock(mm);
             nt_list_remove(mm, vad);
             ntmm_unlock(mm);
-            kfree(vad);
+            nt_vad_free(vad);
             return STATUS_NO_MEMORY;
         }
         if (commit) {
@@ -914,7 +939,7 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
                 ntmm_lock(mm);
                 nt_list_remove(mm, vad);
                 ntmm_unlock(mm);
-                kfree(vad);
+                nt_vad_free(vad);
                 return STATUS_NO_MEMORY;
             }
             if (Protect & PAGE_GUARD) {
@@ -946,7 +971,7 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
             ntmm_lock(mm);
             nt_list_remove(mm, vad);
             ntmm_unlock(mm);
-            kfree(vad);
+            nt_vad_free(vad);
             return STATUS_NO_MEMORY;
         }
         if (Protect & PAGE_GUARD) {
@@ -1147,7 +1172,7 @@ NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
             struct nt_vad *next = cur->list_next;
             if (cur->alloc_base == base && cur->start >= rel_start && cur->end <= rel_end) {
                 nt_list_remove(mm, cur);
-                kfree(cur);
+                nt_vad_free(cur);
             }
             cur = next;
         }
@@ -1158,7 +1183,7 @@ NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
             if (cur->alloc_base == base) {
                 /* Should have been removed; remove any stragglers */
                 nt_list_remove(mm, cur);
-                kfree(cur);
+                nt_vad_free(cur);
             }
             cur = next;
         }
@@ -1172,7 +1197,7 @@ NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
             struct nt_vad *v = rb_entry(n, struct nt_vad, rb);
             if (v->alloc_base == base && v->start >= rel_start && v->end <= rel_end) {
                 rb_erase(n, &mm->vad_root);
-                kfree(v);
+                nt_vad_free(v);
             }
             n = next;
         }
@@ -1182,7 +1207,7 @@ NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
             struct nt_vad *v = rb_entry(n, struct nt_vad, rb);
             if (v->alloc_base == base) {
                 rb_erase(n, &mm->vad_root);
-                kfree(v);
+                nt_vad_free(v);
             }
             n = next;
         }
@@ -1457,13 +1482,57 @@ NTSTATUS NtMmHandleGuardFault(PVOID Address) {
 /* Section objects                                                            */
 /* -------------------------------------------------------------------------- */
 
+/* Section object type (ADR 0001). The body is struct nt_section and the handle
+ * is a handle-table index. The object is freed when its last handle and its
+ * last view reference are gone. */
+static void nt_section_delete(struct nt_object_header *hdr)
+{
+    struct nt_section *sec = (struct nt_section *)nt_object_body(hdr);
+#ifndef __KERNEL__
+    if (sec->backing.fd >= 0) close(sec->backing.fd);
+    if (sec->backing.mem) kshim_munmap(sec->backing.mem, sec->backing.size);
+#endif
+    sec->backing.fd = -1;
+    sec->backing.mem = NULL;
+}
+
+struct nt_object_type nt_section_type = {
+    .name = "Section",
+    .ops = { .delete_obj = nt_section_delete, },
+    .pool_tag = 0,
+};
+
+/* Access a view needs for its protection (Windows rules): read for every view,
+ * write for PAGE_READWRITE, execute for the PAGE_EXECUTE* protections. */
+static ACCESS_MASK nt_section_map_access(ULONG Win32Protect)
+{
+    ACCESS_MASK need = SECTION_MAP_READ;
+    switch (Win32Protect & 0xFFUL) {
+    case PAGE_READWRITE:
+        need |= SECTION_MAP_WRITE;
+        break;
+    case PAGE_EXECUTE:
+    case PAGE_EXECUTE_READ:
+    case PAGE_EXECUTE_WRITECOPY:
+        need |= SECTION_MAP_EXECUTE;
+        break;
+    case PAGE_EXECUTE_READWRITE:
+        need |= SECTION_MAP_WRITE | SECTION_MAP_EXECUTE;
+        break;
+    default:
+        break;
+    }
+    return need;
+}
+
 NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
                          POBJECT_ATTRIBUTES ObjectAttributes,
                          PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
                          ULONG AllocationAttributes, HANDLE FileHandle) {
-    struct nt_section *sec;
+    struct nt_object_header *hdr = NULL;
+    struct nt_section *sec = NULL;
     SIZE_T size = 0;
-    (void)DesiredAccess;
+    NTSTATUS st;
     (void)ObjectAttributes;
     if (!SectionHandle) return STATUS_INVALID_PARAMETER;
     if (!ntmm_protection_valid(SectionPageProtection)) return STATUS_INVALID_PAGE_PROTECTION;
@@ -1471,62 +1540,37 @@ NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
      * so the section would be zeroed anonymous memory, not the file. */
     if (FileHandle) return STATUS_NOT_IMPLEMENTED;
     if (MaximumSize) size = (SIZE_T)MaximumSize->QuadPart;
-    else if (FileHandle) size = 0;
     else return STATUS_INVALID_PARAMETER;
-    sec = (struct nt_section *)kzalloc(sizeof(*sec), GFP_KERNEL);
-    if (!sec) return STATUS_NO_MEMORY;
+    if (AllocationAttributes & SEC_IMAGE) return STATUS_INVALID_PARAMETER;
+
+    ObRegisterObjectType(&nt_section_type);
+    st = ObCreateObject(&nt_section_type, NULL, sizeof(*sec), &hdr, (void **)&sec);
+    if (!NT_SUCCESS(st)) return st;
+    /* Set the backing before any failure path: the delete callback releases it,
+     * and a zeroed fd of 0 would close stdin. */
+    sec->backing.fd = -1;
     sec->page_protection = SectionPageProtection;
     sec->attributes = AllocationAttributes;
-    sec->is_file = (FileHandle != NULL) ? 1 : 0;
-    if ((AllocationAttributes & SEC_IMAGE) && !FileHandle) { kfree(sec); return STATUS_INVALID_PARAMETER; }
-    if (sec->is_file) {
-#ifdef __KERNEL__
-        /* Kernel 6.18 kshim expects size_t*, but SIZE_T is uint64_t (ULONG_PTR).
-         * Use a size_t temporary to avoid -Wincompatible-pointer-types with -Werror.
-         */
-        size_t ksize = (size_t)size;
-        if (kshim_section_create_file(&sec->backing, (const char *)FileHandle, &ksize) != 0) {
-            kfree(sec);
-            return STATUS_INVALID_FILE_FOR_SECTION;
-        }
-        size = (SIZE_T)ksize;
-#else
-        /* Userspace shim: same prototype, but provide explicit temporary for clarity
-         * and to keep the shim's -Werror build clean without relying on cast aliasing.
-         */
-        size_t ksize = (size_t)size;
-        if (kshim_section_create_file(&sec->backing, (const char *)FileHandle, &ksize) != 0) {
-            kfree(sec);
-            return STATUS_INVALID_FILE_FOR_SECTION;
-        }
-        size = (SIZE_T)ksize;
-#endif
-    } else {
-        if (kshim_section_create(&sec->backing, (size_t)size) != 0) {
-            kfree(sec);
-            return STATUS_NO_MEMORY;
-        }
+    sec->is_file = 0;
+    if (kshim_section_create(&sec->backing, (size_t)size) != 0) {
+        ObDereferenceObject(hdr);
+        return STATUS_NO_MEMORY;
     }
     sec->size = size;
-    *SectionHandle = (HANDLE)sec;
-    return STATUS_SUCCESS;
+    /* The handle takes its own reference. Dropping the creation reference
+     * leaves the handle as the only owner. On failure the object is freed. */
+    st = ObInsertObject(hdr, NULL, DesiredAccess, kshim_current_process(), SectionHandle);
+    ObDereferenceObject(hdr);
+    return st;
 }
 
-NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
-                            PVOID *BaseAddress, ULONG_PTR ZeroBits,
-                            SIZE_T CommitSize, PLARGE_INTEGER SectionOffset,
-                            PSIZE_T ViewSize, ULONG InheritDisposition,
-                            ULONG AllocationType, ULONG Win32Protect) {
-    struct nt_section *sec = (struct nt_section *)SectionHandle;
+/* Maps a view of an open section. The caller holds a reference to sec. */
+static NTSTATUS nt_map_view_of_section(struct nt_section *sec, PVOID *BaseAddress,
+                                       PLARGE_INTEGER SectionOffset, PSIZE_T ViewSize,
+                                       ULONG AllocationType, ULONG Win32Protect) {
     struct nt_mm *mm = &g_nt_mm;
     ULONG_PTR offset = 0, base = 0, actual_size = 0;
     int commit;
-    (void)ProcessHandle;
-    (void)ZeroBits;
-    (void)InheritDisposition;
-    (void)CommitSize;
-    if (!sec || !BaseAddress || !ViewSize) return STATUS_INVALID_PARAMETER;
-    if (!ntmm_protection_valid(Win32Protect)) return STATUS_INVALID_PAGE_PROTECTION;
     if (SectionOffset) offset = (ULONG_PTR)SectionOffset->QuadPart;
     // Windows requires SectionOffset be aligned to allocation granularity (64K) for image sections, otherwise page size for data
     if (sec->attributes & SEC_IMAGE) {
@@ -1561,6 +1605,7 @@ NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                                     base, type);
     if (!vad) { ntmm_unlock(mm); return STATUS_NO_MEMORY; }
     vad->section = sec;
+    nt_section_ref(sec);    /* the VAD's own reference, dropped by nt_vad_free */
     vad->section_offset = offset;
     if (Win32Protect & PAGE_GUARD) vad->guard = 1;
     nt_list_insert(mm, vad);
@@ -1572,12 +1617,36 @@ NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
         ntmm_lock(mm);
         nt_list_remove(mm, vad);
         ntmm_unlock(mm);
-        kfree(vad);
+        nt_vad_free(vad);
         return STATUS_NO_MEMORY;
     }
     *BaseAddress = (PVOID)base;
     *ViewSize = (SIZE_T)actual_size;
     return STATUS_SUCCESS;
+}
+
+NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
+                            PVOID *BaseAddress, ULONG_PTR ZeroBits,
+                            SIZE_T CommitSize, PLARGE_INTEGER SectionOffset,
+                            PSIZE_T ViewSize, ULONG InheritDisposition,
+                            ULONG AllocationType, ULONG Win32Protect) {
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st;
+    (void)ProcessHandle;
+    (void)ZeroBits;
+    (void)InheritDisposition;
+    (void)CommitSize;
+    if (!BaseAddress || !ViewSize) return STATUS_INVALID_PARAMETER;
+    if (!ntmm_protection_valid(Win32Protect)) return STATUS_INVALID_PAGE_PROTECTION;
+    /* ADR 0001: the handle must name a live section with the access the view
+     * needs. The lookup reference is dropped after mapping; the VAD keeps its own. */
+    st = ObReferenceObjectByHandle(kshim_current_process(), SectionHandle, &nt_section_type,
+                                   UserMode, nt_section_map_access(Win32Protect), &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    st = nt_map_view_of_section((struct nt_section *)nt_object_body(hdr), BaseAddress,
+                                SectionOffset, ViewSize, AllocationType, Win32Protect);
+    ObDereferenceObject(hdr);
+    return st;
 }
 
 NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
@@ -1608,7 +1677,7 @@ NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
         struct nt_vad *next = cur->list_next;
         if (cur->alloc_base == base && cur->start >= unmap_start && cur->end <= unmap_end) {
             nt_list_remove(mm, cur);
-            kfree(cur);
+            nt_vad_free(cur);
         }
         cur = next;
     }
@@ -1619,7 +1688,7 @@ NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
         struct nt_vad *v = rb_entry(n, struct nt_vad, rb);
         if (v->alloc_base == base && v->start >= unmap_start && v->end <= unmap_end) {
             rb_erase(n, &mm->vad_root);
-            kfree(v);
+            nt_vad_free(v);
         }
         n = next;
     }
@@ -1652,7 +1721,7 @@ NTSTATUS ntmm_add_region(ULONG_PTR base, SIZE_T size, ULONG protect, ULONG type,
     if (!vad) { ntmm_unlock(mm); return STATUS_NO_MEMORY; }
     if (nt_list_insert(mm, vad) != 0) {
         ntmm_unlock(mm);
-        kfree(vad);
+        nt_vad_free(vad);
         return STATUS_CONFLICTING_ADDRESSES;
     }
     nt_vad_coalesce(mm, vad);
