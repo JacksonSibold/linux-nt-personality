@@ -38,12 +38,14 @@ Notes on the code:
 - `ObCloseHandle` runs the type's `okay_to_close` hook under the table spinlock.
   Its contract forbids blocking and handle-table calls. It then clears the slot,
   drops the handle count, runs `ops.close`, and drops one reference.
-- Object types are listed in `ob_type_list`: directory, symbolic link, process,
-  thread and a test type. `ObCreateObjectType` is declared in `object.h` but has
-  no definition, so only `ObRegisterObjectType` is usable. The Section type
-  (`nt_section_type`, defined in `mm.c`) is registered with `ObRegisterObjectType`
-  when the first section is created, not in `ObInitObjectManager`, so the object
-  manager does not link against `mm.c`.
+- Object types are listed in `ob_type_list` by `ObInitObjectManager`
+  (`object.c:1336-1341`): directory, symbolic link, process, thread, token and a
+  test type. `ObCreateObjectType` is declared in `object.h` but has no
+  definition, so only `ObRegisterObjectType` is usable. The Section type
+  (`nt_section_type`, defined in `mm.c`) and the event, mutant, semaphore, file
+  and key types are registered with `ObRegisterObjectType` by their own modules
+  (`mm.c:1747`, `nt_obj.c:125-128`, `registry.c:465`). Sections register on first
+  use, so the object manager does not link against `mm.c`.
 - `ObInitObjectManager` creates the well-known directories `??`, `Device`,
   `BaseNamedObjects`, `KnownDlls` and `Sessions` under the root.
 
