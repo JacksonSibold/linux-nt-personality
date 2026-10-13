@@ -127,13 +127,19 @@ struct nt_object_header {
     atomic64_t              handle_count;
     struct nt_directory    *parent_dir;
     UNICODE_STRING          name;
-    PSECURITY_DESCRIPTOR    security_descriptor;
     ULONG                   flags;
     void                   *body;
     struct list_head        type_link;
     bool                    is_permanent;
     bool                    is_exclusive;
     bool                    exclusive_owned;
+    /* Owned self-relative security descriptor copy, NULL when the object has
+     * none. Set with ObSetObjectSecurityDescriptor; freed on the final
+     * ObDereferenceObject. Shared by every handle, since handles point at
+     * this header. Keep this field last: nothing outside object.c relies on
+     * the offsets, but new fields are appended at the end. */
+    PSECURITY_DESCRIPTOR    security_descriptor;
+    ULONG                   security_descriptor_length;
 };
 
 static inline void *nt_object_body(struct nt_object_header *hdr)
@@ -223,6 +229,18 @@ NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs,
                              PHANDLE out_handle);
 
 NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj);
+
+/* Attaches a copy of the self-relative descriptor sd (length bytes) to obj,
+ * replacing and freeing any previous one. sd == NULL clears it. The object
+ * takes ownership of the copy; the caller's buffer is not retained. */
+NTSTATUS ObSetObjectSecurityDescriptor(struct nt_object_header *obj,
+                                        const void *sd, ULONG length);
+
+/* Returns a heap copy of obj's descriptor (*out, *out_len), or *out == NULL when
+ * the object has none. The caller frees the copy with kfree. Safe against a
+ * concurrent ObSetObjectSecurityDescriptor. */
+NTSTATUS ObCopyObjectSecurityDescriptor(struct nt_object_header *obj,
+                                        void **out, ULONG *out_len);
 /* Creates a Token object that takes its own reference on tok and inserts it
  * into proc's handle table. The caller keeps its own reference. */
 NTSTATUS ObCreateTokenHandle(struct nt_eprocess *proc,

@@ -23,6 +23,8 @@ NTSTATUS nt_svc_NtOpenProcessToken(HANDLE ProcessHandle, ACCESS_MASK DesiredAcce
 NTSTATUS nt_svc_NtOpenProcessTokenEx(HANDLE ProcessHandle, ACCESS_MASK DesiredAccess, ULONG HandleAttributes, PHANDLE TokenHandle);
 NTSTATUS nt_svc_NtOpenThreadToken(HANDLE ThreadHandle, ACCESS_MASK DesiredAccess, BOOLEAN OpenAsSelf, PHANDLE TokenHandle);
 NTSTATUS nt_svc_NtOpenThreadTokenEx(HANDLE ThreadHandle, ACCESS_MASK DesiredAccess, BOOLEAN OpenAsSelf, ULONG HandleAttributes, PHANDLE TokenHandle);
+NTSTATUS nt_svc_NtQuerySecurityObject(HANDLE Handle, ULONG SecurityInformation, PSECURITY_DESCRIPTOR SecurityDescriptor, ULONG Length, PULONG LengthNeeded);
+NTSTATUS nt_svc_NtSetSecurityObject(HANDLE Handle, ULONG SecurityInformation, PSECURITY_DESCRIPTOR SecurityDescriptor);
 
 /* Layouts of TOKEN_GROUPS and TOKEN_PRIVILEGES (the variable tail is indexed). */
 struct tg_hdr { ULONG GroupCount; SID_AND_ATTRIBUTES Groups[1]; };
@@ -1013,6 +1015,705 @@ TEST(access_check_self_relative_sd)
 }
 
 /* -------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------- */
+/* Security descriptor services: NtQuerySecurityObject, NtSetSecurityObject   */
+/* -------------------------------------------------------------------------- */
+
+#define SDT_U1 "S-1-5-21-0-0-0-1000"
+#define SDT_U2 "S-1-5-21-0-0-0-2000"
+#define SDT_U3 "S-1-5-21-0-0-0-3000"
+#define SDT_G1 "S-1-5-21-0-0-0-513"
+
+/* Self-relative SD: owner, group, and a DACL with up to two allowed ACEs. */
+static void *sdt_make_sd(const char *owner, const char *group,
+                         const char *ace1, ACCESS_MASK mask1,
+                         const char *ace2, ACCESS_MASK mask2, ULONG *out_len)
+{
+    PSID o = owner ? make_sid(owner) : NULL;
+    PSID g = group ? make_sid(group) : NULL;
+    PSID u1 = make_sid(ace1);
+    PSID u2 = ace2 ? make_sid(ace2) : NULL;
+    PACL dacl = acl_create(512);
+    SECURITY_DESCRIPTOR *sd = NULL;
+    void *buf = NULL;
+    ULONG idx = 0;
+    if (!u1 || !dacl || (ace2 && !u2) || (owner && !o) || (group && !g)) {
+        buf = NULL;
+    } else {
+        acl_add_allowed_ace(dacl, mask1, 0, u1, &idx);
+        if (u2) acl_add_allowed_ace(dacl, mask2, 0, u2, &idx);
+        sd = sd_create_absolute(o, g, dacl, NULL, SE_DACL_PRESENT);
+        if (!sd || sd_to_self_relative(sd, &buf, out_len) != STATUS_SUCCESS)
+            buf = NULL;
+    }
+    sd_free(sd);
+    if (dacl) acl_free(dacl);
+    if (u1) sid_free(u1);
+    if (u2) sid_free(u2);
+    if (o) sid_free(o);
+    if (g) sid_free(g);
+    return buf;
+}
+
+/* Frees the components sd_from_self_relative allocated, and the struct. */
+static void sdt_free_abs(SECURITY_DESCRIPTOR *sd)
+{
+    if (!sd) return;
+    if (sd->Owner) sid_free(sd->Owner);
+    if (sd->Group) sid_free(sd->Group);
+    if (sd->Dacl) acl_free(sd->Dacl);
+    if (sd->Sacl) acl_free(sd->Sacl);
+    sd_free(sd);
+}
+
+/* A Test object in p's handle table with the given access. The creator's
+ * reference is returned in *hdr_out; sdt_close releases both. */
+static HANDLE sdt_object(struct nt_eprocess *p, ACCESS_MASK access,
+                         struct nt_object_header **hdr_out)
+{
+    struct nt_object_header *h = NULL;
+    void *b = NULL;
+    HANDLE hd = NULL;
+    if (ObCreateObject(&nt_test_type, NULL, sizeof(struct nt_test_body), &h, &b) != STATUS_SUCCESS)
+        return NULL;
+    if (ObInsertObject(h, NULL, access, p, &hd) != STATUS_SUCCESS) {
+        ObDereferenceObject(h);
+        return NULL;
+    }
+    *hdr_out = h;
+    return hd;
+}
+
+static void sdt_close(struct nt_eprocess *p, HANDLE hd, struct nt_object_header *h)
+{
+    ObCloseHandle(p, hd);
+    ObMakeTemporaryObject(h);
+    ObDereferenceObject(h);
+}
+
+/* Sets an object SD through the object layer (the kernel-side attach path). */
+static NTSTATUS sdt_attach(struct nt_object_header *h, ULONG len, void *sd)
+{
+    NTSTATUS st = ObSetObjectSecurityDescriptor(h, sd, len);
+    return st;
+}
+
+TEST(query_sd_info_selection)
+{
+    struct nt_eprocess *p = make_current_process_as("sq_sel", SDT_U1);
+    ASSERT(p != NULL);
+    struct nt_object_header *h = NULL;
+    HANDLE hd = sdt_object(p, READ_CONTROL | WRITE_DAC | WRITE_OWNER | ACCESS_SYSTEM_SECURITY, &h);
+    ASSERT(hd != NULL);
+    ULONG full = 0;
+    void *sd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, READ_CONTROL | WRITE_DAC, NULL, 0, &full);
+    ASSERT(sd != NULL && full > 0);
+    ASSERT_STATUS(sdt_attach(h, full, sd), STATUS_SUCCESS);
+    kfree(sd);
+
+    UCHAR buf[512];
+    ULONG need = 0;
+    const SECURITY_DESCRIPTOR_RELATIVE *r = (const SECURITY_DESCRIPTOR_RELATIVE *)buf;
+    SECURITY_DESCRIPTOR *abs = NULL;
+
+    /* Owner only: the output carries an owner and no other component. */
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd, OWNER_SECURITY_INFORMATION, buf, sizeof(buf), &need),
+                  STATUS_SUCCESS);
+    ASSERT(r->Revision == 1 && (r->Control & SE_SELF_RELATIVE));
+    ASSERT(r->Owner != 0 && r->Group == 0 && r->Dacl == 0 && r->Sacl == 0);
+    ASSERT(need < full);
+    ASSERT_STATUS(sd_from_self_relative(buf, need, &abs), STATUS_SUCCESS);
+    PSID want_owner = make_sid(SDT_U1);
+    ASSERT(want_owner != NULL && sid_equal(abs->Owner, want_owner));
+    sid_free(want_owner);
+    sdt_free_abs(abs);
+    abs = NULL;
+
+    /* Group only. */
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd, GROUP_SECURITY_INFORMATION, buf, sizeof(buf), &need),
+                  STATUS_SUCCESS);
+    ASSERT(r->Group != 0 && r->Owner == 0 && r->Dacl == 0 && r->Sacl == 0);
+
+    /* DACL only: the ACE survives the round trip. */
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd, DACL_SECURITY_INFORMATION, buf, sizeof(buf), &need),
+                  STATUS_SUCCESS);
+    ASSERT(r->Dacl != 0 && r->Owner == 0 && r->Group == 0 && r->Sacl == 0);
+    ASSERT_STATUS(sd_from_self_relative(buf, need, &abs), STATUS_SUCCESS);
+    ASSERT(abs->Dacl != NULL && abs->Dacl->AceCount == 1);
+    sdt_free_abs(abs);
+    abs = NULL;
+
+    /* Everything requested reproduces the stored descriptor's size. */
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd, OWNER_SECURITY_INFORMATION |
+                                               GROUP_SECURITY_INFORMATION |
+                                               DACL_SECURITY_INFORMATION,
+                                               buf, sizeof(buf), &need), STATUS_SUCCESS);
+    ASSERT(need == full);
+    ASSERT(r->Owner != 0 && r->Group != 0 && r->Dacl != 0 && r->Sacl == 0);
+
+    sdt_close(p, hd, h);
+    ObDestroyProcessObject(p);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(query_sd_buffer_too_small)
+{
+    struct nt_eprocess *p = make_current_process_as("sq_buf", SDT_U1);
+    ASSERT(p != NULL);
+    struct nt_object_header *h = NULL;
+    HANDLE hd = sdt_object(p, READ_CONTROL, &h);
+    ASSERT(hd != NULL);
+    ULONG full = 0;
+    void *sd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, READ_CONTROL, NULL, 0, &full);
+    ASSERT(sd != NULL);
+    ASSERT_STATUS(sdt_attach(h, full, sd), STATUS_SUCCESS);
+    kfree(sd);
+
+    ULONG all = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    UCHAR buf[512];
+    ULONG need = 0;
+    /* A probe with no buffer reports the required length. */
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd, all, NULL, 0, &need), STATUS_BUFFER_TOO_SMALL);
+    ASSERT(need == full);
+    /* One byte short is still too small, and the length is still reported. */
+    need = 0;
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd, all, buf, full - 1, &need), STATUS_BUFFER_TOO_SMALL);
+    ASSERT(need == full);
+    /* Exactly the required length succeeds. The return pointer is optional. */
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd, all, buf, full, &need), STATUS_SUCCESS);
+    ASSERT(need == full);
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd, all, buf, full, NULL), STATUS_SUCCESS);
+
+    sdt_close(p, hd, h);
+    ObDestroyProcessObject(p);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(query_sd_access_and_errors)
+{
+    struct nt_eprocess *p = make_current_process_as("sq_err", SDT_U1);
+    ASSERT(p != NULL);
+    UCHAR buf[512];
+    ULONG need = 0;
+
+    /* Handle without READ_CONTROL. */
+    struct nt_object_header *h1 = NULL;
+    HANDLE hd1 = sdt_object(p, WRITE_DAC, &h1);
+    ASSERT(hd1 != NULL);
+    ULONG len1 = 0;
+    void *sd1 = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, READ_CONTROL | WRITE_DAC, NULL, 0, &len1);
+    ASSERT(sd1 != NULL);
+    ASSERT_STATUS(sdt_attach(h1, len1, sd1), STATUS_SUCCESS);
+    kfree(sd1);
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd1, OWNER_SECURITY_INFORMATION, buf, sizeof(buf), &need),
+                  STATUS_ACCESS_DENIED);
+
+    /* DACL denies the caller: the object belongs to and allows only U2. */
+    struct nt_object_header *h2 = NULL;
+    HANDLE hd2 = sdt_object(p, READ_CONTROL, &h2);
+    ASSERT(hd2 != NULL);
+    ULONG len2 = 0;
+    void *sd2 = sdt_make_sd(SDT_U2, SDT_G1, SDT_U2, READ_CONTROL, NULL, 0, &len2);
+    ASSERT(sd2 != NULL);
+    ASSERT_STATUS(sdt_attach(h2, len2, sd2), STATUS_SUCCESS);
+    kfree(sd2);
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd2, OWNER_SECURITY_INFORMATION, buf, sizeof(buf), &need),
+                  STATUS_ACCESS_DENIED);
+
+    /* SACL needs ACCESS_SYSTEM_SECURITY on the handle, which READ_CONTROL alone lacks. */
+    struct nt_object_header *h3 = NULL;
+    HANDLE hd3 = sdt_object(p, READ_CONTROL, &h3);
+    ASSERT(hd3 != NULL);
+    ULONG len3 = 0;
+    void *sd3 = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, READ_CONTROL | ACCESS_SYSTEM_SECURITY, NULL, 0, &len3);
+    ASSERT(sd3 != NULL);
+    ASSERT_STATUS(sdt_attach(h3, len3, sd3), STATUS_SUCCESS);
+    kfree(sd3);
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd3, SACL_SECURITY_INFORMATION, buf, sizeof(buf), &need),
+                  STATUS_ACCESS_DENIED);
+
+    /* Information classes: none selected, or an unsupported bit, are invalid. */
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd3, 0, buf, sizeof(buf), &need), STATUS_INVALID_PARAMETER);
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd3, LABEL_SECURITY_INFORMATION, buf, sizeof(buf), &need),
+                  STATUS_INVALID_PARAMETER);
+
+    /* A closed handle is invalid. */
+    struct nt_object_header *h4 = NULL;
+    HANDLE hd4 = sdt_object(p, READ_CONTROL, &h4);
+    ASSERT(hd4 != NULL);
+    ASSERT_STATUS(ObCloseHandle(p, hd4), STATUS_SUCCESS);
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd4, OWNER_SECURITY_INFORMATION, buf, sizeof(buf), &need),
+                  STATUS_INVALID_HANDLE);
+    ObMakeTemporaryObject(h4);
+    ObDereferenceObject(h4);
+
+    /* An object without a descriptor reports an empty self-relative header. */
+    struct nt_object_header *h5 = NULL;
+    HANDLE hd5 = sdt_object(p, READ_CONTROL, &h5);
+    ASSERT(hd5 != NULL);
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd5, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                                               buf, sizeof(buf), &need), STATUS_SUCCESS);
+    ASSERT(need == sizeof(SECURITY_DESCRIPTOR_RELATIVE));
+    const SECURITY_DESCRIPTOR_RELATIVE *r = (const SECURITY_DESCRIPTOR_RELATIVE *)buf;
+    ASSERT(r->Owner == 0 && r->Dacl == 0 && r->Group == 0 && r->Sacl == 0);
+
+    sdt_close(p, hd1, h1);
+    sdt_close(p, hd2, h2);
+    sdt_close(p, hd3, h3);
+    sdt_close(p, hd5, h5);
+    ObDestroyProcessObject(p);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(set_sd_dacl_and_owner)
+{
+    struct nt_eprocess *p = make_current_process_as("ss_dacl", SDT_U1);
+    ASSERT(p != NULL);
+    struct nt_object_header *h = NULL;
+    ACCESS_MASK rw = READ_CONTROL | WRITE_DAC | WRITE_OWNER;
+    HANDLE hd = sdt_object(p, rw, &h);
+    ASSERT(hd != NULL);
+    ULONG len = 0;
+    void *sd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, rw, NULL, 0, &len);
+    ASSERT(sd != NULL);
+    ASSERT_STATUS(sdt_attach(h, len, sd), STATUS_SUCCESS);
+    kfree(sd);
+
+    /* Replace the DACL: U1 keeps full rights, U2 gets read. The owner is untouched. */
+    ULONG nlen = 0;
+    void *nsd = sdt_make_sd(SDT_U3, SDT_G1, SDT_U1, rw, SDT_U2, READ_CONTROL, &nlen);
+    ASSERT(nsd != NULL);
+    ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd, DACL_SECURITY_INFORMATION, nsd), STATUS_SUCCESS);
+    kfree(nsd);
+
+    UCHAR buf[512];
+    ULONG need = 0;
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd, OWNER_SECURITY_INFORMATION |
+                                               DACL_SECURITY_INFORMATION,
+                                               buf, sizeof(buf), &need), STATUS_SUCCESS);
+    SECURITY_DESCRIPTOR *abs = NULL;
+    ASSERT_STATUS(sd_from_self_relative(buf, need, &abs), STATUS_SUCCESS);
+    PSID want = make_sid(SDT_U1);
+    ASSERT(want != NULL && sid_equal(abs->Owner, want));
+    ASSERT(abs->Dacl != NULL && abs->Dacl->AceCount == 2);
+    sid_free(want);
+    sdt_free_abs(abs);
+
+    /* Owner change needs WRITE_OWNER; the new owner must be in the token. */
+    nsd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, rw, NULL, 0, &nlen);
+    ASSERT(nsd != NULL);
+    ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd, OWNER_SECURITY_INFORMATION, nsd), STATUS_SUCCESS);
+    kfree(nsd);
+    nsd = sdt_make_sd(SDT_U3, SDT_G1, SDT_U1, rw, NULL, 0, &nlen);
+    ASSERT(nsd != NULL);
+    ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd, OWNER_SECURITY_INFORMATION, nsd), STATUS_INVALID_OWNER);
+    kfree(nsd);
+
+    /* A primary group that the token does not carry is rejected. */
+    nsd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, rw, NULL, 0, &nlen);
+    ASSERT(nsd != NULL);
+    ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd, GROUP_SECURITY_INFORMATION, nsd),
+                  STATUS_INVALID_PRIMARY_GROUP);
+    kfree(nsd);
+
+    sdt_close(p, hd, h);
+    ObDestroyProcessObject(p);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(set_sd_denied_and_implicit_owner)
+{
+    struct nt_eprocess *p = make_current_process_as("ss_deny", SDT_U1);
+    ASSERT(p != NULL);
+    ULONG len = 0, nlen = 0;
+    UCHAR before[512];
+    ULONG need_before = 0, need_after = 0;
+    void *sd = NULL, *nsd = NULL;
+
+    /* (a) Handle without WRITE_DAC. */
+    struct nt_object_header *h1 = NULL;
+    HANDLE hd1 = sdt_object(p, READ_CONTROL, &h1);
+    ASSERT(hd1 != NULL);
+    sd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, READ_CONTROL | WRITE_DAC, NULL, 0, &len);
+    ASSERT(sd != NULL);
+    ASSERT_STATUS(sdt_attach(h1, len, sd), STATUS_SUCCESS);
+    kfree(sd);
+    nsd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, READ_CONTROL, NULL, 0, &nlen);
+    ASSERT(nsd != NULL);
+    ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd1, DACL_SECURITY_INFORMATION, nsd), STATUS_ACCESS_DENIED);
+    kfree(nsd);
+
+    /* (b) Handle has WRITE_DAC, but the DACL denies the caller. The object is
+     * owned by U2, so U1 gets no implicit rights. The descriptor is unchanged. */
+    struct nt_object_header *h2 = NULL;
+    HANDLE hd2 = sdt_object(p, READ_CONTROL | WRITE_DAC, &h2);
+    ASSERT(hd2 != NULL);
+    sd = sdt_make_sd(SDT_U2, SDT_G1, SDT_U2, READ_CONTROL | WRITE_DAC, NULL, 0, &len);
+    ASSERT(sd != NULL);
+    ASSERT_STATUS(sdt_attach(h2, len, sd), STATUS_SUCCESS);
+    kfree(sd);
+    /* Snapshot the stored descriptor at the object layer: the caller cannot
+     * read it through the DACL that is about to be tested. */
+    need_before = h2->security_descriptor_length;
+    ASSERT(need_before > 0 && need_before <= sizeof(before));
+    memcpy(before, h2->security_descriptor, need_before);
+    nsd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, READ_CONTROL | WRITE_DAC, NULL, 0, &nlen);
+    ASSERT(nsd != NULL);
+    ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd2, DACL_SECURITY_INFORMATION, nsd), STATUS_ACCESS_DENIED);
+    kfree(nsd);
+    need_after = h2->security_descriptor_length;
+    ASSERT(need_after == need_before && memcmp(before, h2->security_descriptor, need_after) == 0);
+
+    /* (c) The owner keeps WRITE_DAC implicitly even when the DACL omits it. */
+    struct nt_object_header *h3 = NULL;
+    HANDLE hd3 = sdt_object(p, WRITE_DAC, &h3);
+    ASSERT(hd3 != NULL);
+    sd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U2, READ_CONTROL, NULL, 0, &len);
+    ASSERT(sd != NULL);
+    ASSERT_STATUS(sdt_attach(h3, len, sd), STATUS_SUCCESS);
+    kfree(sd);
+    nsd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U2, READ_CONTROL, NULL, 0, &nlen);
+    ASSERT(nsd != NULL);
+    ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd3, DACL_SECURITY_INFORMATION, nsd), STATUS_SUCCESS);
+    kfree(nsd);
+
+    /* (d) An object with no descriptor is unprotected: nothing can be set on it. */
+    struct nt_object_header *h4 = NULL;
+    HANDLE hd4 = sdt_object(p, WRITE_DAC | WRITE_OWNER, &h4);
+    ASSERT(hd4 != NULL);
+    nsd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, READ_CONTROL, NULL, 0, &nlen);
+    ASSERT(nsd != NULL);
+    ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd4, DACL_SECURITY_INFORMATION, nsd), STATUS_ACCESS_DENIED);
+    kfree(nsd);
+
+    /* (e) Bad arguments. A descriptor with a bad revision, a NULL descriptor,
+     * and an empty information mask are all rejected. */
+    struct nt_object_header *h5 = NULL;
+    HANDLE hd5 = sdt_object(p, READ_CONTROL | WRITE_DAC | WRITE_OWNER, &h5);
+    ASSERT(hd5 != NULL);
+    sd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, READ_CONTROL | WRITE_DAC, NULL, 0, &len);
+    ASSERT(sd != NULL);
+    ASSERT_STATUS(sdt_attach(h5, len, sd), STATUS_SUCCESS);
+    kfree(sd);
+    UCHAR junk[sizeof(SECURITY_DESCRIPTOR_RELATIVE)];
+    memset(junk, 0, sizeof(junk));
+    ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd5, DACL_SECURITY_INFORMATION, junk),
+                  STATUS_INVALID_SECURITY_DESCR);
+    ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd5, DACL_SECURITY_INFORMATION, NULL),
+                  STATUS_INVALID_PARAMETER);
+    nsd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, READ_CONTROL, NULL, 0, &nlen);
+    ASSERT(nsd != NULL);
+    ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd5, 0, nsd), STATUS_INVALID_PARAMETER);
+    /* A part requested but absent from the descriptor is invalid. */
+    nsd = sdt_make_sd(NULL, SDT_G1, SDT_U1, READ_CONTROL, NULL, 0, &nlen);
+    ASSERT(nsd != NULL);
+    ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd5, OWNER_SECURITY_INFORMATION, nsd), STATUS_INVALID_OWNER);
+    kfree(nsd);
+    nsd = sdt_make_sd(SDT_U1, NULL, SDT_U1, READ_CONTROL, NULL, 0, &nlen);
+    ASSERT(nsd != NULL);
+    ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd5, GROUP_SECURITY_INFORMATION, nsd),
+                  STATUS_INVALID_PRIMARY_GROUP);
+    kfree(nsd);
+
+    sdt_close(p, hd1, h1);
+    sdt_close(p, hd2, h2);
+    sdt_close(p, hd3, h3);
+    sdt_close(p, hd4, h4);
+    sdt_close(p, hd5, h5);
+    ObDestroyProcessObject(p);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(set_sd_replace_does_not_leak)
+{
+    struct nt_eprocess *p = make_current_process_as("ss_leak", SDT_U1);
+    ASSERT(p != NULL);
+    struct nt_object_header *h = NULL;
+    ACCESS_MASK rw = READ_CONTROL | WRITE_DAC;
+    HANDLE hd = sdt_object(p, rw, &h);
+    ASSERT(hd != NULL);
+    ULONG len = 0;
+    void *sd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, rw, NULL, 0, &len);
+    ASSERT(sd != NULL);
+    ASSERT_STATUS(sdt_attach(h, len, sd), STATUS_SUCCESS);
+    kfree(sd);
+
+    /* One pass of set and query settles the allocation count. */
+    UCHAR buf[512];
+    ULONG need = 0;
+    ULONG nlen = 0;
+    void *nsd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, rw, NULL, 0, &nlen);
+    ASSERT(nsd != NULL);
+    ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd, DACL_SECURITY_INFORMATION, nsd), STATUS_SUCCESS);
+    kfree(nsd);
+    ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd, DACL_SECURITY_INFORMATION, buf, sizeof(buf), &need),
+                  STATUS_SUCCESS);
+    long base = atomic_load(&kshim_alloc_count);
+
+    for (int i = 0; i < 50; i++) {
+        nsd = sdt_make_sd(SDT_U1, SDT_G1, SDT_U1, rw, (i & 1) ? SDT_U2 : NULL,
+                          READ_CONTROL, &nlen);
+        ASSERT(nsd != NULL);
+        ASSERT_STATUS(nt_svc_NtSetSecurityObject(hd, DACL_SECURITY_INFORMATION, nsd), STATUS_SUCCESS);
+        kfree(nsd);
+        ASSERT_STATUS(nt_svc_NtQuerySecurityObject(hd, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                                                   buf, sizeof(buf), &need), STATUS_SUCCESS);
+    }
+    ASSERT(atomic_load(&kshim_alloc_count) == base);
+
+    sdt_close(p, hd, h);
+    ObDestroyProcessObject(p);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
+/* NtSetInformationToken: TokenOwner, TokenPrimaryGroup, TokenDefaultDacl     */
+/* -------------------------------------------------------------------------- */
+
+NTSTATUS nt_svc_NtSetInformationToken(HANDLE TokenHandle, ULONG TokenInformationClass,
+                                      PVOID TokenInformation, ULONG TokenInformationLength);
+
+/* Input layouts (TOKEN_OWNER, TOKEN_PRIMARY_GROUP, TOKEN_DEFAULT_DACL). */
+struct ts_owner { PSID Owner; };
+struct ts_pgroup { PSID PrimaryGroup; };
+struct ts_dacl { PACL DefaultDacl; };
+
+/* A user token with one enabled group, held through a handle in p. */
+static HANDLE ts_token_handle(struct nt_eprocess *p, ACCESS_MASK access,
+                              ACCESS_TOKEN **live_out)
+{
+    ACCESS_TOKEN *tok = make_user_token(SDT_U1);
+    PSID g1 = make_sid(SDT_G1);
+    HANDLE h = NULL;
+    if (!tok || !g1) return NULL;
+    if (token_add_group(tok, g1, 0x7) != STATUS_SUCCESS) { sid_free(g1); token_dereference(tok); return NULL; }
+    sid_free(g1);
+    if (ObCreateTokenHandle(p, tok, access, 0, &h) != STATUS_SUCCESS) { token_dereference(tok); return NULL; }
+    token_dereference(tok);
+    *live_out = token_of_handle(p, h);
+    return h;
+}
+
+TEST(set_token_owner_and_primary_group)
+{
+    struct nt_eprocess *p = make_current_process_as("st_grp", SDT_U1);
+    ASSERT(p != NULL);
+    ACCESS_TOKEN *live = NULL;
+    HANDLE h = ts_token_handle(p, TOKEN_ADJUST_DEFAULT | TOKEN_QUERY, &live);
+    ASSERT(h != NULL && live != NULL);
+    PSID g1 = make_sid(SDT_G1), u1 = make_sid(SDT_U1), u3 = make_sid(SDT_U3);
+    ASSERT(g1 && u1 && u3);
+
+    /* Owner: the token's group (enabled) is assignable. */
+    struct ts_owner o;
+    o.Owner = g1;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenOwner, &o, sizeof(o)), STATUS_SUCCESS);
+    ASSERT(sid_equal(live->owner, g1));
+    /* A SID the token does not hold, NULL, and a short length are rejected. */
+    o.Owner = u3;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenOwner, &o, sizeof(o)), STATUS_INVALID_OWNER);
+    ASSERT(sid_equal(live->owner, g1));
+    o.Owner = NULL;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenOwner, &o, sizeof(o)), STATUS_INVALID_OWNER);
+    o.Owner = u1;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenOwner, &o, 0), STATUS_INFO_LENGTH_MISMATCH);
+    ASSERT(sid_equal(live->owner, g1));
+    /* The user SID is assignable too. */
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenOwner, &o, sizeof(o)), STATUS_SUCCESS);
+    ASSERT(sid_equal(live->owner, u1));
+
+    /* Primary group must be one of the token's groups. */
+    struct ts_pgroup pg;
+    pg.PrimaryGroup = g1;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenPrimaryGroup, &pg, sizeof(pg)), STATUS_SUCCESS);
+    ASSERT(sid_equal(live->primary_group, g1));
+    pg.PrimaryGroup = u3;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenPrimaryGroup, &pg, sizeof(pg)),
+                  STATUS_INVALID_PRIMARY_GROUP);
+    ASSERT(sid_equal(live->primary_group, g1));
+
+    sid_free(g1); sid_free(u1); sid_free(u3);
+    ObCloseHandle(p, h);
+    ObDestroyProcessObject(p);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(set_token_default_dacl)
+{
+    struct nt_eprocess *p = make_current_process_as("st_dacl", SDT_U1);
+    ASSERT(p != NULL);
+    ACCESS_TOKEN *live = NULL;
+    HANDLE h = ts_token_handle(p, TOKEN_ADJUST_DEFAULT | TOKEN_QUERY, &live);
+    ASSERT(h != NULL && live != NULL);
+    PSID u1 = make_sid(SDT_U1);
+    ASSERT(u1 != NULL);
+
+    /* A supplied ACL is copied: the token keeps its own, so freeing ours is safe. */
+    PACL acl = acl_create(256);
+    ULONG idx = 0;
+    ASSERT(acl != NULL);
+    ASSERT_STATUS(acl_add_allowed_ace(acl, 0x1, 0, u1, &idx), STATUS_SUCCESS);
+    struct ts_dacl d;
+    d.DefaultDacl = acl;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenDefaultDacl, &d, sizeof(d)), STATUS_SUCCESS);
+    ASSERT(live->default_dacl != NULL && live->default_dacl != acl);
+    ASSERT(live->default_dacl->AceCount == 1);
+    acl_free(acl);
+    ASSERT(live->default_dacl != NULL && live->default_dacl->AceCount == 1);
+
+    /* An ACL with an allow ACE before a deny ACE is not canonical. The stored
+     * default DACL stays as it was. */
+    PACL bad = acl_create(256);
+    ASSERT(bad != NULL);
+    ASSERT_STATUS(acl_add_allowed_ace(bad, 0x1, 0, u1, &idx), STATUS_SUCCESS);
+    ASSERT_STATUS(acl_add_denied_ace(bad, 0x1, 0, u1, &idx), STATUS_SUCCESS);
+    d.DefaultDacl = bad;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenDefaultDacl, &d, sizeof(d)), STATUS_INVALID_ACL);
+    ASSERT(live->default_dacl->AceCount == 1);
+    acl_free(bad);
+
+    /* NULL removes the default DACL. */
+    d.DefaultDacl = NULL;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenDefaultDacl, &d, sizeof(d)), STATUS_SUCCESS);
+    ASSERT(live->default_dacl == NULL);
+
+    sid_free(u1);
+    ObCloseHandle(p, h);
+    ObDestroyProcessObject(p);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(set_token_info_access_and_arguments)
+{
+    struct nt_eprocess *p = make_current_process_as("st_acc", SDT_U1);
+    ASSERT(p != NULL);
+    ACCESS_TOKEN *live = NULL;
+    HANDLE hq = ts_token_handle(p, TOKEN_QUERY, &live);
+    ASSERT(hq != NULL && live != NULL);
+    PSID u1 = make_sid(SDT_U1);
+    ASSERT(u1 != NULL);
+
+    /* A handle without TOKEN_ADJUST_DEFAULT cannot change these classes. */
+    struct ts_owner o; o.Owner = u1;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(hq, TokenOwner, &o, sizeof(o)), STATUS_ACCESS_DENIED);
+    struct ts_dacl d; d.DefaultDacl = NULL;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(hq, TokenDefaultDacl, &d, sizeof(d)), STATUS_ACCESS_DENIED);
+
+    HANDLE ha = ts_token_handle(p, TOKEN_ADJUST_DEFAULT, &live);
+    ASSERT(ha != NULL);
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(ha, TokenOwner, NULL, sizeof(o)), STATUS_INVALID_PARAMETER);
+    /* A class this service does not set. */
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(ha, TokenUser, &o, sizeof(o)), STATUS_INVALID_INFO_CLASS);
+
+    /* Repeated owner changes do not leak SID copies. */
+    PSID g1 = make_sid(SDT_G1);
+    ASSERT(g1 != NULL);
+    struct ts_owner oo;
+    oo.Owner = g1;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(ha, TokenOwner, &oo, sizeof(oo)), STATUS_SUCCESS);
+    long base = atomic_load(&kshim_alloc_count);
+    for (int i = 0; i < 50; i++) {
+        oo.Owner = (i & 1) ? u1 : g1;
+        ASSERT_STATUS(nt_svc_NtSetInformationToken(ha, TokenOwner, &oo, sizeof(oo)), STATUS_SUCCESS);
+    }
+    ASSERT(atomic_load(&kshim_alloc_count) == base);
+
+    sid_free(g1);
+    sid_free(u1);
+    ObCloseHandle(p, hq);
+    ObCloseHandle(p, ha);
+    ObDestroyProcessObject(p);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
+/* NtAccessCheckAndAuditAlarm: access check against the effective token; the  */
+/* audit part is a documented no-op.                                          */
+/* -------------------------------------------------------------------------- */
+
+NTSTATUS nt_svc_NtAccessCheckAndAuditAlarm(PUNICODE_STRING SubsystemName, PVOID HandleId,
+                                           PUNICODE_STRING ObjectTypeName, PUNICODE_STRING ObjectName,
+                                           PSECURITY_DESCRIPTOR SecurityDescriptor,
+                                           ACCESS_MASK DesiredAccess, PGENERIC_MAPPING GenericMapping,
+                                           BOOLEAN ObjectCreation, PACCESS_MASK GrantedAccess,
+                                           PNTSTATUS AccessStatus, PBOOLEAN GenerateOnClose);
+
+TEST(access_check_and_audit_alarm)
+{
+    struct nt_eprocess *p = make_current_process_as("aaa_proc", SDT_U1);
+    ASSERT(p != NULL);
+    ULONG sdlen = 0;
+    void *sdbuf = make_allow_sd(SDT_U1, 0x1, &sdlen);
+    ASSERT(sdbuf != NULL && sdlen > 0);
+    GENERIC_MAPPING gm = { 0x1, 0x2, 0x4, 0x7 };
+    ACCESS_MASK granted = 0xDEAD;
+    NTSTATUS astat = 0x12345678;
+    BOOLEAN gen = TRUE;
+
+    /* Granted right: the primary token is U1, which the DACL allows 0x1. */
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, sdbuf, 0x1, &gm,
+                                                    FALSE, &granted, &astat, &gen), STATUS_SUCCESS);
+    ASSERT(astat == STATUS_SUCCESS && granted == 0x1);
+    /* The audit output is always FALSE: nothing is generated on close. */
+    ASSERT(gen == FALSE);
+
+    /* A generic right is mapped; a right the DACL lacks is denied, nothing granted. */
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, sdbuf, 0x80000000UL, &gm,
+                                                    FALSE, &granted, &astat, &gen), STATUS_SUCCESS);
+    ASSERT(astat == STATUS_SUCCESS && granted == 0x1);
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, sdbuf, 0x2, &gm,
+                                                    FALSE, &granted, &astat, &gen), STATUS_SUCCESS);
+    ASSERT(astat == STATUS_ACCESS_DENIED && granted == 0);
+
+    /* Impersonation: the thread's token wins over the process primary token. */
+    struct nt_ethread *thr = NULL;
+    ASSERT(ObCreateThreadObject(&thr, p, 77) == STATUS_SUCCESS && thr != NULL);
+    ACCESS_TOKEN *other = make_user_token(SDT_U2);
+    ASSERT(other != NULL);
+    thr->impersonation_token = other;   /* the thread now owns this reference */
+    kshim_set_current_thread(thr);
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, sdbuf, 0x1, &gm,
+                                                    FALSE, &granted, &astat, &gen), STATUS_SUCCESS);
+    ASSERT(astat == STATUS_ACCESS_DENIED && granted == 0);
+    kshim_set_current_thread(NULL);
+    ObDestroyThreadObject(thr);
+
+    /* Bad arguments: a required output or the descriptor missing, and junk. */
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, NULL, 0x1, &gm,
+                                                    FALSE, &granted, &astat, &gen), STATUS_INVALID_PARAMETER);
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, sdbuf, 0x1, &gm,
+                                                    FALSE, &granted, &astat, NULL), STATUS_INVALID_PARAMETER);
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, sdbuf, 0x1, &gm,
+                                                    FALSE, NULL, &astat, &gen), STATUS_INVALID_PARAMETER);
+    UCHAR junk[sizeof(SECURITY_DESCRIPTOR_RELATIVE)];
+    memset(junk, 0, sizeof(junk));
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, junk, 0x1, &gm,
+                                                    FALSE, &granted, &astat, &gen),
+                  STATUS_INVALID_SECURITY_DESCR);
+
+    /* Repeated calls do not leak. */
+    long base = atomic_load(&kshim_alloc_count);
+    for (int i = 0; i < 50; i++) {
+        ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, sdbuf, 0x1, &gm,
+                                                        FALSE, &granted, &astat, &gen), STATUS_SUCCESS);
+    }
+    ASSERT(atomic_load(&kshim_alloc_count) == base);
+
+    kfree(sdbuf);
+    ObDestroyProcessObject(p);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
 /* Driver                                                                     */
 /* -------------------------------------------------------------------------- */
 int main(void)
@@ -1041,6 +1742,16 @@ int main(void)
     RUN(adjust_privileges_needs_adjust_right);
     RUN(privilege_check_all_and_any);
     RUN(access_check_self_relative_sd);
+    RUN(query_sd_info_selection);
+    RUN(query_sd_buffer_too_small);
+    RUN(query_sd_access_and_errors);
+    RUN(set_sd_dacl_and_owner);
+    RUN(set_sd_denied_and_implicit_owner);
+    RUN(set_sd_replace_does_not_leak);
+    RUN(set_token_owner_and_primary_group);
+    RUN(set_token_default_dacl);
+    RUN(set_token_info_access_and_arguments);
+    RUN(access_check_and_audit_alarm);
     printf("security extra tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

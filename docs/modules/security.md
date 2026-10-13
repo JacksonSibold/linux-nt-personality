@@ -61,6 +61,14 @@ Token and security services defined in `security.c` (from the inventory in `docs
 
 - Implemented: `NtOpenProcessToken`, `NtOpenProcessTokenEx`, `NtOpenThreadToken`, `NtOpenThreadTokenEx`, `NtQueryInformationToken` (`security.c:2220`), `NtDuplicateToken` (`:2351`), `NtAdjustPrivilegesToken` (`:2586`), `NtPrivilegeCheck` (`:2596`), `NtAccessCheck` (`:2605`).
 - Not defined (dispatch slot is NULL): `NtSetInformationToken`, `NtSetSecurityObject`, `NtQuerySecurityObject`, `NtCloseObjectAuditAlarm`, `NtAccessCheckAndAuditAlarm`.
+Security services (`security.c`, service entry points `nt_svc_*`):
+
+- `NtQuerySecurityObject(Handle, SecurityInformation, SecurityDescriptor, Length, LengthNeeded)` - copies the OWNER, GROUP, DACL and SACL parts selected by `SecurityInformation` into a self-relative buffer. Needs READ_CONTROL on the handle and a token check on the object descriptor (SACL also needs ACCESS_SYSTEM_SECURITY). A short buffer returns `STATUS_BUFFER_TOO_SMALL` with the required length. An object with no descriptor returns an empty header.
+- `NtSetSecurityObject(Handle, SecurityInformation, SecurityDescriptor)` - replaces the selected parts and keeps the others. Needs WRITE_OWNER (owner, group), WRITE_DAC (DACL) or ACCESS_SYSTEM_SECURITY (SACL) on the handle and in the caller effective token. The new owner or primary group must be a SID the token holds. An object with no descriptor cannot be changed through this call.
+- `NtSetInformationToken(TokenHandle, Class, Information, Length)` - classes `TokenOwner`, `TokenPrimaryGroup` and `TokenDefaultDacl`, under TOKEN_ADJUST_DEFAULT. The token keeps its own copies. A default DACL must be canonical (DENY before ALLOW), or it is `STATUS_INVALID_ACL`. Other classes return `STATUS_INVALID_INFO_CLASS`.
+- `NtAccessCheckAndAuditAlarm(...)` - access check of the descriptor against the caller effective token (impersonation token first, else primary), through `se_access_check`. Audit is a documented no-op: no audit record is generated, `GenerateOnClose` is always FALSE, and the name strings and `ObjectCreation` are accepted and ignored.
+
+The object owner has READ_CONTROL and WRITE_DAC implicitly, as in NT. WRITE_OWNER and ACCESS_SYSTEM_SECURITY are not implicit.
 
 ## Key data structures
 
@@ -83,3 +91,6 @@ Token and security services defined in `security.c` (from the inventory in `docs
 - The ACL capacity side table holds 256 entries (`ACL_CAP_MAX`, `security.c:45`). `acl_capacity_register` (`security.c:62`) silently drops registrations beyond that, so the lookup falls back to `AclSize` for those ACLs.
 - The module is unsynchronised apart from the token reference count. Concurrent use of ACLs, SIDs or the capacity table is unsafe.
 - Security descriptors are stored in the object header (`object.h:130`, set from the object attributes at `object.c:521`). No service reads or sets them, because `NtQuerySecurityObject` and `NtSetSecurityObject` are missing.
+- `se_access_check` is called by the access-check and security-descriptor services above, and by `ntsec_object_access`. Object create and open paths in `object.c`, `handle.c`, `registry.c`, `io.c` and `mm.c` do not yet apply a descriptor. `token_create_primary`, `sd_create_absolute` and `se_inherit_dacl` are still used only in `security.c`, the test files and token creation.
+- The ACL capacity side table holds 256 entries. `acl_capacity_register` (`security.c:57-60`) silently drops registrations beyond that, so the lookup falls back to `AclSize` for those ACLs.
+- The module is unsynchronised (see above). Concurrent use of tokens, ACLs or the capacity table is unsafe.

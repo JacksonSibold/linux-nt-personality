@@ -704,6 +704,99 @@ TEST(symlink_self_loop)
 }
 
 /* -------------------------------------------------------------------------- */
+/* 13. owned security descriptor slot                                          */
+/* -------------------------------------------------------------------------- */
+TEST(security_descriptor_slot)
+{
+    reset_ob();
+    static const UCHAR sd_a[24] = { 1, 0, 0x04, 0x80, 0 };
+    static const UCHAR sd_b[40] = { 1, 0, 0x04, 0x80, 1 };
+    struct nt_object_header *h = NULL; void *b = NULL;
+    long base = atomic_load(&kshim_alloc_count);
+
+    NTSTATUS st = ObCreateObject(&nt_test_type, NULL, sizeof(struct nt_test_body), &h, &b);
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+    /* Default: no security descriptor. */
+    ASSERT(h->security_descriptor == NULL);
+
+    /* Attaching copies the bytes: the object owns its own buffer. */
+    st = ObSetObjectSecurityDescriptor(h, sd_a, sizeof(sd_a));
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+    ASSERT(h->security_descriptor != NULL);
+    ASSERT(h->security_descriptor != (PSECURITY_DESCRIPTOR)sd_a);
+    ASSERT(memcmp(h->security_descriptor, sd_a, sizeof(sd_a)) == 0);
+
+    /* Replacing frees the old copy: exactly one descriptor buffer is live. */
+    st = ObSetObjectSecurityDescriptor(h, sd_b, sizeof(sd_b));
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+    ASSERT(memcmp(h->security_descriptor, sd_b, sizeof(sd_b)) == 0);
+    ASSERT(atomic_load(&kshim_alloc_count) == base + 2);
+
+    /* Clearing with NULL drops the descriptor and its buffer. */
+    st = ObSetObjectSecurityDescriptor(h, NULL, 0);
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+    ASSERT(h->security_descriptor == NULL);
+    ASSERT(atomic_load(&kshim_alloc_count) == base + 1);
+
+    /* Re-attach, then drop the last reference: the descriptor is freed on destroy. */
+    st = ObSetObjectSecurityDescriptor(h, sd_a, sizeof(sd_a));
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+    ObDereferenceObject(h);
+    ASSERT(atomic_load(&kshim_alloc_count) == base);
+
+    /* Invalid arguments are rejected without touching the object. */
+    ASSERT_STATUS(ObSetObjectSecurityDescriptor(NULL, sd_a, sizeof(sd_a)), STATUS_INVALID_PARAMETER);
+    PASS();
+}
+
+TEST(security_descriptor_shared_by_handles)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(106, "p13");
+    struct nt_ethread *thr = make_thread(proc, 13);
+    static const UCHAR sd[32] = { 1, 0, 0x04, 0x80, 2 };
+    long base = atomic_load(&kshim_alloc_count);
+
+    struct nt_object_header *h = NULL; void *b = NULL;
+    NTSTATUS st = ObCreateObject(&nt_test_type, NULL, sizeof(struct nt_test_body), &h, &b);
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+    HANDLE h1 = NULL;
+    st = ObInsertObject(h, NULL, 0x03, proc, &h1);
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+    HANDLE h2 = NULL;
+    st = NtDuplicateObject(proc, h1, proc, &h2, 0x01, 0, 0);
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+
+    st = ObSetObjectSecurityDescriptor(h, sd, sizeof(sd));
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+
+    /* Both handles resolve to the same header, hence the same descriptor. */
+    struct nt_object_header *o1 = NULL, *o2 = NULL;
+    st = ObReferenceObjectByHandle(proc, h1, &nt_test_type, UserMode, 0, &o1, NULL);
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+    st = ObReferenceObjectByHandle(proc, h2, &nt_test_type, UserMode, 0, &o2, NULL);
+    ASSERT_STATUS(st, STATUS_SUCCESS);
+    ASSERT(o1 == o2);
+    ASSERT(o1->security_descriptor == h->security_descriptor);
+    ObDereferenceObject(o1);
+    ObDereferenceObject(o2);
+
+    /* Closing both handles and dropping the creator's reference frees the
+     * descriptor exactly once (no leak, no double free). */
+    ObCloseHandle(proc, h1);
+    ObCloseHandle(proc, h2);
+    ObMakeTemporaryObject(h);
+    ObDereferenceObject(h);
+    ASSERT(atomic_load(&kshim_alloc_count) == base);
+
+    ObDestroyProcessObject(proc);
+    ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL);
+    kshim_set_current_thread(NULL);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* Main                                                                        */
 /* -------------------------------------------------------------------------- */
 int main(void)
@@ -723,6 +816,8 @@ int main(void)
     RUN(pseudo_handles);
     RUN(handle_reuse);
     RUN(stress_random);
+    RUN(security_descriptor_slot);
+    RUN(security_descriptor_shared_by_handles);
     printf("ntobj tests: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) return 1;
     /* Final leak check */
