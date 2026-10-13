@@ -10,10 +10,10 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 97 |
+| IMPLEMENTED | 101 |
 | STUB-NOT-IMPLEMENTED | 2 |
 | WEAK-FALLBACK | 0 |
-| MISSING | 72 |
+| MISSING | 68 |
 
 ## By area
 
@@ -24,7 +24,7 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | memory | 19 | 4 | 0 | 0 | 15 |
 | io | 30 | 9 | 0 | 0 | 21 |
 | sync | 32 | 31 | 0 | 0 | 1 |
-| security | 10 | 5 | 0 | 0 | 5 |
+| security | 10 | 9 | 0 | 0 | 1 |
 | registry | 11 | 11 | 0 | 0 | 0 |
 | ports | 10 | 0 | 0 | 0 | 10 |
 | object | 6 | 5 | 0 | 0 | 1 |
@@ -194,14 +194,14 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 |---|---|---:|---|---|
 | 0x0042 | `NtDuplicateToken` | 6 | IMPLEMENTED | `src/kernel/nt/security.c` |
 | 0x0021 | `NtQueryInformationToken` | 5 | IMPLEMENTED | `src/kernel/nt/security.c` |
-| 0x01a3 | `NtSetInformationToken` | 4 | MISSING |  |
+| 0x01a3 | `NtSetInformationToken` | 4 | IMPLEMENTED | `src/kernel/nt/security.c` |
 | 0x0041 | `NtAdjustPrivilegesToken` | 6 | IMPLEMENTED | `src/kernel/nt/security.c` |
 | 0x0000 | `NtAccessCheck` | 8 | IMPLEMENTED | `src/kernel/nt/security.c` |
 | 0x013d | `NtPrivilegeCheck` | 3 | IMPLEMENTED | `src/kernel/nt/security.c` |
-| 0x01af | `NtSetSecurityObject` | 3 | MISSING |  |
-| 0x0161 | `NtQuerySecurityObject` | 5 | MISSING |  |
+| 0x01af | `NtSetSecurityObject` | 3 | IMPLEMENTED | `src/kernel/nt/security.c` |
+| 0x0161 | `NtQuerySecurityObject` | 5 | IMPLEMENTED | `src/kernel/nt/security.c` |
 | 0x003b | `NtCloseObjectAuditAlarm` | 3 | MISSING |  |
-| 0x0029 | `NtAccessCheckAndAuditAlarm` | 11 | MISSING |  |
+| 0x0029 | `NtAccessCheckAndAuditAlarm` | 11 | IMPLEMENTED | `src/kernel/nt/security.c` |
 
 ## Area: registry
 

@@ -18,6 +18,8 @@ Object manager lifecycle and creation:
 - `NTSTATUS ObCreateObject(struct nt_object_type *type, POBJECT_ATTRIBUTES attrs, SIZE_T body_size, struct nt_object_header **out_hdr, void **out_body)` - allocate header and body as one contiguous block.
 - `NTSTATUS ObInsertObject(struct nt_object_header *obj, POBJECT_ATTRIBUTES attrs, ACCESS_MASK access, struct nt_eprocess *proc, PHANDLE out_handle)` - insert into the namespace (if named) and create a handle in `proc`.
 - `NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj)` - drop the permanent flag so the name is removed when unreferenced.
+- `NTSTATUS ObSetObjectSecurityDescriptor(struct nt_object_header *obj, const void *sd, ULONG length)` - attach a copy of a self-relative descriptor (NULL clears). The object owns the copy and frees it on the final dereference.
+- `NTSTATUS ObCopyObjectSecurityDescriptor(struct nt_object_header *obj, void **out, ULONG *out_len)` - return a heap copy of the descriptor (NULL when none); the caller frees it with `kfree`.
 
 Reference counting and lookup:
 
@@ -45,7 +47,7 @@ Inline helpers in the header: `nt_object_body`, `nt_body_to_header` (body pointe
 
 ## Key data structures
 
-- `struct nt_object_header` - `type`, `ref_count` and `handle_count` (atomic64), `parent_dir`, `name` (UNICODE_STRING), `security_descriptor`, `flags`, `body`, `type_link`, and the flags `is_permanent`, `is_exclusive`, `exclusive_owned`. The body is allocated directly after the header.
+- `struct nt_object_header` - `type`, `ref_count` and `handle_count` (atomic64), `parent_dir`, `name` (UNICODE_STRING), `flags`, `body`, `type_link`, the flags `is_permanent`, `is_exclusive`, `exclusive_owned`, and last `security_descriptor` (owned, self-relative copy, NULL when none) with `security_descriptor_length`. The body is allocated directly after the header.
 - `struct nt_object_type` - `list`, `name`, `ops` (`delete_obj`, `close`, `parse`, `okay_to_close`), `pool_tag`. Built-in types: `nt_directory_type`, `nt_symlink_type`, `nt_process_type`, `nt_thread_type`, `nt_test_type`. Other modules add `nt_key_type` (registry), event/mutant/semaphore/file types (`nt_obj.c`).
 - `struct nt_directory` - `rwlock_t lock` and `entries` list of `struct nt_dir_entry` (name, object pointer, link).
 - `struct nt_symlink` - `target` UNICODE_STRING.
@@ -59,6 +61,7 @@ Inline helpers in the header: `nt_object_body`, `nt_body_to_header` (body pointe
 - Directory bodies are protected by `rwlock_t`. `object.c` takes `write_lock`/`write_unlock` on them at several sites. `object.c` also uses `spin_lock`/`spin_unlock` at about 15 sites; I did not map each one to a field.
 - Names are duplicated into owned buffers (`nt_dup_unicodestring`). Lengths must be a multiple of `sizeof(WCHAR)`, otherwise `STATUS_OBJECT_NAME_INVALID`. Buffers are NUL-terminated.
 - Name comparison is ASCII-only: `nt_toupper` maps only `a`-`z`.
+- A descriptor is replaced under `ob_sd_lock`, a file-scope lock in `object.c`. Readers copy it with `ObCopyObjectSecurityDescriptor`, so a replace never frees a buffer in use.
 - Each process and thread object guards its state with a lock: a `spinlock_t` in the kernel build, a `pthread_mutex_t` in the shim.
 
 ## Known gaps (evident in code)
@@ -67,4 +70,4 @@ Inline helpers in the header: `nt_object_body`, `nt_body_to_header` (body pointe
 - Case-insensitive comparison is ASCII-only. `object.c:31` says full Unicode case folding is not implemented.
 - A symbolic link in a middle path component is not followed. `object.c:426-429` returns `STATUS_OBJECT_PATH_NOT_FOUND` in that case. A symlink is resolved only when it is the final component (`object.c:400`, via `ObpResolveSymlink`).
 - The `ops.parse` hook is consulted during lookup (`object.c:364`). Only `registry.c` sets it in this tree (`registry_parse`), so no generic parse routine is provided here.
-- Object security descriptors are carried in the header, but enforcement is not wired here. The security module's `se_access_check` has no call sites outside its own tests (see `security.md`).
+- Object security descriptors are attached with `ObSetObjectSecurityDescriptor` and are enforced only by `NtQuerySecurityObject`, `NtSetSecurityObject` and the access-check services in `security.c` (see `security.md`). `ObCreateObject` does not consume `OBJECT_ATTRIBUTES.SecurityDescriptor`, because the object never borrows a caller buffer of unknown length. Creation-time descriptors are therefore not applied yet.

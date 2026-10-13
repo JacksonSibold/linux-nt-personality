@@ -47,6 +47,15 @@ Access check and inheritance:
 - `NTSTATUS se_access_check(const SECURITY_DESCRIPTOR *sd, const ACCESS_TOKEN *token, ACCESS_MASK desired_access, const GENERIC_MAPPING *generic_mapping, enum ntsec_object_class object_class, ACCESS_MASK *granted_access)` - evaluate a DACL against a token and return the granted mask.
 - `NTSTATUS se_inherit_dacl(const PACL parent_dacl, BOOLEAN is_container, const GENERIC_MAPPING *generic_mapping, ...)` - compute a child DACL from a parent.
 
+Security services (`security.c`, service entry points `nt_svc_*`):
+
+- `NtQuerySecurityObject(Handle, SecurityInformation, SecurityDescriptor, Length, LengthNeeded)` - copies the OWNER, GROUP, DACL and SACL parts selected by `SecurityInformation` into a self-relative buffer. Needs READ_CONTROL on the handle and a token check on the object descriptor (SACL also needs ACCESS_SYSTEM_SECURITY). A short buffer returns `STATUS_BUFFER_TOO_SMALL` with the required length. An object with no descriptor returns an empty header.
+- `NtSetSecurityObject(Handle, SecurityInformation, SecurityDescriptor)` - replaces the selected parts and keeps the others. Needs WRITE_OWNER (owner, group), WRITE_DAC (DACL) or ACCESS_SYSTEM_SECURITY (SACL) on the handle and in the caller effective token. The new owner or primary group must be a SID the token holds. An object with no descriptor cannot be changed through this call.
+- `NtSetInformationToken(TokenHandle, Class, Information, Length)` - classes `TokenOwner`, `TokenPrimaryGroup` and `TokenDefaultDacl`, under TOKEN_ADJUST_DEFAULT. The token keeps its own copies. A default DACL must be canonical (DENY before ALLOW), or it is `STATUS_INVALID_ACL`. Other classes return `STATUS_INVALID_INFO_CLASS`.
+- `NtAccessCheckAndAuditAlarm(...)` - access check of the descriptor against the caller effective token (impersonation token first, else primary), through `se_access_check`. Audit is a documented no-op: no audit record is generated, `GenerateOnClose` is always FALSE, and the name strings and `ObjectCreation` are accepted and ignored.
+
+The object owner has READ_CONTROL and WRITE_DAC implicitly, as in NT. WRITE_OWNER and ACCESS_SYSTEM_SECURITY are not implicit.
+
 ## Key data structures
 
 - `struct _SID`, `struct _GUID`, `struct _LUID`, `struct _GENERIC_MAPPING`, `struct _ACL`, `struct _ACE_HEADER`, plus typed ACE structures (`ACCESS_ALLOWED_ACE`, `ACCESS_DENIED_ACE`, object ACEs, callback ACEs).
@@ -63,6 +72,6 @@ Access check and inheritance:
 
 ## Known gaps (evident in code)
 
-- No call sites for `se_access_check`, `token_create_primary`, `sd_create_absolute` or `se_inherit_dacl` exist outside `security.c`, `security.h` and the test files. The enforcement described in the header ("called ONLY on NT object create/open paths") is not wired into `object.c`, `handle.c`, `registry.c`, `io.c` or `mm.c` in this tree. `debugfs_tests.c` mentions the fail-closed check only in a comment.
+- `se_access_check` is called by the access-check and security-descriptor services above, and by `ntsec_object_access`. Object create and open paths in `object.c`, `handle.c`, `registry.c`, `io.c` and `mm.c` do not yet apply a descriptor. `token_create_primary`, `sd_create_absolute` and `se_inherit_dacl` are still used only in `security.c`, the test files and token creation.
 - The ACL capacity side table holds 256 entries. `acl_capacity_register` (`security.c:57-60`) silently drops registrations beyond that, so the lookup falls back to `AclSize` for those ACLs.
 - The module is unsynchronised (see above). Concurrent use of tokens, ACLs or the capacity table is unsafe.
