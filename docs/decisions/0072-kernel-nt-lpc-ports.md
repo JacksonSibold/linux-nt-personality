@@ -1,6 +1,6 @@
 # 0072: LPC ports (NtCreatePort family) are not implemented
 
-Status: Accepted. Option 1, limited to the scope below. Implemented in `src/kernel/nt/port.c` and `src/kernel/nt/port.h` (see the commit that adds them).
+Status: Accepted. Implemented in fa370b1 (port.c, port.h, build lists) and c81f7f4 (port_test.c, kernel-host Makefile).
 Finding: none in `docs/review/`. Gap found while listing services in `docs/status/SERVICES.md`: nine LPC services are MISSING (NtCreatePort, NtConnectPort, NtListenPort, NtAcceptConnectPort, NtCompleteConnectPort, NtRequestWaitReplyPort, NtReplyPort, NtReplyWaitReceivePort, NtReplyWaitReplyPort), and NtReplyWaitReceivePortEx is also missing.
 Date: 2026-10-12
 
@@ -58,3 +58,15 @@ Host tests in `tests/kernel-host/port_test.c` (LOCAL_TESTS), run by `make check-
 ## Not verified
 
 The kernel build (`vm/kbuild.sh`) is not run for this change, so `port.c` is checked only in the userspace shim build and the syntax check.
+
+## Implementation notes
+
+Deviations from the scope above, and what was found while implementing:
+
+- `NtReplyWaitReplyPort` performs the reply only. Version 1 has no server-initiated messages, so there is nothing to wait for after the reply.
+- The NT service signatures have no timeout or alertable argument. The timed and alertable forms are the internal `port_listen_wait` and `port_receive_wait`, which the tests use.
+- `NtReplyWaitReceivePortEx` is not implemented and stays MISSING in `docs/status/SERVICES.md`.
+- The service table gives `NtAcceptConnectPort` nine arguments. The NT signature has six, and the wrapper takes six.
+- The object manager keeps a named object in its directory after its last handle closes, so a named port is never freed. The host tests use one long-lived connection port so that the leak check measures only per-connection state.
+
+The module page is `docs/modules/port.md`.
