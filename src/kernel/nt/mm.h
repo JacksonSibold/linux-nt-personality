@@ -45,6 +45,7 @@
 #define MEM_RESET                       0x00080000UL
 #define MEM_LARGE_PAGES                 0x20000000UL
 #define MEM_PHYSICAL                    0x00400000UL
+#define MEM_REPLACE_PLACEHOLDER         0x00004000UL   /* NtMapViewOfSectionEx: refused */
 
 #ifdef PAGE_NOACCESS
 #undef PAGE_NOACCESS
@@ -312,6 +313,11 @@ NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                             SIZE_T CommitSize, PLARGE_INTEGER SectionOffset,
                             PSIZE_T ViewSize, ULONG InheritDisposition,
                             ULONG AllocationType, ULONG Win32Protect);
+NTSTATUS NtMapViewOfSectionEx(HANDLE SectionHandle, HANDLE ProcessHandle,
+                              PVOID *BaseAddress, PLARGE_INTEGER SectionOffset,
+                              PSIZE_T ViewSize, ULONG AllocationType,
+                              ULONG PageProtection, PVOID ExtendedParameters,
+                              ULONG ExtendedParameterCount);
 NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress);
 
 /* Service entry points for the section services (nt_service_list.h). The
@@ -336,6 +342,11 @@ NTSTATUS nt_svc_NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                                    SIZE_T CommitSize, PLARGE_INTEGER SectionOffset,
                                    PSIZE_T ViewSize, ULONG InheritDisposition,
                                    ULONG AllocationType, ULONG Win32Protect);
+NTSTATUS nt_svc_NtMapViewOfSectionEx(HANDLE SectionHandle, HANDLE ProcessHandle,
+                                     PVOID *BaseAddress, PLARGE_INTEGER SectionOffset,
+                                     PSIZE_T ViewSize, ULONG AllocationType,
+                                     ULONG PageProtection, PVOID ExtendedParameters,
+                                     ULONG ExtendedParameterCount);
 NTSTATUS nt_svc_NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress);
 NTSTATUS nt_svc_NtQuerySection(HANDLE SectionHandle, ULONG SectionInformationClass,
                                PVOID SectionInformation, SIZE_T SectionInformationLength,

@@ -2395,6 +2395,103 @@ static int test_ext_copy_in(void) {
     return 1;
 }
 
+/* ---- NtMapViewOfSectionEx ---- */
+
+/* Without parameters it is NtMapViewOfSection. Address requirements place the
+ * view inside [Lowest, Highest) at the requested alignment. Bad requirements,
+ * a placeholder flag and other parameter types are refused, and a window with
+ * no room is STATUS_NO_MEMORY. The window is taken from an existing view so the
+ * test does not depend on fixed host addresses. */
+static int test_map_ex(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE h = NULL;
+    NTSTATUS st = NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS, "mapex create 0x%lx", (unsigned long)st);
+    LARGE_INTEGER off; off.QuadPart = 0;
+
+    PVOID base1 = NULL; SIZE_T vs = 0;
+    st = NtMapViewOfSectionEx(h, (HANDLE)-1, &base1, &off, &vs, 0, PAGE_READWRITE, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS && base1 != NULL && vs == 0x2000, "mapex plain 0x%lx", (unsigned long)st);
+
+    ULONG_PTR b1 = (ULONG_PTR)base1;
+    MEM_ADDRESS_REQUIREMENTS rq;
+    memset(&rq, 0, sizeof(rq));
+    rq.LowestStartingAddress = (PVOID)(b1 + 0x100000);
+    rq.HighestEndingAddress = (PVOID)(b1 + 0x4000000);
+    rq.Alignment = 0x100000;
+    MEM_EXTENDED_PARAMETER ep = mk_ext(MemExtendedParameterAddressRequirements, 0);
+    ep.Pointer = &rq;
+
+    PVOID base2 = NULL; SIZE_T vs2 = 0;
+    st = NtMapViewOfSectionEx(h, (HANDLE)-1, &base2, &off, &vs2, 0, PAGE_READWRITE, &ep, 1);
+    ASSERT(st == STATUS_SUCCESS, "mapex requirements 0x%lx", (unsigned long)st);
+    ULONG_PTR b2 = (ULONG_PTR)base2;
+    ASSERT(b2 >= (ULONG_PTR)rq.LowestStartingAddress, "mapex honours lowest");
+    ASSERT(b2 + vs2 <= (ULONG_PTR)rq.HighestEndingAddress, "mapex honours highest");
+    ASSERT((b2 & (rq.Alignment - 1)) == 0, "mapex honours alignment");
+    ASSERT(vs2 == 0x2000, "mapex size 0x%zx", (size_t)vs2);
+
+    /* A window with no room: Lowest is the view just placed, Highest is its end.
+     * Nothing is written to the base. */
+    rq.LowestStartingAddress = (PVOID)b2;
+    rq.HighestEndingAddress = (PVOID)(b2 + 0x2000);
+    rq.Alignment = 0;
+    PVOID base3 = NULL; SIZE_T vs3 = 0;
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base3, &off, &vs3, 0, PAGE_READWRITE, &ep, 1) == STATUS_NO_MEMORY,
+           "mapex full window");
+    ASSERT(base3 == NULL, "full window base untouched");
+
+    /* Invalid requirements: a fixed base, bad alignment, empty window, null record. */
+    rq.LowestStartingAddress = (PVOID)(b1 + 0x100000);
+    rq.HighestEndingAddress = (PVOID)(b1 + 0x4000000);
+    rq.Alignment = 0x3000;
+    PVOID base4 = NULL; SIZE_T vs4 = 0x2000;
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, &ep, 1) == STATUS_INVALID_PARAMETER,
+           "mapex non-power-of-two alignment");
+    rq.Alignment = 0x800;
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, &ep, 1) == STATUS_INVALID_PARAMETER,
+           "mapex alignment below page");
+    rq.Alignment = 0x100000;
+    rq.LowestStartingAddress = (PVOID)0x5000000UL;
+    rq.HighestEndingAddress = (PVOID)0x4000000UL;
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, &ep, 1) == STATUS_INVALID_PARAMETER,
+           "mapex empty window");
+    rq.LowestStartingAddress = (PVOID)(b1 + 0x100000);
+    rq.HighestEndingAddress = (PVOID)(b1 + 0x4000000);
+    base4 = (PVOID)b1;
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, &ep, 1) == STATUS_INVALID_PARAMETER,
+           "mapex fixed base with requirements");
+    base4 = NULL;
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, NULL, 1) == STATUS_INVALID_PARAMETER,
+           "mapex null array");
+    MEM_EXTENDED_PARAMETER null_rec = mk_ext(MemExtendedParameterAddressRequirements, 0);
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, &null_rec, 1) == STATUS_INVALID_PARAMETER,
+           "mapex null requirements record");
+    ASSERT(base4 == NULL, "invalid requirements leave base untouched");
+
+    /* Other parameter types, the count limit and the placeholder flag. */
+    MEM_EXTENDED_PARAMETER numa = mk_ext(MemExtendedParameterNumaNode, 0);
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, &numa, 1) == STATUS_NOT_SUPPORTED,
+           "mapex numa not supported");
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, &ep, MEM_EXT_MAX_COUNT + 1) == STATUS_NOT_SUPPORTED,
+           "mapex count over max");
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, MEM_RESERVE | MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0)
+           == STATUS_NOT_SUPPORTED, "mapex replace placeholder refused");
+    ASSERT(base4 == NULL, "refused placeholder leaves base untouched");
+
+    /* The service entry point takes the same arguments. */
+    PVOID base5 = NULL; SIZE_T vs5 = 0;
+    st = nt_svc_NtMapViewOfSectionEx(h, (HANDLE)-1, &base5, &off, &vs5, 0, PAGE_READWRITE, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS && base5 != NULL, "svc mapex plain 0x%lx", (unsigned long)st);
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base5) == STATUS_SUCCESS, "svc mapex unmap");
+
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base2) == STATUS_SUCCESS, "mapex unmap requirements view");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base1) == STATUS_SUCCESS, "mapex unmap plain view");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "mapex close");
+    ntmm_reset();
+    return 1;
+}
+
 int main(void) {
     printf("=== ntmm tests ===\n");
     if (!mm_setup_objects()) {
@@ -2460,6 +2557,7 @@ int main(void) {
     RUN_TEST(test_nt_svc_extend_section);
     RUN_TEST(test_create_ex_params);
     RUN_TEST(test_ext_copy_in);
+    RUN_TEST(test_map_ex);
     ntmm_reset();
     ObDestroyProcessObject(g_mm_proc);
     ObCleanupObjectManager();

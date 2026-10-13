@@ -743,6 +743,112 @@ static void nt_coalesce_all(struct nt_mm *mm)
 #endif
 #endif /* __KERNEL__ shim vs rbtree */
 
+/* -------------------------------------------------------------------------- */
+/* Address requirements (MEM_ADDRESS_REQUIREMENTS)                            */
+/* -------------------------------------------------------------------------- */
+
+/* Placement limits from an address-requirements entry, already validated. */
+struct nt_addr_req {
+    ULONG_PTR low;      /* lowest allowed start, at least NTMM_LOW_ADDRESS */
+    ULONG_PTR high;     /* exclusive end bound, at most NTMM_HIGH_ADDRESS */
+    ULONG_PTR align;    /* power of two, at least the allocation granularity */
+    int present;
+};
+
+/* Validates the parameters of an NtXxxEx call and fills req. Only
+ * MemExtendedParameterAddressRequirements is honoured. Unknown and reserved
+ * entries are STATUS_INVALID_PARAMETER, other known types are
+ * STATUS_NOT_SUPPORTED, and a second requirements entry is
+ * STATUS_INVALID_PARAMETER. A zero HighestEndingAddress means no upper bound.
+ * An alignment of zero means the allocation granularity. */
+static NTSTATUS ntmm_parse_addr_req(const MEM_EXTENDED_PARAMETER *params, ULONG count,
+                                    struct nt_addr_req *req) {
+    ULONG i;
+    req->present = 0;
+    for (i = 0; i < count; i++) {
+        ULONG type = (ULONG)params[i].Type;
+        const MEM_ADDRESS_REQUIREMENTS *r;
+        ULONG_PTR low, high, align;
+        if (params[i].Reserved || type == MemExtendedParameterInvalidType ||
+            type >= MemExtendedParameterMax)
+            return STATUS_INVALID_PARAMETER;
+        if (type != MemExtendedParameterAddressRequirements) return STATUS_NOT_SUPPORTED;
+        if (req->present) return STATUS_INVALID_PARAMETER;
+        r = (const MEM_ADDRESS_REQUIREMENTS *)params[i].Pointer;
+        if (!r) return STATUS_INVALID_PARAMETER;
+        if (r->Alignment != 0 &&
+            (r->Alignment < NTMM_PAGE_SIZE || (r->Alignment & (r->Alignment - 1)) != 0))
+            return STATUS_INVALID_PARAMETER;
+        low = (ULONG_PTR)r->LowestStartingAddress;
+        high = r->HighestEndingAddress ? (ULONG_PTR)r->HighestEndingAddress : NTMM_HIGH_ADDRESS;
+        if (low < NTMM_LOW_ADDRESS) low = NTMM_LOW_ADDRESS;
+        if (high > NTMM_HIGH_ADDRESS) high = NTMM_HIGH_ADDRESS;
+        if (low >= high) return STATUS_INVALID_PARAMETER;
+        align = r->Alignment > NTMM_ALLOC_GRANULARITY ? (ULONG_PTR)r->Alignment : NTMM_ALLOC_GRANULARITY;
+        req->low = low;
+        req->high = high;
+        req->align = align;
+        req->present = 1;
+    }
+    return STATUS_SUCCESS;
+}
+
+/* Rounds x up to a multiple of align (a power of two). Returns 0 when the
+ * result would wrap. */
+static int ntmm_align_up_checked(ULONG_PTR x, ULONG_PTR align, ULONG_PTR *out) {
+    if (x > (ULONG_PTR)-1 - (align - 1)) return 0;
+    *out = (x + align - 1) & ~(align - 1);
+    return 1;
+}
+
+/* Finds a free, aligned hole of size bytes that lies entirely in [low, high).
+ * It uses only the VAD primitives both builds share, so it is the same
+ * algorithm on the list and on the tree. The caller holds the VAD lock. Returns
+ * 0 when no hole fits. Each step moves the candidate strictly past (or below) a
+ * VAD that overlaps it, so the loop ends. */
+static ULONG_PTR ntmm_find_hole_in(struct nt_mm *mm, ULONG_PTR size, ULONG_PTR align,
+                                   ULONG_PTR low, ULONG_PTR high, int top_down) {
+    ULONG_PTR cand;
+    if (size == 0 || high < low || size > high - low) return 0;
+    if (!top_down) {
+        if (!ntmm_align_up_checked(low, align, &cand)) return 0;
+        for (;;) {
+            struct nt_vad *v, *ge;
+            ULONG_PTR next;
+            if (cand > high || size > high - cand) return 0;
+            if (ntmm_range_free(mm, cand, cand + size)) return cand;
+            v = nt_vad_find(mm, cand);
+            if (v) {
+                next = v->end;
+            } else {
+                ge = nt_vad_find_ge(mm, cand);
+                if (!ge) return 0;
+                next = ge->end;
+            }
+            if (!ntmm_align_up_checked(next, align, &cand)) return 0;
+        }
+    }
+    /* Top down: start at the highest aligned slot that ends at or below high. */
+    if (high - size < low) return 0;
+    cand = (high - size) & ~(align - 1);
+    for (;;) {
+        struct nt_vad *v, *ge;
+        ULONG_PTR limit;
+        if (cand < low) return 0;
+        if (ntmm_range_free(mm, cand, cand + size)) return cand;
+        v = nt_vad_find(mm, cand);
+        if (v) {
+            limit = v->start;
+        } else {
+            ge = nt_vad_find_ge(mm, cand);
+            if (!ge) return 0;
+            limit = ge->start;
+        }
+        if (limit < size) return 0;
+        cand = (limit - size) & ~(align - 1);
+    }
+}
+
  /* -------------------------------------------------------------------------- */
 /* Init / destroy / reset / invariants                                        */
 /* -------------------------------------------------------------------------- */
@@ -2568,14 +2674,19 @@ static NTSTATUS nt_map_image_view(struct nt_section *sec, PVOID *BaseAddress,
 /* Maps a view of an open section. The caller holds a reference to sec. */
 static NTSTATUS nt_map_view_of_section(struct nt_section *sec, PVOID *BaseAddress,
                                        PLARGE_INTEGER SectionOffset, PSIZE_T ViewSize,
-                                       ULONG AllocationType, ULONG Win32Protect) {
+                                       ULONG AllocationType, ULONG Win32Protect,
+                                       const struct nt_addr_req *req) {
     struct nt_mm *mm = &g_nt_mm;
     ULONG_PTR offset = 0, base = 0, actual_size = 0;
     int commit;
+    int placed = req && req->present;
 #ifndef __KERNEL__
-    /* An image section maps as a whole image, with its own rules. */
-    if (sec->attributes & SEC_IMAGE)
+    /* An image section maps as a whole image, with its own rules. Its placement
+     * is not the data allocator's, so address requirements are refused for it. */
+    if (sec->attributes & SEC_IMAGE) {
+        if (placed) return STATUS_NOT_SUPPORTED;
         return nt_map_image_view(sec, BaseAddress, SectionOffset, ViewSize);
+    }
 #endif
     if (SectionOffset) offset = (ULONG_PTR)SectionOffset->QuadPart;
     /* A shared writable view writes to the file, so the section must be writable. */
@@ -2600,7 +2711,10 @@ static NTSTATUS nt_map_view_of_section(struct nt_section *sec, PVOID *BaseAddres
     if (sec->attributes & SEC_RESERVE) commit = 0;
     ntmm_lock(mm);
     if (*BaseAddress == NULL) {
-        base = ntmm_find_hole_bottom_up(mm, actual_size, NTMM_ALLOC_GRANULARITY);
+        if (placed)
+            base = ntmm_find_hole_in(mm, actual_size, req->align, req->low, req->high, 0);
+        else
+            base = ntmm_find_hole_bottom_up(mm, actual_size, NTMM_ALLOC_GRANULARITY);
         if (base == 0) { ntmm_unlock(mm); return STATUS_NO_MEMORY; }
     } else {
         base = ntmm_round_down((ULONG_PTR)*BaseAddress, NTMM_ALLOC_GRANULARITY);
@@ -2655,7 +2769,43 @@ NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                                    UserMode, nt_section_map_access(Win32Protect), &hdr, NULL);
     if (!NT_SUCCESS(st)) return st;
     st = nt_map_view_of_section((struct nt_section *)nt_object_body(hdr), BaseAddress,
-                                SectionOffset, ViewSize, AllocationType, Win32Protect);
+                                SectionOffset, ViewSize, AllocationType, Win32Protect, NULL);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+/* NtMapViewOfSectionEx. With no parameters it is NtMapViewOfSection. The
+ * address requirements place the view in [Lowest, Highest) at the requested
+ * alignment. The base must then be NULL, because the allocator chooses it. A
+ * placeholder replacement is STATUS_NOT_SUPPORTED. The process handle is
+ * ignored here, as in NtMapViewOfSection. */
+NTSTATUS NtMapViewOfSectionEx(HANDLE SectionHandle, HANDLE ProcessHandle,
+                              PVOID *BaseAddress, PLARGE_INTEGER SectionOffset,
+                              PSIZE_T ViewSize, ULONG AllocationType,
+                              ULONG PageProtection, PVOID ExtendedParameters,
+                              ULONG ExtendedParameterCount) {
+    struct nt_object_header *hdr = NULL;
+    struct nt_addr_req req;
+    NTSTATUS st;
+    (void)ProcessHandle;
+    req.present = 0;
+    if (!BaseAddress || !ViewSize) return STATUS_INVALID_PARAMETER;
+    if (AllocationType & MEM_REPLACE_PLACEHOLDER) return STATUS_NOT_SUPPORTED;
+    if (!ntmm_protection_valid(PageProtection)) return STATUS_INVALID_PAGE_PROTECTION;
+    if (ExtendedParameterCount != 0) {
+        if (!ExtendedParameters) return STATUS_INVALID_PARAMETER;
+        if (ExtendedParameterCount > MEM_EXT_MAX_COUNT) return STATUS_NOT_SUPPORTED;
+        st = ntmm_parse_addr_req((const MEM_EXTENDED_PARAMETER *)ExtendedParameters,
+                                 ExtendedParameterCount, &req);
+        if (!NT_SUCCESS(st)) return st;
+    }
+    if (req.present && *BaseAddress != NULL) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(kshim_current_process(), SectionHandle, &nt_section_type,
+                                   UserMode, nt_section_map_access(PageProtection), &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    st = nt_map_view_of_section((struct nt_section *)nt_object_body(hdr), BaseAddress,
+                                SectionOffset, ViewSize, AllocationType, PageProtection,
+                                req.present ? &req : NULL);
     ObDereferenceObject(hdr);
     return st;
 }
@@ -2919,6 +3069,16 @@ NTSTATUS nt_svc_NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                               SectionOffset, ViewSize, InheritDisposition, AllocationType, Win32Protect);
 }
 
+NTSTATUS nt_svc_NtMapViewOfSectionEx(HANDLE SectionHandle, HANDLE ProcessHandle,
+                                     PVOID *BaseAddress, PLARGE_INTEGER SectionOffset,
+                                     PSIZE_T ViewSize, ULONG AllocationType,
+                                     ULONG PageProtection, PVOID ExtendedParameters,
+                                     ULONG ExtendedParameterCount) {
+    return NtMapViewOfSectionEx(SectionHandle, ProcessHandle, BaseAddress, SectionOffset,
+                                ViewSize, AllocationType, PageProtection,
+                                ExtendedParameters, ExtendedParameterCount);
+}
+
 NTSTATUS nt_svc_NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
     return NtUnmapViewOfSection(ProcessHandle, BaseAddress);
 }
@@ -2961,6 +3121,52 @@ NTSTATUS nt_svc_NtMapViewOfSection(unsigned long a0, unsigned long a1, unsigned 
     }
     st = NtMapViewOfSection(SectionHandle, ProcessHandle, &kbase, ZeroBits, CommitSize,
                             poff, &ksize, InheritDisposition, AllocationType, Win32Protect);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(BaseAddress, &kbase, sizeof(kbase)) ||
+        copy_to_user(ViewSize, &ksize, sizeof(ksize))) {
+        NtUnmapViewOfSection(ProcessHandle, kbase);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return st;
+}
+
+/* NtMapViewOfSectionEx: the base, offset and size are copied in as for
+ * NtMapViewOfSection, and the extended-parameter array is copied in once
+ * (ntmm_ext_copy_in). A view that maps but cannot be reported is unmapped. */
+NTSTATUS nt_svc_NtMapViewOfSectionEx(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                     unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                     unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE SectionHandle = (HANDLE)a0;
+    HANDLE ProcessHandle = (HANDLE)a1;
+    PVOID *BaseAddress = (PVOID *)a2;
+    PLARGE_INTEGER SectionOffset = (PLARGE_INTEGER)a3;
+    PSIZE_T ViewSize = (PSIZE_T)a4;
+    ULONG AllocationType = (ULONG)a5;
+    ULONG PageProtection = (ULONG)a6;
+    PVOID ExtendedParameters = (PVOID)a7;
+    ULONG ExtendedParameterCount = (ULONG)a8;
+    struct nt_mem_ext_snapshot snap;
+    PVOID kbase;
+    SIZE_T ksize;
+    LARGE_INTEGER koff;
+    PLARGE_INTEGER poff = NULL;
+    NTSTATUS st;
+    (void)a9; (void)a10; (void)a11;
+    if (!BaseAddress || !ViewSize) return STATUS_INVALID_PARAMETER;
+    if (!access_ok(BaseAddress, sizeof(PVOID)) || !access_ok(ViewSize, sizeof(SIZE_T)))
+        return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(&kbase, BaseAddress, sizeof(kbase))) return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(&ksize, ViewSize, sizeof(ksize))) return STATUS_ACCESS_VIOLATION;
+    if (SectionOffset) {
+        if (!access_ok(SectionOffset, sizeof(*SectionOffset))) return STATUS_ACCESS_VIOLATION;
+        if (copy_from_user(&koff, SectionOffset, sizeof(koff))) return STATUS_ACCESS_VIOLATION;
+        poff = &koff;
+    }
+    st = ntmm_ext_copy_in(ExtendedParameters, ExtendedParameterCount, &snap);
+    if (!NT_SUCCESS(st)) return st;
+    st = NtMapViewOfSectionEx(SectionHandle, ProcessHandle, &kbase, poff, &ksize,
+                              AllocationType, PageProtection, snap.params, snap.count);
     if (!NT_SUCCESS(st)) return st;
     if (copy_to_user(BaseAddress, &kbase, sizeof(kbase)) ||
         copy_to_user(ViewSize, &ksize, sizeof(ksize))) {
