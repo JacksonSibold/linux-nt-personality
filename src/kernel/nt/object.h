@@ -361,6 +361,12 @@ struct nt_eprocess {
     /* Primary access token (one reference held). Created with the process
      * and released in ObDestroyProcessObject. */
     struct _ACCESS_TOKEN    *primary_token;
+    /* Process information set state (NtSetInformationProcess). Added at the
+     * end of the struct; defaults are set in ObCreateProcessObject. */
+    UCHAR                    priority_class;        /* PROCESS_PRIORITY_CLASS_*, default NORMAL */
+    BOOLEAN                  priority_foreground;   /* PROCESS_PRIORITY_CLASS.Foreground */
+    ULONG                    default_hard_error_mode; /* SEM_* flags */
+    BOOLEAN                  break_on_termination;  /* ProcessBreakOnTermination */
 };
 
 struct nt_ethread {

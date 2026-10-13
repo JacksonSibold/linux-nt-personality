@@ -12,6 +12,7 @@
 #include "handle.h"
 #include "proc_thread.h"
 #include "sync.h"
+#include "security.h"
 #include "kshim.h"
 #include "../../ntdll/nt_types.h"
 #include "../../ntdll/ntstatus.h"
@@ -518,6 +519,262 @@ static void test_alert_resume_thread(void){
     PASS();
 }
 
+/* ---- NtSetInformationProcess: priority classes (ProcessBasePriority 5,
+ * ProcessPriorityClass 18). Set-only base priority; the class is set/query. ---- */
+#define PT_TEST_PROC_QUERY 0x0400   /* PROCESS_QUERY_INFORMATION */
+#define PT_TEST_PRIO_HIGH     3
+#define PT_TEST_PRIO_REALTIME 4
+#define PT_TEST_PRIO_NORMAL   2
+typedef struct { BOOLEAN Foreground; UCHAR PriorityClass; } PT_TEST_PRIORITY_CLASS;
+
+/* Token with (or without) one privilege, for the privilege-gated classes. */
+static struct _ACCESS_TOKEN *pt_test_make_token(ULONG privilege, BOOLEAN with_privilege)
+{
+    PSID user = NULL;
+    LUID_AND_ATTRIBUTES priv;
+    struct _ACCESS_TOKEN *tok = NULL;
+    if (sid_from_string("S-1-5-21-0-0-0-1000", &user) != STATUS_SUCCESS)
+        return NULL;
+    priv.Luid.LowPart = privilege;
+    priv.Luid.HighPart = 0;
+    priv.Attributes = SE_PRIVILEGE_ENABLED;
+    tok = token_create_primary(user, NULL, 0, with_privilege ? &priv : NULL,
+                               with_privilege ? 1 : 0, NULL, NULL, NULL, NULL, 0);
+    sid_free(user);
+    return tok;
+}
+
+static void pt_test_set_token(struct nt_eprocess *proc, struct _ACCESS_TOKEN *tok)
+{
+    if (proc->primary_token)
+        token_dereference(proc->primary_token);
+    proc->primary_token = tok;
+}
+
+/* A process handle that grants PROCESS_QUERY_INFORMATION but not SET. */
+static NTSTATUS open_query_only_process(HANDLE *out)
+{
+    HANDLE ph = NULL;
+    PROCESS_BASIC_INFORMATION pbi; ULONG ret = 0;
+    NTSTATUS st = nt_svc_NtCreateProcessEx(&ph, 0, NULL, NtCurrentProcess(), 0, NULL, NULL, NULL, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    nt_svc_NtQueryInformationProcess(ph, 0, &pbi, 48, &ret);
+    CLIENT_ID cid; cid.UniqueProcess = pbi.UniqueProcessId; cid.UniqueThread = 0;
+    st = nt_svc_NtOpenProcess(out, PT_TEST_PROC_QUERY, NULL, &cid);
+    ObCloseHandle(kshim_current_process(), ph);   /* the creating handle is not needed */
+    return st;
+}
+
+static void test_set_process_base_priority(void){
+    setup_proc();
+    LONG pri; NTSTATUS s; ULONG ret = 0;
+    PROCESS_BASIC_INFORMATION pbi;
+    /* ProcessBasePriority takes exactly one LONG */
+    pri = 5;
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 5, &pri, 8);
+    ASSERT(s == STATUS_INFO_LENGTH_MISMATCH);
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 5, NULL, 4);
+    ASSERT(s == STATUS_INVALID_PARAMETER);
+    /* Values are clamped to the 0..31 priority range and stored */
+    pri = 40; s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 5, &pri, 4);
+    ASSERT(s == STATUS_SUCCESS);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 0, &pbi, 48, &ret);
+    ASSERT(s == STATUS_SUCCESS && pbi.BasePriority == 31);
+    pri = -7; s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 5, &pri, 4);
+    ASSERT(s == STATUS_SUCCESS);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 0, &pbi, 48, &ret);
+    ASSERT(s == STATUS_SUCCESS && pbi.BasePriority == 0);
+    pri = 6; s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 5, &pri, 4);
+    ASSERT(s == STATUS_SUCCESS);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 0, &pbi, 48, &ret);
+    ASSERT(s == STATUS_SUCCESS && pbi.BasePriority == 6);
+    /* A handle without PROCESS_SET_INFORMATION is refused */
+    HANDLE qh = NULL;
+    s = open_query_only_process(&qh);
+    ASSERT(NT_SUCCESS(s));
+    pri = 9; s = nt_svc_NtSetInformationProcess(qh, 5, &pri, 4);
+    ASSERT(s == STATUS_ACCESS_DENIED);
+    s = nt_svc_NtQueryInformationProcess(qh, 0, &pbi, 48, &ret);
+    ASSERT(s == STATUS_SUCCESS && pbi.BasePriority == 8);   /* new process default */
+    ObCloseHandle(kshim_current_process(), qh);
+    /* ProcessBasePriority is set-only */
+    LONG qbuf = 0;
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 5, &qbuf, 4, &ret);
+    ASSERT(s == STATUS_INVALID_INFO_CLASS);
+    PASS();
+}
+
+static void test_set_process_priority_class(void){
+    setup_proc();
+    struct nt_eprocess *cur = kshim_current_process();
+    PT_TEST_PRIORITY_CLASS pc; NTSTATUS s; ULONG ret = 0;
+    PT_TEST_PRIORITY_CLASS qpc; PROCESS_BASIC_INFORMATION pbi;
+    /* PROCESS_PRIORITY_CLASS is exactly two bytes */
+    pc.Foreground = 0; pc.PriorityClass = PT_TEST_PRIO_HIGH;
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 18, &pc, 4);
+    ASSERT(s == STATUS_INFO_LENGTH_MISMATCH);
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 18, NULL, 2);
+    ASSERT(s == STATUS_INVALID_PARAMETER);
+    /* Unknown classes are invalid parameters */
+    pc.PriorityClass = 0; s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 18, &pc, 2);
+    ASSERT(s == STATUS_INVALID_PARAMETER);
+    pc.PriorityClass = 7; s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 18, &pc, 2);
+    ASSERT(s == STATUS_INVALID_PARAMETER);
+    /* Query before any set reports NORMAL */
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 18, &qpc, 2, &ret);
+    ASSERT(s == STATUS_SUCCESS && qpc.PriorityClass == PT_TEST_PRIO_NORMAL && ret == 2);
+    /* A valid HIGH set maps to base priority 13 and is reported back */
+    pc.Foreground = 1; pc.PriorityClass = PT_TEST_PRIO_HIGH;
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 18, &pc, 2);
+    ASSERT(s == STATUS_SUCCESS);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 18, &qpc, 2, &ret);
+    ASSERT(s == STATUS_SUCCESS && qpc.PriorityClass == PT_TEST_PRIO_HIGH && qpc.Foreground == 1);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 0, &pbi, 48, &ret);
+    ASSERT(s == STATUS_SUCCESS && pbi.BasePriority == 13);
+    /* REALTIME needs SeIncreaseBasePriority: refused without the privilege,
+     * and a refused set changes neither the class nor the base priority */
+    pc.Foreground = 0; pc.PriorityClass = PT_TEST_PRIO_REALTIME;
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 18, &pc, 2);
+    ASSERT(s == STATUS_PRIVILEGE_NOT_HELD);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 18, &qpc, 2, &ret);
+    ASSERT(s == STATUS_SUCCESS && qpc.PriorityClass == PT_TEST_PRIO_HIGH);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 0, &pbi, 48, &ret);
+    ASSERT(s == STATUS_SUCCESS && pbi.BasePriority == 13);
+    /* With the privilege REALTIME is accepted */
+    pt_test_set_token(cur, pt_test_make_token(SE_INC_BASE_PRIORITY_PRIVILEGE, TRUE));
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 18, &pc, 2);
+    ASSERT(s == STATUS_SUCCESS);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 18, &qpc, 2, &ret);
+    ASSERT(s == STATUS_SUCCESS && qpc.PriorityClass == PT_TEST_PRIO_REALTIME);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 0, &pbi, 48, &ret);
+    ASSERT(s == STATUS_SUCCESS && pbi.BasePriority == 24);
+    /* A handle without PROCESS_SET_INFORMATION is refused */
+    HANDLE qh = NULL;
+    s = open_query_only_process(&qh);
+    ASSERT(NT_SUCCESS(s));
+    pc.PriorityClass = PT_TEST_PRIO_NORMAL;
+    s = nt_svc_NtSetInformationProcess(qh, 18, &pc, 2);
+    ASSERT(s == STATUS_ACCESS_DENIED);
+    ObCloseHandle(cur, qh);
+    PASS();
+}
+
+/* ---- NtSetInformationProcess: affinity, hard error mode, break on
+ * termination, refused classes ---- */
+static void test_set_process_affinity(void){
+    setup_proc();
+    ULONG_PTR mask; NTSTATUS s; ULONG ret = 0;
+    PROCESS_BASIC_INFORMATION pbi;
+    /* ProcessAffinityMask takes exactly one ULONG_PTR */
+    mask = 0x3;
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 21, &mask, 4);
+    ASSERT(s == STATUS_INFO_LENGTH_MISMATCH);
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 21, NULL, sizeof(ULONG_PTR));
+    ASSERT(s == STATUS_INVALID_PARAMETER);
+    /* Empty mask, and a bit outside the system mask (0xFF), are invalid */
+    mask = 0;
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 21, &mask, sizeof(ULONG_PTR));
+    ASSERT(s == STATUS_INVALID_PARAMETER);
+    mask = 0x100;
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 21, &mask, sizeof(ULONG_PTR));
+    ASSERT(s == STATUS_INVALID_PARAMETER);
+    /* A rejected value leaves the stored mask alone (new process: 0xFF) */
+    ULONG_PTR qmask = 0;
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 21, &qmask, sizeof(ULONG_PTR), &ret);
+    ASSERT(s == STATUS_SUCCESS && qmask == 0xFF && ret == sizeof(ULONG_PTR));
+    /* A valid subset is stored and reported by both queries */
+    mask = 0x3;
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 21, &mask, sizeof(ULONG_PTR));
+    ASSERT(s == STATUS_SUCCESS);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 21, &qmask, sizeof(ULONG_PTR), &ret);
+    ASSERT(s == STATUS_SUCCESS && qmask == 0x3);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 0, &pbi, 48, &ret);
+    ASSERT(s == STATUS_SUCCESS && pbi.AffinityMask == 0x3);
+    /* Query length must match exactly */
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 21, &qmask, 4, &ret);
+    ASSERT(s == STATUS_INFO_LENGTH_MISMATCH);
+    /* A handle without PROCESS_SET_INFORMATION is refused */
+    HANDLE qh = NULL;
+    s = open_query_only_process(&qh);
+    ASSERT(NT_SUCCESS(s));
+    mask = 0x1;
+    s = nt_svc_NtSetInformationProcess(qh, 21, &mask, sizeof(ULONG_PTR));
+    ASSERT(s == STATUS_ACCESS_DENIED);
+    ObCloseHandle(kshim_current_process(), qh);
+    PASS();
+}
+
+static void test_set_process_hard_error_mode(void){
+    setup_proc();
+    ULONG mode; NTSTATUS s; ULONG ret = 0; ULONG q = 0xFFFF;
+    /* ProcessDefaultHardErrorMode takes exactly one ULONG */
+    mode = 1;
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 12, &mode, 2);
+    ASSERT(s == STATUS_INFO_LENGTH_MISMATCH);
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 12, NULL, 4);
+    ASSERT(s == STATUS_INVALID_PARAMETER);
+    /* New process reports 0 */
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 12, &q, 4, &ret);
+    ASSERT(s == STATUS_SUCCESS && q == 0 && ret == 4);
+    /* Stored flags are reported back unchanged */
+    mode = 0x8003;   /* SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX */
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 12, &mode, 4);
+    ASSERT(s == STATUS_SUCCESS);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 12, &q, 4, &ret);
+    ASSERT(s == STATUS_SUCCESS && q == 0x8003);
+    /* A query-only handle is refused and the stored value is kept */
+    HANDLE qh = NULL;
+    s = open_query_only_process(&qh);
+    ASSERT(NT_SUCCESS(s));
+    mode = 0;
+    s = nt_svc_NtSetInformationProcess(qh, 12, &mode, 4);
+    ASSERT(s == STATUS_ACCESS_DENIED);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 12, &q, 4, &ret);
+    ASSERT(s == STATUS_SUCCESS && q == 0x8003);
+    ObCloseHandle(kshim_current_process(), qh);
+    PASS();
+}
+
+static void test_set_process_break_on_termination(void){
+    setup_proc();
+    struct nt_eprocess *cur = kshim_current_process();
+    ULONG flag; NTSTATUS s; ULONG ret = 0; ULONG q = 0xFFFF;
+    /* ProcessBreakOnTermination takes exactly one ULONG */
+    flag = 1;
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 29, &flag, 2);
+    ASSERT(s == STATUS_INFO_LENGTH_MISMATCH);
+    /* Without SeDebugPrivilege the set is refused and nothing is stored */
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 29, &flag, 4);
+    ASSERT(s == STATUS_PRIVILEGE_NOT_HELD);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 29, &q, 4, &ret);
+    ASSERT(s == STATUS_SUCCESS && q == 0);
+    /* With the privilege a nonzero value is stored as 1, and zero clears it */
+    pt_test_set_token(cur, pt_test_make_token(SE_DEBUG_PRIVILEGE, TRUE));
+    flag = 0x55;
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 29, &flag, 4);
+    ASSERT(s == STATUS_SUCCESS);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 29, &q, 4, &ret);
+    ASSERT(s == STATUS_SUCCESS && q == 1);
+    flag = 0;
+    s = nt_svc_NtSetInformationProcess(NtCurrentProcess(), 29, &flag, 4);
+    ASSERT(s == STATUS_SUCCESS);
+    s = nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 29, &q, 4, &ret);
+    ASSERT(s == STATUS_SUCCESS && q == 0);
+    PASS();
+}
+
+/* Classes that are refused: handle tracing (STATUS_NOT_SUPPORTED); the
+ * foreground and Wx86 classes and unknown numbers (STATUS_INVALID_INFO_CLASS). */
+static void test_set_process_refused_classes(void){
+    setup_proc();
+    ULONG buf[2] = {0, 0};
+    ASSERT(nt_svc_NtSetInformationProcess(NtCurrentProcess(), 32, buf, 4) == STATUS_NOT_SUPPORTED);
+    ASSERT(nt_svc_NtSetInformationProcess(NtCurrentProcess(), 25, buf, 2) == STATUS_INVALID_INFO_CLASS);
+    ASSERT(nt_svc_NtSetInformationProcess(NtCurrentProcess(), 19, buf, 4) == STATUS_INVALID_INFO_CLASS);
+    ASSERT(nt_svc_NtSetInformationProcess(NtCurrentProcess(), 9999, buf, 4) == STATUS_INVALID_INFO_CLASS);
+    PASS();
+}
+
 int main(void){
     printf("proc_thread tests\n");
     RUN(test_thread_create_join);
@@ -537,6 +794,12 @@ int main(void){
     RUN(test_alert_resume_thread);
     RUN(test_process_terminate_twice);
     RUN(test_open_bad_cid);
+    RUN(test_set_process_base_priority);
+    RUN(test_set_process_priority_class);
+    RUN(test_set_process_affinity);
+    RUN(test_set_process_hard_error_mode);
+    RUN(test_set_process_break_on_termination);
+    RUN(test_set_process_refused_classes);
     printf("proc_thread tests: %d passed, %d failed\n", g_pass, g_fail);
     long leaks=atomic_load(&kshim_alloc_count);
     printf("leaks %ld\n", leaks);
