@@ -1812,6 +1812,35 @@ TEST(query_volume_device)
 	PASS();
 }
 
+/* No volume information can be set: valid classes are not implemented and
+ * unknown classes are invalid. */
+TEST(set_volume_unsupported)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	FILE_FS_DEVICE_INFORMATION di = { 0, 0 };
+
+	reset_state();
+	ASSERT(write_file_at("setvol.txt", "x"));
+	ASSERT_STATUS(open_test_file("setvol.txt", FILE_GENERIC_READ, FILE_SHARE_READ,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtSetVolumeInformationFile(h, &iosb, &di, sizeof(di),
+							FileFsLabelInformation),
+		      STATUS_NOT_IMPLEMENTED);
+	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_NOT_IMPLEMENTED);
+	ASSERT_STATUS(nt_svc_NtSetVolumeInformationFile(h, &iosb, &di, sizeof(di), 99),
+		      STATUS_INVALID_INFO_CLASS);
+	ASSERT_STATUS(nt_svc_NtSetVolumeInformationFile(NULL, &iosb, &di, sizeof(di),
+							FileFsLabelInformation),
+		      STATUS_INVALID_HANDLE);
+	ASSERT_STATUS(nt_svc_NtSetVolumeInformationFile(h, NULL, &di, sizeof(di),
+							FileFsLabelInformation),
+		      STATUS_ACCESS_VIOLATION);
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 /* NtOpenIoCompletion: names are not registered by NtCreateIoCompletion in
  * this build, so every name lookup misses. The NULL object-attributes case
  * is rejected before any lookup. */
@@ -1923,6 +1952,7 @@ int main(void)
 	RUN(byte_range_locks);
 	RUN(query_directory_scan);
 	RUN(query_volume_device);
+	RUN(set_volume_unsupported);
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);
 

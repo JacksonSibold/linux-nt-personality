@@ -3852,6 +3852,41 @@ NTSTATUS nt_svc_NtQueryVolumeInformationFile(HANDLE FileHandle,
 	return ntio_complete_iosb_info(IoStatusBlock, status, 0);
 }
 
+/*
+ * NtSetVolumeInformationFile. No volume information can be set in this build.
+ * Valid classes return STATUS_NOT_IMPLEMENTED, and unknown classes return
+ * STATUS_INVALID_INFO_CLASS.
+ */
+NTSTATUS nt_svc_NtSetVolumeInformationFile(HANDLE FileHandle,
+					   PIO_STATUS_BLOCK __user IoStatusBlock,
+					   PVOID __user FsInformation, ULONG Length,
+					   ULONG FsInformationClass)
+{
+	struct nt_file_object *file;
+	NTSTATUS status;
+
+	(void)FsInformation;
+	(void)Length;
+
+	if (!IoStatusBlock)
+		return STATUS_ACCESS_VIOLATION;
+#ifdef __KERNEL__
+	if (!access_ok(IoStatusBlock, sizeof(IO_STATUS_BLOCK)))
+		return STATUS_ACCESS_VIOLATION;
+#endif
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb_info(IoStatusBlock, STATUS_INVALID_HANDLE, 0);
+	ntio_file_put(file);
+
+	if (FsInformationClass >= FileFsVolumeInformation &&
+	    FsInformationClass <= FileFsDataCopyInformation)
+		status = STATUS_NOT_IMPLEMENTED;
+	else
+		status = STATUS_INVALID_INFO_CLASS;
+	return ntio_complete_iosb_info(IoStatusBlock, status, 0);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Module init / fini (userspace shim)                                          */
 /* -------------------------------------------------------------------------- */

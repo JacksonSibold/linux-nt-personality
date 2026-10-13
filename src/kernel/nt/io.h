@@ -557,6 +557,11 @@ NTSTATUS nt_svc_NtQueryVolumeInformationFile(HANDLE FileHandle,
 					       PVOID FsInformation, ULONG Length,
 					       ULONG FsInformationClass);
 
+NTSTATUS nt_svc_NtSetVolumeInformationFile(HANDLE FileHandle,
+					     PIO_STATUS_BLOCK IoStatusBlock,
+					     PVOID FsInformation, ULONG Length,
+					     ULONG FsInformationClass);
+
 NTSTATUS nt_svc_NtQueryEaFile(HANDLE FileHandle,
 			      PIO_STATUS_BLOCK IoStatusBlock,
 			      PVOID Buffer, ULONG Length,
