@@ -906,6 +906,18 @@ NTSTATUS sd_from_self_relative(const void *sr_buffer, ULONG sr_length, SECURITY_
 /* Token                                                                       */
 /* -------------------------------------------------------------------------- */
 
+/* Token ids: a LUID from a counter that only increases. The id must not be derived from
+ * the token's address, which would disclose kernel address bits to user mode. */
+static LUID ntsec_next_token_id(void)
+{
+    static unsigned long long next_id;
+    unsigned long long id = __atomic_add_fetch(&next_id, 1, __ATOMIC_SEQ_CST);
+    LUID luid;
+    luid.LowPart = (ULONG)(id & 0xFFFFFFFFULL);
+    luid.HighPart = (LONG)(id >> 32);
+    return luid;
+}
+
 ACCESS_TOKEN *token_create_primary(PSID user,
                                    const SID_AND_ATTRIBUTES *groups,
                                    ULONG group_count,
@@ -922,6 +934,7 @@ ACCESS_TOKEN *token_create_primary(PSID user,
     ACCESS_TOKEN *tok = (ACCESS_TOKEN *)kzalloc(sizeof(ACCESS_TOKEN), GFP_KERNEL);
     if (!tok) return NULL;
     tok->ref_count = 1;
+    tok->token_id = ntsec_next_token_id();
     tok->token_type = TokenPrimary;
     tok->impersonation_level = SecurityAnonymous;
     tok->user = sid_dup(user);
@@ -1057,6 +1070,7 @@ ACCESS_TOKEN *token_duplicate(const ACCESS_TOKEN *src)
     ACCESS_TOKEN *tok = (ACCESS_TOKEN *)kzalloc(sizeof(ACCESS_TOKEN), GFP_KERNEL);
     if (!tok) return NULL;
     tok->ref_count = 1;
+    tok->token_id = ntsec_next_token_id();
     tok->token_type = src->token_type;
     tok->impersonation_level = src->impersonation_level;
     tok->user = sid_dup(src->user);
@@ -2170,8 +2184,7 @@ static NTSTATUS ntsec_fill_token_info(const ACCESS_TOKEN *tok, ULONG cls, struct
         if (c->buf) {
             struct ntsec_token_stats *st = (struct ntsec_token_stats *)(c->buf + h);
             memset(st, 0, sizeof(*st));
-            /* The token has no id counter of its own: its address stands in. */
-            st->TokenId.LowPart = (ULONG)(uintptr_t)tok;
+            st->TokenId = tok->token_id;
             st->TokenType = (ULONG)tok->token_type;
             st->ImpersonationLevel = (ULONG)tok->impersonation_level;
             st->GroupCount = tok->group_count;
@@ -2499,6 +2512,17 @@ static NTSTATUS ntsec_privilege_check_core(HANDLE h, ULONG count, ULONG control,
 /* Walks a self-relative SD and returns the byte length it occupies. */
 #define NTSEC_SD_MAX_LENGTH (64U * 1024U)
 
+/* Grows *total to cover [off, off + size). The end is summed in 64 bits, so an offset near
+ * ULONG_MAX cannot wrap into a small length. A result past NTSEC_SD_MAX_LENGTH is refused
+ * and *total is left unchanged. */
+NTSTATUS ntsec_sr_extend(ULONG *total, ULONG off, ULONG size)
+{
+    unsigned long long end = (unsigned long long)off + size;
+    if (end > NTSEC_SD_MAX_LENGTH) return STATUS_INVALID_SECURITY_DESCR;
+    if (end > *total) *total = (ULONG)end;
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS ntsec_sr_length(const void *base, ULONG *out)
 {
     SECURITY_DESCRIPTOR_RELATIVE hdr;
@@ -2527,9 +2551,9 @@ static NTSTATUS ntsec_sr_length(const void *base, ULONG *out)
             if (a.AclSize < sizeof(ACL)) return STATUS_INVALID_ACL;
             size = a.AclSize;
         }
-        if ((unsigned long long)offs[i] + size > total) total = (ULONG)(offs[i] + size);
+        st = ntsec_sr_extend(&total, offs[i], size);
+        if (!NT_SUCCESS(st)) return st;
     }
-    if (total > NTSEC_SD_MAX_LENGTH) return STATUS_INVALID_SECURITY_DESCR;
     *out = total;
     return STATUS_SUCCESS;
 }

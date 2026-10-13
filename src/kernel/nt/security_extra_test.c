@@ -555,6 +555,52 @@ TEST(query_token_owner_group_type_stats_session_il)
     PASS();
 }
 
+/* TokenStatistics TokenId is a LUID from a counter: it must not be the token's
+ * address (the old value leaked the low bits of a kernel pointer). Ids are
+ * distinct and increase from one token to a later duplicate. */
+struct tstats_view {
+    ULONG IdLow; LONG IdHigh;
+    ULONG AuthLow; LONG AuthHigh;
+    long long Expiration;
+    ULONG TokenType; ULONG ImpLevel; ULONG DynCharged; ULONG DynAvail;
+    ULONG GroupCount; ULONG PrivilegeCount;
+    ULONG ModLow; LONG ModHigh;
+};
+
+static unsigned long long token_stats_id(HANDLE h)
+{
+    unsigned char buf[sizeof(struct tstats_view)];
+    ULONG ret = 0;
+    struct tstats_view v;
+    if (!NT_SUCCESS(query_token(h, TokenStatistics, buf, sizeof(buf), &ret))) return 0;
+    memcpy(&v, buf, sizeof(v));
+    return ((unsigned long long)(ULONG)v.IdHigh << 32) | v.IdLow;
+}
+
+TEST(token_statistics_id_is_counter_not_address)
+{
+    struct nt_eprocess *caller = make_current_process("tid_caller");
+    ASSERT(caller != NULL);
+    ACCESS_TOKEN *a = make_rich_token();
+    ASSERT(a != NULL);
+    ULONG a_low_addr = (ULONG)(uintptr_t)a;
+    HANDLE ha = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, a, TOKEN_QUERY, 0, &ha), STATUS_SUCCESS);
+    ACCESS_TOKEN *b = token_duplicate(a);
+    ASSERT(b != NULL);
+    HANDLE hb = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, b, TOKEN_QUERY, 0, &hb), STATUS_SUCCESS);
+    token_dereference(a);
+    token_dereference(b);
+
+    unsigned long long id_a = token_stats_id(ha);
+    unsigned long long id_b = token_stats_id(hb);
+    ASSERT(id_a != 0);
+    ASSERT((ULONG)id_a != a_low_addr);
+    ASSERT(id_b > id_a);
+    PASS();
+}
+
 TEST(query_token_buffer_and_errors)
 {
     struct nt_eprocess *caller = make_current_process("qtk_err");
@@ -958,6 +1004,25 @@ static void *make_allow_sd(const char *user_sid, ACCESS_MASK allow_mask, ULONG *
     acl_free(dacl);
     sid_free(u);
     return buf;
+}
+
+/* ntsec_sr_extend: the running length of a self-relative descriptor is computed in 64 bits.
+ * An offset near ULONG_MAX must not wrap into a small length. The host cannot reach this
+ * through NtAccessCheck (the component read at the offset faults first), so the arithmetic
+ * is tested directly. 64 KiB is NTSEC_SD_MAX_LENGTH. */
+TEST(sr_extend_refuses_ulong_wrap)
+{
+    ULONG total = 0x14;
+    ASSERT_STATUS(ntsec_sr_extend(&total, 0x14, 0x20), STATUS_SUCCESS);
+    ASSERT(total == 0x34);
+    total = 0x14;
+    ASSERT_STATUS(ntsec_sr_extend(&total, 0xFFFFFFF0UL, 0x20), STATUS_INVALID_SECURITY_DESCR);
+    ASSERT(total == 0x14);
+    ASSERT_STATUS(ntsec_sr_extend(&total, 0xFFFFFFFFUL, 0xFFFFFFFFUL), STATUS_INVALID_SECURITY_DESCR);
+    ASSERT_STATUS(ntsec_sr_extend(&total, 64U * 1024U - 4U, 4U), STATUS_SUCCESS);
+    ASSERT(total == 64U * 1024U);
+    ASSERT_STATUS(ntsec_sr_extend(&total, 64U * 1024U - 4U, 8U), STATUS_INVALID_SECURITY_DESCR);
+    PASS();
 }
 
 TEST(access_check_self_relative_sd)
@@ -1732,6 +1797,7 @@ int main(void)
     RUN(open_thread_token_impersonation);
     RUN(query_token_user_groups_privs);
     RUN(query_token_owner_group_type_stats_session_il);
+    RUN(token_statistics_id_is_counter_not_address);
     RUN(query_token_buffer_and_errors);
     RUN(duplicate_primary_token);
     RUN(duplicate_impersonation_token);
@@ -1741,6 +1807,7 @@ int main(void)
     RUN(adjust_privileges_enable_disable);
     RUN(adjust_privileges_needs_adjust_right);
     RUN(privilege_check_all_and_any);
+    RUN(sr_extend_refuses_ulong_wrap);
     RUN(access_check_self_relative_sd);
     RUN(query_sd_info_selection);
     RUN(query_sd_buffer_too_small);

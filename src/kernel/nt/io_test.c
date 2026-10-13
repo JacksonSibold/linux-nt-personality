@@ -946,8 +946,15 @@ TEST(ci_component_length_limit)
 
 	/*
 	 * Create and reopen under the scratch root. A 255-character component
-	 * needs root + "/" + name inside PATH_MAX, so it runs only when that
-	 * fits. On a 260-byte PATH_MAX it does not, and is skipped.
+	 * needs root + "/" + name inside PATH_MAX, so this runs only when that
+	 * fits. The shim builds the joined path in a PATH_MAX buffer, and with
+	 * the MinGW headers PATH_MAX is 260: any root longer than 3 bytes does
+	 * not fit (root + 1 + 255 >= 260). The create case is therefore skipped
+	 * on this Windows host and runs where PATH_MAX is 4096 (Linux). The
+	 * lookup case above still covers 255. A relative root (".") was rejected:
+	 * the joined path would fit, but a 255-byte relative file cannot be
+	 * removed afterwards (MSVCRT _unlink and the shim's NtDeleteFile are
+	 * limited to MAX_PATH), so it would be left in the test directory.
 	 */
 	if (strlen(g_test_root) + 1 + 255 < PATH_MAX) {
 		memset(name, 'a', 255);

@@ -235,6 +235,22 @@ TEST(set_timer_fires_and_reports_previous) {
     PASS();
 }
 
+/* A relative due time of INT64_MIN is 2^63 units, which cannot be negated in int64_t.
+ * It must not overflow into a past expiry: the timer stays unsignalled. */
+TEST(set_timer_int64_min_due_does_not_fire) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, NotificationTimer), STATUS_SUCCESS);
+    LARGE_INTEGER due;
+    due.QuadPart = INT64_MIN;
+    BOOLEAN prev = 0;
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, 0, &prev), STATUS_SUCCESS);
+    /* 300 ms: a past expiry from an overflow would have fired by now. */
+    LARGE_INTEGER wait = rel100(300);
+    ASSERT_STATUS(t_wait_handle(h, &wait), STATUS_TIMEOUT);
+    PASS();
+}
+
 TEST(set_timer_bad_arguments) {
     reset_ob();
     HANDLE h = NULL;
@@ -376,6 +392,24 @@ TEST(signal_and_wait_bad_objects) {
     PASS();
 }
 
+/* Rights: the signalled handle needs EVENT_MODIFY_STATE and the wait handle needs
+ * SYNCHRONIZE. A handle without the right is refused before anything is signalled. */
+#define T_SYNCHRONIZE 0x00100000UL
+#define T_EVENT_MODIFY_STATE 0x0002UL
+TEST(signal_and_wait_checks_rights) {
+    reset_ob();
+    HANDLE sync_only = NULL, modify_only = NULL, full = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&sync_only, T_SYNCHRONIZE, NULL, SynchronizationEvent, 0), STATUS_SUCCESS);
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&modify_only, T_EVENT_MODIFY_STATE, NULL, SynchronizationEvent, 0), STATUS_SUCCESS);
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&full, 0x1F0003, NULL, SynchronizationEvent, 1), STATUS_SUCCESS);
+    LARGE_INTEGER to = rel100(100);
+    /* Signalling needs EVENT_MODIFY_STATE: SYNCHRONIZE alone is refused. */
+    ASSERT_STATUS(t_signal_and_wait(sync_only, full, 0, &to), STATUS_ACCESS_DENIED);
+    /* Waiting needs SYNCHRONIZE: EVENT_MODIFY_STATE alone is refused. */
+    ASSERT_STATUS(t_signal_and_wait(full, modify_only, 0, &to), STATUS_ACCESS_DENIED);
+    PASS();
+}
+
 /* ------------------------------------------------------------------ */
 /* Keyed events                                                         */
 /* ------------------------------------------------------------------ */
@@ -434,6 +468,25 @@ static void *keyed_waiter_thread(void *p) {
     LARGE_INTEGER to = rel100(3000);
     a->st = t_wait_keyed(a->h, a->key, &to);
     return NULL;
+}
+
+/* Rights: NtWaitForKeyedEvent needs KEYEDEVENT_WAIT and NtReleaseKeyedEvent needs
+ * KEYEDEVENT_WAKE. A handle without the right is refused, and the other right works. */
+#define T_KEYEDEVENT_WAIT 0x0001UL
+#define T_KEYEDEVENT_WAKE 0x0002UL
+TEST(keyed_event_checks_rights) {
+    reset_ob();
+    HANDLE wake_only = NULL, wait_only = NULL;
+    ASSERT_STATUS(t_create_keyed(&wake_only, T_KEYEDEVENT_WAKE, NULL, 0), STATUS_SUCCESS);
+    ASSERT_STATUS(t_create_keyed(&wait_only, T_KEYEDEVENT_WAIT, NULL, 0), STATUS_SUCCESS);
+    int key_marker = 0;
+    LARGE_INTEGER zero;
+    zero.QuadPart = 0;
+    ASSERT_STATUS(t_wait_keyed(wake_only, &key_marker, &zero), STATUS_ACCESS_DENIED);
+    ASSERT_STATUS(t_release_keyed(wait_only, &key_marker, &zero), STATUS_ACCESS_DENIED);
+    ASSERT_STATUS(t_wait_keyed(wait_only, &key_marker, &zero), STATUS_TIMEOUT);
+    ASSERT_STATUS(t_release_keyed(wake_only, &key_marker, &zero), STATUS_TIMEOUT);
+    PASS();
 }
 
 TEST(keyed_release_wakes_waiter) {
@@ -617,6 +670,7 @@ int main(void) {
     RUN(open_timer_bad_arguments);
     RUN(open_timer_type_mismatch);
     RUN(set_timer_fires_and_reports_previous);
+    RUN(set_timer_int64_min_due_does_not_fire);
     RUN(set_timer_bad_arguments);
     RUN(set_timer_wrong_type);
     RUN(cancel_timer_before_fire);
@@ -632,8 +686,10 @@ int main(void) {
     RUN(signal_and_wait_event_pair);
     RUN(signal_and_wait_mutant_release);
     RUN(signal_and_wait_bad_objects);
+    RUN(signal_and_wait_checks_rights);
     RUN(keyed_create_and_open);
     RUN(keyed_wait_times_out);
+    RUN(keyed_event_checks_rights);
     RUN(keyed_release_wakes_waiter);
     RUN(keyed_release_without_waiter_times_out);
     RUN(keyed_release_blocks_until_waiter);

@@ -40,6 +40,16 @@
 #include <stdatomic.h>
 #endif
 
+/* Absolute expiry for a relative due time (negative, 100 ns units) measured from now.
+ * The magnitude is taken as unsigned, so INT64_MIN (2^63 units) is not negated in
+ * int64_t. An expiry past INT64_MAX saturates there: such a timer never fires. */
+static int64_t nt_relative_expiry_100ns(int64_t now, int64_t due)
+{
+    uint64_t rel = (uint64_t)0 - (uint64_t)due;
+    if (rel > (uint64_t)(0x7FFFFFFFFFFFFFFFLL - now)) return 0x7FFFFFFFFFFFFFFFLL;
+    return now + (int64_t)rel;
+}
+
 #ifndef __KERNEL__
 
 /* TLS */
@@ -866,7 +876,7 @@ static void *timer_thread_func(void *arg) {
 /* Absolute NT expiry (100 ns since 1601) for a due time; negative is relative. */
 static int64_t timer_expiry_100ns(const LARGE_INTEGER *due) {
     if (due->QuadPart >= 0) return due->QuadPart;
-    return now_nt100() - due->QuadPart;
+    return nt_relative_expiry_100ns(now_nt100(), due->QuadPart);
 }
 NTSTATUS nt_set_timer(struct nt_timer *timer, const LARGE_INTEGER *due_time, LONG period_ms, void (*apc_routine)(void*), void *apc_ctx) {
     if (!timer || !due_time) return STATUS_INVALID_PARAMETER;
@@ -1711,7 +1721,8 @@ static int64_t timer_expiry_100ns(const LARGE_INTEGER *due)
     struct timespec64 ts;
     if (due->QuadPart >= 0) return due->QuadPart;
     ktime_get_real_ts64(&ts);
-    return (int64_t)ts.tv_sec * 10000000LL + ts.tv_nsec / 100 + 116444736000000000LL - due->QuadPart;
+    int64_t now = (int64_t)ts.tv_sec * 10000000LL + ts.tv_nsec / 100 + 116444736000000000LL;
+    return nt_relative_expiry_100ns(now, due->QuadPart);
 }
 
 NTSTATUS nt_set_timer(struct nt_timer *timer, const LARGE_INTEGER *due_time, LONG period_ms,
@@ -2686,6 +2697,19 @@ extern struct nt_object_type nt_event_type, nt_mutant_type, nt_semaphore_type;
 
 /* Signal one object, then wait on another. Both handles are resolved first so that a
  * bad handle fails before anything is signalled. */
+/* Access rights (NT values). The signal handle needs the modify right of its type, the
+ * wait handle needs SYNCHRONIZE. */
+#define SYNC_SYNCHRONIZE            0x00100000UL
+#define SYNC_EVENT_MODIFY_STATE     0x0002UL
+#define SYNC_MUTANT_MODIFY_STATE    0x0001UL
+#define SYNC_SEMAPHORE_MODIFY_STATE 0x0002UL
+
+/* Same test as ObReferenceObjectByHandle's desired-access check. */
+static bool sync_rights_ok(ACCESS_MASK granted, ACCESS_MASK desired)
+{
+    return (desired & ~granted) == 0;
+}
+
 NTSTATUS nt_svc_NtSignalAndWaitForSingleObject(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
                                                ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
                                                ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
@@ -2705,9 +2729,10 @@ NTSTATUS nt_svc_NtSignalAndWaitForSingleObject(ULONG_PTR a0, ULONG_PTR a1, ULONG
         p_timeout = &k_timeout;
     }
     struct nt_object_header *sig_hdr = NULL, *wait_hdr = NULL;
-    NTSTATUS st = ObReferenceObjectByHandle(proc, SignalHandle, NULL, UserMode, 0, &sig_hdr, NULL);
+    ACCESS_MASK sig_granted = 0, wait_granted = 0, sig_desired = 0;
+    NTSTATUS st = ObReferenceObjectByHandle(proc, SignalHandle, NULL, UserMode, 0, &sig_hdr, &sig_granted);
     if (!NT_SUCCESS(st)) return st;
-    st = ObReferenceObjectByHandle(proc, WaitHandle, NULL, UserMode, 0, &wait_hdr, NULL);
+    st = ObReferenceObjectByHandle(proc, WaitHandle, NULL, UserMode, 0, &wait_hdr, &wait_granted);
     if (!NT_SUCCESS(st)) { ObDereferenceObject(sig_hdr); return st; }
     if (sig_hdr->type != &nt_event_type && sig_hdr->type != &nt_mutant_type &&
         sig_hdr->type != &nt_semaphore_type) {
@@ -2715,6 +2740,15 @@ NTSTATUS nt_svc_NtSignalAndWaitForSingleObject(ULONG_PTR a0, ULONG_PTR a1, ULONG
     } else if (wait_hdr->type != &nt_event_type && wait_hdr->type != &nt_mutant_type &&
                wait_hdr->type != &nt_semaphore_type && wait_hdr->type != &nt_timer_type) {
         st = STATUS_OBJECT_TYPE_MISMATCH;
+    }
+    /* Refuse before anything is signalled, so a missing right changes no state. */
+    if (NT_SUCCESS(st)) {
+        if (sig_hdr->type == &nt_event_type) sig_desired = SYNC_EVENT_MODIFY_STATE;
+        else if (sig_hdr->type == &nt_mutant_type) sig_desired = SYNC_MUTANT_MODIFY_STATE;
+        else sig_desired = SYNC_SEMAPHORE_MODIFY_STATE;
+        if (!sync_rights_ok(sig_granted, sig_desired) ||
+            !sync_rights_ok(wait_granted, SYNC_SYNCHRONIZE))
+            st = STATUS_ACCESS_DENIED;
     }
     if (NT_SUCCESS(st)) {
         LONG prev = 0;
@@ -2837,6 +2871,10 @@ NTSTATUS nt_svc_NtOpenKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG
     return st;
 }
 
+/* Keyed event access rights (NT values): wait needs KEYEDEVENT_WAIT, release needs KEYEDEVENT_WAKE. */
+#define SYNC_KEYEDEVENT_WAIT 0x0001UL
+#define SYNC_KEYEDEVENT_WAKE 0x0002UL
+
 /* Shared body of NtWaitForKeyedEvent and NtReleaseKeyedEvent. */
 static NTSTATUS keyed_event_op(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3, bool wait)
 {
@@ -2854,7 +2892,8 @@ static NTSTATUS keyed_event_op(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_P
         p_timeout = &k_timeout;
     }
     struct nt_object_header *hdr = NULL;
-    NTSTATUS st = ObReferenceObjectByHandle(proc, KeyedEventHandle, &nt_keyed_event_type, UserMode, 0, &hdr, NULL);
+    ACCESS_MASK desired = wait ? SYNC_KEYEDEVENT_WAIT : SYNC_KEYEDEVENT_WAKE;
+    NTSTATUS st = ObReferenceObjectByHandle(proc, KeyedEventHandle, &nt_keyed_event_type, UserMode, desired, &hdr, NULL);
     if (!NT_SUCCESS(st)) return st;
     struct nt_keyed_event *k = (struct nt_keyed_event *)nt_object_body(hdr);
     if (wait) st = nt_wait_for_keyed_event(k, Key, Alertable, p_timeout);

@@ -1375,7 +1375,8 @@ static int test_allocate_ex(void) {
     NTSTATUS st = NtAllocateVirtualMemoryEx((HANDLE)-1, &base, &size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE, NULL, 0);
     ASSERT(st == STATUS_SUCCESS, "ex alloc 0x%lx", (unsigned long)st);
     ASSERT(base != NULL, "ex alloc base");
-    ASSERT(size == 0x10000 || size == 0x1000, "ex size 0x%zx", (size_t)size);
+    /* A NULL base is page-rounded (no granularity rounding), so the size is exactly 0x1000. */
+    ASSERT(size == 0x1000, "ex size 0x%zx", (size_t)size);
 
     MEMORY_BASIC_INFORMATION mbi;
     ASSERT(query(base, &mbi), "query ex");

@@ -1531,7 +1531,7 @@ static SIZE_T ntmm_access_run(ULONG_PTR addr, SIZE_T want, int write) {
  * a page at a time through a kernel bounce buffer. *done is the number of
  * bytes moved before the first inaccessible byte or fault. */
 static NTSTATUS ntmm_transfer(ULONG_PTR addr, PVOID user, SIZE_T size, SIZE_T *done, int write) {
-    unsigned char kbuf[NTMM_PAGE_SIZE];
+    unsigned char *kbuf;
     SIZE_T off = 0;
     SIZE_T req = size;
     *done = 0;
@@ -1542,6 +1542,10 @@ static NTSTATUS ntmm_transfer(ULONG_PTR addr, PVOID user, SIZE_T size, SIZE_T *d
         SIZE_T room = (SIZE_T)(~(ULONG_PTR)0 - addr);
         if (size - 1 > room) size = room + 1;
     }
+    /* The bounce buffer is one page. It lives on the heap, not the kernel stack:
+     * a kernel stack frame of 4 KiB is too large. */
+    kbuf = (unsigned char *)kmalloc(NTMM_PAGE_SIZE, GFP_KERNEL);
+    if (!kbuf) return STATUS_NO_MEMORY;
     while (off < size) {
         ULONG_PTR cur = addr + off;
         SIZE_T want = size - off;
@@ -1560,6 +1564,7 @@ static NTSTATUS ntmm_transfer(ULONG_PTR addr, PVOID user, SIZE_T size, SIZE_T *d
         off += run;
     }
     *done = off;
+    kfree(kbuf);
     return (off == req) ? STATUS_SUCCESS : STATUS_PARTIAL_COPY;
 }
 

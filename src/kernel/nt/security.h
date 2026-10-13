@@ -484,6 +484,7 @@ typedef struct _ACCESS_TOKEN {
     SID_AND_ATTRIBUTES         *restricted_sids;
     struct _ACCESS_TOKEN       *parent;
     ULONG                      session_id;
+    LUID                       token_id;            /* from ntsec_next_token_id, never an address */
 } ACCESS_TOKEN;
 
 /* Object class hint for privilege overrides */
@@ -573,6 +574,8 @@ NTSTATUS sd_to_self_relative(const SECURITY_DESCRIPTOR *sd,
 NTSTATUS sd_from_self_relative(const void *sr_buffer, ULONG sr_length,
                                SECURITY_DESCRIPTOR **sd);
 ULONG    sd_length(const SECURITY_DESCRIPTOR *sd);
+/* Grows *total to cover [off, off + size); refuses a result past the 64 KiB descriptor limit. */
+NTSTATUS ntsec_sr_extend(ULONG *total, ULONG off, ULONG size);
 
 /* Token access rights (winnt.h) */
 #define TOKEN_ASSIGN_PRIMARY        0x0001
