@@ -1472,6 +1472,169 @@ TEST(set_sd_replace_does_not_leak)
     PASS();
 }
 
+/* -------------------------------------------------------------------------- */
+/* NtSetInformationToken: TokenOwner, TokenPrimaryGroup, TokenDefaultDacl     */
+/* -------------------------------------------------------------------------- */
+
+NTSTATUS nt_svc_NtSetInformationToken(HANDLE TokenHandle, ULONG TokenInformationClass,
+                                      PVOID TokenInformation, ULONG TokenInformationLength);
+
+/* Input layouts (TOKEN_OWNER, TOKEN_PRIMARY_GROUP, TOKEN_DEFAULT_DACL). */
+struct ts_owner { PSID Owner; };
+struct ts_pgroup { PSID PrimaryGroup; };
+struct ts_dacl { PACL DefaultDacl; };
+
+/* A user token with one enabled group, held through a handle in p. */
+static HANDLE ts_token_handle(struct nt_eprocess *p, ACCESS_MASK access,
+                              ACCESS_TOKEN **live_out)
+{
+    ACCESS_TOKEN *tok = make_user_token(SDT_U1);
+    PSID g1 = make_sid(SDT_G1);
+    HANDLE h = NULL;
+    if (!tok || !g1) return NULL;
+    if (token_add_group(tok, g1, 0x7) != STATUS_SUCCESS) { sid_free(g1); token_dereference(tok); return NULL; }
+    sid_free(g1);
+    if (ObCreateTokenHandle(p, tok, access, 0, &h) != STATUS_SUCCESS) { token_dereference(tok); return NULL; }
+    token_dereference(tok);
+    *live_out = token_of_handle(p, h);
+    return h;
+}
+
+TEST(set_token_owner_and_primary_group)
+{
+    struct nt_eprocess *p = make_current_process_as("st_grp", SDT_U1);
+    ASSERT(p != NULL);
+    ACCESS_TOKEN *live = NULL;
+    HANDLE h = ts_token_handle(p, TOKEN_ADJUST_DEFAULT | TOKEN_QUERY, &live);
+    ASSERT(h != NULL && live != NULL);
+    PSID g1 = make_sid(SDT_G1), u1 = make_sid(SDT_U1), u3 = make_sid(SDT_U3);
+    ASSERT(g1 && u1 && u3);
+
+    /* Owner: the token's group (enabled) is assignable. */
+    struct ts_owner o;
+    o.Owner = g1;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenOwner, &o, sizeof(o)), STATUS_SUCCESS);
+    ASSERT(sid_equal(live->owner, g1));
+    /* A SID the token does not hold, NULL, and a short length are rejected. */
+    o.Owner = u3;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenOwner, &o, sizeof(o)), STATUS_INVALID_OWNER);
+    ASSERT(sid_equal(live->owner, g1));
+    o.Owner = NULL;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenOwner, &o, sizeof(o)), STATUS_INVALID_OWNER);
+    o.Owner = u1;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenOwner, &o, 0), STATUS_INFO_LENGTH_MISMATCH);
+    ASSERT(sid_equal(live->owner, g1));
+    /* The user SID is assignable too. */
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenOwner, &o, sizeof(o)), STATUS_SUCCESS);
+    ASSERT(sid_equal(live->owner, u1));
+
+    /* Primary group must be one of the token's groups. */
+    struct ts_pgroup pg;
+    pg.PrimaryGroup = g1;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenPrimaryGroup, &pg, sizeof(pg)), STATUS_SUCCESS);
+    ASSERT(sid_equal(live->primary_group, g1));
+    pg.PrimaryGroup = u3;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenPrimaryGroup, &pg, sizeof(pg)),
+                  STATUS_INVALID_PRIMARY_GROUP);
+    ASSERT(sid_equal(live->primary_group, g1));
+
+    sid_free(g1); sid_free(u1); sid_free(u3);
+    ObCloseHandle(p, h);
+    ObDestroyProcessObject(p);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(set_token_default_dacl)
+{
+    struct nt_eprocess *p = make_current_process_as("st_dacl", SDT_U1);
+    ASSERT(p != NULL);
+    ACCESS_TOKEN *live = NULL;
+    HANDLE h = ts_token_handle(p, TOKEN_ADJUST_DEFAULT | TOKEN_QUERY, &live);
+    ASSERT(h != NULL && live != NULL);
+    PSID u1 = make_sid(SDT_U1);
+    ASSERT(u1 != NULL);
+
+    /* A supplied ACL is copied: the token keeps its own, so freeing ours is safe. */
+    PACL acl = acl_create(256);
+    ULONG idx = 0;
+    ASSERT(acl != NULL);
+    ASSERT_STATUS(acl_add_allowed_ace(acl, 0x1, 0, u1, &idx), STATUS_SUCCESS);
+    struct ts_dacl d;
+    d.DefaultDacl = acl;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenDefaultDacl, &d, sizeof(d)), STATUS_SUCCESS);
+    ASSERT(live->default_dacl != NULL && live->default_dacl != acl);
+    ASSERT(live->default_dacl->AceCount == 1);
+    acl_free(acl);
+    ASSERT(live->default_dacl != NULL && live->default_dacl->AceCount == 1);
+
+    /* An ACL with an allow ACE before a deny ACE is not canonical. The stored
+     * default DACL stays as it was. */
+    PACL bad = acl_create(256);
+    ASSERT(bad != NULL);
+    ASSERT_STATUS(acl_add_allowed_ace(bad, 0x1, 0, u1, &idx), STATUS_SUCCESS);
+    ASSERT_STATUS(acl_add_denied_ace(bad, 0x1, 0, u1, &idx), STATUS_SUCCESS);
+    d.DefaultDacl = bad;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenDefaultDacl, &d, sizeof(d)), STATUS_INVALID_ACL);
+    ASSERT(live->default_dacl->AceCount == 1);
+    acl_free(bad);
+
+    /* NULL removes the default DACL. */
+    d.DefaultDacl = NULL;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(h, TokenDefaultDacl, &d, sizeof(d)), STATUS_SUCCESS);
+    ASSERT(live->default_dacl == NULL);
+
+    sid_free(u1);
+    ObCloseHandle(p, h);
+    ObDestroyProcessObject(p);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(set_token_info_access_and_arguments)
+{
+    struct nt_eprocess *p = make_current_process_as("st_acc", SDT_U1);
+    ASSERT(p != NULL);
+    ACCESS_TOKEN *live = NULL;
+    HANDLE hq = ts_token_handle(p, TOKEN_QUERY, &live);
+    ASSERT(hq != NULL && live != NULL);
+    PSID u1 = make_sid(SDT_U1);
+    ASSERT(u1 != NULL);
+
+    /* A handle without TOKEN_ADJUST_DEFAULT cannot change these classes. */
+    struct ts_owner o; o.Owner = u1;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(hq, TokenOwner, &o, sizeof(o)), STATUS_ACCESS_DENIED);
+    struct ts_dacl d; d.DefaultDacl = NULL;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(hq, TokenDefaultDacl, &d, sizeof(d)), STATUS_ACCESS_DENIED);
+
+    HANDLE ha = ts_token_handle(p, TOKEN_ADJUST_DEFAULT, &live);
+    ASSERT(ha != NULL);
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(ha, TokenOwner, NULL, sizeof(o)), STATUS_INVALID_PARAMETER);
+    /* A class this service does not set. */
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(ha, TokenUser, &o, sizeof(o)), STATUS_INVALID_INFO_CLASS);
+
+    /* Repeated owner changes do not leak SID copies. */
+    PSID g1 = make_sid(SDT_G1);
+    ASSERT(g1 != NULL);
+    struct ts_owner oo;
+    oo.Owner = g1;
+    ASSERT_STATUS(nt_svc_NtSetInformationToken(ha, TokenOwner, &oo, sizeof(oo)), STATUS_SUCCESS);
+    long base = atomic_load(&kshim_alloc_count);
+    for (int i = 0; i < 50; i++) {
+        oo.Owner = (i & 1) ? u1 : g1;
+        ASSERT_STATUS(nt_svc_NtSetInformationToken(ha, TokenOwner, &oo, sizeof(oo)), STATUS_SUCCESS);
+    }
+    ASSERT(atomic_load(&kshim_alloc_count) == base);
+
+    sid_free(g1);
+    sid_free(u1);
+    ObCloseHandle(p, hq);
+    ObCloseHandle(p, ha);
+    ObDestroyProcessObject(p);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
 /* Driver                                                                     */
 /* -------------------------------------------------------------------------- */
 int main(void)
@@ -1506,6 +1669,9 @@ int main(void)
     RUN(set_sd_dacl_and_owner);
     RUN(set_sd_denied_and_implicit_owner);
     RUN(set_sd_replace_does_not_leak);
+    RUN(set_token_owner_and_primary_group);
+    RUN(set_token_default_dacl);
+    RUN(set_token_info_access_and_arguments);
     printf("security extra tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

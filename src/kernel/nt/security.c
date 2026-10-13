@@ -2857,6 +2857,106 @@ out:
     return st;
 }
 
+/* -------------------------------------------------------------------------- */
+/* NtSetInformationToken: TokenOwner, TokenPrimaryGroup, TokenDefaultDacl     */
+/* -------------------------------------------------------------------------- */
+
+static BOOLEAN ntsec_token_has_group(const ACCESS_TOKEN *tok, PCSID sid)
+{
+    for (ULONG i = 0; i < tok->group_count; i++) {
+        if (tok->groups[i].Sid && sid_equal(tok->groups[i].Sid, sid))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+/* Sets one token class. info points at the TOKEN_OWNER, TOKEN_PRIMARY_GROUP or
+ * TOKEN_DEFAULT_DACL structure (readable here). The token keeps its own copies:
+ * a new SID or ACL is duplicated, and the replaced one is freed. */
+static NTSTATUS ntsec_set_token_core(HANDLE h, ULONG cls, const void *info, ULONG len)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    ACCESS_TOKEN *tok;
+    NTSTATUS st;
+
+    if (!caller || !info) return STATUS_INVALID_PARAMETER;
+    switch (cls) {
+    case TokenOwner:
+        if (len < sizeof(struct ntsec_token_owner)) return STATUS_INFO_LENGTH_MISMATCH;
+        break;
+    case TokenPrimaryGroup:
+        if (len < sizeof(struct ntsec_token_primary_grp)) return STATUS_INFO_LENGTH_MISMATCH;
+        break;
+    case TokenDefaultDacl:
+        if (len < sizeof(struct ntsec_token_default_dacl)) return STATUS_INFO_LENGTH_MISMATCH;
+        break;
+    default:
+        return STATUS_INVALID_INFO_CLASS;
+    }
+
+    st = ObReferenceObjectByHandle(caller, h, &nt_token_type, KernelMode,
+                                   TOKEN_ADJUST_DEFAULT, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    tok = ((struct nt_token_body *)nt_object_body(hdr))->token;
+
+    if (cls == TokenOwner) {
+        PSID s = ((const struct ntsec_token_owner *)info)->Owner;
+        if (!s || !sid_valid(s) || !ntsec_sid_assignable(tok, s)) {
+            st = STATUS_INVALID_OWNER;
+        } else {
+            PSID dup = sid_dup(s);
+            if (!dup) {
+                st = STATUS_NO_MEMORY;
+            } else {
+                PSID old = tok->owner;
+                tok->owner = dup;
+                if (old) sid_free(old);
+            }
+        }
+    } else if (cls == TokenPrimaryGroup) {
+        PSID s = ((const struct ntsec_token_primary_grp *)info)->PrimaryGroup;
+        if (!s || !sid_valid(s) || !ntsec_token_has_group(tok, s)) {
+            st = STATUS_INVALID_PRIMARY_GROUP;
+        } else {
+            PSID dup = sid_dup(s);
+            if (!dup) {
+                st = STATUS_NO_MEMORY;
+            } else {
+                PSID old = tok->primary_group;
+                tok->primary_group = dup;
+                if (old) sid_free(old);
+            }
+        }
+    } else {
+        PACL acl = ((const struct ntsec_token_default_dacl *)info)->DefaultDacl;
+        if (!acl) {
+            PACL old = tok->default_dacl;
+            tok->default_dacl = NULL;
+            if (old) acl_free(old);
+        } else {
+            ULONG used = acl_used_size(acl);
+            if (used < sizeof(ACL) || used > NTSEC_SD_MAX_LENGTH || !acl_is_canonical(acl)) {
+                st = STATUS_INVALID_ACL;
+            } else {
+                PACL dup = (PACL)kmalloc(used, GFP_KERNEL);
+                if (!dup) {
+                    st = STATUS_NO_MEMORY;
+                } else {
+                    PACL old = tok->default_dacl;
+                    memcpy(dup, acl, used);
+                    acl_capacity_register(dup, used);
+                    tok->default_dacl = dup;
+                    if (old) acl_free(old);
+                }
+            }
+        }
+    }
+
+    ObDereferenceObject(hdr);
+    return st;
+}
+
 #ifndef __KERNEL__
 NTSTATUS nt_svc_NtAdjustPrivilegesToken(HANDLE TokenHandle, BOOLEAN DisableAllPrivileges,
                                         PTOKEN_PRIVILEGES NewState, ULONG BufferLength,
@@ -2916,6 +3016,12 @@ NTSTATUS nt_svc_NtSetSecurityObject(HANDLE Handle, ULONG SecurityInformation,
     st = ntsec_sr_length(SecurityDescriptor, &len);
     if (!NT_SUCCESS(st)) return st;
     return ntsec_set_sd_core(Handle, SecurityInformation, SecurityDescriptor, len);
+}
+NTSTATUS nt_svc_NtSetInformationToken(HANDLE TokenHandle, ULONG TokenInformationClass,
+                                      PVOID TokenInformation, ULONG TokenInformationLength)
+{
+    return ntsec_set_token_core(TokenHandle, TokenInformationClass,
+                                TokenInformation, TokenInformationLength);
 }
 #else
 /* Kernel entry points: the caller's structures are copied in, and results
@@ -3100,6 +3206,47 @@ NTSTATUS nt_svc_NtSetSecurityObject(unsigned long a0, unsigned long a1, unsigned
     }
     st = ntsec_set_sd_core(h, info, ksd, len);
     kfree(ksd);
+    return st;
+}
+
+NTSTATUS nt_svc_NtSetInformationToken(unsigned long a0, unsigned long a1, unsigned long a2,
+                                      unsigned long a3, unsigned long a4, unsigned long a5,
+                                      unsigned long a6, unsigned long a7, unsigned long a8,
+                                      unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = (HANDLE)a0;
+    ULONG cls = (ULONG)a1;
+    const void *user_info = (const void *)a2;
+    ULONG len = (ULONG)a3;
+    /* All three input structures start with one pointer: copy that in. For a
+     * default DACL, the ACL it points to is copied in as well, sized by its
+     * own AclSize. */
+    struct { void *p; } kin;
+    void *kacl = NULL;
+    NTSTATUS st;
+    (void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+
+    if (!user_info) return STATUS_INVALID_PARAMETER;
+    if (len < sizeof(kin)) return STATUS_INFO_LENGTH_MISMATCH;
+    if (ntsec_rd_user(&kin.p, user_info, sizeof(kin.p)) != STATUS_SUCCESS)
+        return STATUS_ACCESS_VIOLATION;
+    if (cls == TokenDefaultDacl && kin.p) {
+        ACL hdr_acl;
+        ULONG used;
+        if (ntsec_rd_user(&hdr_acl, kin.p, sizeof(hdr_acl)) != STATUS_SUCCESS)
+            return STATUS_ACCESS_VIOLATION;
+        used = hdr_acl.AclSize;
+        if (used < sizeof(ACL) || used > NTSEC_SD_MAX_LENGTH) return STATUS_INVALID_ACL;
+        kacl = kmalloc(used, GFP_KERNEL);
+        if (!kacl) return STATUS_NO_MEMORY;
+        if (ntsec_rd_user(kacl, kin.p, used) != STATUS_SUCCESS) {
+            kfree(kacl);
+            return STATUS_ACCESS_VIOLATION;
+        }
+        kin.p = kacl;
+    }
+    st = ntsec_set_token_core(h, cls, &kin, sizeof(kin));
+    kfree(kacl);
     return st;
 }
 #endif /* __KERNEL__ */
