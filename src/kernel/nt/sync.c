@@ -40,6 +40,16 @@
 #include <stdatomic.h>
 #endif
 
+/* Absolute expiry for a relative due time (negative, 100 ns units) measured from now.
+ * The magnitude is taken as unsigned, so INT64_MIN (2^63 units) is not negated in
+ * int64_t. An expiry past INT64_MAX saturates there: such a timer never fires. */
+static int64_t nt_relative_expiry_100ns(int64_t now, int64_t due)
+{
+    uint64_t rel = (uint64_t)0 - (uint64_t)due;
+    if (rel > (uint64_t)(0x7FFFFFFFFFFFFFFFLL - now)) return 0x7FFFFFFFFFFFFFFFLL;
+    return now + (int64_t)rel;
+}
+
 #ifndef __KERNEL__
 
 /* TLS */
@@ -866,7 +876,7 @@ static void *timer_thread_func(void *arg) {
 /* Absolute NT expiry (100 ns since 1601) for a due time; negative is relative. */
 static int64_t timer_expiry_100ns(const LARGE_INTEGER *due) {
     if (due->QuadPart >= 0) return due->QuadPart;
-    return now_nt100() - due->QuadPart;
+    return nt_relative_expiry_100ns(now_nt100(), due->QuadPart);
 }
 NTSTATUS nt_set_timer(struct nt_timer *timer, const LARGE_INTEGER *due_time, LONG period_ms, void (*apc_routine)(void*), void *apc_ctx) {
     if (!timer || !due_time) return STATUS_INVALID_PARAMETER;
@@ -1711,7 +1721,8 @@ static int64_t timer_expiry_100ns(const LARGE_INTEGER *due)
     struct timespec64 ts;
     if (due->QuadPart >= 0) return due->QuadPart;
     ktime_get_real_ts64(&ts);
-    return (int64_t)ts.tv_sec * 10000000LL + ts.tv_nsec / 100 + 116444736000000000LL - due->QuadPart;
+    int64_t now = (int64_t)ts.tv_sec * 10000000LL + ts.tv_nsec / 100 + 116444736000000000LL;
+    return nt_relative_expiry_100ns(now, due->QuadPart);
 }
 
 NTSTATUS nt_set_timer(struct nt_timer *timer, const LARGE_INTEGER *due_time, LONG period_ms,

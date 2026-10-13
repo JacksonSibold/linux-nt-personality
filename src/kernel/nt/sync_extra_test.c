@@ -235,6 +235,22 @@ TEST(set_timer_fires_and_reports_previous) {
     PASS();
 }
 
+/* A relative due time of INT64_MIN is 2^63 units, which cannot be negated in int64_t.
+ * It must not overflow into a past expiry: the timer stays unsignalled. */
+TEST(set_timer_int64_min_due_does_not_fire) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, NotificationTimer), STATUS_SUCCESS);
+    LARGE_INTEGER due;
+    due.QuadPart = INT64_MIN;
+    BOOLEAN prev = 0;
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, 0, &prev), STATUS_SUCCESS);
+    /* 300 ms: a past expiry from an overflow would have fired by now. */
+    LARGE_INTEGER wait = rel100(300);
+    ASSERT_STATUS(t_wait_handle(h, &wait), STATUS_TIMEOUT);
+    PASS();
+}
+
 TEST(set_timer_bad_arguments) {
     reset_ob();
     HANDLE h = NULL;
@@ -654,6 +670,7 @@ int main(void) {
     RUN(open_timer_bad_arguments);
     RUN(open_timer_type_mismatch);
     RUN(set_timer_fires_and_reports_previous);
+    RUN(set_timer_int64_min_due_does_not_fire);
     RUN(set_timer_bad_arguments);
     RUN(set_timer_wrong_type);
     RUN(cancel_timer_before_fire);
