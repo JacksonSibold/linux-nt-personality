@@ -2957,6 +2957,37 @@ static NTSTATUS ntsec_set_token_core(HANDLE h, ULONG cls, const void *info, ULON
     return st;
 }
 
+/* -------------------------------------------------------------------------- */
+/* NtAccessCheckAndAuditAlarm                                                 */
+/* -------------------------------------------------------------------------- */
+
+/* Access check of a self-relative descriptor against a token object. A denial
+ * is a successful call with AccessStatus = ACCESS_DENIED and nothing granted,
+ * as in NtAccessCheck. */
+static NTSTATUS ntsec_access_check_token(const void *sr, ULONG sr_len,
+                                         const ACCESS_TOKEN *tok, ACCESS_MASK desired,
+                                         const GENERIC_MAPPING *gm,
+                                         ACCESS_MASK *granted_out, NTSTATUS *status_out)
+{
+    SECURITY_DESCRIPTOR *sd = NULL;
+    ACCESS_MASK granted = 0;
+    NTSTATUS st;
+    if (!tok) return STATUS_ACCESS_DENIED;
+    st = sd_from_self_relative(sr, sr_len, &sd);
+    if (!NT_SUCCESS(st)) return STATUS_INVALID_SECURITY_DESCR;
+    st = se_access_check(sd, tok, desired, gm, NTSEC_OBJECT_GENERIC, &granted);
+    ntsec_free_abs_sd(sd);
+    if (st == STATUS_ACCESS_DENIED) {
+        *status_out = STATUS_ACCESS_DENIED;
+        *granted_out = 0;
+        return STATUS_SUCCESS;
+    }
+    if (!NT_SUCCESS(st)) return st;
+    *status_out = STATUS_SUCCESS;
+    *granted_out = granted;
+    return STATUS_SUCCESS;
+}
+
 #ifndef __KERNEL__
 NTSTATUS nt_svc_NtAdjustPrivilegesToken(HANDLE TokenHandle, BOOLEAN DisableAllPrivileges,
                                         PTOKEN_PRIVILEGES NewState, ULONG BufferLength,
@@ -3022,6 +3053,37 @@ NTSTATUS nt_svc_NtSetInformationToken(HANDLE TokenHandle, ULONG TokenInformation
 {
     return ntsec_set_token_core(TokenHandle, TokenInformationClass,
                                 TokenInformation, TokenInformationLength);
+}
+/* Audit is a no-op: no audit record is generated, GenerateOnClose is always
+ * FALSE, and the subsystem, handle, type and object name strings are accepted
+ * and ignored. ObjectCreation only affects default ownership, which is not
+ * modelled here. The access decision is the caller's effective token against
+ * the descriptor, as in NtAccessCheck. */
+NTSTATUS nt_svc_NtAccessCheckAndAuditAlarm(PUNICODE_STRING SubsystemName, PVOID HandleId,
+                                           PUNICODE_STRING ObjectTypeName, PUNICODE_STRING ObjectName,
+                                           PSECURITY_DESCRIPTOR SecurityDescriptor,
+                                           ACCESS_MASK DesiredAccess, PGENERIC_MAPPING GenericMapping,
+                                           BOOLEAN ObjectCreation, PACCESS_MASK GrantedAccess,
+                                           PNTSTATUS AccessStatus, PBOOLEAN GenerateOnClose)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    ULONG len = 0;
+    ACCESS_MASK granted = 0;
+    NTSTATUS astat = STATUS_SUCCESS;
+    NTSTATUS st;
+    (void)SubsystemName; (void)HandleId; (void)ObjectTypeName; (void)ObjectName; (void)ObjectCreation;
+
+    if (!SecurityDescriptor || !GenericMapping || !GrantedAccess || !AccessStatus || !GenerateOnClose)
+        return STATUS_INVALID_PARAMETER;
+    st = ntsec_sr_length(SecurityDescriptor, &len);
+    if (!NT_SUCCESS(st)) return st;
+    st = ntsec_access_check_token(SecurityDescriptor, len, ntsec_effective_token(caller),
+                                  DesiredAccess, GenericMapping, &granted, &astat);
+    if (!NT_SUCCESS(st)) return st;
+    *GrantedAccess = granted;
+    *AccessStatus = astat;
+    *GenerateOnClose = FALSE;
+    return STATUS_SUCCESS;
 }
 #else
 /* Kernel entry points: the caller's structures are copied in, and results
@@ -3248,5 +3310,50 @@ NTSTATUS nt_svc_NtSetInformationToken(unsigned long a0, unsigned long a1, unsign
     st = ntsec_set_token_core(h, cls, &kin, sizeof(kin));
     kfree(kacl);
     return st;
+}
+
+NTSTATUS nt_svc_NtAccessCheckAndAuditAlarm(unsigned long a0, unsigned long a1, unsigned long a2,
+                                           unsigned long a3, unsigned long a4, unsigned long a5,
+                                           unsigned long a6, unsigned long a7, unsigned long a8,
+                                           unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    /* a0..a3 are the name strings and a1 the handle id: accepted, not used. */
+    const void *user_sd = (const void *)a4;
+    ACCESS_MASK desired = (ACCESS_MASK)a5;
+    GENERIC_MAPPING *user_gm = (GENERIC_MAPPING *)a6;
+    PACCESS_MASK user_granted = (PACCESS_MASK)a8;
+    PNTSTATUS user_status = (PNTSTATUS)a9;
+    PBOOLEAN user_gen = (PBOOLEAN)a10;
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    GENERIC_MAPPING gm;
+    ULONG len = 0;
+    void *ksd = NULL;
+    ACCESS_MASK granted = 0;
+    NTSTATUS astat = STATUS_SUCCESS;
+    NTSTATUS st;
+    BOOLEAN gen_off = FALSE;
+    (void)a0;(void)a1;(void)a2;(void)a3;(void)a7;(void)a11;
+
+    if (!user_sd || !user_gm || !user_granted || !user_status || !user_gen)
+        return STATUS_INVALID_PARAMETER;
+    if (ntsec_rd_user(&gm, user_gm, sizeof(gm)) != STATUS_SUCCESS)
+        return STATUS_ACCESS_VIOLATION;
+    st = ntsec_sr_length(user_sd, &len);
+    if (!NT_SUCCESS(st)) return st;
+    ksd = kmalloc(len, GFP_KERNEL);
+    if (!ksd) return STATUS_NO_MEMORY;
+    if (ntsec_rd_user(ksd, user_sd, len) != STATUS_SUCCESS) {
+        kfree(ksd);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    st = ntsec_access_check_token(ksd, len, ntsec_effective_token(caller), desired, &gm,
+                                  &granted, &astat);
+    kfree(ksd);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(user_granted, &granted, sizeof(granted)) ||
+        copy_to_user(user_status, &astat, sizeof(astat)) ||
+        copy_to_user(user_gen, &gen_off, sizeof(gen_off)))
+        return STATUS_ACCESS_VIOLATION;
+    return STATUS_SUCCESS;
 }
 #endif /* __KERNEL__ */

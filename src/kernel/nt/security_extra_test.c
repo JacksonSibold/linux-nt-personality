@@ -1635,6 +1635,85 @@ TEST(set_token_info_access_and_arguments)
     PASS();
 }
 
+/* -------------------------------------------------------------------------- */
+/* NtAccessCheckAndAuditAlarm: access check against the effective token; the  */
+/* audit part is a documented no-op.                                          */
+/* -------------------------------------------------------------------------- */
+
+NTSTATUS nt_svc_NtAccessCheckAndAuditAlarm(PUNICODE_STRING SubsystemName, PVOID HandleId,
+                                           PUNICODE_STRING ObjectTypeName, PUNICODE_STRING ObjectName,
+                                           PSECURITY_DESCRIPTOR SecurityDescriptor,
+                                           ACCESS_MASK DesiredAccess, PGENERIC_MAPPING GenericMapping,
+                                           BOOLEAN ObjectCreation, PACCESS_MASK GrantedAccess,
+                                           PNTSTATUS AccessStatus, PBOOLEAN GenerateOnClose);
+
+TEST(access_check_and_audit_alarm)
+{
+    struct nt_eprocess *p = make_current_process_as("aaa_proc", SDT_U1);
+    ASSERT(p != NULL);
+    ULONG sdlen = 0;
+    void *sdbuf = make_allow_sd(SDT_U1, 0x1, &sdlen);
+    ASSERT(sdbuf != NULL && sdlen > 0);
+    GENERIC_MAPPING gm = { 0x1, 0x2, 0x4, 0x7 };
+    ACCESS_MASK granted = 0xDEAD;
+    NTSTATUS astat = 0x12345678;
+    BOOLEAN gen = TRUE;
+
+    /* Granted right: the primary token is U1, which the DACL allows 0x1. */
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, sdbuf, 0x1, &gm,
+                                                    FALSE, &granted, &astat, &gen), STATUS_SUCCESS);
+    ASSERT(astat == STATUS_SUCCESS && granted == 0x1);
+    /* The audit output is always FALSE: nothing is generated on close. */
+    ASSERT(gen == FALSE);
+
+    /* A generic right is mapped; a right the DACL lacks is denied, nothing granted. */
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, sdbuf, 0x80000000UL, &gm,
+                                                    FALSE, &granted, &astat, &gen), STATUS_SUCCESS);
+    ASSERT(astat == STATUS_SUCCESS && granted == 0x1);
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, sdbuf, 0x2, &gm,
+                                                    FALSE, &granted, &astat, &gen), STATUS_SUCCESS);
+    ASSERT(astat == STATUS_ACCESS_DENIED && granted == 0);
+
+    /* Impersonation: the thread's token wins over the process primary token. */
+    struct nt_ethread *thr = NULL;
+    ASSERT(ObCreateThreadObject(&thr, p, 77) == STATUS_SUCCESS && thr != NULL);
+    ACCESS_TOKEN *other = make_user_token(SDT_U2);
+    ASSERT(other != NULL);
+    thr->impersonation_token = other;   /* the thread now owns this reference */
+    kshim_set_current_thread(thr);
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, sdbuf, 0x1, &gm,
+                                                    FALSE, &granted, &astat, &gen), STATUS_SUCCESS);
+    ASSERT(astat == STATUS_ACCESS_DENIED && granted == 0);
+    kshim_set_current_thread(NULL);
+    ObDestroyThreadObject(thr);
+
+    /* Bad arguments: a required output or the descriptor missing, and junk. */
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, NULL, 0x1, &gm,
+                                                    FALSE, &granted, &astat, &gen), STATUS_INVALID_PARAMETER);
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, sdbuf, 0x1, &gm,
+                                                    FALSE, &granted, &astat, NULL), STATUS_INVALID_PARAMETER);
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, sdbuf, 0x1, &gm,
+                                                    FALSE, NULL, &astat, &gen), STATUS_INVALID_PARAMETER);
+    UCHAR junk[sizeof(SECURITY_DESCRIPTOR_RELATIVE)];
+    memset(junk, 0, sizeof(junk));
+    ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, junk, 0x1, &gm,
+                                                    FALSE, &granted, &astat, &gen),
+                  STATUS_INVALID_SECURITY_DESCR);
+
+    /* Repeated calls do not leak. */
+    long base = atomic_load(&kshim_alloc_count);
+    for (int i = 0; i < 50; i++) {
+        ASSERT_STATUS(nt_svc_NtAccessCheckAndAuditAlarm(NULL, NULL, NULL, NULL, sdbuf, 0x1, &gm,
+                                                        FALSE, &granted, &astat, &gen), STATUS_SUCCESS);
+    }
+    ASSERT(atomic_load(&kshim_alloc_count) == base);
+
+    kfree(sdbuf);
+    ObDestroyProcessObject(p);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
 /* Driver                                                                     */
 /* -------------------------------------------------------------------------- */
 int main(void)
@@ -1672,6 +1751,7 @@ int main(void)
     RUN(set_token_owner_and_primary_group);
     RUN(set_token_default_dacl);
     RUN(set_token_info_access_and_arguments);
+    RUN(access_check_and_audit_alarm);
     printf("security extra tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
