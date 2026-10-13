@@ -130,24 +130,58 @@ static bool nt_is_absolute(const UNICODE_STRING *path)
 /* Object types                                                               */
 /* -------------------------------------------------------------------------- */
 
+/* Namespace lock. Lock order: ob_ns_lock, then a directory's lock. It covers
+ * every obj->parent_dir and every directory entry list. A directory's
+ * directory_delete clears its children under ob_ns_lock before the directory
+ * is freed, so a thread that reads a non-NULL parent_dir under ob_ns_lock sees
+ * a live directory. No lock is held across ObDereferenceObject: the last
+ * reference can run a directory_delete, which takes ob_ns_lock. */
+static rwlock_t ob_ns_lock;
+
+/* Moves every entry of dir to 'out', clears each child's parent and name, and
+ * releases the locks. The caller frees the entries with obp_release_entries. */
+static void obp_detach_entries(struct nt_directory *dir, struct list_head *out)
+{
+    struct nt_dir_entry *de;
+    write_lock(&ob_ns_lock);
+    write_lock(&dir->lock);
+    while (!list_empty(&dir->entries)) {
+        de = list_first_entry(&dir->entries, struct nt_dir_entry, link);
+        list_del(&de->link);
+        list_add_tail(&de->link, out);
+    }
+    list_for_each_entry(de, out, link) {
+        de->obj->parent_dir = NULL;
+        de->obj->name.Buffer = NULL;
+        de->obj->name.Length = 0;
+        de->obj->name.MaximumLength = 0;
+    }
+    write_unlock(&dir->lock);
+    write_unlock(&ob_ns_lock);
+}
+
+/* Frees detached entries and drops the directory's reference to each child.
+ * Takes no lock: the release can delete a child directory. */
+static void obp_release_entries(struct list_head *list)
+{
+    struct nt_dir_entry *de, *tmp;
+    list_for_each_entry_safe(de, tmp, list, link) {
+        struct nt_object_header *obj = de->obj;
+        list_del(&de->link);
+        nt_free_unicodestring(&de->name);
+        kfree(de);
+        ObDereferenceObject(obj);
+    }
+}
+
 static void directory_delete(struct nt_object_header *hdr)
 {
     struct nt_directory *dir = (struct nt_directory *)nt_object_body(hdr);
-    struct nt_dir_entry *de, *tmp;
+    struct list_head detached;
     /* Recursively free child entries if any remain (e.g., BaseNamedObjects children). */
-    write_lock(&dir->lock);
-    list_for_each_entry_safe(de, tmp, &dir->entries, link) {
-        list_del(&de->link);
-        struct nt_object_header *obj = de->obj;
-        nt_free_unicodestring(&de->name);
-        kfree(de);
-        obj->parent_dir = NULL;
-        obj->name.Buffer = NULL;
-        obj->name.Length = 0;
-        /* Drop directory's reference to child */
-        ObDereferenceObject(obj);
-    }
-    write_unlock(&dir->lock);
+    INIT_LIST_HEAD(&detached);
+    obp_detach_entries(dir, &detached);
+    obp_release_entries(&detached);
 }
 
 static void symlink_delete(struct nt_object_header *hdr)
@@ -235,6 +269,9 @@ static struct nt_object_header *ob_sessions_hdr = NULL;
 
 static bool ob_initialized = false;
 
+void (*ObTestPauseHook)(const char *point, struct nt_object_header *obj) = NULL;
+#define OB_TEST_PAUSE(point, obj) do { if (ObTestPauseHook) ObTestPauseHook((point), (obj)); } while (0)
+
 /* -------------------------------------------------------------------------- */
 /* Directory helpers - internal                                               */
 /* -------------------------------------------------------------------------- */
@@ -276,30 +313,39 @@ static NTSTATUS ObpInsertDirectoryEntry(struct nt_directory *dir,
     NTSTATUS status;
     if (!name || name->Length == 0)
         return STATUS_OBJECT_NAME_INVALID;
+    write_lock(&ob_ns_lock);
     write_lock(&dir->lock);
     if (obp_find_entry_locked(dir, name)) {
         write_unlock(&dir->lock);
+        write_unlock(&ob_ns_lock);
         return STATUS_OBJECT_NAME_COLLISION;
     }
     de = (struct nt_dir_entry *)kzalloc(sizeof(*de), GFP_KERNEL);
     if (!de) {
         write_unlock(&dir->lock);
+        write_unlock(&ob_ns_lock);
         return STATUS_NO_MEMORY;
     }
     status = nt_dup_unicodestring(name, &de->name);
     if (!NT_SUCCESS(status)) {
         kfree(de);
         write_unlock(&dir->lock);
+        write_unlock(&ob_ns_lock);
         return status;
     }
     de->obj = obj;
     INIT_LIST_HEAD(&de->link);
-    list_add_tail(&de->link, &dir->entries);
-    write_unlock(&dir->lock);
+    /* The entry is published last. A name lookup needs only dir->lock, so
+     * obj must already hold its directory reference, parent and name when
+     * the entry becomes visible (C-2). */
     ObReferenceObject(obj);
     obj->parent_dir = dir;
-    /* Save copy of name in header (points to dir entry's copy). We duplicate again for header ownership? Keep header name pointing to entry's buffer for test introspection. */
+    /* Header name points to the entry's name buffer (freed with the entry). */
     obj->name = de->name;
+    list_add_tail(&de->link, &dir->entries);
+    write_unlock(&dir->lock);
+    OB_TEST_PAUSE("insert", obj);
+    write_unlock(&ob_ns_lock);
     if (obj->flags & OBJ_PERMANENT)
         obj->is_permanent = true;
     if (obj->flags & OBJ_EXCLUSIVE)
@@ -307,37 +353,42 @@ static NTSTATUS ObpInsertDirectoryEntry(struct nt_directory *dir,
     return STATUS_SUCCESS;
 }
 
+/* Removes obj from the directory it is in, if any, and drops the directory's
+ * reference. Safe to call with no lock held and with any caller's reference:
+ * parent_dir is read under ob_ns_lock, so the directory cannot be freed
+ * meanwhile (see the comment on ob_ns_lock). */
 static void ObpRemoveFromDirectory(struct nt_object_header *obj)
 {
-    struct nt_directory *dir = obj->parent_dir;
-    struct nt_dir_entry *de;
-    bool removed = false;
-    if (!dir)
-        return;
-    write_lock(&dir->lock);
-    /* Re-check parent_dir under the directory lock. Two callers can read the same
-     * non-NULL parent_dir (concurrent ObMakeTemporaryObject). Only the one that
-     * still finds the entry linked removes it and drops the directory's
-     * reference; the other sees NULL and does nothing. */
-    if (obj->parent_dir == dir) {
-        list_for_each_entry(de, &dir->entries, link) {
-            if (de->obj == obj) {
-                list_del(&de->link);
-                /* Header name points to this entry's name buffer. Clear header name after freeing. */
-                nt_free_unicodestring(&de->name);
-                kfree(de);
+    struct nt_directory *dir;
+    struct nt_dir_entry *de = NULL, *cur;
+    OB_TEST_PAUSE("remove", obj);
+    write_lock(&ob_ns_lock);
+    dir = obj->parent_dir;
+    if (dir) {
+        write_lock(&dir->lock);
+        list_for_each_entry(cur, &dir->entries, link) {
+            if (cur->obj == obj) {
+                de = cur;
                 break;
             }
         }
+        /* parent_dir is set exactly when obj has an entry in that directory. */
+        KASSERT(de != NULL);
+        if (de)
+            list_del(&de->link);
+        /* Header name points to this entry's name buffer. Clear it under the lock. */
         obj->parent_dir = NULL;
         obj->name.Buffer = NULL;
         obj->name.Length = 0;
         obj->name.MaximumLength = 0;
-        removed = true;
+        write_unlock(&dir->lock);
     }
-    write_unlock(&dir->lock);
-    if (removed)
+    write_unlock(&ob_ns_lock);
+    if (de) {
+        nt_free_unicodestring(&de->name);
+        kfree(de);
         ObDereferenceObject(obj);
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -469,11 +520,23 @@ static NTSTATUS ObpParsePath(PUNICODE_STRING path,
             return STATUS_SUCCESS;
         }
 
-        /* has more components: if found is symlink, we do not follow symlinks in middle (known gap, return path not found) */
+        /* A link in a middle component is followed (NT): the walk goes on from
+         * the link's target with the remaining components. The target is
+         * resolved with the same depth limit as a final link, so a cycle ends
+         * with STATUS_NAME_TOO_LONG. A missing target is a missing path
+         * component, so it is PATH_NOT_FOUND. */
         if (found->type == &nt_symlink_type) {
+            struct nt_object_header *resolved = NULL;
+            status = ObpResolveSymlink(found, NULL, 0, depth, &resolved);
             ObDereferenceObject(found);
             ObDereferenceObject(cur_hdr);
-            return STATUS_OBJECT_PATH_NOT_FOUND;
+            if (status == STATUS_OBJECT_NAME_NOT_FOUND)
+                return STATUS_OBJECT_PATH_NOT_FOUND;
+            if (!NT_SUCCESS(status))
+                return status;
+            cur_hdr = resolved;
+            depth++;
+            continue;
         }
 
         ObDereferenceObject(cur_hdr);
@@ -908,8 +971,7 @@ NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj)
      * reference and free obj. */
     obj->flags &= ~OBJ_PERMANENT;
     obj->is_permanent = false;
-    if (obj->parent_dir)
-        ObpRemoveFromDirectory(obj);
+    ObpRemoveFromDirectory(obj);
     return STATUS_SUCCESS;
 }
 
@@ -1553,6 +1615,7 @@ NTSTATUS ObInitObjectManager(void)
     NTSTATUS st;
     if (ob_initialized) return STATUS_SUCCESS;
     spin_lock_init(&ob_sd_lock);
+    rwlock_init(&ob_ns_lock);
     INIT_LIST_HEAD(&ob_type_list);
     list_add(&nt_directory_type.list, &ob_type_list);
     list_add(&nt_symlink_type.list, &ob_type_list);
@@ -1617,8 +1680,6 @@ NTSTATUS ObInitObjectManager(void)
 
 void ObCleanupObjectManager(void)
 {
-    struct nt_dir_entry *de;
-    struct list_head *pos, *n;
     if (!ob_initialized) return;
     /* Save local copies of well-known dir pointers before clearing root */
     struct nt_object_header *dos = ob_dosdevices_hdr;
@@ -1627,22 +1688,12 @@ void ObCleanupObjectManager(void)
     struct nt_object_header *kdll = ob_knowndlls_hdr;
     struct nt_object_header *sess = ob_sessions_hdr;
 
-    write_lock(&ob_root_dir.lock);
-    pos = ob_root_dir.entries.next;
-    while (pos != &ob_root_dir.entries) {
-        n = pos->next;
-        de = list_entry(pos, struct nt_dir_entry, link);
-        list_del(&de->link);
-        nt_free_unicodestring(&de->name);
-        struct nt_object_header *obj = de->obj;
-        kfree(de);
-        obj->parent_dir = NULL;
-        obj->name.Buffer = NULL;
-        obj->name.Length = 0;
-        ObDereferenceObject(obj);
-        pos = n;
+    {
+        struct list_head detached;
+        INIT_LIST_HEAD(&detached);
+        obp_detach_entries(&ob_root_dir, &detached);
+        obp_release_entries(&detached);
     }
-    write_unlock(&ob_root_dir.lock);
 
     /* Drop the creation references for well-known directories.
      * Each had ref 2 (create + directory). The loop above dropped the directory ref (1 -> 1).

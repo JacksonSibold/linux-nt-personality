@@ -223,6 +223,11 @@ struct nt_test_body {
 NTSTATUS ObInitObjectManager(void);
 void     ObCleanupObjectManager(void);
 
+/* Test seam for the namespace race tests (object_extra_test.c). NULL in
+ * production. The object manager calls it at named points in the directory
+ * insert and remove paths, with the object involved. */
+extern void (*ObTestPauseHook)(const char *point, struct nt_object_header *obj);
+
 NTSTATUS ObCreateObjectType(const char *name,
                               const struct nt_object_type_ops *ops,
                               struct nt_object_type **out_type);

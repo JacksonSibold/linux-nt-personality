@@ -18,6 +18,7 @@
 #include <string.h>
 #include <wchar.h>
 #include <stdint.h>
+#include <pthread.h>
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -1079,11 +1080,288 @@ TEST(duplicate_null_target)
 }
 
 /* -------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------- */
+/* Namespace race regressions (OB-1, C-2)                                     */
+/* -------------------------------------------------------------------------- */
+
+/* One-shot pause at a named point in object.c, for one object. The hook runs
+ * on the thread that reaches the point and blocks there until released. */
+static pthread_mutex_t g_pause_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_pause_cv = PTHREAD_COND_INITIALIZER;
+static struct nt_object_header *g_pause_obj;
+static const char *g_pause_point;
+static int g_paused, g_resume;
+
+static void pause_hook(const char *point, struct nt_object_header *obj)
+{
+    if (obj != g_pause_obj || strcmp(point, g_pause_point) != 0)
+        return;
+    pthread_mutex_lock(&g_pause_mu);
+    g_pause_obj = NULL;
+    g_paused = 1;
+    pthread_cond_broadcast(&g_pause_cv);
+    while (!g_resume)
+        pthread_cond_wait(&g_pause_cv, &g_pause_mu);
+    pthread_mutex_unlock(&g_pause_mu);
+}
+
+static void pause_arm(struct nt_object_header *obj, const char *point)
+{
+    pthread_mutex_lock(&g_pause_mu);
+    g_pause_obj = obj;
+    g_pause_point = point;
+    g_paused = 0;
+    g_resume = 0;
+    pthread_mutex_unlock(&g_pause_mu);
+    ObTestPauseHook = pause_hook;
+}
+
+static void pause_wait(void)
+{
+    pthread_mutex_lock(&g_pause_mu);
+    while (!g_paused)
+        pthread_cond_wait(&g_pause_cv, &g_pause_mu);
+    pthread_mutex_unlock(&g_pause_mu);
+}
+
+static void pause_release(void)
+{
+    pthread_mutex_lock(&g_pause_mu);
+    g_resume = 1;
+    pthread_cond_broadcast(&g_pause_cv);
+    pthread_mutex_unlock(&g_pause_mu);
+    ObTestPauseHook = NULL;
+}
+
+struct temp_arg {
+    struct nt_object_header *obj;
+    NTSTATUS st;
+};
+
+static void *make_temporary_thread(void *p)
+{
+    struct temp_arg *a = (struct temp_arg *)p;
+    a->st = ObMakeTemporaryObject(a->obj);
+    return NULL;
+}
+
+/* OB-1: ObpRemoveFromDirectory read obj->parent_dir and then locked that
+ * directory with no reference. A remove of a child is paused after the parent
+ * pointer is read, the parent directory is then made temporary and freed, and
+ * the remove resumes. The freed directory must not be touched. main sets
+ * KSHIM_POISON, so the freed directory header reads as garbage and the old
+ * code faults on its lock. */
+TEST(remove_after_parent_directory_freed)
+{
+    reset_ob();
+    UNICODE_STRING dus;
+    make_us(&dus, "\\BaseNamedObjects\\OB1Dir", wbuf, sizeof(wbuf));
+    OBJECT_ATTRIBUTES doa = make_oa(&dus, 0);
+    struct nt_object_header *dir = NULL;
+    ASSERT_STATUS(ObCreateDirectoryObject(&doa, &dir), STATUS_SUCCESS);
+    ASSERT_STATUS(ObInsertObject(dir, &doa, 0, NULL, NULL), STATUS_SUCCESS);
+
+    UNICODE_STRING cus;
+    make_us(&cus, "\\BaseNamedObjects\\OB1Dir\\OB1Ev", wbuf2, sizeof(wbuf2));
+    OBJECT_ATTRIBUTES coa = make_oa(&cus, 0);
+    struct nt_object_header *child = NULL;
+    void *cbody = NULL;
+    ASSERT_STATUS(ObCreateObject(&nt_test_type, &coa, sizeof(struct nt_test_body), &child, &cbody), STATUS_SUCCESS);
+    ASSERT_STATUS(ObInsertObject(child, &coa, 0, NULL, NULL), STATUS_SUCCESS);
+    ObDereferenceObject(child);          /* creator ref; the directory entry keeps the child */
+    ObReferenceObject(child);            /* ref held by the remover thread */
+
+    /* The directory keeps its creator ref, so the deref below is the last one. */
+    struct temp_arg ta = { child, STATUS_UNSUCCESSFUL };
+    pthread_t th;
+    pause_arm(child, "remove");
+    ASSERT(pthread_create(&th, NULL, make_temporary_thread, &ta) == 0);
+    pause_wait();
+
+    /* Drop the entry (creator ref stays), then the creator ref frees the directory. */
+    ASSERT_STATUS(ObMakeTemporaryObject(dir), STATUS_SUCCESS);
+    ObDereferenceObject(dir);
+
+    pause_release();
+    pthread_join(th, NULL);
+    ASSERT_STATUS(ta.st, STATUS_SUCCESS);
+    ASSERT(child->parent_dir == NULL);
+    ASSERT(child->name.Buffer == NULL);
+
+    struct nt_object_header *gone = NULL;
+    ASSERT_STATUS(ObReferenceObjectByName(&cus, NULL, KernelMode, 0, &gone), STATUS_OBJECT_PATH_NOT_FOUND);
+    ObDereferenceObject(child);          /* last ref: frees the child */
+    PASS();
+}
+
+struct insert_arg {
+    struct nt_object_header *obj;
+    OBJECT_ATTRIBUTES *oa;
+    NTSTATUS st;
+};
+
+static void *insert_thread(void *p)
+{
+    struct insert_arg *a = (struct insert_arg *)p;
+    a->st = ObInsertObject(a->obj, a->oa, 0, NULL, NULL);
+    return NULL;
+}
+
+/* C-2: ObpInsertDirectoryEntry published the entry before it set obj's parent
+ * and name. A name lookup needs only the directory lock, so it could return
+ * the object in that window. The insert is paused after the entry is linked,
+ * and the lookup must already see a parented object. */
+TEST(insert_publishes_entry_after_parent_set)
+{
+    reset_ob();
+    UNICODE_STRING us;
+    make_us(&us, "\\BaseNamedObjects\\C2Obj", wbuf, sizeof(wbuf));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    struct nt_object_header *obj = NULL;
+    void *body = NULL;
+    ASSERT_STATUS(ObCreateObject(&nt_test_type, &oa, sizeof(struct nt_test_body), &obj, &body), STATUS_SUCCESS);
+
+    struct insert_arg ia = { obj, &oa, STATUS_UNSUCCESSFUL };
+    pthread_t th;
+    pause_arm(obj, "insert");
+    ASSERT(pthread_create(&th, NULL, insert_thread, &ia) == 0);
+    pause_wait();
+
+    /* Look up while the insert is paused. Record what is seen, then release the
+     * insert before any assertion, so a failure cannot leave it blocked. */
+    struct nt_object_header *found = NULL;
+    NTSTATUS fst = ObReferenceObjectByName(&us, NULL, KernelMode, 0, &found);
+    bool same = (found == obj);
+    bool parented = found && found->parent_dir != NULL;
+    bool named = found && found->name.Buffer != NULL;
+    if (found)
+        ObDereferenceObject(found);
+
+    pause_release();
+    pthread_join(th, NULL);
+    ASSERT_STATUS(fst, STATUS_SUCCESS);
+    ASSERT(same);
+    ASSERT(parented);
+    ASSERT(named);
+    ASSERT_STATUS(ia.st, STATUS_SUCCESS);
+
+    /* The name is in the directory: making it temporary must remove it. */
+    struct nt_object_header *again = NULL;
+    ASSERT_STATUS(ObReferenceObjectByName(&us, NULL, KernelMode, 0, &again), STATUS_SUCCESS);
+    ASSERT_STATUS(ObMakeTemporaryObject(again), STATUS_SUCCESS);
+    ObDereferenceObject(again);
+    ASSERT_STATUS(ObReferenceObjectByName(&us, NULL, KernelMode, 0, &again), STATUS_OBJECT_NAME_NOT_FOUND);
+    ObDereferenceObject(obj);            /* creator ref: frees the object */
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
+/* Symbolic links in the middle of a path (OB-2)                              */
+/* -------------------------------------------------------------------------- */
+
+/* Inserts a symbolic link object at path that points at target. */
+static NTSTATUS insert_link(const char *path, const char *target)
+{
+    static WCHAR lname[256], ltarget[256];
+    UNICODE_STRING us, tus;
+    make_us(&us, path, lname, sizeof(lname));
+    make_us(&tus, target, ltarget, sizeof(ltarget));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = ObCreateSymbolicLinkObject(&oa, &tus, &hdr);
+    if (!NT_SUCCESS(st))
+        return st;
+    return ObInsertObject(hdr, &oa, 0, NULL, NULL);
+}
+
+/* Inserts an unnamed-body test object at path. */
+static NTSTATUS insert_test_object(const char *path, struct nt_object_header **out)
+{
+    static WCHAR oname[256];
+    UNICODE_STRING us;
+    make_us(&us, path, oname, sizeof(oname));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    void *body = NULL;
+    NTSTATUS st = ObCreateObject(&nt_test_type, &oa, sizeof(struct nt_test_body), out, &body);
+    if (!NT_SUCCESS(st))
+        return st;
+    return ObInsertObject(*out, &oa, 0, NULL, NULL);
+}
+
+/* Name lookup with no type filter. Drops the reference it gets. */
+static NTSTATUS lookup_path(const char *path, struct nt_object_header **out)
+{
+    static WCHAR pname[256];
+    UNICODE_STRING us;
+    make_us(&us, path, pname, sizeof(pname));
+    return ObReferenceObjectByName(&us, NULL, KernelMode, 0, out);
+}
+
+/* A link in a middle component is followed (NT): the rest of the path is
+ * looked up under the link's target. */
+TEST(middle_symlink_is_followed)
+{
+    reset_ob();
+    struct nt_object_header *dir = NULL, *ev = NULL, *found = NULL;
+    static WCHAR dname[256];
+    UNICODE_STRING dus;
+    make_us(&dus, "\\BaseNamedObjects\\OB2Dir", dname, sizeof(dname));
+    OBJECT_ATTRIBUTES doa = make_oa(&dus, 0);
+    ASSERT_STATUS(ObCreateDirectoryObject(&doa, &dir), STATUS_SUCCESS);
+    ASSERT_STATUS(ObInsertObject(dir, &doa, 0, NULL, NULL), STATUS_SUCCESS);
+    ASSERT_STATUS(insert_test_object("\\BaseNamedObjects\\OB2Dir\\OB2Ev", &ev), STATUS_SUCCESS);
+    ASSERT_STATUS(insert_link("\\BaseNamedObjects\\OB2Link", "\\BaseNamedObjects\\OB2Dir"), STATUS_SUCCESS);
+
+    ASSERT_STATUS(lookup_path("\\BaseNamedObjects\\OB2Link\\OB2Ev", &found), STATUS_SUCCESS);
+    ASSERT(found == ev);
+    ObDereferenceObject(found);
+
+    /* A missing final name under a link is NAME_NOT_FOUND, not PATH_NOT_FOUND. */
+    ASSERT_STATUS(lookup_path("\\BaseNamedObjects\\OB2Link\\Missing", &found), STATUS_OBJECT_NAME_NOT_FOUND);
+    PASS();
+}
+
+/* A link whose target does not exist: the target path is missing, so the
+ * path is PATH_NOT_FOUND (the same as a missing directory in the path). */
+TEST(middle_symlink_dangling_is_path_not_found)
+{
+    reset_ob();
+    struct nt_object_header *found = NULL;
+    ASSERT_STATUS(insert_link("\\BaseNamedObjects\\OB2Dangle", "\\BaseNamedObjects\\OB2Missing"), STATUS_SUCCESS);
+    ASSERT_STATUS(lookup_path("\\BaseNamedObjects\\OB2Dangle\\X", &found), STATUS_OBJECT_PATH_NOT_FOUND);
+    PASS();
+}
+
+/* A link that leads back to itself through a middle component: the depth limit
+ * (32, as NT) ends the walk with the loop status used for final links. */
+TEST(middle_symlink_cycle_hits_depth_limit)
+{
+    reset_ob();
+    struct nt_object_header *found = NULL;
+    ASSERT_STATUS(insert_link("\\BaseNamedObjects\\OB2Loop", "\\BaseNamedObjects\\OB2Loop\\X"), STATUS_SUCCESS);
+    ASSERT_STATUS(lookup_path("\\BaseNamedObjects\\OB2Loop\\X", &found), STATUS_NAME_TOO_LONG);
+    PASS();
+}
+
+/* A middle link to an object that is not a directory has no further path. */
+TEST(middle_symlink_to_non_directory_is_path_not_found)
+{
+    reset_ob();
+    struct nt_object_header *obj = NULL, *found = NULL;
+    ASSERT_STATUS(insert_test_object("\\BaseNamedObjects\\OB2Obj", &obj), STATUS_SUCCESS);
+    ASSERT_STATUS(insert_link("\\BaseNamedObjects\\OB2Link2", "\\BaseNamedObjects\\OB2Obj"), STATUS_SUCCESS);
+    ASSERT_STATUS(lookup_path("\\BaseNamedObjects\\OB2Link2\\X", &found), STATUS_OBJECT_PATH_NOT_FOUND);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* main                                                                        */
 /* -------------------------------------------------------------------------- */
 
 int main(void)
 {
+    /* KSHIM_POISON is read on the first allocation, so set it before any. */
+    putenv("KSHIM_POISON=1");
     printf("object_extra_test\n");
     RUN(make_permanent_requires_privilege);
     RUN(make_permanent_with_privilege);
@@ -1115,6 +1393,12 @@ int main(void)
     RUN(create_directory_type_mismatch);
     RUN(create_directory_bad_paths_and_args);
     RUN(create_directory_generic_access);
+    RUN(remove_after_parent_directory_freed);
+    RUN(insert_publishes_entry_after_parent_set);
+    RUN(middle_symlink_is_followed);
+    RUN(middle_symlink_dangling_is_path_not_found);
+    RUN(middle_symlink_cycle_hits_depth_limit);
+    RUN(middle_symlink_to_non_directory_is_path_not_found);
 
     printf("object_extra_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
