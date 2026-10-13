@@ -76,15 +76,20 @@ but this is not the same as the status convention above.
 `nt_service_list.h` has 171 entries. `NT_NR_SERVICES` is 476, which is the
 highest SSN (0x1db) plus one (`nt_internal.h:16`). Checked at this commit:
 
-- 122 of the 171 names have a `nt_svc_` definition in `src/kernel/nt/`
-  (non-test sources). `docs/status/SERVICES.md` counts 120 of them as
-  IMPLEMENTED and 2 (`NtGetContextThread`, `NtSetContextThread`) as
-  STUB-NOT-IMPLEMENTED.
-- The other 49 names have no definition, so they return
-  `STATUS_NOT_IMPLEMENTED`. The section services (`NtCreateSection`,
-  `NtOpenSection`, `NtMapViewOfSection`) and the port services are among them,
-  as are `NtAlertResumeThread` and `NtWaitForAlertByThreadId`. `NtAllocateVirtualMemoryEx`
-  now has a definition (`dispatch.c:348`).
+- 140 of the 171 names have an `nt_svc_` definition in `src/kernel/nt/`, and 31 have
+  none (`MISSING` in `docs/status/SERVICES.md`). Of the 140, 134 are classed
+  IMPLEMENTED (57 with one definition, 77 with a definition in each build), 2 are
+  IMPLEMENTED in the userspace build and a stub in the kernel build
+  (`NtCreateProcess`, `NtCreateProcessEx`), 1 refuses in userspace and is implemented
+  in the kernel build, and 3 are stubs in both builds (`NtGetContextThread`,
+  `NtSetContextThread`, `NtExtendSection`).
+- The 31 missing names resolve to NULL and return `STATUS_NOT_IMPLEMENTED`. They
+  include the port services, the debug and job-object services, `NtCreateSectionEx`,
+  `NtMapViewOfSectionEx`, `NtUnmapViewOfSectionEx`, `NtLockVirtualMemory`,
+  `NtUnlockVirtualMemory` and `NtWaitForAlertByThreadId`. The section services
+  `NtCreateSection`, `NtOpenSection`, `NtMapViewOfSection`, `NtUnmapViewOfSection`
+  and `NtQuerySection` are defined now (`mm.c`). `NtAllocateVirtualMemoryEx` is
+  defined at `dispatch.c:352`, and `NtAlertResumeThread` in `proc_thread.c`.
 
 `tools/check_syscall_tables.py` reports parity for the 171 services across the
 seven copies of the table. No generator produces `nt_service_list.h`. The

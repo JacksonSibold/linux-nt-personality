@@ -66,7 +66,7 @@ Constants declared in the header: value types `REG_NONE` through `REG_QWORD` (0 
 
 - Not implemented, and not in `nt_service_list.h`, so no handler is added: `NtRenameKey`, `NtSaveKey`/`NtSaveKeyEx`, `NtNotifyChangeKey`, `NtQueryMultipleValueKey`, `NtCreateKeyTransacted`. Adding any of them needs a service-table entry with an SSN first.
 - `REG_OPTION_CREATE_LINK` is refused, so symbolic-link keys (`REG_LINK` values and `SymbolicLinkValue` resolution) do not exist. `REG_OPTION_OPEN_LINK` has no effect for the same reason.
-- `REG_OPTION_VOLATILE` and `REG_OPTION_BACKUP_RESTORE` are ignored.
+- `REG_OPTION_VOLATILE` and `REG_OPTION_BACKUP_RESTORE` are ignored. `NtOpenKeyEx` ignores `OpenOptions` entirely (`registry.c:903`).
 - The regf-compatible hive writer described in `registry.h` is not implemented. The current format is the `NTREG` snapshot above.
 - Per-key directory-tree persistence described in the design note is not implemented. The per-key files above are the only per-key output.
-- Write access to the Machine hive is restricted by path, not by the security module. `NtCreateKey` and `NtOpenKeyEx` return `STATUS_ACCESS_DENIED` when the path is under Machine and the desired access includes `KEY_SET_VALUE` or `KEY_CREATE_SUB_KEY`. WOW64 reserved bits are stripped first (`strip_wow64`). No other per-key access check is visible, and the security module is not called from here.
+- Write access to the Machine hive is restricted by path, not by the security module. `NtCreateKey` (`registry.c:714`) and `NtOpenKeyEx` (`registry.c:911`) return `STATUS_ACCESS_DENIED` when the path is under Machine and the desired access includes `KEY_SET_VALUE` or `KEY_CREATE_SUB_KEY`; `NtCreateKey` also refuses the bit `0x00020000`. WOW64 reserved bits are stripped first (`strip_wow64`). No other per-key access check is visible, and the security module is not called from here.

@@ -116,8 +116,11 @@ flowchart TD
   itself is done outside the lock. A shared writable view needs a writable
   section (`STATUS_SECTION_PROTECTION`). Image sections (`SEC_IMAGE`) are
   built in the userspace build only: the file is planned by `image_plan.h`
-  and mapped whole, with one `MEM_IMAGE` VAD per segment (see
-  [mm.md](../modules/mm.md)). The kernel build refuses `SEC_IMAGE`.
+  and mapped whole, with one `MEM_IMAGE` VAD per segment. A view placed away from
+  the preferred base gets its base relocations applied to the private copy
+  (`image_reloc.h`) before any segment takes its final protection. See
+  [mm.md](../modules/mm.md), [image_plan](../modules/image_plan.md) and
+  [image_reloc](../modules/image_reloc.md). The kernel build refuses `SEC_IMAGE`.
 - `NtUnmapViewOfSection` takes the base, which must be the VAD's `alloc_base`,
   removes the view VAD and unmaps the range.
 
@@ -146,14 +149,14 @@ what the loader mapped, as well as what the NT calls mapped. See
   the current-process handle is accepted (`mm.c:1605`).
 - `NtAllocateVirtualMemoryEx` is `NtAllocateVirtualMemory` when no extended
   parameters are given. Any extended parameter returns `STATUS_NOT_SUPPORTED`.
-- Not implemented: `NtLockVirtualMemory` and `NtUnlockVirtualMemory` (need a
-  page-lock primitive in kshim). `NtQuerySection`, `NtExtendSection`,
-  `NtOpenSection`, `NtCreateSectionEx`, `NtMapViewOfSectionEx` and
-  `NtUnmapViewOfSectionEx` have no service entry. `NtCreateSection`,
-  `NtMapViewOfSection` and `NtUnmapViewOfSection` exist as C functions in
-  `mm.c` but have no `nt_svc_` wrapper, so their dispatch slots are NULL. The
-  section handle is a handle-table index (ADR 0001, record 0001), so adding those
-  wrappers is now a matter of wiring the table entry, not of changing the handle.
+- Not implemented: `NtLockVirtualMemory` and `NtUnlockVirtualMemory` (need a page-lock
+  primitive in kshim), and `NtCreateSectionEx`, `NtMapViewOfSectionEx` and
+  `NtUnmapViewOfSectionEx` have no service entry, so their dispatch slots are NULL.
+  `NtCreateSection`, `NtOpenSection`, `NtMapViewOfSection`, `NtUnmapViewOfSection`
+  and `NtQuerySection` have `nt_svc_` wrappers in `mm.c` (typed in the userspace
+  build, raw-argument in the kernel build). `NtExtendSection` returns
+  `STATUS_NOT_IMPLEMENTED`. The section handle is a handle-table index (ADR 0001,
+  record 0001).
 
 ## Gaps
 
