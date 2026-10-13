@@ -567,6 +567,68 @@ NTSTATUS sd_from_self_relative(const void *sr_buffer, ULONG sr_length,
                                SECURITY_DESCRIPTOR **sd);
 ULONG    sd_length(const SECURITY_DESCRIPTOR *sd);
 
+/* Token access rights (winnt.h) */
+#define TOKEN_ASSIGN_PRIMARY        0x0001
+#define TOKEN_DUPLICATE             0x0002
+#define TOKEN_IMPERSONATE           0x0004
+#define TOKEN_QUERY                 0x0008
+#define TOKEN_QUERY_SOURCE          0x0010
+#define TOKEN_ADJUST_PRIVILEGES     0x0020
+#define TOKEN_ADJUST_GROUPS         0x0040
+#define TOKEN_ADJUST_DEFAULT        0x0080
+#define TOKEN_ADJUST_SESSIONID      0x0100
+#define TOKEN_ALL_ACCESS            (STANDARD_RIGHTS_REQUIRED | 0x1FFUL)
+#define TOKEN_READ                  (STANDARD_RIGHTS_READ | TOKEN_QUERY)
+#define TOKEN_WRITE                 (STANDARD_RIGHTS_WRITE | TOKEN_ADJUST_PRIVILEGES | \
+                                     TOKEN_ADJUST_GROUPS | TOKEN_ADJUST_DEFAULT)
+#define TOKEN_EXECUTE               (STANDARD_RIGHTS_EXECUTE)
+
+/* TOKEN_INFORMATION_CLASS values used by NtQueryInformationToken (winnt.h) */
+typedef enum _TOKEN_INFORMATION_CLASS {
+    TokenUser = 1,
+    TokenGroups,
+    TokenPrivileges,
+    TokenOwner,
+    TokenPrimaryGroup,
+    TokenDefaultDacl,
+    TokenSource,
+    TokenType,
+    TokenImpersonationLevel,
+    TokenStatistics,
+    TokenRestrictedSids,
+    TokenSessionId,
+    TokenGroupsAndPrivileges,
+    TokenSessionReference,
+    TokenSandBoxInert,
+    TokenAuditPolicy,
+    TokenOrigin,
+    TokenElevationType,
+    TokenLinkedToken,
+    TokenElevation,
+    TokenHasRestrictions,
+    TokenAccessInformation,
+    TokenVirtualizationAllowed,
+    TokenVirtualizationEnabled,
+    TokenIntegrityLevel = 25
+} TOKEN_INFORMATION_CLASS;
+
+typedef GENERIC_MAPPING *PGENERIC_MAPPING;
+typedef ACCESS_MASK *PACCESS_MASK;
+
+/* Privilege structures (winnt.h) */
+typedef struct _TOKEN_PRIVILEGES {
+    ULONG               PrivilegeCount;
+    LUID_AND_ATTRIBUTES Privileges[1];
+} TOKEN_PRIVILEGES, *PTOKEN_PRIVILEGES;
+
+typedef struct _PRIVILEGE_SET {
+    ULONG               PrivilegeCount;
+    ULONG               Control;
+    LUID_AND_ATTRIBUTES Privilege[1];
+} PRIVILEGE_SET, *PPRIVILEGE_SET;
+
+#define PRIVILEGE_SET_ALL_NECESSARY 1
+
 /* -------------------------------------------------------------------------- */
 /* Token API                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -581,6 +643,9 @@ ACCESS_TOKEN *token_create_primary(PSID user,
                                    PACL default_dacl,
                                    PSID integrity_level,
                                    ULONG session_id);
+/* Default primary token for a new process: user S-1-5-21-0-0-0-1000, member
+ * of the builtin Users group, no privileges, medium integrity. Caller owns it. */
+ACCESS_TOKEN *token_create_default_primary(void);
 ACCESS_TOKEN *token_duplicate(const ACCESS_TOKEN *src);
 void         token_reference(ACCESS_TOKEN *token);
 void         token_dereference(ACCESS_TOKEN *token);
