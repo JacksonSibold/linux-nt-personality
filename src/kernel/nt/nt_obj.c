@@ -859,6 +859,18 @@ NTSTATUS nt_svc_NtQueryObject(HANDLE Handle, ULONG ObjectInformationClass,
         ti->ValidAccessMask = 0x1FFFFF;
         break;
     }
+    case ObjectHandleFlagInformation: {
+        bool inherit = false, protect = false;
+        needed = sizeof(OBJECT_HANDLE_FLAG_INFORMATION);
+        if (ReturnLength) *ReturnLength = needed;
+        if (Length < needed) { ret = STATUS_INFO_LENGTH_MISMATCH; break; }
+        ret = ObGetHandleFlags(proc, Handle, &inherit, &protect);
+        if (!NT_SUCCESS(ret)) break;
+        OBJECT_HANDLE_FLAG_INFORMATION *fi = (OBJECT_HANDLE_FLAG_INFORMATION*)ObjectInformation;
+        fi->Inherit = inherit;
+        fi->ProtectFromClose = protect;
+        break;
+    }
     default:
         ret = STATUS_INVALID_INFO_CLASS;
         break;
@@ -1198,6 +1210,26 @@ NTSTATUS nt_svc_NtQueryObject(unsigned long a0, unsigned long a1, unsigned long 
             ti->ValidAccessMask = 0x1FFFFF;
             if (copy_to_user(ObjectInformation, kbuf, needed)) { kfree(kbuf); ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
             kfree(kbuf);
+            ObDereferenceObject(hdr);
+            return STATUS_SUCCESS;
+        }
+        case ObjectHandleFlagInformation: {
+            bool inherit = false, protect = false;
+            OBJECT_HANDLE_FLAG_INFORMATION kfi;
+            NTSTATUS fst;
+            needed = sizeof(kfi);
+            k_needed = needed;
+            if (ReturnLength) {
+                if (!access_ok(ReturnLength, sizeof(ULONG))) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
+                if (copy_to_user(ReturnLength, &k_needed, sizeof(k_needed))) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
+            }
+            if (Length < needed) { ObDereferenceObject(hdr); return STATUS_INFO_LENGTH_MISMATCH; }
+            if (!access_ok(ObjectInformation, needed)) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
+            fst = ObGetHandleFlags(proc, Handle, &inherit, &protect);
+            if (!NT_SUCCESS(fst)) { ObDereferenceObject(hdr); return fst; }
+            kfi.Inherit = inherit;
+            kfi.ProtectFromClose = protect;
+            if (copy_to_user(ObjectInformation, &kfi, sizeof(kfi))) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
             ObDereferenceObject(hdr);
             return STATUS_SUCCESS;
         }

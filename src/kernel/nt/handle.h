@@ -96,6 +96,9 @@ NTSTATUS ObCreateHandle(struct nt_eprocess *proc,
 NTSTATUS ObCloseHandle(struct nt_eprocess *proc, HANDLE handle);
 NTSTATUS ObSetHandleFlags(struct nt_eprocess *proc, HANDLE handle,
                           bool inherit, bool protect_from_close);
+/* Reads the inherit and protect-from-close flags of a handle of proc. */
+NTSTATUS ObGetHandleFlags(struct nt_eprocess *proc, HANDLE handle,
+                          bool *inherit, bool *protect_from_close);
 
 NTSTATUS ObReferenceObjectByHandle(struct nt_eprocess *proc,
                                     HANDLE handle,

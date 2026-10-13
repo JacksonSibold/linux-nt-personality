@@ -407,6 +407,30 @@ NTSTATUS ObCloseHandle(struct nt_eprocess *proc, HANDLE handle)
 }
 
 /* Set the Inherit and ProtectFromClose bits of an existing handle entry. */
+NTSTATUS ObGetHandleFlags(struct nt_eprocess *proc, HANDLE handle,
+                          bool *inherit, bool *protect_from_close)
+{
+    struct nt_handle_table *table;
+    struct nt_handle_entry *e;
+    u32 idx;
+
+    if (handle == NtCurrentProcess() || handle == NtCurrentThread())
+        return STATUS_INVALID_HANDLE;
+    if (!proc || !inherit || !protect_from_close) return STATUS_INVALID_PARAMETER;
+    table = proc->handle_table;
+    if (!table || handle == NULL) return STATUS_INVALID_HANDLE;
+    idx = handle_to_index(handle);
+    if (idx == 0) return STATUS_INVALID_HANDLE;
+
+    spin_lock(&table->lock);
+    e = ht_entry(table, idx, false);
+    if (!e || e->free) { spin_unlock(&table->lock); return STATUS_INVALID_HANDLE; }
+    *inherit = (e->attr & HANDLE_FLAG_INHERIT) != 0;
+    *protect_from_close = (e->attr & HANDLE_FLAG_PROTECT_FROM_CLOSE) != 0;
+    spin_unlock(&table->lock);
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS ObSetHandleFlags(struct nt_eprocess *proc, HANDLE handle,
                           bool inherit, bool protect_from_close)
 {

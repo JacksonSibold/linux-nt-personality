@@ -946,6 +946,69 @@ TEST(query_symlink_anonymous)
 }
 
 /* -------------------------------------------------------------------------- */
+/* 8. NtQueryObject(ObjectHandleFlagInformation) and NtSetInformationObject    */
+/* -------------------------------------------------------------------------- */
+
+typedef struct _TEST_OBJECT_HANDLE_FLAG_INFORMATION {
+    BOOLEAN Inherit;
+    BOOLEAN ProtectFromClose;
+} TEST_OBJECT_HANDLE_FLAG_INFORMATION;
+
+NTSTATUS nt_svc_NtQueryObject(HANDLE Handle, ULONG ObjectInformationClass,
+                              PVOID ObjectInformation, ULONG Length, PULONG ReturnLength);
+NTSTATUS nt_svc_NtSetInformationObject(HANDLE Handle, ULONG ObjectInformationClass,
+                                       PVOID ObjectInformation, ULONG Length);
+
+#define TEST_OBJECT_HANDLE_FLAG_CLASS 4UL
+
+TEST(query_handle_flags)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(371, "qflags");
+    ASSERT(proc != NULL);
+
+    /* A handle created with OBJ_INHERIT reports Inherit. */
+    UNICODE_STRING us;
+    make_us(&us, "\\BaseNamedObjects\\FlagObj", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, OBJ_INHERIT);
+    struct nt_object_header *hdr = NULL;
+    void *body = NULL;
+    ASSERT_STATUS(ObCreateObject(&nt_test_type, &oa, sizeof(struct nt_test_body), &hdr, &body), STATUS_SUCCESS);
+    HANDLE h = NULL;
+    ASSERT_STATUS(ObInsertObject(hdr, &oa, 0, proc, &h), STATUS_SUCCESS);
+    ObDereferenceObject(hdr);
+
+    TEST_OBJECT_HANDLE_FLAG_INFORMATION fi;
+    memset(&fi, 0xAA, sizeof(fi));
+    ULONG ret = 0;
+    ASSERT_STATUS(nt_svc_NtQueryObject(h, TEST_OBJECT_HANDLE_FLAG_CLASS, &fi, sizeof(fi), &ret), STATUS_SUCCESS);
+    ASSERT(ret == sizeof(fi));
+    ASSERT(fi.Inherit == TRUE);
+    ASSERT(fi.ProtectFromClose == FALSE);
+
+    /* NtSetInformationObject changes both flags, and the query shows them. */
+    fi.Inherit = FALSE;
+    fi.ProtectFromClose = TRUE;
+    ASSERT_STATUS(nt_svc_NtSetInformationObject(h, TEST_OBJECT_HANDLE_FLAG_CLASS, &fi, sizeof(fi)), STATUS_SUCCESS);
+    TEST_OBJECT_HANDLE_FLAG_INFORMATION got;
+    memset(&got, 0, sizeof(got));
+    ASSERT_STATUS(nt_svc_NtQueryObject(h, TEST_OBJECT_HANDLE_FLAG_CLASS, &got, sizeof(got), NULL), STATUS_SUCCESS);
+    ASSERT(got.Inherit == FALSE);
+    ASSERT(got.ProtectFromClose == TRUE);
+
+    /* A buffer too small for the record gives its size as ReturnLength. */
+    ASSERT_STATUS(nt_svc_NtQueryObject(h, TEST_OBJECT_HANDLE_FLAG_CLASS, &got, 1, &ret), STATUS_INFO_LENGTH_MISMATCH);
+    ASSERT(ret == sizeof(fi));
+
+    /* Clear ProtectFromClose so the handle can be closed. */
+    fi.ProtectFromClose = FALSE;
+    ASSERT_STATUS(nt_svc_NtSetInformationObject(h, TEST_OBJECT_HANDLE_FLAG_CLASS, &fi, sizeof(fi)), STATUS_SUCCESS);
+    ObCloseHandle(proc, h);
+    teardown(proc);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* main                                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -956,6 +1019,7 @@ int main(void)
     RUN(make_permanent_with_privilege);
     RUN(make_permanent_bad_handle);
     RUN(make_permanent_no_token);
+    RUN(query_handle_flags);
     RUN(query_symlink_target);
     RUN(query_symlink_too_small_and_access);
     RUN(query_symlink_anonymous);
