@@ -477,6 +477,7 @@ typedef struct _ACCESS_TOKEN {
     SID_AND_ATTRIBUTES         *restricted_sids;
     struct _ACCESS_TOKEN       *parent;
     ULONG                      session_id;
+    LUID                       token_id;            /* from ntsec_next_token_id, never an address */
 } ACCESS_TOKEN;
 
 /* Object class hint for privilege overrides */
