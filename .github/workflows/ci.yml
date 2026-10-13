@@ -1,8 +1,9 @@
 name: CI
 
 on:
-  push:
-  pull_request:
+  # Manual only: run from the Actions tab. Automatic runs on every push were removed to
+  # stop notification emails; run the same checks locally with tools/run_all_checks.sh.
+  workflow_dispatch:
 
 permissions:
   contents: read
