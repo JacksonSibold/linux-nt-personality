@@ -39,12 +39,12 @@ Notes on the code:
   Its contract forbids blocking and handle-table calls. It then clears the slot,
   drops the handle count, runs `ops.close`, and drops one reference.
 - Object types are listed in `ob_type_list` by `ObInitObjectManager`
-  (`object.c:1336-1341`): directory, symbolic link, process, thread, token and a
+  (`object.c:1556` to `:1562`): directory, symbolic link, process, thread, token and a
   test type. `ObCreateObjectType` is declared in `object.h` but has no
   definition, so only `ObRegisterObjectType` is usable. The Section type
   (`nt_section_type`, defined in `mm.c`) and the event, mutant, semaphore, file
   and key types are registered with `ObRegisterObjectType` by their own modules
-  (`mm.c:1747`, `nt_obj.c:125-128`, `registry.c:465`). Sections register on first
+  (`mm.c:1863`, `nt_obj.c:126` to `:129`, `registry.c:465`). Sections register on first
   use, so the object manager does not link against `mm.c`.
 - `ObInitObjectManager` creates the well-known directories `??`, `Device`,
   `BaseNamedObjects`, `KnownDlls` and `Sessions` under the root.
@@ -75,9 +75,10 @@ flowchart LR
   `ObReferenceObjectByHandle` and are never stored in the table. `ObCloseHandle`
   rejects them.
 
-The comments in `handle.c` describe a LIFO free list and a close-pending state
-for file objects. The code has neither. It uses the FIFO and quarantine
-described above, and no close-pending state exists.
+The comments in `handle.c` describe a LIFO free list (`handle.c:22`, `:60`) and
+close-pending semantics (`handle.c:64` to `:66`). The code uses the FIFO and
+quarantine described above. Close-pending exists only in the test object type
+(`object.c:169`); file objects have no such state.
 
 ## Process and thread registry
 
@@ -107,7 +108,9 @@ flowchart LR
   there is no entry, it creates one, and it reads the PEB pointer from
   `mm->start_data`. This is how the first PE process gets an object, because
   `binfmt_pe` does not create one.
-- `NtDuplicateObject` and `ObInheritHandles` copy handles between tables. Only
-  handles marked `OBJ_INHERIT` are inherited, and they keep the same value.
+- `NtDuplicateObject` copies a handle between tables. `ObInheritHandleTable`
+  (`handle.c:646`) copies the entries marked for inheritance into a child table at
+  the same indices, all or nothing. The shim calls it at process creation; the
+  kernel build does not yet.
 - Security descriptors are stored on the header but are not checked on handle
   use. See [security](../modules/security.md).
