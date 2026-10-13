@@ -2553,6 +2553,11 @@ NTSTATUS nt_svc_NtSetTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a
         ObDereferenceObject(hdr);
         return STATUS_NOT_IMPLEMENTED;
     }
+    /* Probe the output before the timer changes, so a bad pointer fails without arming. */
+    if (PreviousState && !access_ok(PreviousState, sizeof(BOOLEAN))) {
+        ObDereferenceObject(hdr);
+        return STATUS_ACCESS_VIOLATION;
+    }
     BOOLEAN prev = 0;
     st = nt_cancel_timer(t, &prev);   /* stop any earlier arming and read the old state */
     if (NT_SUCCESS(st)) st = nt_set_timer(t, &due, Period, TimerApcRoutine, TimerContext);
@@ -2577,6 +2582,11 @@ NTSTATUS nt_svc_NtCancelTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PT
     struct nt_object_header *hdr = NULL;
     NTSTATUS st = timer_ref(proc, TimerHandle, &t, &hdr);
     if (!NT_SUCCESS(st)) return st;
+    /* Probe the output before the timer is cancelled, so a bad pointer fails without cancelling. */
+    if (CurrentState && !access_ok(CurrentState, sizeof(BOOLEAN))) {
+        ObDereferenceObject(hdr);
+        return STATUS_ACCESS_VIOLATION;
+    }
     BOOLEAN cur = 0;
     st = nt_cancel_timer(t, &cur);
     if (NT_SUCCESS(st) && CurrentState) {
