@@ -412,6 +412,13 @@ struct nt_ethread {
      * thread lock. */
     LONG                     priority;       /* relative, -15..15 */
     ULONG_PTR                affinity_mask;  /* 0 = inherit process mask */
+    /* NtContinue / NtContinueEx (proc_thread.c): the register state the thread
+     * asked to resume with, a copy of the caller's CONTEXT. Written under the
+     * thread lock. pending_continue_valid is set only when a context has been
+     * recorded. The userspace shim has no CPU state to restore, so nothing
+     * consumes this field yet. Zero (not valid) by default. */
+    CONTEXT                  pending_continue;
+    bool                     pending_continue_valid;
 };
 
 NTSTATUS ObCreateProcessObject(struct nt_eprocess **out, ULONG pid, const char *name);
