@@ -19,6 +19,7 @@
 #include "nt_internal.h"
 #include "sync.h"
 #include "object.h"
+#include "mm_ext.h"
 extern void nt_thread_check_suspend(void);
 
 #ifndef STATUS_SUCCESS
@@ -417,8 +418,13 @@ NTSTATUS nt_svc_NtAllocateVirtualMemoryEx(unsigned long a0, unsigned long a1, un
         return STATUS_ACCESS_VIOLATION;
     PVOID kbase = base;
     SIZE_T ksize = size;
-    NTSTATUS st = NtAllocateVirtualMemoryEx(ProcessHandle, &kbase, &ksize, AllocationType,
-                                            PageProtection, ExtendedParameters, ExtendedParameterCount);
+    /* The extended-parameter array and any address-requirements record are
+     * copied in before the call, once each. The native function reads only the copy. */
+    struct nt_mem_ext_snapshot snap;
+    NTSTATUS st = ntmm_ext_copy_in(ExtendedParameters, ExtendedParameterCount, &snap);
+    if (!NT_SUCCESS(st)) return st;
+    st = NtAllocateVirtualMemoryEx(ProcessHandle, &kbase, &ksize, AllocationType,
+                                   PageProtection, snap.params, snap.count);
     if (st != STATUS_NOT_SUPPORTED) {
         if (copy_to_user(BaseAddress, &kbase, sizeof(kbase)) ||
             copy_to_user(RegionSize, &ksize, sizeof(ksize))) {

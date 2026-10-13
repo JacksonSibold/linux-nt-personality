@@ -2068,6 +2068,14 @@ static int test_flush_virtual_memory(void) {
     return 1;
 }
 
+static MEM_EXTENDED_PARAMETER mk_ext(ULONG type, ULONG64 value) {
+    MEM_EXTENDED_PARAMETER p;
+    memset(&p, 0, sizeof(p));
+    p.Type = type;
+    p.ULong64 = value;
+    return p;
+}
+
 /* NtAllocateVirtualMemoryEx: without extended parameters it is
  * NtAllocateVirtualMemory. Extended parameters (NUMA, address requirements)
  * are not supported, and other process handles are STATUS_NOT_SUPPORTED. */
@@ -2085,11 +2093,11 @@ static int test_allocate_ex(void) {
     ASSERT(mbi.State == MEM_COMMIT, "ex state 0x%lx", (unsigned long)mbi.State);
     ASSERT(mbi.Protect == PAGE_READWRITE, "ex protect");
 
-    /* Extended parameters are refused, and the base is not written. */
+    /* A NUMA entry is not honoured, and the base is not written. */
     PVOID b2 = NULL;
     SIZE_T s2 = 0x1000;
-    int dummy = 0;
-    st = NtAllocateVirtualMemoryEx((HANDLE)-1, &b2, &s2, MEM_RESERVE, PAGE_READWRITE, (void *)&dummy, 1);
+    MEM_EXTENDED_PARAMETER numa = mk_ext(MemExtendedParameterNumaNode, 0);
+    st = NtAllocateVirtualMemoryEx((HANDLE)-1, &b2, &s2, MEM_RESERVE, PAGE_READWRITE, &numa, 1);
     ASSERT(st == STATUS_NOT_SUPPORTED, "ext param status 0x%lx", (unsigned long)st);
     ASSERT(b2 == NULL, "ext param base untouched");
 
@@ -2288,6 +2296,342 @@ static int test_nt_svc_extend_section(void) {
     return 1;
 }
 
+/* ---- NtCreateSectionEx ---- */
+
+/* Zero extended parameters is NtCreateSection. Validation of the array happens
+ * before anything is created, so a refused call leaves the handle NULL. */
+static int test_create_ex_params(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE h = NULL;
+    NTSTATUS st = NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS && h != NULL, "ex zero params 0x%lx", (unsigned long)st);
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "ex zero params close");
+
+    MEM_EXTENDED_PARAMETER amd64 = mk_ext(MemExtendedParameterImageMachine, NT_IMAGE_MACHINE_AMD64);
+    h = NULL;
+    st = NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &amd64, 1);
+    ASSERT(st == STATUS_SUCCESS && h != NULL, "ex machine amd64 0x%lx", (unsigned long)st);
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "ex amd64 close");
+
+    /* Other machines, and machine 0 or a value above 16 bits, are invalid parameters. */
+    MEM_EXTENDED_PARAMETER i386 = mk_ext(MemExtendedParameterImageMachine, 0x14C);
+    MEM_EXTENDED_PARAMETER zero = mk_ext(MemExtendedParameterImageMachine, 0);
+    MEM_EXTENDED_PARAMETER wide = mk_ext(MemExtendedParameterImageMachine, 0x10000 | NT_IMAGE_MACHINE_AMD64);
+    h = NULL;
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &i386, 1) == STATUS_INVALID_PARAMETER,
+           "ex machine i386 refused");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &zero, 1) == STATUS_INVALID_PARAMETER,
+           "ex machine zero refused");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &wide, 1) == STATUS_INVALID_PARAMETER,
+           "ex machine wide refused");
+    ASSERT(h == NULL, "refused create writes no handle");
+
+    /* Attribute flags are accepted only as zero. */
+    MEM_EXTENDED_PARAMETER attr0 = mk_ext(MemExtendedParameterAttributeFlags, 0);
+    MEM_EXTENDED_PARAMETER attr1 = mk_ext(MemExtendedParameterAttributeFlags, 1);
+    st = NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &attr0, 1);
+    ASSERT(st == STATUS_SUCCESS && h != NULL, "ex attr zero 0x%lx", (unsigned long)st);
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "ex attr close");
+    h = NULL;
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &attr1, 1) == STATUS_NOT_SUPPORTED,
+           "ex attr nonzero not supported");
+
+    /* Known types this manager does not honour are not supported. Unknown or
+     * reserved types are invalid. */
+    MEM_EXTENDED_PARAMETER numa = mk_ext(MemExtendedParameterNumaNode, 0);
+    MEM_EXTENDED_PARAMETER req = mk_ext(MemExtendedParameterAddressRequirements, 0);
+    MEM_EXTENDED_PARAMETER invalid_type = mk_ext(MemExtendedParameterInvalidType, 0);
+    MEM_EXTENDED_PARAMETER past_max = mk_ext(MemExtendedParameterMax, 0);
+    MEM_EXTENDED_PARAMETER reserved = amd64;
+    reserved.Reserved = 1;
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &numa, 1) == STATUS_NOT_SUPPORTED,
+           "ex numa not supported");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &req, 1) == STATUS_NOT_SUPPORTED,
+           "ex addr req not supported on create");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &invalid_type, 1) == STATUS_INVALID_PARAMETER,
+           "ex invalid type");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &past_max, 1) == STATUS_INVALID_PARAMETER,
+           "ex past-max type");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &reserved, 1) == STATUS_INVALID_PARAMETER,
+           "ex reserved bits");
+
+    /* Count and array argument shape. */
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, NULL, 1) == STATUS_INVALID_PARAMETER,
+           "ex null array");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &amd64, MEM_EXT_MAX_COUNT + 1) == STATUS_NOT_SUPPORTED,
+           "ex count over max");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &amd64, 0xFFFFFFFFu) == STATUS_NOT_SUPPORTED,
+           "ex count 0xffffffff");
+    ASSERT(h == NULL, "refused creates write no handle");
+
+    /* The service entry point takes the same arguments. */
+    st = nt_svc_NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &amd64, 1);
+    ASSERT(st == STATUS_SUCCESS, "svc ex amd64 0x%lx", (unsigned long)st);
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "svc ex close");
+    ntmm_reset();
+    return 1;
+}
+
+/* ntmm_ext_copy_in: count bounds, and an address-requirements record is copied
+ * once and its pointer redirected into the snapshot. */
+static int test_ext_copy_in(void) {
+    struct nt_mem_ext_snapshot snap;
+    ASSERT(ntmm_ext_copy_in(NULL, 0, &snap) == STATUS_SUCCESS && snap.count == 0, "copy in zero");
+    ASSERT(ntmm_ext_copy_in(NULL, 1, &snap) == STATUS_INVALID_PARAMETER, "copy in null array");
+    MEM_EXTENDED_PARAMETER one = mk_ext(MemExtendedParameterNumaNode, 0);
+    ASSERT(ntmm_ext_copy_in(&one, MEM_EXT_MAX_COUNT + 1, &snap) == STATUS_NOT_SUPPORTED, "copy in over max");
+
+    MEM_ADDRESS_REQUIREMENTS rq;
+    memset(&rq, 0, sizeof(rq));
+    rq.Alignment = 0x10000;
+    MEM_EXTENDED_PARAMETER arr[2];
+    arr[0] = mk_ext(MemExtendedParameterAddressRequirements, 0);
+    arr[0].Pointer = &rq;
+    arr[1] = mk_ext(MemExtendedParameterImageMachine, NT_IMAGE_MACHINE_AMD64);
+    ASSERT(ntmm_ext_copy_in(arr, 2, &snap) == STATUS_SUCCESS && snap.count == 2, "copy in two");
+    ASSERT(snap.params[0].Pointer == (PVOID)&snap.reqs[0], "requirements pointer redirected");
+    ASSERT(snap.reqs[0].Alignment == 0x10000, "requirements record copied");
+    ASSERT(snap.params[1].ULong64 == NT_IMAGE_MACHINE_AMD64, "scalar entry copied");
+    return 1;
+}
+
+/* ---- NtMapViewOfSectionEx ---- */
+
+/* Without parameters it is NtMapViewOfSection. Address requirements place the
+ * view inside [Lowest, Highest) at the requested alignment. Bad requirements,
+ * a placeholder flag and other parameter types are refused, and a window with
+ * no room is STATUS_NO_MEMORY. The window is taken from an existing view so the
+ * test does not depend on fixed host addresses. */
+static int test_map_ex(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE h = NULL;
+    NTSTATUS st = NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS, "mapex create 0x%lx", (unsigned long)st);
+    LARGE_INTEGER off; off.QuadPart = 0;
+
+    PVOID base1 = NULL; SIZE_T vs = 0;
+    st = NtMapViewOfSectionEx(h, (HANDLE)-1, &base1, &off, &vs, 0, PAGE_READWRITE, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS && base1 != NULL && vs == 0x2000, "mapex plain 0x%lx", (unsigned long)st);
+
+    ULONG_PTR b1 = (ULONG_PTR)base1;
+    MEM_ADDRESS_REQUIREMENTS rq;
+    memset(&rq, 0, sizeof(rq));
+    rq.LowestStartingAddress = (PVOID)(b1 + 0x100000);
+    rq.HighestEndingAddress = (PVOID)(b1 + 0x4000000);
+    rq.Alignment = 0x100000;
+    MEM_EXTENDED_PARAMETER ep = mk_ext(MemExtendedParameterAddressRequirements, 0);
+    ep.Pointer = &rq;
+
+    PVOID base2 = NULL; SIZE_T vs2 = 0;
+    st = NtMapViewOfSectionEx(h, (HANDLE)-1, &base2, &off, &vs2, 0, PAGE_READWRITE, &ep, 1);
+    ASSERT(st == STATUS_SUCCESS, "mapex requirements 0x%lx", (unsigned long)st);
+    ULONG_PTR b2 = (ULONG_PTR)base2;
+    ASSERT(b2 >= (ULONG_PTR)rq.LowestStartingAddress, "mapex honours lowest");
+    ASSERT(b2 + vs2 <= (ULONG_PTR)rq.HighestEndingAddress, "mapex honours highest");
+    ASSERT((b2 & (rq.Alignment - 1)) == 0, "mapex honours alignment");
+    ASSERT(vs2 == 0x2000, "mapex size 0x%zx", (size_t)vs2);
+
+    /* A window with no room: Lowest is the view just placed, Highest is its end.
+     * Nothing is written to the base. */
+    rq.LowestStartingAddress = (PVOID)b2;
+    rq.HighestEndingAddress = (PVOID)(b2 + 0x2000);
+    rq.Alignment = 0;
+    PVOID base3 = NULL; SIZE_T vs3 = 0;
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base3, &off, &vs3, 0, PAGE_READWRITE, &ep, 1) == STATUS_NO_MEMORY,
+           "mapex full window");
+    ASSERT(base3 == NULL, "full window base untouched");
+
+    /* Invalid requirements: a fixed base, bad alignment, empty window, null record. */
+    rq.LowestStartingAddress = (PVOID)(b1 + 0x100000);
+    rq.HighestEndingAddress = (PVOID)(b1 + 0x4000000);
+    rq.Alignment = 0x3000;
+    PVOID base4 = NULL; SIZE_T vs4 = 0x2000;
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, &ep, 1) == STATUS_INVALID_PARAMETER,
+           "mapex non-power-of-two alignment");
+    rq.Alignment = 0x800;
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, &ep, 1) == STATUS_INVALID_PARAMETER,
+           "mapex alignment below page");
+    rq.Alignment = 0x100000;
+    rq.LowestStartingAddress = (PVOID)0x5000000UL;
+    rq.HighestEndingAddress = (PVOID)0x4000000UL;
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, &ep, 1) == STATUS_INVALID_PARAMETER,
+           "mapex empty window");
+    rq.LowestStartingAddress = (PVOID)(b1 + 0x100000);
+    rq.HighestEndingAddress = (PVOID)(b1 + 0x4000000);
+    base4 = (PVOID)b1;
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, &ep, 1) == STATUS_INVALID_PARAMETER,
+           "mapex fixed base with requirements");
+    base4 = NULL;
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, NULL, 1) == STATUS_INVALID_PARAMETER,
+           "mapex null array");
+    MEM_EXTENDED_PARAMETER null_rec = mk_ext(MemExtendedParameterAddressRequirements, 0);
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, &null_rec, 1) == STATUS_INVALID_PARAMETER,
+           "mapex null requirements record");
+    ASSERT(base4 == NULL, "invalid requirements leave base untouched");
+
+    /* Other parameter types, the count limit and the placeholder flag. */
+    MEM_EXTENDED_PARAMETER numa = mk_ext(MemExtendedParameterNumaNode, 0);
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, &numa, 1) == STATUS_NOT_SUPPORTED,
+           "mapex numa not supported");
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, 0, PAGE_READWRITE, &ep, MEM_EXT_MAX_COUNT + 1) == STATUS_NOT_SUPPORTED,
+           "mapex count over max");
+    ASSERT(NtMapViewOfSectionEx(h, (HANDLE)-1, &base4, &off, &vs4, MEM_RESERVE | MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0)
+           == STATUS_NOT_SUPPORTED, "mapex replace placeholder refused");
+    ASSERT(base4 == NULL, "refused placeholder leaves base untouched");
+
+    /* The service entry point takes the same arguments. */
+    PVOID base5 = NULL; SIZE_T vs5 = 0;
+    st = nt_svc_NtMapViewOfSectionEx(h, (HANDLE)-1, &base5, &off, &vs5, 0, PAGE_READWRITE, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS && base5 != NULL, "svc mapex plain 0x%lx", (unsigned long)st);
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base5) == STATUS_SUCCESS, "svc mapex unmap");
+
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base2) == STATUS_SUCCESS, "mapex unmap requirements view");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base1) == STATUS_SUCCESS, "mapex unmap plain view");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "mapex close");
+    ntmm_reset();
+    return 1;
+}
+
+/* ---- NtUnmapViewOfSectionEx ---- */
+
+/* The transient-boost flag unmaps as NtUnmapViewOfSection does. The preserve-
+ * placeholder flag is not supported, and unknown bits are invalid. A refused
+ * call leaves the view mapped. */
+static int test_unmap_ex(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE h = NULL;
+    NTSTATUS st = NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS, "unmapex create 0x%lx", (unsigned long)st);
+    LARGE_INTEGER off; off.QuadPart = 0;
+    PVOID base = NULL; SIZE_T vs = 0;
+
+    st = NtMapViewOfSectionEx(h, (HANDLE)-1, &base, &off, &vs, 0, PAGE_READWRITE, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS && base != NULL, "unmapex map 0x%lx", (unsigned long)st);
+    ASSERT(NtUnmapViewOfSectionEx((HANDLE)-1, base, 0) == STATUS_SUCCESS, "unmapex flags 0");
+    ASSERT(NtUnmapViewOfSectionEx((HANDLE)-1, base, 0) == STATUS_NOT_MAPPED_VIEW, "unmapex twice");
+
+    base = NULL; vs = 0;
+    st = NtMapViewOfSectionEx(h, (HANDLE)-1, &base, &off, &vs, 0, PAGE_READWRITE, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS, "unmapex remap 0x%lx", (unsigned long)st);
+    ASSERT(NtUnmapViewOfSectionEx((HANDLE)-1, base, MEM_UNMAP_WITH_TRANSIENT_BOOST) == STATUS_SUCCESS,
+           "unmapex transient boost");
+
+    base = NULL; vs = 0;
+    st = NtMapViewOfSectionEx(h, (HANDLE)-1, &base, &off, &vs, 0, PAGE_READWRITE, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS, "unmapex remap2 0x%lx", (unsigned long)st);
+    ASSERT(NtUnmapViewOfSectionEx((HANDLE)-1, base, MEM_PRESERVE_PLACEHOLDER) == STATUS_NOT_SUPPORTED,
+           "unmapex preserve placeholder not supported");
+    ASSERT(NtUnmapViewOfSectionEx((HANDLE)-1, base, 0x4) == STATUS_INVALID_PARAMETER,
+           "unmapex unknown flag");
+    ASSERT(NtUnmapViewOfSectionEx((HANDLE)-1, base, MEM_PRESERVE_PLACEHOLDER | MEM_UNMAP_WITH_TRANSIENT_BOOST)
+           == STATUS_NOT_SUPPORTED, "unmapex preserve with boost");
+    *(volatile unsigned char *)base = 0x21;   /* still mapped after the refusals */
+    ASSERT(nt_svc_NtUnmapViewOfSectionEx((HANDLE)-1, base, MEM_UNMAP_WITH_TRANSIENT_BOOST) == STATUS_SUCCESS,
+           "svc unmapex");
+    ASSERT(nt_svc_NtUnmapViewOfSectionEx((HANDLE)-1, base, 0) == STATUS_NOT_MAPPED_VIEW, "svc unmapex twice");
+    ASSERT(NtUnmapViewOfSectionEx((HANDLE)-1, (PVOID)0x1000, 0) == STATUS_NOT_MAPPED_VIEW, "unmapex unmapped");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "unmapex close");
+    ntmm_reset();
+    return 1;
+}
+
+/* NtAllocateVirtualMemoryEx with address requirements: the region lands inside
+ * [Lowest, Highest) at the requested alignment, top-down when asked. The base
+ * must be NULL and the call must reserve. No room is STATUS_NO_MEMORY. The
+ * window is taken from an existing region, as in test_map_ex. */
+static int test_allocate_ex_requirements(void) {
+    PVOID b1 = NULL;
+    SIZE_T s1 = 0x1000;
+    NTSTATUS st = NtAllocateVirtualMemory((HANDLE)-1, &b1, 0, &s1, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS && b1 != NULL, "req alloc anchor 0x%lx", (unsigned long)st);
+    ULONG_PTR a1 = (ULONG_PTR)b1;
+
+    MEM_ADDRESS_REQUIREMENTS rq;
+    memset(&rq, 0, sizeof(rq));
+    rq.LowestStartingAddress = (PVOID)(a1 + 0x100000);
+    rq.HighestEndingAddress = (PVOID)(a1 + 0x4000000);
+    rq.Alignment = 0x100000;
+    MEM_EXTENDED_PARAMETER ep = mk_ext(MemExtendedParameterAddressRequirements, 0);
+    ep.Pointer = &rq;
+
+    /* Bottom up, then top down, inside the window. */
+    PVOID base = NULL; SIZE_T size = 0x1000;
+    st = NtAllocateVirtualMemoryEx((HANDLE)-1, &base, &size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE, &ep, 1);
+    ASSERT(st == STATUS_SUCCESS, "req alloc 0x%lx", (unsigned long)st);
+    ULONG_PTR a2 = (ULONG_PTR)base;
+    ASSERT(a2 >= (ULONG_PTR)rq.LowestStartingAddress && a2 + size <= (ULONG_PTR)rq.HighestEndingAddress,
+           "req alloc inside window");
+    ASSERT((a2 & (rq.Alignment - 1)) == 0, "req alloc aligned");
+    MEMORY_BASIC_INFORMATION mbi;
+    ASSERT(query(base, &mbi) && mbi.State == MEM_COMMIT, "req alloc committed");
+
+    PVOID base_td = NULL; SIZE_T size_td = 0x1000;
+    st = NtAllocateVirtualMemoryEx((HANDLE)-1, &base_td, &size_td, MEM_RESERVE | MEM_TOP_DOWN, PAGE_READWRITE, &ep, 1);
+    ASSERT(st == STATUS_SUCCESS, "req top down 0x%lx", (unsigned long)st);
+    ULONG_PTR a3 = (ULONG_PTR)base_td;
+    ASSERT(a3 >= (ULONG_PTR)rq.LowestStartingAddress && a3 + size_td <= (ULONG_PTR)rq.HighestEndingAddress,
+           "req top down inside window");
+    ASSERT((a3 & (rq.Alignment - 1)) == 0, "req top down aligned");
+    ASSERT(a3 > a2, "top down sits above the bottom-up region");
+
+    /* A window that is one occupied region has no hole: STATUS_NO_MEMORY and no base. */
+    rq.LowestStartingAddress = (PVOID)a2;
+    rq.HighestEndingAddress = (PVOID)(a2 + 0x1000);
+    rq.Alignment = 0;
+    PVOID base_full = NULL; SIZE_T size_full = 0x1000;
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &base_full, &size_full, MEM_RESERVE, PAGE_READWRITE, &ep, 1)
+           == STATUS_NO_MEMORY, "req full window");
+    ASSERT(base_full == NULL, "req full window base untouched");
+
+    /* Invalid combinations: a fixed base, commit only, bad alignment, empty window,
+     * null record, invalid type, reserved bits. */
+    rq.LowestStartingAddress = (PVOID)(a1 + 0x100000);
+    rq.HighestEndingAddress = (PVOID)(a1 + 0x4000000);
+    rq.Alignment = 0x100000;
+    PVOID bad = (PVOID)a1;
+    SIZE_T bad_size = 0x1000;
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &ep, 1)
+           == STATUS_INVALID_PARAMETER, "req fixed base refused");
+    bad = NULL;
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_COMMIT, PAGE_READWRITE, &ep, 1)
+           == STATUS_INVALID_PARAMETER, "req commit only refused");
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, NULL, &bad_size, MEM_RESERVE, PAGE_READWRITE, &ep, 1)
+           == STATUS_INVALID_PARAMETER, "req null base refused");
+    rq.Alignment = 0x3000;
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &ep, 1)
+           == STATUS_INVALID_PARAMETER, "req bad alignment");
+    rq.Alignment = 0x100000;
+    rq.LowestStartingAddress = (PVOID)0x5000000UL;
+    rq.HighestEndingAddress = (PVOID)0x4000000UL;
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &ep, 1)
+           == STATUS_INVALID_PARAMETER, "req empty window");
+    rq.LowestStartingAddress = (PVOID)(a1 + 0x100000);
+    rq.HighestEndingAddress = (PVOID)(a1 + 0x4000000);
+    MEM_EXTENDED_PARAMETER null_rec = mk_ext(MemExtendedParameterAddressRequirements, 0);
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &null_rec, 1)
+           == STATUS_INVALID_PARAMETER, "req null record");
+    MEM_EXTENDED_PARAMETER invalid_type = mk_ext(MemExtendedParameterInvalidType, 0);
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &invalid_type, 1)
+           == STATUS_INVALID_PARAMETER, "invalid type");
+    MEM_EXTENDED_PARAMETER reserved = ep;
+    reserved.Reserved = 1;
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &reserved, 1)
+           == STATUS_INVALID_PARAMETER, "reserved bits");
+    ASSERT(bad == NULL, "refused requests write no base");
+
+    /* Other types, count limit, other process. */
+    MEM_EXTENDED_PARAMETER numa = mk_ext(MemExtendedParameterNumaNode, 0);
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &numa, 1)
+           == STATUS_NOT_SUPPORTED, "numa with requirements unsupported");
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &ep, MEM_EXT_MAX_COUNT + 1)
+           == STATUS_NOT_SUPPORTED, "count over max");
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)0x1234, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &ep, 1)
+           == STATUS_NOT_SUPPORTED, "other process refused");
+
+    ntmm_reset();
+    return 1;
+}
+
 int main(void) {
     printf("=== ntmm tests ===\n");
     if (!mm_setup_objects()) {
@@ -2351,6 +2695,11 @@ int main(void) {
     RUN_TEST(test_nt_svc_map_errors);
     RUN_TEST(test_nt_svc_query_section);
     RUN_TEST(test_nt_svc_extend_section);
+    RUN_TEST(test_create_ex_params);
+    RUN_TEST(test_ext_copy_in);
+    RUN_TEST(test_map_ex);
+    RUN_TEST(test_unmap_ex);
+    RUN_TEST(test_allocate_ex_requirements);
     ntmm_reset();
     ObDestroyProcessObject(g_mm_proc);
     ObCleanupObjectManager();

@@ -26,6 +26,8 @@
 #include "../../ntdll/ntstatus.h"
 #endif
 
+#include "mm_ext.h"
+
 /* -------------------------------------------------------------------------- */
 /* NT memory constants                                                        */
 /* -------------------------------------------------------------------------- */
@@ -43,6 +45,9 @@
 #define MEM_RESET                       0x00080000UL
 #define MEM_LARGE_PAGES                 0x20000000UL
 #define MEM_PHYSICAL                    0x00400000UL
+#define MEM_REPLACE_PLACEHOLDER         0x00004000UL   /* NtMapViewOfSectionEx: refused */
+#define MEM_UNMAP_WITH_TRANSIENT_BOOST  0x00000001UL   /* NtUnmapViewOfSectionEx flag */
+#define MEM_PRESERVE_PLACEHOLDER        0x00000002UL   /* NtUnmapViewOfSectionEx: refused */
 
 #ifdef PAGE_NOACCESS
 #undef PAGE_NOACCESS
@@ -300,12 +305,23 @@ NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
                          POBJECT_ATTRIBUTES ObjectAttributes,
                          PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
                          ULONG AllocationAttributes, HANDLE FileHandle);
+NTSTATUS NtCreateSectionEx(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                           POBJECT_ATTRIBUTES ObjectAttributes,
+                           PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
+                           ULONG AllocationAttributes, HANDLE FileHandle,
+                           PVOID ExtendedParameters, ULONG ExtendedParameterCount);
 NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                             PVOID *BaseAddress, ULONG_PTR ZeroBits,
                             SIZE_T CommitSize, PLARGE_INTEGER SectionOffset,
                             PSIZE_T ViewSize, ULONG InheritDisposition,
                             ULONG AllocationType, ULONG Win32Protect);
+NTSTATUS NtMapViewOfSectionEx(HANDLE SectionHandle, HANDLE ProcessHandle,
+                              PVOID *BaseAddress, PLARGE_INTEGER SectionOffset,
+                              PSIZE_T ViewSize, ULONG AllocationType,
+                              ULONG PageProtection, PVOID ExtendedParameters,
+                              ULONG ExtendedParameterCount);
 NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress);
+NTSTATUS NtUnmapViewOfSectionEx(HANDLE ProcessHandle, PVOID BaseAddress, ULONG Flags);
 
 /* Service entry points for the section services (nt_service_list.h). The
  * kernel build defines them in mm.c with the generic a0..a11 form that
@@ -319,12 +335,23 @@ NTSTATUS nt_svc_NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess
                                 ULONG AllocationAttributes, HANDLE FileHandle);
 NTSTATUS nt_svc_NtOpenSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
                               POBJECT_ATTRIBUTES ObjectAttributes);
+NTSTATUS nt_svc_NtCreateSectionEx(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                                  POBJECT_ATTRIBUTES ObjectAttributes,
+                                  PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
+                                  ULONG AllocationAttributes, HANDLE FileHandle,
+                                  PVOID ExtendedParameters, ULONG ExtendedParameterCount);
 NTSTATUS nt_svc_NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                                    PVOID *BaseAddress, ULONG_PTR ZeroBits,
                                    SIZE_T CommitSize, PLARGE_INTEGER SectionOffset,
                                    PSIZE_T ViewSize, ULONG InheritDisposition,
                                    ULONG AllocationType, ULONG Win32Protect);
+NTSTATUS nt_svc_NtMapViewOfSectionEx(HANDLE SectionHandle, HANDLE ProcessHandle,
+                                     PVOID *BaseAddress, PLARGE_INTEGER SectionOffset,
+                                     PSIZE_T ViewSize, ULONG AllocationType,
+                                     ULONG PageProtection, PVOID ExtendedParameters,
+                                     ULONG ExtendedParameterCount);
 NTSTATUS nt_svc_NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress);
+NTSTATUS nt_svc_NtUnmapViewOfSectionEx(HANDLE ProcessHandle, PVOID BaseAddress, ULONG Flags);
 NTSTATUS nt_svc_NtQuerySection(HANDLE SectionHandle, ULONG SectionInformationClass,
                                PVOID SectionInformation, SIZE_T SectionInformationLength,
                                PSIZE_T ReturnLength);
