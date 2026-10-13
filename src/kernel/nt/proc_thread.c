@@ -2147,6 +2147,14 @@ static NTSTATUS pt_process_from_handle(HANDLE h, ULONG access, struct nt_eproces
     return STATUS_SUCCESS;
 }
 
+/* Copies n bytes of an NtSetInformationProcess input from user memory. Info is a
+ * user pointer in the kernel build, so it is never dereferenced directly. */
+static NTSTATUS pt_copy_info_in(const void *user, void *dst, size_t n)
+{
+    if (!access_ok(user, n) || copy_from_user(dst, user, n)) return STATUS_ACCESS_VIOLATION;
+    return STATUS_SUCCESS;
+}
+
 /* NtSetInformationProcess. Implemented classes, with the documented rules:
  *
  *  ProcessBasePriority (5)        LONG. Clamped to 0..31 and stored as the
@@ -2185,15 +2193,25 @@ NTSTATUS nt_svc_NtSetInformationProcess(HANDLE ProcessHandle, ULONG Class, PVOID
     case ProcessBasePriority:
         if (Length != sizeof(LONG)) return STATUS_INFO_LENGTH_MISMATCH;
         if (!Info) return STATUS_INVALID_PARAMETER;
-        base = *(LONG *)Info;
+        {
+            LONG in_base = 0;
+            st = pt_copy_info_in(Info, &in_base, sizeof(in_base));
+            if (!NT_SUCCESS(st)) return st;
+            base = in_base;
+        }
         if (base < 0) base = 0;
         if (base > 31) base = 31;
         break;
     case ProcessPriorityClass:
         if (Length != 2) return STATUS_INFO_LENGTH_MISMATCH;
         if (!Info) return STATUS_INVALID_PARAMETER;
-        fg = ((UCHAR *)Info)[0] != 0;
-        cls = ((UCHAR *)Info)[1];
+        {
+            UCHAR in_pc[2] = { 0, 0 };
+            st = pt_copy_info_in(Info, in_pc, sizeof(in_pc));
+            if (!NT_SUCCESS(st)) return st;
+            fg = in_pc[0] != 0;
+            cls = in_pc[1];
+        }
         if (cls < PROCESS_PRIORITY_CLASS_IDLE || cls > PROCESS_PRIORITY_CLASS_ABOVE_NORMAL)
             return STATUS_INVALID_PARAMETER;
         break;
@@ -2201,12 +2219,14 @@ NTSTATUS nt_svc_NtSetInformationProcess(HANDLE ProcessHandle, ULONG Class, PVOID
     case ProcessBreakOnTermination:
         if (Length != sizeof(ULONG)) return STATUS_INFO_LENGTH_MISMATCH;
         if (!Info) return STATUS_INVALID_PARAMETER;
-        value = *(ULONG *)Info;
+        st = pt_copy_info_in(Info, &value, sizeof(value));
+        if (!NT_SUCCESS(st)) return st;
         break;
     case ProcessAffinityMask:
         if (Length != sizeof(ULONG_PTR)) return STATUS_INFO_LENGTH_MISMATCH;
         if (!Info) return STATUS_INVALID_PARAMETER;
-        mask = *(ULONG_PTR *)Info;
+        st = pt_copy_info_in(Info, &mask, sizeof(mask));
+        if (!NT_SUCCESS(st)) return st;
         if (mask == 0 || (mask & ~pt_system_affinity_mask())) return STATUS_INVALID_PARAMETER;
         break;
     case ProcessHandleTracing:

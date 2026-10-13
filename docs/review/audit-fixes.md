@@ -686,3 +686,91 @@ Newest first. Files: basenames of every file the commit touches. Location: `file
 | `67df457` | criteria_trace.py | OK | `tools/criteria_trace.py` | Tooling. |
 | `25bc012` | io.c, nt_io.c | OK | `src/kernel/nt/io.c:898` | Component buffers sized NAME_MAX+1 (pass 3 verdict). |
 | `122f91d` | nt_service_list.h, syscall_table.def, test_syscall_table_argtypes.py | OK | `src/kernel/nt/nt_service_list.h` | ArgTypes table entries; the Python argtypes test covers them (skim). |
+
+# Fifth pass: commits after e2d279e
+
+Date: 2026-10-12. Branch `haiku/audit5`, worktree `ntpers-audit5`. This pass repeats the audit for every non-merge commit after `e2d279e`, the HEAD of the fourth pass, that touches `src`, `arch`, `build`, `tests` or `tools`. The range is `e2d279e..f744b10` (the HEAD at the start of this pass), which gives 39 commits. The table lists each once, newest first. The docs-only commit `28ca926` is outside those paths and is not in the table.
+
+## Method and limits
+
+- Focus areas were read in context (`git show -U8`, callers checked by grep at the audited commit): the SEC_IMAGE planner (`image_plan.h`) and its mapping in `mm.c`, the base relocation applier (`image_reloc.h`), the process parameter block and create-argument copy-in (`process_params.h`, `proc_create_args.h`), handle inheritance (`ObInheritHandleTable`), file-backed sections, the section `nt_svc_` wrappers, the alertable wait changes, and the rename, directory and lock paths in `io.c`.
+- Tests were checked for vacuous or relaxed assertions by grep (OR-ed checks, skipped cases). The new test files were not read line by line; the rows marked "skim" say so.
+- Host limits, as in the earlier passes: `access_ok` is `1` and `copy_from_user` is `memcpy` in the host shim, so a user-pointer fault cannot be produced on the host. There is no allocation-failure injection. The kernel branches are syntax-checked only. The SEC_IMAGE kernel path is a stub (`nt_create_image_section`), so it has no kernel behaviour to audit.
+- Baseline at `f744b10`, before any fix: `make check-quick` and `make check` in `tests/kernel-host` passed. `python -m unittest discover tests/unit` passed (546 tests, 1 skipped). `tests/syntax/check.sh` reported 5 failing files (`src/kernel/nt/dispatch.c`, `src/kernel/nt/kshim.c`, `src/kernel/fs/binfmt_pe.c`, `src/kernel/fs/binfmt_pe_test.c`, `arch/x86/nt/dispatch.c`) and 482 warnings. These failures predate this pass.
+- Line numbers in the table are at `f744b10` (the audited HEAD). The two fix commits are later and are not in the table.
+
+## Results
+
+| Count | Value |
+|-------|-------|
+| Audited | 39 |
+| OK | 30 |
+| SUSPECT | 7 |
+| BROKEN | 2 (both fixed, below) |
+
+Verdicts count each audited hash once.
+
+## Fixes applied
+
+One commit per BROKEN item. Neither defect can fail on this host, so neither has a failing test first; each commit message says why.
+
+- **5b9f19f** `fix(nt/mm): cap the transfer bounce chunk at the page size, not a pointer`, for `19291fe`. `ntmm_transfer` capped each chunk at `sizeof(kbuf)`. Once the buffer moved to the heap that is the size of a pointer, so every chunk was 8 bytes. The copied byte counts did not change, so no host test can fail. The cap is now `NTMM_PAGE_SIZE` (`src/kernel/nt/mm.c:1566` at `f744b10`).
+- **7c32187** `fix(nt/proc_thread): copy NtSetInformationProcess input from user memory`, for `f78503b`. Five `Info` values were read by dereference in the kernel-tree copy (`src/kernel/nt/proc_thread.c:2188`, `:2209`, and the byte reads at `:2195-2196` and `:2204` at `f78503b`). Each is now read through `pt_copy_info_in` (`access_ok`, then `copy_from_user`), the same fix `6c650e3` made for `NtSetInformationThread`. Only the kernel tree is affected; the arch copy is a stub.
+
+Checks on the fixed tree: `make check-quick` and `make check` in `tests/kernel-host` pass (20 distinct test binaries, each rc=0). The unit suite passes (546 tests, 1 skipped). The syntax check reports the same 5 failing files and the same 482 warnings as the baseline; `src/kernel/nt/mm.c` and `src/kernel/nt/proc_thread.c` pass it.
+
+## SUSPECT: for review
+
+1. **`ffbe7ce`** (`src/kernel/nt/handle.c:646`): the rollback is correct, but the commit says the destination "is left as it was". On undo, `high_water` and the free-list order do change: gap indices stay in the list, and the undone slot is appended at the tail (`handle.c:602`). The callers of `ObInheritHandles` ignore the status (`proc_thread.c`), so a failed inheritance gives a child with missing handles and no error. Decide whether to fix the message or the behaviour.
+2. **`e524264`** (`src/kernel/nt/mm.c:2167`): the image is planned from one snapshot (`mm.c:1972`), but each segment is copied from the live file at map time. A file that changes between the two is mapped with bytes the planner never checked. The relocation applier re-validates its input, so this is not a memory-safety defect, and a short read fails with `STATUS_IN_PAGE_ERROR`. Decide whether to plan again at map time or to hold the bytes.
+3. **`6bafa70`** (`src/kernel/nt/mm.c:1619`): the write-back ignores the `pwrite` result, so a failed flush or unmap loses data with no error, and a short write is not retried. Unmap rewrites the whole view, including parts another handle has since truncated away (`mm.c:1611-1621`). Also, the file is extended at `mm.c:1859` before the section object exists, and the extension is not restored if a later step fails.
+4. **`b35029b`** (`src/kernel/nt/mm.c:2250-2251`): a caller base is rounded down to 64 KiB, where NT returns `STATUS_MAPPED_ALIGNMENT`. The data-section path has no guard for `base + actual_size` wrapping past 2^64, which the image path has (`mm.c:2117`). The failure is bounded: the mapping fails and the VAD is removed, but the status is `STATUS_NO_MEMORY`, not `STATUS_INVALID_PARAMETER`. A two-line guard would fix the wrap; the status choice needs a decision.
+5. **`accf1ce`** (`src/kernel/nt/sync.c:2742`): `SYNC_MUTANT_MODIFY_STATE` is `0x0001`. NT headers name that bit `MUTANT_QUERY_STATE`, and NT defines no `MUTANT_MODIFY_STATE`. The right that `NtSignalAndWaitForSingleObject` needs on a mutant is unconfirmed here.
+6. **`170edb9`** (`src/kernel/nt/io.c:2719`): an odd `FileNameLength` is accepted (`uname.Length` is set from it unchecked). Whether the trailing byte is dropped depends on `kshim_ntpath_to_linux`, which this pass did not check. Decide whether to refuse odd lengths.
+7. **`1267511`** (`src/kernel/nt/io_test.c:962`): the 255-byte create case is skipped silently whenever `PATH_MAX` is 260, which is the case on this Windows host. The skip predates this range and the commit only documents it. On this host the case asserts nothing.
+
+## Per-commit audit
+
+Newest first. Files: basenames of the in-scope files each commit touches. Location: `file:line` at `f744b10`, unless the row says otherwise.
+
+| Commit | Files | Verdict | Location | Reason |
+|--------|-------|---------|----------|--------|
+| `f744b10` | mm.c, mm_test.c | OK | `src/kernel/nt/mm.c:2068` | `nt_image_relocate` runs on the read-write copy before any final protection; a failure unmaps the view. The plan-versus-file gap is recorded under `e524264`. |
+| `8dbc1b4` | image_reloc.h, image_reloc_test.c | OK | `src/kernel/nt/image_reloc.h:164` | Two passes: pass one validates and marks (`:184` marks the directory, `:128` detects overlap), pass two cannot fail. Bounds are checked before each read (`:101`, `:108`, `:125`). Modular DIR64 and HIGHLOW arithmetic is correct (`:135-138`). |
+| `ce4d7e4` | image_plan.h, mm_test.c, pe_synth.h | OK | `src/kernel/nt/image_plan.h:20` | Include path fix only. |
+| `405f3fa` | proc_create_args.h, proc_thread.c, arch/x86/nt/proc_thread.c | OK | `src/kernel/nt/proc_create_args.h:120` | The header is read first. `TotalLength` is bounded (`:134-137`) before any arithmetic, the second read is compared with the first (`:140-141`), and the entry index is bounded (`:153-154`). The arch stub copies through `copy_from_user` (`arch/x86/nt/proc_thread.c:1355`). |
+| `ffbe7ce` | handle.c, handle.h | SUSPECT | `src/kernel/nt/handle.c:646` | The rollback is correct and undoes exactly the copies made. The message overstates it (SUSPECT item 1). |
+| `4c0c2c0` | process_params.h, process_params_test.c | OK | `src/kernel/nt/process_params.h:248` | The validator bounds every offset and size with 64-bit sums (`:276`) and checks overlap (`:283`). The empty-environment block is 4 bytes in both the builder (`:181-188`, `:228-233`) and the validator (`:302`). The size limits keep the total under `PP_MAX_BLOB_SIZE` (`:191-193`). |
+| `e524264` | mm.c, mm.h, pe_synth.h | SUSPECT | `src/kernel/nt/mm.c:2167` | The mapping reads the live fd, not the planned bytes (SUSPECT item 2). Header and segment protections, the zero tail and the gap protections are correct (`mm.c:2093` onward). |
+| `ac70f8b` | mm_test.c, ntstatus.h, Makefile | OK | `src/ntdll/ntstatus.h` (new line) | `STATUS_IMAGE_NOT_AT_BASE` is `0x40000003`, the informational NT value. Tests skimmed. |
+| `b7cc2dc` | image_plan.h, image_plan_test.c | OK | `src/kernel/nt/image_plan.h:128` | Checks run in order: PE32 (`:142`), `pe_validate` (`:147`), alignment (`:154-156`), raw alignment (`:208`), raw range (`:209`), mapped range inside `SizeOfImage` (`:206`), overlap in 64-bit (`:245`). |
+| `5546b74` | image_plan.h, Makefile, image_plan_test.c, pe_synth.h | OK | `src/kernel/nt/image_plan.h:23` | Test-first commit, no behaviour change. |
+| `165bca4` | dispatch.c | OK | `src/kernel/nt/dispatch.c:153` | Local `MEM_RELEASE` (`0x8000`) matches `mm.h`. |
+| `f583b05` | dispatch.c | OK | `src/kernel/nt/dispatch.c:382` | The unwind releases only when the allocation succeeded, with `MEM_RELEASE` and size 0 on the allocation base. |
+| `3b187d5` | io.c, io_test.c | OK | `src/kernel/nt/io.c:3636` | The UTF-8 decoder rejects overlongs, surrogates, values past U+10FFFF and truncated sequences. The size pass and the fill pass share one routine (`:3677`), so the fit check and `FileNameLength` agree. |
+| `fcca36a` | io.c, io_test.c | OK | `src/kernel/nt/io.c:616` | The range end saturates at `LLONG_MAX` (`:616`), and the conflict test uses the saturated end on both sides (`:632`). |
+| `cac7296` | object.c, object_extra_test.c | OK | `src/kernel/nt/object.c:636` | A NULL `Buffer` is refused before any copy. |
+| `32816fb` | io.c, io_test.c | OK | `src/kernel/nt/io.c:2744` | The scratch-root prefix is stripped and an empty relative name is refused. Relative `..` names are refused at `src/kernel/nt/kshim.c:428`, so the join cannot leave the RootDirectory. |
+| `6bafa70` | io.c, io.h, kshim.c, kshim.h, mm.c, mm.h, mm_test.c | SUSPECT | `src/kernel/nt/mm.c:1619` | The write-back result is unchecked and the extension is not restored (SUSPECT item 3). The fd dup (`mm.c:1809`) and its close in `nt_section_delete` are balanced. |
+| `a1d128c` | iocp.c, nt_obj.c, object.h, proc_thread.c, proc_thread_test.c, sync.c, sync.h | OK | `src/kernel/nt/iocp.c:773` | An alertable delay consumes a pending alert before it sleeps, and sleeps in 10 ms slices. `NtTestAlert` consumes on the sync thread. With no sync thread, `NtAlertThread` returns `STATUS_NO_MEMORY` (`proc_thread.c:2073` onward), as the code comment says. |
+| `4c916f7` | mm_test.c, Makefile | OK | `tests/kernel-host/Makefile` | Test-only addition. Skimmed; no vacuous assertion found by grep. |
+| `6f133ab` | service_inventory.py, test_service_inventory.py, SERVICES.md | OK | `tools/service_inventory.py:203` | The new rule applies only to a single final return. The selftest passes, and `docs/status/SERVICES.md` equals the tool output (line endings aside; the file is CRLF). |
+| `f78503b` | proc_thread.c, proc_thread_test.c | BROKEN (fixed in 7c32187) | `src/kernel/nt/proc_thread.c:2188` | Five `Info` values were dereferenced in the kernel-tree copy, which is a user pointer in a kernel build. |
+| `39e7e0a` | io_test.c, khost_prelude.h | OK | `src/kernel/nt/io_test.c:84` | Compile guard for a test-only call. |
+| `6c650e3` | proc_thread.c | OK | `src/kernel/nt/proc_thread.c:2273` | The value is read with `access_ok` and `copy_from_user`. |
+| `dca4180` | nt_obj.c, object_extra_test.c | OK | `src/kernel/nt/nt_obj.c:618` | The protect bit is cleared only when there is no target handle. |
+| `e3bf004` | io.c | OK | `src/kernel/nt/io.c:2777` | The new path is allocated before the rename. A failed rename frees it, and success swaps it in. |
+| `520cf42` | io.c, io_test.c | OK | `src/kernel/nt/io.c:2693` | The root reference is dropped on the invalid-handle, translation-failure and success paths. |
+| `170edb9` | io.c, io_test.c | SUSPECT | `src/kernel/nt/io.c:2719` | The length bound and the `0xFFFF` check are correct (`:2705-2707`). An odd length is accepted (SUSPECT item 6). |
+| `0c25984` | object.c, object.h | OK | `src/kernel/nt/object.c:1368` | New fields default to NORMAL (`2`), matching `base_priority` 8 and `pt_priority_class_base`. |
+| `ca82a8a` | mm.c, mm.h, mm_test.c | OK | `src/kernel/nt/mm.c:2571` | The query copies out only on success. Extend returns `STATUS_NOT_IMPLEMENTED` without touching memory. |
+| `646ce95` | mm_test.c | OK | `src/kernel/nt/mm_test.c:1378` | Tightens an assertion to the exact page-rounded size. |
+| `19291fe` | mm.c | BROKEN (fixed in 5b9f19f) | `src/kernel/nt/mm.c:1566` | `sizeof(kbuf)` on a pointer capped every chunk at 8 bytes, and the message says chunking was unchanged. |
+| `de11c20` | security.c, security.h, security_extra_test.c | OK | `src/kernel/nt/security.c:2518` | `ntsec_sr_extend` sums in 64 bits and refuses an end past 64 KiB. |
+| `0589b08` | sync.c, sync_extra_test.c | OK | `src/kernel/nt/sync.c:46` | The magnitude is taken as `uint64_t` and the expiry saturates at `INT64_MAX`. |
+| `222f64d` | security.c, security.h, security_extra_test.c | OK | `src/kernel/nt/security.c:911` | Token ids come from an atomic counter, not from the token address. |
+| `7c6f281` | sync.c, sync_extra_test.c | OK | `src/kernel/nt/sync.c:2913` | The WAIT and WAKE bits (`0x1`, `0x2`) match NT `KEYEDEVENT_*`. |
+| `accf1ce` | sync.c, sync_extra_test.c | SUSPECT | `src/kernel/nt/sync.c:2742` | The rights check runs after the type check and before anything is signalled, and both references are released. The mutant right value is unconfirmed (SUSPECT item 5). |
+| `1267511` | io_test.c | SUSPECT | `src/kernel/nt/io_test.c:962` | Silent host skip of the 255-byte create case (SUSPECT item 7). |
+| `b35029b` | mm.c, mm.h, mm_test.c | SUSPECT | `src/kernel/nt/mm.c:2250` | Base rounding and the missing wrap guard (SUSPECT item 4). |
+| `26f19fe` | mm.c, mm.h, mm_test.c, nt_obj.c, object.c, object.h | OK | `src/kernel/nt/mm.c:2425` | The wrappers pass arguments through. The file path refuses zero and negative sizes and holds the file reference until `ObInsertObject`. The kernel copy-out of the handle closes the object if the copy faults (`mm.c:2456`, `:2483`). |
