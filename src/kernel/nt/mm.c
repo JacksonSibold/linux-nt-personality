@@ -1608,7 +1608,7 @@ NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     SIZE_T size = *RegionSize;
     if (size == 0) return STATUS_INVALID_PARAMETER;
     /* The end (req + size) must not wrap before rounding. */
-    if (size > (SIZE_T)(~(ULONG_PTR)0 - req - (NTMM_PAGE_SIZE - 1))) return STATUS_INVALID_PARAMETER;
+    if (req > ~(ULONG_PTR)0 - NTMM_PAGE_SIZE || size > (SIZE_T)(~(ULONG_PTR)0 - NTMM_PAGE_SIZE - req)) return STATUS_INVALID_PARAMETER;
     start = ntmm_round_down(req, NTMM_PAGE_SIZE);
     end = ntmm_round_up(req + size, NTMM_PAGE_SIZE);
     if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
