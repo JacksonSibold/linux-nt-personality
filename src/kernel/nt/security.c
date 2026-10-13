@@ -1027,6 +1027,26 @@ NTSTATUS ObCreateTokenHandle(struct nt_eprocess *proc,
     return st;
 }
 
+ACCESS_TOKEN *token_create_default_primary(void)
+{
+    PSID user = NULL, users = NULL;
+    SID_AND_ATTRIBUTES grp;
+    ACCESS_TOKEN *tok = NULL;
+
+    if (sid_from_string("S-1-5-21-0-0-0-1000", &user) != STATUS_SUCCESS)
+        return NULL;
+    if (sid_from_string("S-1-5-32-545", &users) != STATUS_SUCCESS) {
+        sid_free(user);
+        return NULL;
+    }
+    grp.Sid = users;
+    grp.Attributes = SE_GROUP_MANDATORY | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_ENABLED;
+    tok = token_create_primary(user, &grp, 1, NULL, 0, NULL, NULL, NULL, NULL, 0);
+    sid_free(users);
+    sid_free(user);
+    return tok;
+}
+
 ACCESS_TOKEN *token_duplicate(const ACCESS_TOKEN *src)
 {
     if (!src) return NULL;

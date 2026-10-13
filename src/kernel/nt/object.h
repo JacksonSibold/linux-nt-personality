@@ -276,6 +276,9 @@ struct nt_eprocess {
     /* PEB allocation */
     struct _PEB             *peb;
     void                    *peb_teb_reservation;
+    /* Primary access token (one reference held). Created with the process
+     * and released in ObDestroyProcessObject. */
+    struct _ACCESS_TOKEN    *primary_token;
 };
 
 struct nt_ethread {
@@ -310,6 +313,9 @@ struct nt_ethread {
     PVOID                    start_arg;
     ULONG                    create_flags;
     struct nt_thread        *sync_thread;
+    /* Impersonation token (one reference held), NULL unless the thread is
+     * impersonating. Released in ObDestroyThreadObject. */
+    struct _ACCESS_TOKEN    *impersonation_token;
 };
 
 NTSTATUS ObCreateProcessObject(struct nt_eprocess **out, ULONG pid, const char *name);

@@ -581,6 +581,9 @@ ACCESS_TOKEN *token_create_primary(PSID user,
                                    PACL default_dacl,
                                    PSID integrity_level,
                                    ULONG session_id);
+/* Default primary token for a new process: user S-1-5-21-0-0-0-1000, member
+ * of the builtin Users group, no privileges, medium integrity. Caller owns it. */
+ACCESS_TOKEN *token_create_default_primary(void);
 ACCESS_TOKEN *token_duplicate(const ACCESS_TOKEN *src);
 void         token_reference(ACCESS_TOKEN *token);
 void         token_dereference(ACCESS_TOKEN *token);

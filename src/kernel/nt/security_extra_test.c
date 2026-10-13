@@ -153,6 +153,55 @@ TEST(token_object_outlives_creator)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Process primary token slot and thread impersonation slot                   */
+/* -------------------------------------------------------------------------- */
+TEST(process_default_primary_token)
+{
+    struct nt_eprocess *p = NULL;
+    ASSERT_STATUS(ObCreateProcessObject(&p, 0, "prim_a"), STATUS_SUCCESS);
+    ASSERT(p->primary_token != NULL);
+    ASSERT(p->primary_token->token_type == TokenPrimary);
+    ASSERT(p->primary_token->ref_count == 1);
+    ASSERT(p->primary_token->user != NULL);
+    PSID expect = make_sid("S-1-5-21-0-0-0-1000");
+    ASSERT(expect != NULL);
+    ASSERT(sid_equal(p->primary_token->user, expect) == TRUE);
+    sid_free(expect);
+
+    /* Each process gets its own primary token. */
+    struct nt_eprocess *q = NULL;
+    ASSERT_STATUS(ObCreateProcessObject(&q, 0, "prim_b"), STATUS_SUCCESS);
+    ASSERT(q->primary_token != NULL && q->primary_token != p->primary_token);
+
+    ObDestroyProcessObject(q);
+    ObDestroyProcessObject(p);
+    PASS();
+}
+
+TEST(process_token_released_on_destroy)
+{
+    long base = atomic_load(&kshim_alloc_count);
+    struct nt_eprocess *p = NULL;
+    ASSERT_STATUS(ObCreateProcessObject(&p, 0, "prim_c"), STATUS_SUCCESS);
+    ASSERT(p->primary_token != NULL);
+    ObDestroyProcessObject(p);
+    ASSERT(atomic_load(&kshim_alloc_count) == base);
+    PASS();
+}
+
+TEST(thread_impersonation_slot_default_null)
+{
+    struct nt_eprocess *p = NULL;
+    ASSERT_STATUS(ObCreateProcessObject(&p, 0, "imp_a"), STATUS_SUCCESS);
+    struct nt_ethread *t = NULL;
+    ASSERT_STATUS(ObCreateThreadObject(&t, p, 0), STATUS_SUCCESS);
+    ASSERT(t->impersonation_token == NULL);
+    ObDestroyThreadObject(t);
+    ObDestroyProcessObject(p);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* Driver                                                                     */
 /* -------------------------------------------------------------------------- */
 int main(void)
@@ -161,6 +210,9 @@ int main(void)
     ObInitObjectManager();
     RUN(token_object_handle_lifecycle);
     RUN(token_object_outlives_creator);
+    RUN(process_default_primary_token);
+    RUN(process_token_released_on_destroy);
+    RUN(thread_impersonation_slot_default_null);
     printf("security extra tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

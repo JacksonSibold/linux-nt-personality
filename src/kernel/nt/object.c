@@ -1172,6 +1172,8 @@ NTSTATUS ObCreateProcessObject(struct nt_eprocess **out, ULONG pid, const char *
     init_waitqueue_head(&p->exit_wq);
     atomic_set(&p->ref_ext, 1);
 #endif
+    p->primary_token = token_create_default_primary();
+    if (!p->primary_token) { ObDestroyProcessObject(p); return STATUS_NO_MEMORY; }
     st = ob_register_proc(p);
     if (!NT_SUCCESS(st)) { ObDestroyProcessObject(p); return st; }
     *out = p;
@@ -1209,6 +1211,7 @@ NTSTATUS ObCreateThreadObject(struct nt_ethread **out, struct nt_eprocess *proc,
     t->start_routine = NULL;
     t->start_arg = NULL;
     t->create_flags = 0;
+    t->impersonation_token = NULL;
 #ifndef __KERNEL__
     t->pthread_valid = false;
     pthread_mutex_init(&t->lock, NULL);
@@ -1244,6 +1247,10 @@ void ObDestroyProcessObject(struct nt_eprocess *proc)
     if (proc->peb) kfree(proc->peb);
 #endif
     if (proc->handle_table) ObDestroyHandleTable(proc->handle_table);
+    if (proc->primary_token) {
+        token_dereference(proc->primary_token);
+        proc->primary_token = NULL;
+    }
     if (proc->obj) ObDereferenceObject(proc->obj);
     kfree(proc);
 }
@@ -1263,6 +1270,10 @@ void ObDestroyThreadObject(struct nt_ethread *thr)
         kshim_munmap(thr->stack_limit, sz);
     }
 #endif
+    if (thr->impersonation_token) {
+        token_dereference(thr->impersonation_token);
+        thr->impersonation_token = NULL;
+    }
     if (thr->obj) ObDereferenceObject(thr->obj);
     kfree(thr);
 }
@@ -1448,6 +1459,7 @@ void ObCleanupObjectManager(void)
         kfree(n);
         if (p) {
             if (p->handle_table) ObDestroyHandleTable(p->handle_table);
+            if (p->primary_token) { token_dereference(p->primary_token); p->primary_token = NULL; }
             if (p->obj) {
                 /* avoid double delete via header delete callback */
                 p->obj->type = NULL;
@@ -1467,6 +1479,7 @@ void ObCleanupObjectManager(void)
         struct nt_ethread *t = n->thr;
         kfree(n);
         if (t) {
+            if (t->impersonation_token) { token_dereference(t->impersonation_token); t->impersonation_token = NULL; }
             if (t->obj) {
                 t->obj->type = NULL;
                 ObDereferenceObject(t->obj);
