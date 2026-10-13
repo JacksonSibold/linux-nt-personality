@@ -2665,6 +2665,7 @@ static NTSTATUS ntio_set_rename(struct nt_file_object *file,
 	UNICODE_STRING uname;
 	NTSTATUS status;
 	bool replace;
+	char *dup;
 
 	if (len < sizeof(FILE_RENAME_INFORMATION) - sizeof(WCHAR))
 		return STATUS_INFO_LENGTH_MISMATCH;
@@ -2725,11 +2726,18 @@ static NTSTATUS ntio_set_rename(struct nt_file_object *file,
 		}
 	}
 
-	if (kshim_vfs_rename(file->linux_path, newpath) != 0)
+	/* Allocate the new path before renaming: a failure after the rename would
+	 * leave the file moved while the object still names the old path (or none). */
+	dup = kstrdup(newpath, GFP_KERNEL);
+	if (!dup)
+		return STATUS_NO_MEMORY;
+	if (kshim_vfs_rename(file->linux_path, newpath) != 0) {
+		kfree(dup);
 		return STATUS_ACCESS_DENIED;
+	}
 
 	kfree(file->linux_path);
-	file->linux_path = kstrdup(newpath, GFP_KERNEL);
+	file->linux_path = dup;
 	return STATUS_SUCCESS;
 }
 
