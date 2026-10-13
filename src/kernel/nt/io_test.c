@@ -1158,6 +1158,37 @@ static ULONG make_rename_buf(void *buf, size_t buflen, BOOLEAN replace,
 	return total;
 }
 
+/* FileNameLength that runs past the information buffer is refused. The name
+ * bytes must come from the caller's buffer only, never past its end. */
+TEST(rename_name_length_bounded)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	unsigned char rbuf[sizeof(FILE_RENAME_INFORMATION_EX) + 2 * PATH_MAX];
+	PFILE_RENAME_INFORMATION ri = (PFILE_RENAME_INFORMATION)rbuf;
+	ULONG rlen;
+
+	reset_state();
+	ASSERT(write_file_at("rn_a.txt", "data"));
+	ASSERT_STATUS(open_test_file("rn_a.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE |
+				     FILE_SYNCHRONOUS_IO_NONALERT, &h),
+		      STATUS_SUCCESS);
+
+	/* Header plus 9 characters, but FileNameLength claims 200 characters. */
+	memset(rbuf, 'a', sizeof(rbuf));
+	rlen = make_rename_buf(rbuf, sizeof(rbuf), 0, 0, false, "rn_c.txt");
+	ri->FileNameLength = 200 * sizeof(WCHAR);
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, rbuf, rlen,
+						  FileRenameInformation),
+		      STATUS_INFO_LENGTH_MISMATCH);
+	ASSERT(file_exists_at("rn_a.txt"));
+	ASSERT(!file_exists_at("rn_c.txt"));
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 TEST(set_info_classes)
 {
 	HANDLE h = NULL, hb = NULL;
@@ -1976,6 +2007,7 @@ int main(void)
 	RUN(query_attributes_file);
 	RUN(ci_component_length_limit);
 	RUN(query_info_classes);
+	RUN(rename_name_length_bounded);
 	RUN(set_info_classes);
 	RUN(device_fs_control_unsupported);
 	RUN(ea_unsupported);

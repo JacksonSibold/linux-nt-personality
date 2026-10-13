@@ -2670,6 +2670,11 @@ static NTSTATUS ntio_set_rename(struct nt_file_object *file,
 		return STATUS_INFO_LENGTH_MISMATCH;
 
 	ri = (PFILE_RENAME_INFORMATION)buf;
+	/* The name must lie inside the caller's buffer, and fit UNICODE_STRING. */
+	if (ri->FileNameLength > len - offsetof(FILE_RENAME_INFORMATION, FileName))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	if (ri->FileNameLength > 0xFFFF)
+		return STATUS_NAME_TOO_LONG;
 	if (ex) {
 		PFILE_RENAME_INFORMATION_EX rx = (PFILE_RENAME_INFORMATION_EX)buf;
 
