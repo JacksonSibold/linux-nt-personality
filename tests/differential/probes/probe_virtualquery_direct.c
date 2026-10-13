@@ -153,6 +153,22 @@ static void write_file_nt(const char *path, const char *buf, int len){
     NtClose(h);
 }
 
+#ifndef NTPERS_VM
+/* Host build read from the running system: RtlGetVersion for the build number, UBR from the registry. */
+typedef LONG (WINAPI *PFN_RtlGetVersion_host)(OSVERSIONINFOEXW*);
+static void host_build_strings(char *build, size_t bn, char *ver, size_t vn){
+    OSVERSIONINFOEXW ovi={0}; DWORD ubr=0, v=0, cb=sizeof v; HKEY hk;
+    PFN_RtlGetVersion_host pr=(PFN_RtlGetVersion_host)GetProcAddress(GetModuleHandleA("ntdll.dll"),"RtlGetVersion");
+    ovi.dwOSVersionInfoSize=sizeof ovi;
+    if(pr) pr(&ovi);
+    if(RegOpenKeyExA(HKEY_LOCAL_MACHINE,"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",0,KEY_READ,&hk)==ERROR_SUCCESS){
+        if(RegQueryValueExA(hk,"UBR",NULL,NULL,(BYTE*)&v,&cb)==ERROR_SUCCESS) ubr=v;
+        RegCloseKey(hk);
+    }
+    snprintf(build,bn,"%lu.%lu",(unsigned long)ovi.dwBuildNumber,(unsigned long)ubr);
+    snprintf(ver,vn,"%lu.%lu.%lu",(unsigned long)ovi.dwMajorVersion,(unsigned long)ovi.dwMinorVersion,(unsigned long)ovi.dwBuildNumber);
+}
+#endif
 static void do_probe(void){
     __asm__ volatile("sub $128, %rsp");
     PVOID jbase=0; ULONGLONG jsz=json_cap;
@@ -173,8 +189,14 @@ static void do_probe(void){
 
     j_add("{\n");
     j_add("  \"probe\": \"probe_virtualquery\",\n");
+#ifdef NTPERS_VM
     j_add("  \"windows_build\": \"26200.9168\",\n");
     j_add("  \"windows_version\": \"10.0.26200\",\n");
+#else
+    { char wb[32], wv[32]; host_build_strings(wb, sizeof wb, wv, sizeof wv);
+      j_add("  \"windows_build\": \""); j_add(wb); j_add("\",\n");
+      j_add("  \"windows_version\": \""); j_add(wv); j_add("\",\n"); }
+#endif
     j_add("  \"arch\": \"x64\",\n");
     j_add("  \"page_size\": 4096,\n");
     j_add("  \"alloc_granularity\": 65536,\n");
@@ -282,7 +304,9 @@ static void do_probe(void){
     { fwrite(json,1,jpos,stdout); fflush(stdout); }
 #endif
     write_file_nt("\\??\\mnt\\share\\.dodresult\\probe_virtualquery.json", json, jpos);
+#ifdef NTPERS_VM
     write_file_nt("\\??\\C:\\tmp\\probe_virtualquery.json", json, jpos);
+#endif
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_virtualquery_direct.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_virtualquery.json", json, jpos);
     write_file_nt(NTPERS_STAGE_NT "\\probe_direct_win.json", json, jpos);

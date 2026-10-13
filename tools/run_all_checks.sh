@@ -8,6 +8,7 @@
 #   3. check_doc_links       tools/check_doc_links.py
 #   4. syscall_tables        tools/check_syscall_tables.py
 #   5. doc counts            tools/update_doc_counts.py --check
+#   5a. docs lint            tools/docs_lint.py --policy --all
 #   6. provenance_scan       tools/provenance_scan.py --check (if the file exists)
 #   7. lint                  vm/lint.sh
 #   8. syntax                tests/syntax/check.sh
@@ -101,13 +102,14 @@ if [ -n "$PY" ]; then
     run_section check_doc_links "$PY" tools/check_doc_links.py
     run_section syscall_tables "$PY" tools/check_syscall_tables.py
     run_section doc_counts "$PY" tools/update_doc_counts.py --check
+    run_section docs_lint "$PY" tools/docs_lint.py --policy --all
     if [ -f tools/provenance_scan.py ]; then
         run_section provenance "$PY" tools/provenance_scan.py --check
     else
         skip provenance "tools/provenance_scan.py not present"
     fi
 else
-    for n in unit check_repo check_doc_links syscall_tables doc_counts provenance; do
+    for n in unit check_repo check_doc_links syscall_tables doc_counts docs_lint provenance; do
         skip "$n" "no working Python (set PYTHON or install WinPython)"
     done
 fi

@@ -3,7 +3,7 @@
   "windows_build": "26200.9457",
   "windows_version": "10.0.26200",
   "arch": "x64",
-  "teb_peb": {"teb":"0xE63FBD4000","peb":"0xE63FBD3000","teb_peb":"0xE63FBD3000","teb_peb_match":true},
+  "teb_peb": {"teb":"0xCAFE05B000","peb":"0xCAFE05A000","teb_peb":"0xCAFE05A000","teb_peb_match":true},
   "process_info": [
     {"class":0,"name":"ProcessBasicInformation","ntstatus":-1073741820,"ntstatus_hex":"0xC0000004","retLen":3735928559,"small_buffer_4":{"ntstatus":-1073741820,"hex":"0xC0000004","retLen":0}},
     {"class":1,"name":"ProcessQuotaLimits","ntstatus":-1073741820,"ntstatus_hex":"0xC0000004","retLen":3735928559},

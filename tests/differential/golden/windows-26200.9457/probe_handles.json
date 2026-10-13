@@ -4,10 +4,10 @@
   "windows_version": "10.0.26200",
   "arch": "x64",
   "handles": [
-    {"name":"CreateFile_RW","handle":"0xE4","value":228,"mod4":0,"is_pseudo":false},
-    {"name":"CreateFile_R","handle":"0xE8","value":232,"mod4":0,"is_pseudo":false},
-    {"name":"Event","handle":"0xEC","value":236,"mod4":0,"is_pseudo":false},
-    {"name":"Mutex","handle":"0xF0","value":240,"mod4":0,"is_pseudo":false},
+    {"name":"CreateFile_RW","handle":"0xE8","value":232,"mod4":0,"is_pseudo":false},
+    {"name":"CreateFile_R","handle":"0xEC","value":236,"mod4":0,"is_pseudo":false},
+    {"name":"Event","handle":"0xF0","value":240,"mod4":0,"is_pseudo":false},
+    {"name":"Mutex","handle":"0xF4","value":244,"mod4":0,"is_pseudo":false},
     {"name":"CreateFile_R2","handle":"0xFFFFFFFFFFFFFFFF","value":18446744073709551615,"mod4":3,"is_pseudo":false}
   ],
   "pseudo_handles": [
@@ -16,20 +16,20 @@
   ],
   "GetProcessHandleCount": {"success":true,"count":63},
   "nt_query_object": [
-    {"handle":"0xE4","info_class":0,"class_name":"ObjectBasicInformation","ntstatus":0,"ntstatus_hex":"0x00000000","GrantedAccess":"0x12019F","HandleCount":1,"PointerCount":32769,"retLen":56},
-    {"handle":"0xE4","info_class":1,"class_name":"ObjectNameInformation","ntstatus":0,"ntstatus_hex":"0x00000000","retLen":154,"name":"\\Device\\HarddiskVolume3\\Users\\<user>\\AppData\\Local\\Temp\\hdl2E8B.tmp"},
-    {"handle":"0xE4","info_class":2,"class_name":"ObjectTypeInformation","ntstatus":0,"ntstatus_hex":"0x00000000","retLen":120,"type":"File"},
-    {"handle":"0xEC","info_class":2,"class_name":"ObjectTypeInformation","ntstatus":0,"ntstatus_hex":"0x00000000","retLen":120,"type":"Event"},
-    {"handle":"0xE4","info_class":0,"buffer_len":4,"ntstatus":-1073741820,"ntstatus_hex":"0xC0000004","retLen":120},
+    {"handle":"0xE8","info_class":0,"class_name":"ObjectBasicInformation","ntstatus":0,"ntstatus_hex":"0x00000000","GrantedAccess":"0x12019F","HandleCount":1,"PointerCount":32769,"retLen":56},
+    {"handle":"0xE8","info_class":1,"class_name":"ObjectNameInformation","ntstatus":0,"ntstatus_hex":"0x00000000","retLen":154,"name":"\\Device\\HarddiskVolume3\\Users\\<user>\\AppData\\Local\\Temp\\hdl756A.tmp"},
+    {"handle":"0xE8","info_class":2,"class_name":"ObjectTypeInformation","ntstatus":0,"ntstatus_hex":"0x00000000","retLen":120,"type":"File"},
+    {"handle":"0xF0","info_class":2,"class_name":"ObjectTypeInformation","ntstatus":0,"ntstatus_hex":"0x00000000","retLen":120,"type":"Event"},
+    {"handle":"0xE8","info_class":0,"buffer_len":4,"ntstatus":-1073741820,"ntstatus_hex":"0xC0000004","retLen":120},
     {"sentinel": true}
   ],
   "duplicate_handle": [
-    {"op":"DuplicateHandle_SAME_ACCESS","src":"0xE4","dst":"0xF4","success":true,"lasterror":32},
+    {"op":"DuplicateHandle_SAME_ACCESS","src":"0xE8","dst":"0xF8","success":true,"lasterror":32},
     {"compare":"GrantedAccess","src_access":"0x12019F","dup_access":"0x12019F","match":true},
     {"HandleCount_after_dup_src":2,"HandleCount_dup":2},
-    {"op":"DuplicateHandle_GENERIC_READ","src":"0xE4","dst":"0xF4","success":true,"lasterror":32},
+    {"op":"DuplicateHandle_GENERIC_READ","src":"0xE8","dst":"0xF8","success":true,"lasterror":32},
     {"dup2_granted":"0x120089","ntstatus":0},
-    {"op":"DuplicateHandle_CLOSE_SOURCE","src":"0xF4","dst":"0xF4","success":true,"lasterror":0,"src_still_valid":true},
+    {"op":"DuplicateHandle_CLOSE_SOURCE","src":"0xF8","dst":"0xF8","success":true,"lasterror":0,"src_still_valid":true},
     {"sentinel": true}
   ],
   "close_tests": [

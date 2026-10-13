@@ -7,9 +7,7 @@ which is registered for `DOD-SEC-A008` in `tests/harness/registry.yaml`.
 ## Scope
 
 The claim surface is every Markdown file in the repository root, plus
-`docs/status/*.md` and `docs/policy/*.md`. The criteria restatements
-(`CRITERIA.md`, `CRITERIA-ROADMAP.md`, `CRITERIA-PROGRESS.md`) quote requirements,
-not claims, and are not scanned. Design notes under `docs/phase1/` and
+`docs/status/*.md` and `docs/policy/*.md`. Design notes under `docs/phase1/` and
 `docs/phase2/` are analysis, not claims, and are not scanned.
 
 ## Claims

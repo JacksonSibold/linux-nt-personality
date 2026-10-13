@@ -1,6 +1,6 @@
 {
   "schema": "ntpers-golden-manifest/1",
-  "captured_utc": "2026-10-13T04:56:22Z",
+  "captured_utc": "2026-10-13T05:51:00Z",
   "host": {
     "CurrentBuild": "26200",
     "UBR": 9457,
@@ -26,129 +26,168 @@
     "method": "text replacement on the captured stdout; raw sha256 kept for each file"
   },
   "counts": {
-    "run": 18,
+    "run": 23,
     "crashed": 0,
     "timeout": 0,
     "blocked": 0,
     "build_failed": 0,
     "launch_error": 0,
-    "skipped": 6
+    "skipped": 1
   },
   "probes_run": [
     {
       "probe": "probe_ntstatus",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "d778eeb297015947bc1e84005912a7a975b9cd4d820f5480566dcaf0ec9ed26b",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
       "stdout_bytes_raw": 57139,
-      "stdout_sha256_raw": "4bdccb9243befb528a1358aa3c7b08d7107fbc02896679a7a43e3860103648cd",
-      "binary_sha256": "0f733423ef31e9943b179bde82a573810e7898d19abfc44d58d808151e5cf37f",
+      "stdout_sha256_raw": "6c4cf626e5d5b99272cb0856075f836c9e864f68b362beca13c39edd1b8c02f0",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_ntstatus.json",
       "bytes_published": 57139,
-      "sha256_published": "4bdccb9243befb528a1358aa3c7b08d7107fbc02896679a7a43e3860103648cd"
+      "sha256_published": "6c4cf626e5d5b99272cb0856075f836c9e864f68b362beca13c39edd1b8c02f0"
     },
     {
       "probe": "probe_teb_peb",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "f172bef5f65a00b27213053320e92e3ba66e0474fe3e31a3c414df851b7e84ec",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
       "stdout_bytes_raw": 2507,
-      "stdout_sha256_raw": "d6050426a24a6f95454bdc3b878a388696d3ca89a7dc6deadf8a7d262b211ee7",
-      "binary_sha256": "91627ab5d57eaca786406fe04e6743a033a21da7265607d173fef52daed6fba2",
+      "stdout_sha256_raw": "5f6ef1a7887221d1d1f94df96f2d2800d6d754ce0495e633613a91bef6ade369",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_teb_peb.json",
       "bytes_published": 2507,
-      "sha256_published": "d6050426a24a6f95454bdc3b878a388696d3ca89a7dc6deadf8a7d262b211ee7"
+      "sha256_published": "5f6ef1a7887221d1d1f94df96f2d2800d6d754ce0495e633613a91bef6ade369"
     },
     {
       "probe": "probe_virtualquery",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "7151cef35bcc160016e68b378e9ce23860c3cb5d4c26ac51fcca6963c50c761b",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
       "stdout_bytes_raw": 3270,
-      "stdout_sha256_raw": "63ff522c31d887ea439822ecff8de932bfaacdd5c10a1268c9e951214e4b1dc8",
-      "binary_sha256": "6c2e6577fb9d7d311bcebed770af608c0ede277e4bf99398d8fd270cc6eeaf50",
+      "stdout_sha256_raw": "0187a4e1ee891b5f23d5b5247be11b1d943682dddb613f4fd86af7d3b045ad36",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_virtualquery.json",
       "bytes_published": 3270,
-      "sha256_published": "63ff522c31d887ea439822ecff8de932bfaacdd5c10a1268c9e951214e4b1dc8"
+      "sha256_published": "0187a4e1ee891b5f23d5b5247be11b1d943682dddb613f4fd86af7d3b045ad36"
     },
     {
       "probe": "probe_handles",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "299324603b84991b23698b5e5dd1b0bb5e91f9f11c00011f539aefc252b1631e",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
       "stdout_bytes_raw": 2532,
-      "stdout_sha256_raw": "6081048f5e7a53af0235161518d1b134e2337b05e8d922f94ad45fc2c1a8e1af",
-      "binary_sha256": "18ace715057f0b3f99c7dc2fbe6fd1ca7358bc4d5a0329e430b610fa80219493",
+      "stdout_sha256_raw": "f7a6c7884fe3dbc29e0dfdb0da697aaf9390054af87590dc951abfe4c31632ca",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_handles.json",
       "bytes_published": 2531,
-      "sha256_published": "1ca59498d2049b275ce193a9e59ae59305393bec63dc9f8a1e6c289c23580cd7"
+      "sha256_published": "620b107d8c60efc895238186667ebd9cb4ed9f1405631c25afa460a6fdf5c045"
     },
     {
       "probe": "probe_sharemode",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "38e83e39e647b04e1937a6146bd1bf8884a85d137b4294f7a1bfd4e1043c0a81",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
       "stdout_bytes_raw": 4905931,
       "stdout_sha256_raw": "090833380cee82c05dbe39a1a034e967c1c605dd0ef64cc4b62e5f76974138b0",
-      "binary_sha256": "1c71a26235cd460ed4804799da30c89d31ac46dd22da1a8c10f8be713d11ac5a",
-      "included": false,
-      "reason": "stdout >= 64 KiB; kept out of repo"
+      "included": true,
+      "stored_as": "gzip",
+      "file": "probe_sharemode.json.gz",
+      "bytes_published": 4905931,
+      "sha256_published": "090833380cee82c05dbe39a1a034e967c1c605dd0ef64cc4b62e5f76974138b0",
+      "gzip_bytes": 188600,
+      "gzip_sha256": "a60177ede80b6ddaeb563471d60e9e72b163d6184aa8d3714b3153030218ed83"
     },
     {
       "probe": "probe_section",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "b0c2ba86801046676fbfc052d57f71becdbe5dc545692d317117ebdbb998ba76",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
       "stdout_bytes_raw": 3067,
-      "stdout_sha256_raw": "ccca5a2572f879b2bf84851751d2e7f1a1d67ba3dd1a837afcb7a01a6ff78c6d",
-      "binary_sha256": "63cb1f9216264a7bc62c47db68712be2f859831f961b2fc4932675154839729b",
+      "stdout_sha256_raw": "c090748a060af33b4bf51438f1dc014eba8b484ef314c2d4feac86f69f303cf6",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_section.json",
       "bytes_published": 3067,
-      "sha256_published": "ccca5a2572f879b2bf84851751d2e7f1a1d67ba3dd1a837afcb7a01a6ff78c6d"
+      "sha256_published": "c090748a060af33b4bf51438f1dc014eba8b484ef314c2d4feac86f69f303cf6"
     },
     {
       "probe": "probe_sync",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "9ef25d8e45dffec3afa20b509a190b763ea85e04b40835870e7792ebabcce10a",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
       "stdout_bytes_raw": 1857,
-      "stdout_sha256_raw": "944731f6bccceaed1b4ba8250694c114c0847f52673892a7f52972e8d2ca82ec",
-      "binary_sha256": "c295f3ed327402887c04502e0de047a8fbdfb86ee8e3dc5f29b0e1d0c702bcfe",
+      "stdout_sha256_raw": "6a714f04992fb883108f11f4212974f397b0e6d4c0bd3540de9bbeb57ccb52c2",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_sync.json",
       "bytes_published": 1857,
-      "sha256_published": "944731f6bccceaed1b4ba8250694c114c0847f52673892a7f52972e8d2ca82ec"
+      "sha256_published": "6a714f04992fb883108f11f4212974f397b0e6d4c0bd3540de9bbeb57ccb52c2"
     },
     {
       "probe": "probe_process_thread",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "90ccbcff76b230815cfd6ce5637546d930397aed486f0ee3e7fb094c4b892fb0",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
       "stdout_bytes_raw": 4231,
-      "stdout_sha256_raw": "ee1eedab88d51a1bc4b805b45dfcc78366ad4601182560d073e5c346fd135dfb",
-      "binary_sha256": "1fc0eb59c0c97ebcdd7e6d808504a7db0f8995634dcf73360fc13e94dc06609d",
+      "stdout_sha256_raw": "1cdc5e5ea83352b98f31b7b42b9748168785089bde052e8fce541c442554839d",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_process_thread.json",
       "bytes_published": 4230,
-      "sha256_published": "5d374199c7d648ca3d29959d617fdb0ae583005b7e3ae77f37165e180b71315b"
+      "sha256_published": "3c0125d058c8c73d6051efeabb85773659bbb5899e0d9a4eb27b2aee6cb4415c"
     },
     {
       "probe": "probe_exception",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "0329a9975d44971292cc5365aa44a2f54f3bc08eb6f9abd2bc294c136aeec808",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
       "stdout_bytes_raw": 1600,
-      "stdout_sha256_raw": "ec147c407916c2a64e7ced1b793bef3c3205cddf1f7edf761282f83c22457fef",
-      "binary_sha256": "06e97114936b1276e99b0f70d20d6fb4e093c7197d255f61848c1b8344682afd",
+      "stdout_sha256_raw": "e4b62bfafe21aa699b382244af7bc15c777c6e11de9f430db8d1bf4ca0029b2c",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_exception.json",
       "bytes_published": 1600,
-      "sha256_published": "ec147c407916c2a64e7ced1b793bef3c3205cddf1f7edf761282f83c22457fef"
+      "sha256_published": "e4b62bfafe21aa699b382244af7bc15c777c6e11de9f430db8d1bf4ca0029b2c"
     },
     {
       "probe": "probe_peloader",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "bf53f4323cb685a5599c88a30353c8ce602ca18bbbf8e9c64dd5f1249e8663c0",
+      "source_commit": "f1b34bf",
+      "input_paths": [
+        "C:/Windows/System32/notepad.exe",
+        "C:/Windows/System32/kernel32.dll",
+        "C:/Windows/System32/ntdll.dll"
+      ],
+      "compile_rc": 0,
       "stdout_bytes_raw": 931,
       "stdout_sha256_raw": "cbb8999811b6c5db2a7fff90e63f1b6edcb9ecd0a8ce7b09294caa0e359fea3c",
-      "binary_sha256": "64cd22894b894492ce2ec29ed8ff9ae43b1b66a975de1440acec07bd63ed751d",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_peloader.json",
       "bytes_published": 931,
       "sha256_published": "cbb8999811b6c5db2a7fff90e63f1b6edcb9ecd0a8ce7b09294caa0e359fea3c"
@@ -157,152 +196,245 @@
       "probe": "probe_namedpipe",
       "status": "ran",
       "rc_hex": "0x00000000",
-      "stdout_bytes_raw": 1105,
-      "stdout_sha256_raw": "25885c3d29a654f68f6844628a7d3070a2c7fd44d28de761170760c96c146c50",
-      "binary_sha256": "76c9a50b25fba84d5fb6015d970f7de40de2d2159b830c3c389effe4a523ddcd",
+      "binary_sha256": "5377ec6d3b2f546732ed935b5d28e46a3248bd347a8a23526467cfd64ef2a475",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
+      "stdout_bytes_raw": 1107,
+      "stdout_sha256_raw": "3fb2e0bb94991d8c3088078b169ea70c6547af5d188563d77477cf660d68b7ea",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_namedpipe.json",
-      "bytes_published": 1105,
-      "sha256_published": "25885c3d29a654f68f6844628a7d3070a2c7fd44d28de761170760c96c146c50"
+      "bytes_published": 1107,
+      "sha256_published": "3fb2e0bb94991d8c3088078b169ea70c6547af5d188563d77477cf660d68b7ea"
     },
     {
       "probe": "probe_directory",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "d0035411a67e4af66a7367985e6eed611048750d856ab973ed130da30092c259",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
       "stdout_bytes_raw": 1787,
-      "stdout_sha256_raw": "cdd6b61608e203531d5a1a9fca007f2d4cb3a3b99ad997c003bfc1fde9454355",
-      "binary_sha256": "9af554e5cd5d46e753f2713fa0b47c55663cc1721ca83ef74ea0f2288281b071",
+      "stdout_sha256_raw": "4e31ee2b116a1a515e79b3962843fc7c78869b406bc30d5984a87fe64e5ffd47",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_directory.json",
       "bytes_published": 1785,
-      "sha256_published": "a2325a61f3efe4184a8ca9f9b7d92ab602ad46815fe5ae305d7369d7a3c98f5a"
+      "sha256_published": "61eb0330b1800f83d80e80b0bab812884048ddc8b4e0d836cd364aa40404e4fc"
     },
     {
       "probe": "probe_fileinfo",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "184775bbed7ec7391534206cf97bc3cd78dcae589a79945f9cf2649bca790468",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
       "stdout_bytes_raw": 5248,
-      "stdout_sha256_raw": "cad45193efbb74b8dc137a1a5971552bf3bbc7574364cef43b2dea8391d8949a",
-      "binary_sha256": "60b29677d8d70737ab119ab04646b58134f010cadd9b1022f9e4a33279b4d03c",
+      "stdout_sha256_raw": "e77bf06d425fbd454f1aa1e5a7e8d3781c196cb194389e8b8080ee1dd73b893e",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_fileinfo.json",
       "bytes_published": 5248,
-      "sha256_published": "cad45193efbb74b8dc137a1a5971552bf3bbc7574364cef43b2dea8391d8949a"
+      "sha256_published": "e77bf06d425fbd454f1aa1e5a7e8d3781c196cb194389e8b8080ee1dd73b893e"
     },
     {
       "probe": "probe_virtualquery_direct",
       "status": "ran",
       "rc_hex": "0x00000000",
-      "stdout_bytes_raw": 1113589,
-      "stdout_sha256_raw": "22086054830bf607cb6b92a2945631f0f613802ba602d9e5c4547f43cd8c109a",
-      "binary_sha256": "d78f73eef0b233387210e95bea66690c414bd949074ceef40cd80bad3e607e3b",
-      "included": false,
-      "reason": "stdout >= 64 KiB; kept out of repo"
+      "binary_sha256": "06f31e7f6b6562fef565311523d50a0e93cbf4204d0338333c3be4335afc1a0b",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
+      "stdout_bytes_raw": 1113581,
+      "stdout_sha256_raw": "ae2f6984f2c8c0dcf85c9af52b01324f1ba633cfc0f8869958ecaa06f3e82ca8",
+      "included": true,
+      "stored_as": "gzip",
+      "file": "probe_virtualquery_direct.json.gz",
+      "bytes_published": 1113581,
+      "sha256_published": "ae2f6984f2c8c0dcf85c9af52b01324f1ba633cfc0f8869958ecaa06f3e82ca8",
+      "gzip_bytes": 36875,
+      "gzip_sha256": "1bb8147e89204f6528eaf173beb594f6533a9357289a8d48ea35b3dbbe074ab8"
     },
     {
       "probe": "probe_sync_direct",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "7bc06589f2f5946ca77a0bd75ed2545df4aff602680a20475fa6ee53ff97fa3c",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
       "stdout_bytes_raw": 1868,
-      "stdout_sha256_raw": "a92079c0149be1d2d5cc91166d79d5088e5d0fe77a1e7804d57efe3a02418cb1",
-      "binary_sha256": "e9135768be8617508506115161157af365c5406b0cb3bcab739042302f463378",
+      "stdout_sha256_raw": "0ddbe903120b21d4a465f120be2e282f8a1b094fcbab65fef8805c178c659e8e",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_sync_direct.json",
       "bytes_published": 1868,
-      "sha256_published": "a92079c0149be1d2d5cc91166d79d5088e5d0fe77a1e7804d57efe3a02418cb1"
+      "sha256_published": "0ddbe903120b21d4a465f120be2e282f8a1b094fcbab65fef8805c178c659e8e"
     },
     {
       "probe": "probe_process_thread_direct",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "7970d0da81a06c210d62322d15394859f3ffa8f194492dbbff2d16d2a8737b56",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
       "stdout_bytes_raw": 4321,
-      "stdout_sha256_raw": "47bf0ed2b064b77c9ef4e3392b9e483dbf7860f8cd2ba2071b33017b0224d6f1",
-      "binary_sha256": "00b6d41476a16cbc3e55dd93ec3785f6e7f0459fcf3f6f61a9de935a2cd731b5",
+      "stdout_sha256_raw": "224dd1bc9b76ed1331e0228893bb1a5619e9d68400cf93814f32c6e34d430693",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_process_thread_direct.json",
       "bytes_published": 4320,
-      "sha256_published": "b7de739a74706ab166756ec7dcbdb2f1988c84dec49450bced92d023de5b3139"
+      "sha256_published": "23778aeb194fdba9233c2530551942938947aa4193e045e2aa14897870a8b6f1"
     },
     {
       "probe": "probe_section_direct",
       "status": "ran",
       "rc_hex": "0x00000000",
+      "binary_sha256": "bdec8b4f1b1fc4ccec61376989bbc47a8aad0f7aae6143f4dccd381c1ea649a2",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
       "stdout_bytes_raw": 3067,
-      "stdout_sha256_raw": "b90ff183a114a07ff0d506c1c41e2ad7cc5d366e154d955d8c65d31c44410b89",
-      "binary_sha256": "c46fda7c41130271ad51857602fcd0634d77426070bd0915b8a79dfed8e18996",
+      "stdout_sha256_raw": "cec697fcfb13bb78701f4cad8d13521b926974e44b96f1b09247d978738ecd29",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_section_direct.json",
       "bytes_published": 3067,
-      "sha256_published": "b90ff183a114a07ff0d506c1c41e2ad7cc5d366e154d955d8c65d31c44410b89",
-      "captured_utc": "2026-10-13T05:10:01Z",
-      "host_build": "26200.9457",
-      "run_mode": "sandbox: cwd and TEMP/TMP in a fresh golden-out/sandbox dir, 60 s timeout"
+      "sha256_published": "cec697fcfb13bb78701f4cad8d13521b926974e44b96f1b09247d978738ecd29"
     },
     {
       "probe": "probe_registry",
       "status": "ran",
       "rc_hex": "0x00000000",
-      "stdout_bytes_raw": 2702,
-      "stdout_sha256_raw": "b9ec56dae0dfd16673931254e4a6bd8bb0219b044ca30a4b6443ea2edf3d6ebb",
-      "binary_sha256": "e3dc9ffdbfa15a8d7ddc4ec78dee6793b3ed42a1568682e258c1d82ac72e6256",
+      "binary_sha256": "495dfe23c0a79c4f5b72cc11d536b2e0b9ba573a41e539f5ac7af87303ad9233",
+      "source_commit": "f1b34bf",
+      "compile_rc": 0,
+      "stdout_bytes_raw": 2701,
+      "stdout_sha256_raw": "baab942bd40f96d714007023a5e64fdd1908dfb60cce75457d7523ac07e7b9f8",
       "included": true,
+      "stored_as": "plain",
       "file": "probe_registry.json",
-      "bytes_published": 2702,
-      "sha256_published": "b9ec56dae0dfd16673931254e4a6bd8bb0219b044ca30a4b6443ea2edf3d6ebb",
-      "captured_utc": "2026-10-13T05:10:04Z",
-      "host_build": "26200.9457",
-      "run_mode": "sandbox: cwd and TEMP/TMP in a fresh golden-out/sandbox dir, 60 s timeout"
+      "bytes_published": 2701,
+      "sha256_published": "baab942bd40f96d714007023a5e64fdd1908dfb60cce75457d7523ac07e7b9f8"
+    },
+    {
+      "probe": "probe_handles_direct",
+      "status": "ran",
+      "rc_hex": "0x00000000",
+      "binary_sha256": "6ab0d1029bdd98b033ca41c114ba463baa0b6d1e575ca44ef74aefdc7546136c",
+      "source_commit": "f1b34bf",
+      "argv": [
+        "--root",
+        "<sandbox>/root"
+      ],
+      "leftover_under_root": [],
+      "compile_rc": 0,
+      "stdout_bytes_raw": 2919,
+      "stdout_sha256_raw": "d8c469555dff0a415f896f2f8603e97818fd21dfcd7f5c91e84afa5891d3ee40",
+      "included": true,
+      "stored_as": "plain",
+      "file": "probe_handles_direct.json",
+      "bytes_published": 2919,
+      "sha256_published": "d8c469555dff0a415f896f2f8603e97818fd21dfcd7f5c91e84afa5891d3ee40"
+    },
+    {
+      "probe": "probe_ntstatus_direct",
+      "status": "ran",
+      "rc_hex": "0x00000000",
+      "binary_sha256": "ac1ff9381eda9b9f566145f2cd16b75665181817e5eecd6117d3dda6b9223603",
+      "source_commit": "f1b34bf",
+      "argv": [
+        "--root",
+        "<sandbox>/root"
+      ],
+      "leftover_under_root": [],
+      "compile_rc": 0,
+      "stdout_bytes_raw": 95165,
+      "stdout_sha256_raw": "75ac678a234fb5d9bb096bf3b7429304ff674923423c7642f25c2b578bfd69fa",
+      "included": true,
+      "stored_as": "gzip",
+      "file": "probe_ntstatus_direct.json.gz",
+      "bytes_published": 95165,
+      "sha256_published": "75ac678a234fb5d9bb096bf3b7429304ff674923423c7642f25c2b578bfd69fa",
+      "gzip_bytes": 9381,
+      "gzip_sha256": "b4034cd7d44a48018f5719960ad3ea3f2ab7ad384cf373ba3cc8ada96ee61976"
+    },
+    {
+      "probe": "probe_path",
+      "status": "ran",
+      "rc_hex": "0x00000000",
+      "binary_sha256": "47912c374ca913b7eab721c66ab9f7a0eff61d4f6dd403534acbfefaa2164ed3",
+      "source_commit": "f1b34bf",
+      "argv": [
+        "--root",
+        "<sandbox>/root"
+      ],
+      "leftover_under_root": [],
+      "compile_rc": 0,
+      "stdout_bytes_raw": 2888920,
+      "stdout_sha256_raw": "8fe8028d7c8772029a528babcbb02953e25793e7d1925c9f92ff662793b7faed",
+      "included": true,
+      "stored_as": "gzip",
+      "file": "probe_path.json.gz",
+      "bytes_published": 2888920,
+      "sha256_published": "8fe8028d7c8772029a528babcbb02953e25793e7d1925c9f92ff662793b7faed",
+      "gzip_bytes": 107179,
+      "gzip_sha256": "7b28a6fe9309536e84173f0978869056aee4dd78732554d6df6d0f14bc1bcfcf"
+    },
+    {
+      "probe": "probe_path_direct",
+      "status": "ran",
+      "rc_hex": "0x00000000",
+      "binary_sha256": "71827b2905c40ff7e52bc34067c8fcb2c1a5aa1186d6cc3d030a55486aec181b",
+      "source_commit": "f1b34bf",
+      "argv": [
+        "--root",
+        "<sandbox>/root"
+      ],
+      "leftover_under_root": [],
+      "compile_rc": 0,
+      "stdout_bytes_raw": 9207661,
+      "stdout_sha256_raw": "7ba31b6d9fc055af43cf551338f9d14798afb95592ccb16eb623af8c02fe6a10",
+      "included": true,
+      "stored_as": "gzip",
+      "file": "probe_path_direct.json.gz",
+      "bytes_published": 9207661,
+      "sha256_published": "7ba31b6d9fc055af43cf551338f9d14798afb95592ccb16eb623af8c02fe6a10",
+      "gzip_bytes": 350882,
+      "gzip_sha256": "d157f50da41f657afd26fcd25e8505654f52e5c460c15800d34f6c3df2c05285"
+    },
+    {
+      "probe": "probe_sharemode_direct",
+      "status": "ran",
+      "rc_hex": "0x00000000",
+      "binary_sha256": "35ef64f813192c2795690e965a95e6fcf5f5e7b852c7c51b6884969fec341aa8",
+      "source_commit": "f1b34bf",
+      "argv": [
+        "--root",
+        "<sandbox>/root",
+        "--max-helpers",
+        "8",
+        "--helper-timeout-ms",
+        "2000"
+      ],
+      "leftover_under_root": [],
+      "compile_rc": 0,
+      "stdout_bytes_raw": 4942145,
+      "stdout_sha256_raw": "2b014d83b0c2b64ee8aa20b0eeb8bb83ea2da72df49d52d0baf996c004e0b4b1",
+      "included": true,
+      "stored_as": "gzip",
+      "file": "probe_sharemode_direct.json.gz",
+      "bytes_published": 4942145,
+      "sha256_published": "2b014d83b0c2b64ee8aa20b0eeb8bb83ea2da72df49d52d0baf996c004e0b4b1",
+      "gzip_bytes": 190502,
+      "gzip_sha256": "52212656efe48ed250f05de41d93f8e29cbee9d3139be6b4b9183217de46b987"
     }
   ],
   "probes_skipped": [
     {
       "probe": "probe_direct_simple",
       "status": "skipped",
-      "reason": "whole file is raw SSN syscall stubs (NtWriteFile 0x08, NtTerminateProcess 0x2c) with no Win32 path and no NTPERS_VM guard; SSNs are build-specific, so on this build they may reach a different service. GOLDEN.md section 7"
-    },
-    {
-      "probe": "probe_handles_direct",
-      "status": "skipped",
-      "reason": "stubs are under the NTPERS_VM guard (guard present). Windows build creates C:\\tmp\\probe_hdl_direct.tmp (fallback C:\\Windows\\Temp) and never deletes it. GOLDEN.md section 7"
-    },
-    {
-      "probe": "probe_ntstatus_direct",
-      "status": "skipped",
-      "reason": "stubs are under the NTPERS_VM guard (guard present). Windows build creates C:\\tmp\\probe_ntstatus.tmp (never deleted) and writes C:\\tmp\\probe_ntstatus_direct.json. GOLDEN.md section 7"
-    },
-    {
-      "probe": "probe_path",
-      "status": "skipped",
-      "reason": "Windows build passes UNC (\\server\\share, \\?\\UNC) prefixes to NtCreateFile (network); also opens C:\\tmp paths outside %TEMP%. GOLDEN.md section 7"
-    },
-    {
-      "probe": "probe_path_direct",
-      "status": "skipped",
-      "reason": "Windows build creates a C:\\tmp\\probe_path_direct tree (never deleted) and passes UNC prefixes to NtCreateFile (network). GOLDEN.md section 7"
-    },
-    {
-      "probe": "probe_sharemode_direct",
-      "status": "skipped",
-      "reason": "Windows build deletes and creates fixed C:\\tmp\\probe_cross_* names and spawns 64 helper processes; runtime not measured and may exceed the 60 s limit. GOLDEN.md section 7"
+      "reason": "not a portable Windows probe: the whole file is raw syscall stubs (NtWriteFile 0x08, NtTerminateProcess 0x2c) with no Win32 path and no NTPERS_VM guard, and the SSNs are specific to one Windows build. GOLDEN.md section 7.2"
     }
   ],
-  "known_label_defects": [
-    {
-      "probes": [
-        "probe_virtualquery_direct",
-        "probe_sync_direct",
-        "probe_process_thread_direct"
-      ],
-      "field": "windows_build",
-      "value_in_output": "26200.9168",
-      "host_build": "26200.9457",
-      "finding": "The probe source hardcodes the string 26200.9168 (lines 176, 466 and 235). The label is not the host build and must not be read as one. Output is kept as captured."
-    }
-  ],
-  "not_published_too_large": [
-    "probe_sharemode",
-    "probe_virtualquery_direct"
-  ],
+  "not_published": [],
   "files_published": [
     "version.json",
     "manifest.json",
@@ -310,6 +442,7 @@
     "probe_teb_peb.json",
     "probe_virtualquery.json",
     "probe_handles.json",
+    "probe_sharemode.json.gz",
     "probe_section.json",
     "probe_sync.json",
     "probe_process_thread.json",
@@ -318,9 +451,22 @@
     "probe_namedpipe.json",
     "probe_directory.json",
     "probe_fileinfo.json",
+    "probe_virtualquery_direct.json.gz",
     "probe_sync_direct.json",
     "probe_process_thread_direct.json",
     "probe_section_direct.json",
-    "probe_registry.json"
-  ]
+    "probe_registry.json",
+    "probe_handles_direct.json",
+    "probe_ntstatus_direct.json.gz",
+    "probe_path.json.gz",
+    "probe_path_direct.json.gz",
+    "probe_sharemode_direct.json.gz"
+  ],
+  "source_capture": {
+    "commit": "f1b34bf",
+    "base_commit": "354a912",
+    "probe_source_diff_sha256": "c37da645b5f1e8bd49c5fa5457e633430858b416f4edb26e31f61bb6b5b604f8",
+    "probe_source_diff_command": "git diff 354a912 f1b34bf -- tests/differential/probes/",
+    "note": "All probes_run entries were captured from the probe sources at this commit. The Windows build of the seven direct probes reports the host build from RtlGetVersion and the registry UBR (GOLDEN.md section 8.4). The NTPERS_VM build keeps its literal 26200.9168."
+  }
 }

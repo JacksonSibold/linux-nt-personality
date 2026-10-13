@@ -46,7 +46,15 @@ def project_root() -> Path:
 ROOT = project_root()
 DIFF_DIR = ROOT / "tests" / "differential"
 BUILD_DIR = DIFF_DIR / "build"
-GOLDEN_DIR = DIFF_DIR / "golden" / "26200.9168"
+def _golden_dir() -> Path:
+    """Verified golden directory for the host build, from tests/differential/golden/ACCEPTED_BUILDS.json.
+    Returns a path that does not exist when the host build is not accepted or the entry fails verification."""
+    import importlib.util as _ilu
+    spec = _ilu.spec_from_file_location("check_golden_integrity", DIFF_DIR / "check_golden_integrity.py")
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    d = mod.resolve_golden_dir(get_host_build())
+    return d if d is not None else DIFF_DIR / "golden" / "unaccepted"
 POLICY_PATH = DIFF_DIR / "dualrun_policy.json"
 
 # Probes that have services we actually implement (per task)
@@ -133,13 +141,8 @@ def get_host_build() -> str:
             return b
     except Exception:
         pass
-    # Fallback via version.json (pinned)
-    try:
-        v = json.loads((DIFF_DIR / "golden" / "26200.9168" / "version.json").read_text(encoding="utf-8"))
-        return v.get("windows_build", "26200.9168")
-    except Exception:
-        pass
-    return "26200.9168"
+    # No pinned fallback: an unknown host build makes the build guard fail loudly.
+    return "unknown"
 
 def run_windows_probe(probe: str, timeout: float = 30.0) -> Tuple[Optional[Dict[str,Any]], str, int]:
     """Run probe PE natively on Windows, capture JSON.
@@ -148,7 +151,7 @@ def run_windows_probe(probe: str, timeout: float = 30.0) -> Tuple[Optional[Dict[
     natively on Windows via harness.ps1 (cmd /c). This avoids WSL/Windows interop complexity and
     ensures the oracle is the pinned Windows build. Falls back to live exec on Windows host if golden missing.
     """
-    golden_path = GOLDEN_DIR / f"{probe}.json"
+    golden_path = _golden_dir() / f"{probe}.json"
     if golden_path.exists():
         try:
             raw = golden_path.read_text(encoding="utf-8", errors="replace").strip()
@@ -876,7 +879,7 @@ def main(argv=None):
         per_probe = {
             "probe": probe,
             "timestamp": timestamp,
-            "windows_build": "26200.9168",
+            "windows_build": get_host_build(),
             "windows": {"json": win_json, "raw_len": len(win_raw) if win_raw else 0, "rc": win_rc},
             "vm": {"json": vm_json, "raw_len": len(vm_raw) if vm_raw else 0, "rc": vm_rc, "raw_excerpt": vm_raw[:2000]},
             "divergences": divergences,
@@ -896,7 +899,7 @@ def main(argv=None):
     summary = {
         "run_id": timestamp,
         "project_root": str(ROOT),
-        "windows_build": "26200.9168",
+        "windows_build": get_host_build(),
         "probes": probes,
         "results": results,
         "overall_pass": all_pass,
@@ -915,7 +918,7 @@ def main(argv=None):
     md_path = reports_dir / f"dualrun_summary_{timestamp}.md"
     with open(md_path, "w", encoding="utf-8") as fh:
         fh.write(f"# Dual-Run Summary {timestamp}\n\n")
-        fh.write(f"Windows build 26200.9168, probes: {', '.join(probes)}\n\n")
+        fh.write(f"Windows build {get_host_build()}, probes: {', '.join(probes)}\n\n")
         fh.write(f"**Overall:** {'PASS' if all_pass else 'FAIL'}  Passed {summary['passed']}/{summary['total_probes']}  Divergences {summary['total_divergences']} (S1 {summary['total_s1']}, S2 {summary['total_s2']}, S3 {summary['total_s3']})\n\n")
         fh.write("| Probe | Verdict | S1 | S2 | S3 | Divs | Reason |\n|---|---|---|---|---|---|---|\n")
         for r in results:

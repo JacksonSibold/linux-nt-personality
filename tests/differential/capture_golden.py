@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 
 import subprocess
 import sys
@@ -54,15 +55,31 @@ RUN = [
     "probe_process_thread_direct",
     "probe_section_direct",  # audited, GOLDEN.md section 7
     "probe_registry",  # audited, GOLDEN.md section 7
+    # GOLDEN.md section 7.2 (parameterised, see ROOTED)
+    "probe_handles_direct",
+    "probe_ntstatus_direct",
+    "probe_path",
+    "probe_path_direct",
+    "probe_sharemode_direct",
 ]
 
 SKIP = {
-    "probe_direct_simple": "whole file is raw SSN syscall stubs (NtWriteFile 0x08, NtTerminateProcess 0x2c) with no Win32 path and no NTPERS_VM guard; SSNs are build-specific, so on this build they may reach a different service. GOLDEN.md section 7",
-    "probe_handles_direct": "stubs are under the NTPERS_VM guard (guard present). Windows build creates C:\\tmp\\probe_hdl_direct.tmp (fallback C:\\Windows\\Temp) and never deletes it. GOLDEN.md section 7",
-    "probe_ntstatus_direct": "stubs are under the NTPERS_VM guard (guard present). Windows build creates C:\\tmp\\probe_ntstatus.tmp (never deleted) and writes C:\\tmp\\probe_ntstatus_direct.json. GOLDEN.md section 7",
-    "probe_path": "Windows build passes UNC (\\server\\share, \\?\\UNC) prefixes to NtCreateFile (network); also opens C:\\tmp paths outside %TEMP%. GOLDEN.md section 7",
-    "probe_path_direct": "Windows build creates a C:\\tmp\\probe_path_direct tree (never deleted) and passes UNC prefixes to NtCreateFile (network). GOLDEN.md section 7",
-    "probe_sharemode_direct": "Windows build deletes and creates fixed C:\\tmp\\probe_cross_* names and spawns 64 helper processes; runtime not measured and may exceed the 60 s limit. GOLDEN.md section 7",
+    "probe_direct_simple": "not a portable Windows probe: the whole file is raw syscall stubs (NtWriteFile 0x08, NtTerminateProcess 0x2c) with no Win32 path and no NTPERS_VM guard, and the SSNs are specific to one Windows build. GOLDEN.md section 7.2",
+}
+
+# GOLDEN.md section 7.2 probes, parameterised: they write scratch files, so they
+# run inside a fresh sandbox with --root pointing into it.
+ROOTED = {
+    "probe_handles_direct",
+    "probe_ntstatus_direct",
+    "probe_path",
+    "probe_path_direct",
+    "probe_sharemode_direct",
+}
+# Helper cap and timeout for probe_sharemode_direct: 8 helpers x 2 s bounds
+# (ready and done) x 2 plus spawns stays under the 60 s limit.
+EXTRA_ARGS = {
+    "probe_sharemode_direct": ["--max-helpers", "8", "--helper-timeout-ms", "2000"],
 }
 
 EXTRA_LIBS = ["-ladvapi32", "-luser32"]
@@ -134,12 +151,13 @@ def build_probe(name: str, out_bin: Path) -> dict:
     return rec
 
 
-def run_probe(exe: Path, args: list[str], stdin_text: str | None) -> dict:
+def run_probe(exe: Path, args: list[str], stdin_text: str | None,
+              cwd: Path | None = None, env: dict | None = None) -> dict:
     rec: dict = {"status": None}
     t0 = time.monotonic()
     try:
         r = subprocess.run([str(exe), *args], input=(stdin_text.encode("utf-8") if stdin_text is not None else None), capture_output=True,
-                           timeout=TIMEOUT_S, env=toolchain_env())
+                           timeout=TIMEOUT_S, env=(env if env is not None else toolchain_env()), cwd=cwd)
         rc = r.returncode
         rec["rc"] = rc
         rec["rc_hex"] = f"0x{rc & 0xFFFFFFFF:08X}"
@@ -168,6 +186,34 @@ def run_probe(exe: Path, args: list[str], stdin_text: str | None) -> dict:
     return rec
 
 
+def run_rooted(name: str, exe: Path) -> dict:
+    """Run a probe that writes scratch files, inside the sandbox it was built in.
+
+    exe lives in <out>/sandbox-<name>/. The probe gets --root <sandbox>/root;
+    cwd and TEMP/TMP are <sandbox>/tmp. Afterwards every entry left under the
+    root is recorded and the whole sandbox (binary included) is removed. A probe
+    that leaves files behind is reported, not repaired.
+    """
+    sandbox = exe.parent
+    root = sandbox / "root"
+    tmp = sandbox / "tmp"
+    root.mkdir()
+    tmp.mkdir()
+    env = toolchain_env()
+    env["TMP"] = env["TEMP"] = str(tmp)
+    env.pop("NTPERS_PROBE_ALLOW_UNC", None)
+    env.pop("NTPERS_PROBE_ROOT", None)
+    argv = ["--root", str(root), *EXTRA_ARGS.get(name, [])]
+    try:
+        rec = run_probe(exe, argv, None, cwd=sandbox, env=env)
+        rec["leftover_under_root"] = sorted(
+            str(p.relative_to(root)).replace("\\", "/") for p in root.rglob("*"))
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+    rec["argv"] = ["--root", "<sandbox>/root", *EXTRA_ARGS.get(name, [])]
+    return rec
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True, help="output directory, must be outside the repository")
@@ -190,10 +236,16 @@ def main() -> int:
 
     results = []
     for name in RUN:
-        exe = out / "build" / f"{name}.exe"
+        if name in ROOTED:
+            exe = out / f"sandbox-{name}" / f"{name}.exe"   # built inside its own sandbox
+            exe.parent.mkdir(parents=True, exist_ok=False)
+        else:
+            exe = out / "build" / f"{name}.exe"
         b = build_probe(name, exe)
         entry: dict = {"probe": name, **b}
         if b["compile_rc"] != 0:
+            if name in ROOTED:
+                shutil.rmtree(exe.parent, ignore_errors=True)
             entry["status"] = "build_failed"
             results.append(entry)
             print(f"{name}: BUILD_FAILED")
@@ -205,7 +257,10 @@ def main() -> int:
             argv = ["--batch"]
             stdin_text = pe_list
             entry["input_paths"] = pe_inputs
-        r = run_probe(exe, argv, stdin_text)
+        if name in ROOTED:
+            r = run_rooted(name, exe)
+        else:
+            r = run_probe(exe, argv, stdin_text)
         stdout = r.pop("stdout", b"")
         entry.update(r)
         if isinstance(stdout, str):

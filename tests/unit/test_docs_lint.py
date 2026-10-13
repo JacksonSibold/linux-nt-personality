@@ -35,6 +35,7 @@ No claim is made.
 
 - PatchGuard is out of scope. It is not implemented.
 - Secure Kernel is out of scope. It is not implemented.
+- Windows-update-signed kernel images are out of scope. They are not claimed.
 
 ## Rules for public text
 
@@ -94,6 +95,12 @@ class SecA008Tests(unittest.TestCase):
         found = docs_lint.lint_sec_a008(self.tree(policy=policy))
         self.assertTrue(any("DOD-ZZ-A999 is not in criteria.json" in v for v in found))
 
+    def test_windows_update_signed_not_declared_out_of_scope_is_a_violation(self):
+        policy = POLICY_OK.replace("Windows-update-signed kernel images are out of scope.",
+                                   "Windows-update-signed kernel images are discussed.")
+        found = docs_lint.lint_sec_a008(self.tree(policy=policy))
+        self.assertTrue(any("Windows-update-signed kernel is not declared out of scope" in v for v in found))
+
     def test_affirmed_patchguard_support_is_a_violation(self):
         found = docs_lint.lint_sec_a008(
             self.tree(readme="The Personality supports PatchGuard on every boot.\n"))
@@ -132,12 +139,33 @@ class SecA008Tests(unittest.TestCase):
             self.assertEqual(docs_lint.main(["--policy", "--criterion", "DOD-SEC-A008"]), 0)
 
 
-BOUNDARY_OK = """# Claim boundary
 
-## Boundary statement
+def build_tree(files, criteria=None):
+    """Write a synthetic tree from {relative path: text} and a criteria.json."""
+    root = pathlib.Path(tempfile.mkdtemp(prefix="docslint-"))
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    if criteria is None:
+        criteria = [{"id": "DOD-DRV-B003", "criterion": ""}, {"id": "DOD-EVI-B006", "criterion": ""}]
+    cj = root / "tests" / "conformance" / "criteria.json"
+    cj.parent.mkdir(parents=True, exist_ok=True)
+    cj.write_text(json.dumps(criteria), encoding="utf-8")
+    return root
 
-No third-party NT `.sys` executes on the Personality.
-"""
+
+STATEMENT = "No third-party NT `.sys` executes in the Personality.\n"
+BOUNDARY_FILES = {
+    "docs/policy/CLAIM-BOUNDARY.md": "# Claim boundary\n\n" + STATEMENT,
+    "README.md": "Plain readme.\n\n" + STATEMENT,
+    "docs/status/CRITERIA.md": "Matrix.\n\n" + STATEMENT,
+}
+DRV_B003_TEXT = ("`[P1]` Claim boundary: no third-party NT `.sys` executes; public docs + capability "
+                 "matrix state this; any \"hardware support\" claim must name the **API subset + device "
+                 "class** it covers; doc-lint fails release if a gated claim appears without §11 waiver.")
+DRV_A001_TEXT = ("Load/run a third-party **production-signed NT `.sys`** (e.g. a real printer/GPU "
+                 "filter driver).")
 
 
 class DrvB003Tests(unittest.TestCase):
@@ -148,58 +176,85 @@ class DrvB003Tests(unittest.TestCase):
         for r in self.roots:
             shutil.rmtree(r, ignore_errors=True)
 
-    def tree(self, boundary=BOUNDARY_OK, readme="Plain readme.\n", status=None):
-        root = make_tree()
+    def tree(self, extra=None, drop=(), criteria=None):
+        files = dict(BOUNDARY_FILES)
+        files.update(extra or {})
+        for rel in drop:
+            files.pop(rel, None)
+        root = build_tree(files, criteria)
         self.roots.append(root)
-        if boundary is not None:
-            (root / "docs" / "policy" / "CLAIM-BOUNDARY.md").write_text(boundary, encoding="utf-8")
-        if status is not None:
-            (root / "docs" / "status" / "CRITERIA.md").write_text(status, encoding="utf-8")
-        (root / "README.md").write_text(readme, encoding="utf-8")
         return root
 
+    def lint(self, **kw):
+        return docs_lint.lint_drv_b003(self.tree(**kw))
+
     def test_clean_tree_has_no_violations(self):
-        self.assertEqual(docs_lint.lint_drv_b003(self.tree()), [])
+        self.assertEqual(self.lint(), [])
 
     def test_missing_boundary_document_is_a_violation(self):
-        found = docs_lint.lint_drv_b003(self.tree(boundary=None))
-        self.assertTrue(any("claim-boundary document is missing" in v for v in found))
+        found = self.lint(drop=["docs/policy/CLAIM-BOUNDARY.md"])
+        self.assertEqual(len(found), 1)
+        self.assertIn("document is missing", found[0])
 
-    def test_missing_boundary_statement_is_a_violation(self):
-        found = docs_lint.lint_drv_b003(self.tree(boundary="# Claim boundary\n"))
-        self.assertTrue(any("required statement" in v for v in found))
+    def test_boundary_without_statement_is_a_violation(self):
+        found = self.lint(extra={"docs/policy/CLAIM-BOUNDARY.md": "# Claim boundary\n\nNothing here.\n"})
+        self.assertTrue(any("CLAIM-BOUNDARY.md" in v and "required statement" in v for v in found))
 
-    def test_affirmed_third_party_driver_is_a_violation(self):
-        found = docs_lint.lint_drv_b003(
-            self.tree(readme="Third-party NT .sys drivers load and run on the Personality.\n"))
-        self.assertTrue(any("third-party or gated driver claim" in v for v in found))
+    def test_readme_must_state_the_boundary(self):
+        found = self.lint(extra={"README.md": "Plain readme.\n"})
+        self.assertTrue(any(v.startswith("README.md") and "required statement" in v for v in found))
+
+    def test_matrix_must_state_the_boundary_outside_the_criterion_text(self):
+        restated = f"| DOD-DRV-B003 | DRV | {DRV_B003_TEXT} | P1 | SELF | unknown |\n"
+        criteria = [{"id": "DOD-DRV-B003", "criterion": DRV_B003_TEXT}]
+        found = self.lint(extra={"docs/status/CRITERIA.md": restated}, criteria=criteria)
+        self.assertTrue(any("CRITERIA.md" in v and "required statement" in v for v in found))
 
     def test_hardware_support_without_subset_and_class_is_a_violation(self):
-        found = docs_lint.lint_drv_b003(self.tree(readme="The Personality has hardware support.\n"))
-        self.assertTrue(any("does not name an API subset and device class" in v for v in found))
+        found = self.lint(extra={"README.md": STATEMENT + "The Personality adds hardware support for USB.\n"})
+        self.assertTrue(any("API subset and device class" in v for v in found))
 
-    def test_hardware_support_naming_subset_and_class_is_allowed(self):
-        found = docs_lint.lint_drv_b003(self.tree(
-            readme="Hardware support covers the API subset of HID input for the device class keyboard.\n"))
-        self.assertEqual(found, [])
+    def test_hardware_support_naming_subset_and_class_passes(self):
+        text = STATEMENT + ("The Personality adds hardware support for the WinUSB API subset "
+                            "in the HID device class.\n")
+        self.assertEqual(self.lint(extra={"README.md": text}), [])
 
-    def test_hardware_sentence_wrapped_across_lines_is_read_as_one(self):
-        readme = ("Hardware support is limited to the API subset\n"
-                  "covering the device class of virtual serial ports.\n")
-        self.assertEqual(docs_lint.lint_drv_b003(self.tree(readme=readme)), [])
+    def test_negated_hardware_support_is_not_a_claim(self):
+        text = STATEMENT + "No hardware support is claimed.\n"
+        self.assertEqual(self.lint(extra={"README.md": text}), [])
 
-    def test_disclaimer_is_not_a_violation(self):
-        found = docs_lint.lint_drv_b003(
-            self.tree(readme="No third-party NT .sys runs on the Personality.\n"))
-        self.assertEqual(found, [])
+    def test_affirmed_vendor_driver_without_waiver_is_a_violation(self):
+        text = STATEMENT + "The Personality runs a production-signed vendor .sys driver.\n"
+        found = self.lint(extra={"README.md": text})
+        self.assertTrue(any("without a section 11 waiver" in v for v in found))
 
-    def test_criteria_restatement_is_not_scanned(self):
-        status = "| DOD-DRV-A001 | DRV | Load/run a third-party production-signed NT `.sys`. | P3 | EXT-GATED | unknown |\n"
-        self.assertEqual(docs_lint.lint_drv_b003(self.tree(status=status)), [])
+    def test_affirmed_vendor_driver_with_section_11_waiver_passes(self):
+        text = STATEMENT + ("The Personality runs a production-signed vendor .sys driver "
+                            "under the section 11 waiver.\n")
+        self.assertEqual(self.lint(extra={"README.md": text}), [])
+
+    def test_disclaimed_vendor_driver_passes(self):
+        text = STATEMENT + "The Personality does not run a production-signed vendor .sys driver.\n"
+        self.assertEqual(self.lint(extra={"README.md": text}), [])
+
+    def test_criterion_restatement_row_is_not_a_claim(self):
+        row = f"| DOD-DRV-A001 | DRV | {DRV_A001_TEXT} | P3 | EXT-GATED | unknown |\n"
+        criteria = [{"id": "DOD-DRV-A001", "criterion": DRV_A001_TEXT}]
+        self.assertEqual(self.lint(extra={"docs/status/CRITERIA-ROADMAP.md": row}, criteria=criteria), [])
+
+    def test_same_words_outside_a_restatement_are_a_claim(self):
+        row = f"| DOD-DRV-A001 | DRV | The project runs a production-signed vendor .sys. | P3 | EXT-GATED | unknown |\n"
+        criteria = [{"id": "DOD-DRV-A001", "criterion": DRV_A001_TEXT}]
+        found = self.lint(extra={"docs/status/CRITERIA-ROADMAP.md": row}, criteria=criteria)
+        self.assertTrue(any("CRITERIA-ROADMAP.md" in v for v in found))
 
 
-MATRIX_HEADER = ("| ID | Area | Description | Tier | Dependency | Status | Evidence | Owner |\n"
-                 "|---|---|---|---|---|---|---|---|\n")
+EVI_HEADER = "| ID | Area | Description | Tier | Dependency | Verdict | Evidence | Owner |\n"
+EVI_SEP = "|---|---|---|---|---|---|---|---|\n"
+
+
+def matrix_row(cid, tier="P1", dep="SELF", verdict="unknown", evidence="[matrix](CRITERIA.md)", owner=""):
+    return f"| {cid} | AREA | desc | {tier} | {dep} | {verdict} | {evidence} | {owner} |\n"
 
 
 class EviB006Tests(unittest.TestCase):
@@ -210,60 +265,88 @@ class EviB006Tests(unittest.TestCase):
         for r in self.roots:
             shutil.rmtree(r, ignore_errors=True)
 
-    def tree(self, matrix=MATRIX_HEADER, readme="Plain readme.\n"):
-        root = make_tree()
+    def tree(self, matrix=None, extra=None):
+        files = {"docs/status/CRITERIA.md": (EVI_HEADER + EVI_SEP + (matrix or matrix_row("DOD-EVI-A001"))),
+                 "README.md": "Plain readme.\n"}
+        files.update(extra or {})
+        root = build_tree(files)
         self.roots.append(root)
-        if matrix is not None:
-            (root / "docs" / "status" / "CRITERIA.md").write_text(matrix, encoding="utf-8")
-        (root / "README.md").write_text(readme, encoding="utf-8")
         return root
 
-    def row(self, cid="DOD-AA-A001", tier="P0", dep="SELF", status="unknown",
-            evidence="none recorded", owner="-", desc="a plain criterion"):
-        return f"| {cid} | AA | {desc} | {tier} | {dep} | {status} | {evidence} | {owner} |\n"
+    def lint(self, **kw):
+        return docs_lint.lint_evi_b006(self.tree(**kw))
 
-    def test_unknown_rows_with_no_evidence_are_clean(self):
-        self.assertEqual(docs_lint.lint_evi_b006(self.tree(matrix=MATRIX_HEADER + self.row())), [])
+    def test_clean_matrix_has_no_violations(self):
+        matrix = matrix_row("DOD-EVI-A001") + matrix_row("DOD-EVI-A002", dep="EXT-GATED", owner="Microsoft")
+        self.assertEqual(self.lint(matrix=matrix), [])
 
-    def test_missing_matrix_is_a_violation(self):
-        found = docs_lint.lint_evi_b006(self.tree(matrix=None))
-        self.assertTrue(any("capability matrix is missing" in v for v in found))
+    def test_missing_verdict_column_is_a_violation(self):
+        header = "| ID | Area | Description | Tier | Dependency | Evidence | Owner |\n"
+        root = build_tree({"docs/status/CRITERIA.md": header + EVI_SEP + "| DOD-EVI-A001 | A | d | P1 | SELF | [m](CRITERIA.md) | |\n"})
+        self.roots.append(root)
+        found = docs_lint.lint_evi_b006(root)
+        self.assertTrue(any("lacks required column 'Verdict'" in v for v in found))
 
-    def test_empty_matrix_is_a_violation(self):
-        found = docs_lint.lint_evi_b006(self.tree(matrix=MATRIX_HEADER))
-        self.assertTrue(any("no criterion rows" in v for v in found))
+    def test_missing_evidence_column_is_a_violation(self):
+        header = "| ID | Area | Description | Tier | Dependency | Verdict | Owner |\n"
+        root = build_tree({"docs/status/CRITERIA.md": header + EVI_SEP + "| DOD-EVI-A001 | A | d | P1 | SELF | x | |\n"})
+        self.roots.append(root)
+        found = docs_lint.lint_evi_b006(root)
+        self.assertTrue(any("lacks required column 'Evidence'" in v for v in found))
 
-    def test_short_row_is_a_violation(self):
-        found = docs_lint.lint_evi_b006(self.tree(matrix=MATRIX_HEADER + "| DOD-AA-A001 | AA | x | P0 |\n"))
-        self.assertTrue(any("row lacks" in v for v in found))
+    def test_row_without_evidence_link_is_a_violation(self):
+        found = self.lint(matrix=matrix_row("DOD-EVI-A001", evidence="none recorded"))
+        self.assertTrue(any("DOD-EVI-A001 shows no evidence link" in v for v in found))
 
-    def test_pass_without_evidence_link_is_a_violation(self):
-        found = docs_lint.lint_evi_b006(self.tree(matrix=MATRIX_HEADER + self.row(status="pass")))
-        self.assertTrue(any("claims pass without an evidence link" in v for v in found))
-
-    def test_pass_with_evidence_link_is_clean(self):
-        matrix = MATRIX_HEADER + self.row(status="pass", evidence="evidence/DOD-AA-A001.json")
-        self.assertEqual(docs_lint.lint_evi_b006(self.tree(matrix=matrix)), [])
+    def test_evidence_link_to_missing_file_is_a_violation(self):
+        found = self.lint(matrix=matrix_row("DOD-EVI-A001", evidence="[bundle](evidence/none.json)"))
+        self.assertTrue(any("does not resolve" in v for v in found))
 
     def test_gated_row_without_owner_is_a_violation(self):
-        matrix = MATRIX_HEADER + self.row(dep="EXT-GATED", owner="")
-        found = docs_lint.lint_evi_b006(self.tree(matrix=matrix))
-        self.assertTrue(any("gated DOD-AA-A001 has no owner name" in v for v in found))
+        found = self.lint(matrix=matrix_row("DOD-EVI-A001", dep="EXT-GATED"))
+        self.assertTrue(any("gated or deviation row DOD-EVI-A001 has no owner name" in v for v in found))
 
-    def test_escaped_pipe_in_description_keeps_eight_cells(self):
-        matrix = MATRIX_HEADER + self.row(desc="a \\| b")
-        self.assertEqual(docs_lint.lint_evi_b006(self.tree(matrix=matrix)), [])
+    def test_deviation_row_without_owner_is_a_violation(self):
+        found = self.lint(matrix=matrix_row("DOD-EVI-A001", verdict="deviation: skipped"))
+        self.assertTrue(any("DOD-EVI-A001 has no owner name" in v for v in found))
 
-    def test_unqualified_pass_count_claim_is_a_violation(self):
-        readme = "The project records **5 of 423** criteria passing.\n"
-        found = docs_lint.lint_evi_b006(self.tree(matrix=MATRIX_HEADER, readme=readme))
-        self.assertTrue(any("unqualified pass-count claim" in v for v in found))
+    def test_row_without_tier_is_a_violation(self):
+        found = self.lint(matrix=matrix_row("DOD-EVI-A001", tier=""))
+        self.assertTrue(any("DOD-EVI-A001 has no tier" in v for v in found))
 
-    def test_pass_count_qualified_in_same_paragraph_is_clean(self):
-        readme = ("The handoff records **5 of 423** criteria passing.\n"
-                  "This count is historical and not reproduced here.\n")
-        matrix = MATRIX_HEADER + self.row()
-        self.assertEqual(docs_lint.lint_evi_b006(self.tree(matrix=matrix, readme=readme)), [])
+    def test_pass_claim_without_bundle_is_a_violation(self):
+        found = self.lint(extra={"README.md": "DOD-EVI-A001 passes on every boot.\n"})
+        self.assertTrue(any("pass claim without a linked green bundle" in v for v in found))
+
+    def test_pass_claim_with_existing_bundle_passes(self):
+        text = "DOD-EVI-A001 passes, see `evidence/DOD-EVI-A001.bundle.json`.\n"
+        found = self.lint(extra={"README.md": text,
+                                 "evidence/DOD-EVI-A001.bundle.json": "{}"})
+        self.assertEqual(found, [])
+
+    def test_pass_claim_with_missing_bundle_is_a_violation(self):
+        text = "DOD-EVI-A001 passes, see `evidence/DOD-EVI-A001.bundle.json`.\n"
+        found = self.lint(extra={"README.md": text})
+        self.assertTrue(any("pass claim" in v for v in found))
+
+    def test_disclaimed_pass_claim_passes(self):
+        found = self.lint(extra={"README.md": "DOD-EVI-A001 does not pass.\n"})
+        self.assertEqual(found, [])
+
+    def test_pass_count_without_bundle_is_a_violation(self):
+        found = self.lint(extra={"README.md": "The project records 3 of 423 criteria passing.\n"})
+        self.assertTrue(any("pass claim" in v for v in found))
+
+    def test_historical_pass_count_in_same_sentence_passes(self):
+        text = "The handoff records 3 of 423 criteria passing (historical, not reproduced).\n"
+        self.assertEqual(self.lint(extra={"README.md": text}), [])
+
+    def test_hyphenated_identifier_is_not_a_pass_claim(self):
+        self.assertIsNone(docs_lint.PASS_CLAIM.search("WI-EXC-SECOND-PASS"))
+        self.assertIsNotNone(docs_lint.PASS_CLAIM.search("DOD-EVI-A001 PASS"))
+
+    def test_rules_are_wired(self):
+        self.assertEqual(set(docs_lint.RULES), {"DOD-SEC-A008", "DOD-DRV-B003", "DOD-EVI-B006"})
 
 
 if __name__ == "__main__":

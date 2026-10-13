@@ -1,0 +1,42 @@
+{
+  "probe": "probe_handles",
+  "windows_build": "26200.9457",
+  "windows_version": "10.0.26200",
+  "arch": "x64",
+  "create_status": {"h1":0,"h1_hex":"0x00000000","h2":0,"h2_hex":"0x00000000","event":0,"event_hex":"0x00000000","mutant":0,"mutant_hex":"0x00000000","hFile2":18446744072635809859,"hFile2_hex":"0xc0000043"},
+  "handles": [
+    {"name":"CreateFile_RW","handle":"0x00000000000000ec","value":236,"mod4":0,"is_pseudo":false},
+    {"name":"CreateFile_R","handle":"0x00000000000000f0","value":240,"mod4":0,"is_pseudo":false},
+    {"name":"Event","handle":"0x00000000000000f4","value":244,"mod4":0,"is_pseudo":false},
+    {"name":"Mutex","handle":"0x00000000000000f8","value":248,"mod4":0,"is_pseudo":false},
+    {"name":"CreateFile_R2","handle":"0x0000000000000000","value":0,"mod4":0,"is_pseudo":false}
+  ],
+  "pseudo_handles": [
+    {"name":"GetCurrentProcess","handle":"0xFFFFFFFFFFFFFFFF","value":"-1"},
+    {"name":"GetCurrentThread","handle":"0xFFFFFFFFFFFFFFFE","value":"-2"}
+  ],
+  "GetProcessHandleCount": {"success":true,"count":70},
+  "nt_query_object": [
+    {"handle":"0x00000000000000ec","info_class":0,"class_name":"ObjectBasicInformation","ntstatus":0,"ntstatus_hex":"0x00000000","GrantedAccess":"0x0012019f","HandleCount":1,"PointerCount":32769,"retLen":56},
+    {"handle":"0x00000000000000ec","info_class":1,"class_name":"ObjectNameInformation","ntstatus":0,"ntstatus_hex":"0x00000000","retLen":236,"name":"/Device/HarddiskVolume3/tmp/probe_hdl_direct.tmp"},
+    {"handle":"0x00000000000000ec","info_class":2,"class_name":"ObjectTypeInformation","ntstatus":0,"ntstatus_hex":"0x00000000","retLen":120,"type":"File"},
+    {"handle":"0x00000000000000f4","info_class":2,"class_name":"ObjectTypeInformation","ntstatus":0,"ntstatus_hex":"0x00000000","retLen":120,"type":"Event"},
+    {"handle":"0x00000000000000ec","info_class":0,"buffer_len":4,"ntstatus":18446744072635809796,"ntstatus_hex":"0xc0000004","retLen":0},
+    {"sentinel": true}
+  ],
+  "duplicate_handle": [
+    {"op":"DuplicateHandle_SAME_ACCESS","src":"0x00000000000000ec","dst":"0x00000000000000fc","success":true,"lasterror":32},
+    {"compare":"GrantedAccess","src_access":"0x0012019f","dup_access":"0x0012019f","match":true},
+    {"HandleCount_after_dup_src":2,"HandleCount_dup":2},
+    {"op":"DuplicateHandle_GENERIC_READ","src":"0x00000000000000ec","dst":"0x00000000000000fc","success":true,"lasterror":32},
+    {"dup2_granted":"0x00120089","ntstatus":0},
+    {"op":"DuplicateHandle_CLOSE_SOURCE","src":"0x00000000000000fc","dst":"0x00000000000000fc","success":true,"lasterror":0,"src_still_valid":true},
+    {"sentinel": true}
+  ],
+  "close_tests": [
+    {"handle":"0x1234","success":false,"lasterror":6},
+    {"handle":"NULL","success":false,"lasterror":6},
+    {"handle":"pseudoProc(-1)","success":true,"lasterror":6},
+    {"handle":"0xFFFFFFFF","success":false,"lasterror":6}
+  ]
+}

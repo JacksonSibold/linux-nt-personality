@@ -20,9 +20,9 @@ Total criteria: 423
 | Class | Count |
 |---|---|
 | HAS-HOST-TEST | 12 |
-| HAS-HARNESS-ENTRY | 6 |
-| REFERENCED-IN-DOCS | 15 |
-| NO-EVIDENCE | 390 |
+| HAS-HARNESS-ENTRY | 4 |
+| REFERENCED-IN-DOCS | 16 |
+| NO-EVIDENCE | 391 |
 
 Results: unknown 423
 
@@ -31,15 +31,15 @@ Results: unknown 423
 | Tier | HAS-HOST-TEST | HAS-HARNESS-ENTRY | REFERENCED-IN-DOCS | NO-EVIDENCE | Total |
 |---|---|---|---|---|---|
 | P0 | 7 | 4 | 9 | 123 | 143 |
-| P1 | 2 | 2 | 4 | 167 | 175 |
+| P1 | 2 | 0 | 6 | 167 | 175 |
 | P2 | 3 | 0 | 0 | 86 | 89 |
-| P3 | 0 | 0 | 2 | 14 | 16 |
+| P3 | 0 | 0 | 1 | 15 | 16 |
 
 ## By area
 
 | Area | HAS-HOST-TEST | HAS-HARNESS-ENTRY | REFERENCED-IN-DOCS | NO-EVIDENCE | Total |
 |---|---|---|---|---|---|
-| AC | 0 | 0 | 1 | 8 | 9 |
+| AC | 0 | 0 | 0 | 9 | 9 |
 | API | 0 | 0 | 2 | 10 | 12 |
 | ARCH | 2 | 3 | 0 | 9 | 14 |
 | AUD | 0 | 0 | 0 | 11 | 11 |
@@ -49,9 +49,9 @@ Results: unknown 423
 | DLL | 0 | 0 | 0 | 15 | 15 |
 | DOTNET | 0 | 0 | 0 | 13 | 13 |
 | DRM | 0 | 0 | 0 | 10 | 10 |
-| DRV | 0 | 1 | 1 | 8 | 10 |
+| DRV | 0 | 0 | 2 | 8 | 10 |
 | DX | 0 | 0 | 0 | 19 | 19 |
-| EVI | 0 | 1 | 0 | 5 | 6 |
+| EVI | 0 | 0 | 1 | 5 | 6 |
 | EXE | 0 | 0 | 0 | 16 | 16 |
 | FS | 0 | 0 | 0 | 22 | 22 |
 | GDK | 0 | 0 | 0 | 1 | 1 |
@@ -90,23 +90,24 @@ Ranked by distinct host-test and harness sources, then by doc sources, then ID.
 | 9 | DOD-PE-B010 | PE | P2 | HAS-HOST-TEST | 1 | 2 | `tests/conformance/test_pe_parse.c`, `tests/harness/registry.yaml` (+1) |
 | 10 | DOD-SEC-A008 | SEC | P0 | HAS-HARNESS-ENTRY | 1 | 1 | `tests/harness/registry.yaml`, `tests/unit/test_docs_lint.py` |
 | 11 | DOD-ARCH-B006 | ARCH | P1 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/provenance.py` |
-| 12 | DOD-DRV-B003 | DRV | P1 | HAS-HARNESS-ENTRY | 1 | 0 | `tests/harness/registry.yaml` |
-| 13 | DOD-EVI-B006 | EVI | P1 | HAS-HARNESS-ENTRY | 1 | 0 | `tests/harness/registry.yaml` |
-| 14 | DOD-GFX-B002 | GFX | P0 | HAS-HOST-TEST | 1 | 0 | `tests/harness/dualrun_wrapper.py` |
-| 15 | DOD-MEM-A001 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
-| 16 | DOD-MEM-B001 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
-| 17 | DOD-MEM-B002 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
-| 18 | DOD-PE-B001 | PE | P0 | HAS-HOST-TEST | 1 | 0 | `tests/conformance/test_pe_parse.c` |
-| 19 | DOD-NT-A003 | NT | P0 | REFERENCED-IN-DOCS | 0 | 2 | `tests/harness/registry.yaml`, `tests/unit/test_criteria_trace.py` |
-| 20 | DOD-NT-B004 | NT | P0 | REFERENCED-IN-DOCS | 0 | 2 | `tests/harness/registry.yaml`, `tests/unit/test_criteria_trace.py` |
+| 12 | DOD-GFX-B002 | GFX | P0 | HAS-HOST-TEST | 1 | 0 | `tests/harness/dualrun_wrapper.py` |
+| 13 | DOD-MEM-A001 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
+| 14 | DOD-MEM-B001 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
+| 15 | DOD-MEM-B002 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
+| 16 | DOD-PE-B001 | PE | P0 | HAS-HOST-TEST | 1 | 0 | `tests/conformance/test_pe_parse.c` |
+| 17 | DOD-NT-A003 | NT | P0 | REFERENCED-IN-DOCS | 0 | 2 | `tests/harness/registry.yaml`, `tests/unit/test_criteria_trace.py` |
+| 18 | DOD-NT-B004 | NT | P0 | REFERENCED-IN-DOCS | 0 | 2 | `tests/harness/registry.yaml`, `tests/unit/test_criteria_trace.py` |
+| 19 | DOD-API-A006 | API | P1 | REFERENCED-IN-DOCS | 0 | 1 | `tests/harness/registry.yaml` |
+| 20 | DOD-API-B005 | API | P1 | REFERENCED-IN-DOCS | 0 | 1 | `tests/harness/registry.yaml` |
 
 ## NO-EVIDENCE criteria by area
 
-### AC (8)
+### AC (9)
 
 | ID | Tier | Dependency | Description |
 |---|---|---|---|
 | DOD-AC-A001 | P3 | EXT-GATED | Kernel anti-cheat titles (Vanguard, BattlEye, EasyAntiCheat) function end-to-end. |
+| DOD-AC-A002 | P3 | EXT-GATED | Join a live VAC-protected server. |
 | DOD-AC-A003 | P1 | EXT-RE | Titles using **user-mode-only** integrity checks run offline with the checks actually passing on us (measured: game reaches main menu without AC-failure dialog, and AC SDK trace log shows its checks executed and returned clean). |
 | DOD-AC-A004 | P2 | SELF | Self-hosted/offline multiplayer: 2 SUT instances + 1 Windows instance play a LAN-only title to scripted completion with byte-consistent game state (netcode parity). |
 | DOD-AC-A005 | P0 | SELF | Integrity policy (anti-spoof): automated audit proves no code path lies about OS identity beyond the declared, documented compatibility versioning (version-lies are a **gaming vector** for AC/DRM and must be policy-controlled, not ad hoc); canary app enumerates every version-bearing API (28 calls) and results are compared to `osidentity.json`. |

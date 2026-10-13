@@ -3,7 +3,7 @@
   "windows_build": "26200.9457",
   "windows_version": "10.0.26200",
   "arch": "x64",
-  "test_key": "SOFTWARE\\ntpers_probe_18168_731346250",
+  "test_key": "SOFTWARE\\ntpers_probe_3736_733763812",
   "reg_create": {"lasterror":0,"disp":1,"disp_str":"NEW"},
   "reg_create_second": {"lasterror":0,"disp":2},
   "value_sets": [
@@ -34,10 +34,10 @@
   "missing_value_query": {"lasterror":2},
   "nt_open": {"machine_hex":"0x00000000","machine_dos":0,"user_hex":"0x00000000"},
   "nt_query_key": [
-    {"class":0,"ntstatus":0,"hex":"0x00000000","retLen":72,"small_hex":"0xC0000023","small_retLen":72},
-    {"class":1,"ntstatus":0,"hex":"0x00000000","retLen":80,"small_hex":"0xC0000023","small_retLen":80},
+    {"class":0,"ntstatus":0,"hex":"0x00000000","retLen":70,"small_hex":"0xC0000023","small_retLen":70},
+    {"class":1,"ntstatus":0,"hex":"0x00000000","retLen":78,"small_hex":"0xC0000023","small_retLen":78},
     {"class":2,"ntstatus":0,"hex":"0x00000000","retLen":44,"small_hex":"0xC0000023","small_retLen":44},
-    {"class":3,"ntstatus":0,"hex":"0x00000000","retLen":202,"small_hex":"0x80000005","small_retLen":202}
+    {"class":3,"ntstatus":0,"hex":"0x00000000","retLen":200,"small_hex":"0x80000005","small_retLen":200}
   ],
   "nt_query_value": [
     {"value":"ProductName","ntstatus":-1073741772,"hex":"0xC0000034","retLen":0,"small_hex":"0xC0000034","small_retLen":0},

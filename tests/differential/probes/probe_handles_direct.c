@@ -141,14 +141,39 @@ static void j_add_hex64(ULONGLONG v){ char tmp[32]; u64_hex(tmp,v); j_add(tmp); 
 static void j_add_dec64(ULONGLONG v){ char tmp[32]; u64_dec(tmp,v); j_add(tmp); }
 static void j_add_u32(ULONG v){ char tmp[32]; u64_dec(tmp,v); j_add(tmp); }
 
+#ifndef NTPERS_VM
+/* Host build read from the running system: RtlGetVersion for the build number, UBR from the registry. */
+typedef LONG (WINAPI *PFN_RtlGetVersion_host)(OSVERSIONINFOEXW*);
+static void host_build_strings(char *build, size_t bn, char *ver, size_t vn){
+    OSVERSIONINFOEXW ovi={0}; DWORD ubr=0, v=0, cb=sizeof v; HKEY hk;
+    PFN_RtlGetVersion_host pr=(PFN_RtlGetVersion_host)GetProcAddress(GetModuleHandleA("ntdll.dll"),"RtlGetVersion");
+    ovi.dwOSVersionInfoSize=sizeof ovi;
+    if(pr) pr(&ovi);
+    if(RegOpenKeyExA(HKEY_LOCAL_MACHINE,"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",0,KEY_READ,&hk)==ERROR_SUCCESS){
+        if(RegQueryValueExA(hk,"UBR",NULL,NULL,(BYTE*)&v,&cb)==ERROR_SUCCESS) ubr=v;
+        RegCloseKey(hk);
+    }
+    snprintf(build,bn,"%lu.%lu",(unsigned long)ovi.dwBuildNumber,(unsigned long)ubr);
+    snprintf(ver,vn,"%lu.%lu.%lu",(unsigned long)ovi.dwMajorVersion,(unsigned long)ovi.dwMinorVersion,(unsigned long)ovi.dwBuildNumber);
+}
+#endif
 static void do_probe(void){
+#ifdef NTPERS_VM
     __asm__ volatile("sub $128, %rsp");
+#endif
+
     // Header
     jpos=0;
     j_add("{\n");
     j_add("  \"probe\": \"probe_handles\",\n");
+#ifdef NTPERS_VM
     j_add("  \"windows_build\": \"26200.9168\",\n");
     j_add("  \"windows_version\": \"10.0.26200\",\n");
+#else
+    { char wb[32], wv[32]; host_build_strings(wb, sizeof wb, wv, sizeof wv);
+      j_add("  \"windows_build\": \""); j_add(wb); j_add("\",\n");
+      j_add("  \"windows_version\": \""); j_add(wv); j_add("\",\n"); }
+#endif
     j_add("  \"arch\": \"x64\",\n");
 
     // Create file handles via NtCreateFile under C:\\tmp

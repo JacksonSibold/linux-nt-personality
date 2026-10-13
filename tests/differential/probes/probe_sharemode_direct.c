@@ -29,6 +29,7 @@ typedef struct { ULONGLONG QuadPart; } LARGE_INTEGER;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ntpers_probe_root.h"
 #endif
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
 #define STATUS_SHARING_VIOLATION ((NTSTATUS)0xC0000043L)
@@ -199,6 +200,26 @@ struct desired_entry { ACCESS_MASK access; const char *name; };
 struct share_entry { ULONG share; const char *name; };
 
 #ifndef NTPERS_VM
+static int g_max_helpers = 64;     /* --max-helpers N: cap on helper processes (1..64) */
+static long g_helper_ms = 5000;     /* --helper-timeout-ms T: bound on each helper wait */
+static wchar_t g_tmp_w[MAX_PATH];   /* matrix scratch file (GetTempFileName), deleted on exit */
+
+/* Signal file under the root. Uses one static buffer: use the result at once. */
+static const char *sig(const char *leaf){
+    static char b[MAX_PATH+64];
+    snprintf(b, sizeof b, "%s\\%s", g_root, leaf);
+    return b;
+}
+
+/* Delete everything do_probe and the helpers create, under the root. */
+static void cleanup_win(void){
+    DeleteFileW(g_tmp_w);
+    DeleteFileA(sig("probe_cross_ready.tmp"));
+    DeleteFileA(sig("probe_cross_done.tmp"));
+    DeleteFileA(sig("probe_cross_child_status.tmp"));
+    { char p[MAX_PATH+64]; snprintf(p, sizeof p, "%s\\probe_shr_direct.tmp", g_root); DeleteFileA(p); }
+}
+
 /* Windows hold mode handling - child process that opens file and waits */
 static int windows_hold_mode(void){
     LPSTR cmd = GetCommandLineA();
@@ -224,8 +245,8 @@ static int windows_hold_mode(void){
     while(n>0 && (ntpath[n-1]==' '||ntpath[n-1]=='"'||ntpath[n-1]=='\r'||ntpath[n-1]=='\n')) n--; ntpath[n]=0;
     if(n==0){
         /* fallback default */
-        const char *def="\\??\\C:\\tmp\\probe_shr_direct.tmp";
-        int k=0; while(def[k]&&k<1023){ ntpath[k]=def[k]; k++; } ntpath[k]=0; n=k;
+        snprintf(ntpath, sizeof ntpath, "\\??\\%s\\probe_shr_direct.tmp", g_root);
+        n=(int)strlen(ntpath);
     }
     /* Convert ntpath to WCHAR */
     WCHAR wpath[1024]; int i=0; while(ntpath[i]&&i<1023){ wpath[i]=(WCHAR)ntpath[i]; i++; } wpath[i]=0;
@@ -236,7 +257,7 @@ static int windows_hold_mode(void){
     NTSTATUS st = NtCreateFile(&h, desired, &oa, &ios, &alloc, FILE_ATTRIBUTE_NORMAL, share, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
     /* signal ready regardless, but write status file */
     {
-        HANDLE hf = CreateFileA("C:\\tmp\\probe_cross_ready.tmp", GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        HANDLE hf = CreateFileA(sig("probe_cross_ready.tmp"), GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if(hf!=INVALID_HANDLE_VALUE){
             char buf[64]; int pos=0; long v=(long)st; if(v<0){ buf[pos++]='-'; ULONGLONG uv=(ULONGLONG)(-v); char t[32]; u64_dec(t,uv); int tl=s_len(t); for(int k=0;k<tl;k++) buf[pos++]=t[k]; } else { char t[32]; u64_dec(t,(ULONGLONG)v); int tl=s_len(t); for(int k=0;k<tl;k++) buf[pos++]=t[k]; }
             buf[pos++]='\n';
@@ -248,8 +269,8 @@ static int windows_hold_mode(void){
     }
     if(st!=STATUS_SUCCESS){
         /* failed to hold: wait briefly for done then exit with code */
-        for(int t=0;t<50;t++){
-            DWORD attr = GetFileAttributesA("C:\\tmp\\probe_cross_done.tmp");
+        for(long t=0;t<g_helper_ms/100;t++){
+            DWORD attr = GetFileAttributesA(sig("probe_cross_done.tmp"));
             if(attr!=INVALID_FILE_ATTRIBUTES) break;
             Sleep(100);
         }
@@ -257,8 +278,8 @@ static int windows_hold_mode(void){
         ExitProcess((UINT)st);
     }
     /* wait for done signal up to 10s */
-    for(int t=0;t<100;t++){
-        DWORD attr = GetFileAttributesA("C:\\tmp\\probe_cross_done.tmp");
+    for(long t=0;t<g_helper_ms/100;t++){
+        DWORD attr = GetFileAttributesA(sig("probe_cross_done.tmp"));
         if(attr!=INVALID_FILE_ATTRIBUTES) break;
         Sleep(100);
     }
@@ -268,8 +289,26 @@ static int windows_hold_mode(void){
 }
 #endif
 
+#ifndef NTPERS_VM
+/* Host build read from the running system: RtlGetVersion for the build number, UBR from the registry. */
+typedef LONG (WINAPI *PFN_RtlGetVersion_host)(OSVERSIONINFOEXW*);
+static void host_build_strings(char *build, size_t bn, char *ver, size_t vn){
+    OSVERSIONINFOEXW ovi={0}; DWORD ubr=0, v=0, cb=sizeof v; HKEY hk;
+    PFN_RtlGetVersion_host pr=(PFN_RtlGetVersion_host)GetProcAddress(GetModuleHandleA("ntdll.dll"),"RtlGetVersion");
+    ovi.dwOSVersionInfoSize=sizeof ovi;
+    if(pr) pr(&ovi);
+    if(RegOpenKeyExA(HKEY_LOCAL_MACHINE,"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",0,KEY_READ,&hk)==ERROR_SUCCESS){
+        if(RegQueryValueExA(hk,"UBR",NULL,NULL,(BYTE*)&v,&cb)==ERROR_SUCCESS) ubr=v;
+        RegCloseKey(hk);
+    }
+    snprintf(build,bn,"%lu.%lu",(unsigned long)ovi.dwBuildNumber,(unsigned long)ubr);
+    snprintf(ver,vn,"%lu.%lu.%lu",(unsigned long)ovi.dwMajorVersion,(unsigned long)ovi.dwMinorVersion,(unsigned long)ovi.dwBuildNumber);
+}
+#endif
 static void do_probe(void){
+#ifdef NTPERS_VM
     __asm__ volatile("sub $128, %rsp");
+#endif
     PVOID base=0;
     ULONGLONG sz=json_cap;
 #ifdef NTPERS_VM
@@ -300,10 +339,12 @@ static void do_probe(void){
     int ltmp=0;
     wchar_t tmpDir[MAX_PATH];
     wchar_t tmpFile[MAX_PATH];
-    DWORD tl = GetTempPathW(MAX_PATH, tmpDir);
+    DWORD tl = (DWORD)MultiByteToWideChar(CP_ACP, 0, g_root, -1, tmpDir, MAX_PATH);
+        if(tl>0) tl--;   /* count without the terminating NUL, as GetTempPathW did */
     BOOL gotTmp = FALSE;
     if(tl>0 && tl < MAX_PATH){
         if(GetTempFileNameW(tmpDir, L"shm", 0, tmpFile)!=0){
+            { int q=0; while(tmpFile[q] && q<MAX_PATH-1){ g_tmp_w[q]=tmpFile[q]; q++; } g_tmp_w[q]=0; }
             HANDLE hEnsure = CreateFileW(tmpFile, GENERIC_READ|GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
             if(hEnsure!=INVALID_HANDLE_VALUE) CloseHandle(hEnsure);
             const wchar_t *prefix = L"\\??\\";
@@ -315,7 +356,8 @@ static void do_probe(void){
         }
     }
     if(!gotTmp){
-        const char *tmpPath="\\??\\C:\\tmp\\probe_shr_direct.tmp";
+        char fbnt[MAX_PATH+64]; snprintf(fbnt, sizeof fbnt, "\\??\\%s\\probe_shr_direct.tmp", g_root);
+        const char *tmpPath=fbnt;
         ltmp=0; while(tmpPath[ltmp]) ltmp++;
         for(int i=0;i<ltmp;i++) wtmp[i]=(WCHAR)tmpPath[i]; wtmp[ltmp]=0;
     }
@@ -395,8 +437,14 @@ static void do_probe(void){
 
     j_add("{\n");
     j_add("  \"probe\": \"probe_sharemode\",\n");
+#ifdef NTPERS_VM
     j_add("  \"windows_build\": \"26200.9168\",\n");
     j_add("  \"windows_version\": \"10.0.26200\",\n");
+#else
+    { char wb[32], wv[32]; host_build_strings(wb, sizeof wb, wv, sizeof wv);
+      j_add("  \"windows_build\": \""); j_add(wb); j_add("\",\n");
+      j_add("  \"windows_version\": \""); j_add(wv); j_add("\",\n"); }
+#endif
     j_add("  \"arch\": \"x64\",\n");
     j_add("  \"desired_values\": [\n");
     for(int i=0;i<nDesired;i++){
@@ -500,9 +548,10 @@ static void do_probe(void){
     DWORD exeLen = GetModuleFileNameA(NULL, exePath, MAX_PATH);
     if(exeLen==0 || exeLen>=MAX_PATH){ const char *fb="probe_sharemode_direct.exe"; int k=0; while(fb[k]&&k<MAX_PATH-1){ exePath[k]=fb[k]; k++; } exePath[k]=0; }
     /* clean signal files */
-    DeleteFileA("C:\\tmp\\probe_cross_ready.tmp");
-    DeleteFileA("C:\\tmp\\probe_cross_done.tmp");
-    DeleteFileA("C:\\tmp\\probe_cross_child_status.tmp");
+    DeleteFileA(sig("probe_cross_ready.tmp"));
+    DeleteFileA(sig("probe_cross_done.tmp"));
+    DeleteFileA(sig("probe_cross_child_status.tmp"));
+    SetEnvironmentVariableA("NTPERS_PROBE_ROOT", g_root);   /* helpers resolve the same root */
     int cross_first=1;
     ULONGLONG cross_total=0;
     j_add("  \"cross_process_supported\": true,\n");
@@ -510,16 +559,20 @@ static void do_probe(void){
     j_add("  \"cross_process_missing_ssn\": 0,\n");
     j_add("  \"cross_process_missing_status\": 0,\n");
     j_add("  \"cross_process_missing_hex\": \"0x00000000\",\n");
-    j_add("  \"cross_process_selection\": \"8 Desired (0,READ,WRITE,READ|WRITE,DELETE,READ|DELETE,GENERIC_READ,GENERIC_WRITE) *8 Share both sides =4096; reuse holder per 64 helper combos (1 CreateProcess per helper, inner loop tests 64 openers) - Windows share rule exercised\",\n");
-    j_add("  \"cross_process_case_count\": 4096,\n");
+    j_add("  \"cross_process_selection\": \"8 Desired (0,READ,WRITE,READ|WRITE,DELETE,READ|DELETE,GENERIC_READ,GENERIC_WRITE) *8 Share both sides; 1 CreateProcess per helper combo, each helper tests the 64 openers; helper count is cross_process_max_helpers\",\n");
+    j_add("  \"cross_process_max_helpers\": "); j_add_u64_dec((ULONGLONG)g_max_helpers); j_add(",\n");
+    j_add("  \"cross_process_helper_timeout_ms\": "); j_add_u64_dec((ULONGLONG)g_helper_ms); j_add(",\n");
+    j_add("  \"cross_process_case_count\": "); j_add_u64_dec((ULONGLONG)g_max_helpers*64); j_add(",\n");
     j_add("  \"cross_process\": [\n");
+    int helpers_started = 0;
     for(int ci=0; ci<nCrossDesired; ci++){
         int i = cross_desired_idx[ci];
         for(int si=0; si<8; si++){
+            if(helpers_started++ >= g_max_helpers) continue;   /* --max-helpers cap */
             ULONG desired1 = desired[i].access | SYNCHRONIZE;
             ULONG share1 = shares[si].share;
-            DeleteFileA("C:\\tmp\\probe_cross_ready.tmp");
-            DeleteFileA("C:\\tmp\\probe_cross_done.tmp");
+            DeleteFileA(sig("probe_cross_ready.tmp"));
+            DeleteFileA(sig("probe_cross_done.tmp"));
             char cmdLine[2048];
             int pos=0;
             cmdLine[pos++]='"'; for(int k=0; exePath[k]&&pos<2000;k++) cmdLine[pos++]=exePath[k]; cmdLine[pos++]='"'; cmdLine[pos++]=' ';
@@ -534,8 +587,8 @@ static void do_probe(void){
             BOOL ok = CreateProcessA(NULL, cmdLine, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &siInfo, &pi);
             int helper_ready=0;
             if(ok){
-                for(int t=0;t<50;t++){
-                    DWORD a = GetFileAttributesA("C:\\tmp\\probe_cross_ready.tmp");
+                for(long t=0;t<g_helper_ms/100;t++){
+                    DWORD a = GetFileAttributesA(sig("probe_cross_ready.tmp"));
                     if(a!=INVALID_FILE_ATTRIBUTES){ helper_ready=1; break; }
                     DWORD ec=0; if(GetExitCodeProcess(pi.hProcess,&ec) && ec!=STILL_ACTIVE){ break; }
                     Sleep(100);
@@ -571,13 +624,13 @@ static void do_probe(void){
                 }
             }
             if(ok && helper_ready){
-                HANDLE hf = CreateFileA("C:\\tmp\\probe_cross_done.tmp", GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                HANDLE hf = CreateFileA(sig("probe_cross_done.tmp"), GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
                 if(hf!=INVALID_HANDLE_VALUE) CloseHandle(hf);
                 WaitForSingleObject(pi.hProcess, 5000);
             }
             if(ok){ CloseHandle(pi.hThread); CloseHandle(pi.hProcess); }
-            DeleteFileA("C:\\tmp\\probe_cross_ready.tmp");
-            DeleteFileA("C:\\tmp\\probe_cross_done.tmp");
+            DeleteFileA(sig("probe_cross_ready.tmp"));
+            DeleteFileA(sig("probe_cross_done.tmp"));
         }
     }
     j_add("\n  ],\n");
@@ -657,11 +710,16 @@ static void do_probe(void){
         fwrite(json,1,jpos,stdout); fflush(stdout);
     }
 #endif
+#ifdef NTPERS_VM
     write_file_nt("\\??\\mnt\\share\\.dodresult\\probe_sharemode.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_sharemode.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_sharemode_direct.json", json, jpos);
     write_file_nt(NTPERS_STAGE_NT "\\probe_sharemode_direct.json", json, jpos);
     write_file_nt(NTPERS_STAGE_NT "\\probe_sharemode.json", json, jpos);
+#endif
+#ifndef NTPERS_VM
+    cleanup_win();
+#endif
     NtTerminateProcess(NtCurrentProcess(),0);
 #ifdef NTPERS_VM
     __asm__ volatile("mov $60, %%eax; mov $0, %%edi; syscall" ::: "rax","rdi");
@@ -676,7 +734,10 @@ void _start(void){
     while(1){}
 }
 #else
-int main(void){
+int main(int argc, char **argv){
+    if(!resolve_root(argc, argv)){ fprintf(stderr, "probe_sharemode_direct: --root must be a local absolute path (X:\\dir), not UNC\n"); return 2; }
+    g_max_helpers = (int)arg_long(argc, argv, "--max-helpers", 64, 1, 64);
+    g_helper_ms = arg_long(argc, argv, "--helper-timeout-ms", 5000, 100, 60000);
     init_ntdll();
     if(windows_hold_mode()) return 0;
     do_probe();

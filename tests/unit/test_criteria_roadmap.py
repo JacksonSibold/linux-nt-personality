@@ -11,7 +11,6 @@ import json
 import pathlib
 import tempfile
 import unittest
-from unittest import mock
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tools" / "criteria_roadmap.py"
@@ -203,9 +202,7 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(status, {"0029": "open", "0003": "fixed"})
 
     def test_ref_text_reads_decision_status(self):
-        # Pin the decision table so the test does not track the live ADR index.
-        with mock.patch.dict(criteria_roadmap._DECISIONS, {"0029": "open"}, clear=True):
-            self.assertEqual(criteria_roadmap.ref_text("ADR-0029"), "ADR-0029 (open)")
+        self.assertEqual(criteria_roadmap.ref_text("ADR-0029"), "ADR-0029 (open)")
         self.assertEqual(criteria_roadmap.ref_text("OD-17"), "OD-17")
         self.assertEqual(criteria_roadmap.ref_text("DOC:docs/x.md"), "docs/x.md")
 

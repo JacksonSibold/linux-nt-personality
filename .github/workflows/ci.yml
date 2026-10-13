@@ -44,6 +44,9 @@ jobs:
       - name: Documentation counts are current
         run: python tools/update_doc_counts.py --check
 
+      - name: Policy docs-lint (DOD-SEC-A008, DOD-DRV-B003, DOD-EVI-B006)
+        run: python tools/docs_lint.py --policy --all
+
       - name: Provenance SPDX tag syntax
         run: python tools/provenance_scan.py --check
 

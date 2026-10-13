@@ -1,0 +1,19 @@
+{
+  "schema": "ntpers-accepted-golden-builds/1",
+  "policy_version": 1,
+  "decision": "docs/decisions/0073-golden-accepted-builds.md",
+  "rule": "A golden directory is accepted iff its build is listed here and its version.json and manifest.json match the entry's hashes and provenance. Host build must equal the golden build. No environment-variable bypass.",
+  "accepted": [
+    {
+      "build": "26200.9457",
+      "directory": "windows-26200.9457",
+      "provenance": "host-captured",
+      "captured_on": "2026-10-13",
+      "accepted_on": "2026-10-13",
+      "version_json_sha256": "822d9534e7dca6c033f3033af2aab44dd3275cf85b8346e3d3e1437e5b554835",
+      "manifest_sha256": "28c4149488df506fc8fbd9965196e4002a8f5eb653967fd1bb57dc3e37744ac1",
+      "rationale": "Owner decision: option 3, accept a list of builds (docs/status/GOLDEN.md section 4). Captured natively on the Windows 11 Pro 25H2 host at build 26200.9457. Run modes and probe source commits are recorded per probe in manifest.json. Published goldens are scrubbed and each has its sha256 in the manifest. This build is not claimed to equal 26200.9168. The VM tables were calibrated against 26200.9168, so divergences on this build must be reviewed as build drift.",
+      "known_gaps": {}
+    }
+  ]
+}

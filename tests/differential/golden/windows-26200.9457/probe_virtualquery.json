@@ -5,37 +5,37 @@
   "arch": "x64",
   "page_size": 4096,
   "alloc_granularity": 65536,
-  "reserve_base": "0x2D91D0F0000",
+  "reserve_base": "0x2ACCA500000",
   "reserve_size": 65536,
   "commits": [
-    {"addr":"0x2D91D0F0000","size":4096,"protect":4,"result":"success"},
-    {"addr":"0x2D91D0F1000","size":4096,"protect":2,"result":"success"},
-    {"addr":"0x2D91D0F4000","size":4096,"protect":32,"result":"success"}
+    {"addr":"0x2ACCA500000","size":4096,"protect":4,"result":"success"},
+    {"addr":"0x2ACCA501000","size":4096,"protect":2,"result":"success"},
+    {"addr":"0x2ACCA504000","size":4096,"protect":32,"result":"success"}
   ],
-  "virtualprotect": {"addr":"0x2D91D0F0000","size":4096,"new_protect":2,"old_protect":4,"success":true},
+  "virtualprotect": {"addr":"0x2ACCA500000","size":4096,"new_protect":2,"old_protect":4,"success":true},
   "query_before_free": [
-    {"BaseAddress":"0x2D91D0F0000","AllocationBase":"0x2D91D0F0000","AllocationProtect":4,"RegionSize":8192,"State":4096,"Protect":2,"Type":131072},
-    {"BaseAddress":"0x2D91D0F2000","AllocationBase":"0x2D91D0F0000","AllocationProtect":4,"RegionSize":8192,"State":8192,"Protect":0,"Type":131072},
-    {"BaseAddress":"0x2D91D0F4000","AllocationBase":"0x2D91D0F0000","AllocationProtect":4,"RegionSize":4096,"State":4096,"Protect":32,"Type":131072},
-    {"BaseAddress":"0x2D91D0F5000","AllocationBase":"0x2D91D0F0000","AllocationProtect":4,"RegionSize":45056,"State":8192,"Protect":0,"Type":131072}
+    {"BaseAddress":"0x2ACCA500000","AllocationBase":"0x2ACCA500000","AllocationProtect":4,"RegionSize":8192,"State":4096,"Protect":2,"Type":131072},
+    {"BaseAddress":"0x2ACCA502000","AllocationBase":"0x2ACCA500000","AllocationProtect":4,"RegionSize":8192,"State":8192,"Protect":0,"Type":131072},
+    {"BaseAddress":"0x2ACCA504000","AllocationBase":"0x2ACCA500000","AllocationProtect":4,"RegionSize":4096,"State":4096,"Protect":32,"Type":131072},
+    {"BaseAddress":"0x2ACCA505000","AllocationBase":"0x2ACCA500000","AllocationProtect":4,"RegionSize":45056,"State":8192,"Protect":0,"Type":131072}
   ],
-  "free_query": {"query_addr":"0x2D91D101000","BaseAddress":"0x2D91D101000","AllocationBase":"0x0","RegionSize":126976,"State":65536,"Protect":1,"Type":0,"ret":48},
-  "decommit": {"addr":"0x2D91D0F1000","size":4096,"success":true},
+  "free_query": {"query_addr":"0x2ACCA511000","BaseAddress":"0x2ACCA511000","AllocationBase":"0x0","RegionSize":651264,"State":65536,"Protect":1,"Type":0,"ret":48},
+  "decommit": {"addr":"0x2ACCA501000","size":4096,"success":true},
   "query_after_decommit": [
-    {"BaseAddress":"0x2D91D0F0000","AllocationBase":"0x2D91D0F0000","AllocationProtect":4,"RegionSize":4096,"State":4096,"Protect":2,"Type":131072},
-    {"BaseAddress":"0x2D91D0F1000","AllocationBase":"0x2D91D0F0000","AllocationProtect":4,"RegionSize":12288,"State":8192,"Protect":0,"Type":131072},
-    {"BaseAddress":"0x2D91D0F4000","AllocationBase":"0x2D91D0F0000","AllocationProtect":4,"RegionSize":4096,"State":4096,"Protect":32,"Type":131072},
-    {"BaseAddress":"0x2D91D0F5000","AllocationBase":"0x2D91D0F0000","AllocationProtect":4,"RegionSize":45056,"State":8192,"Protect":0,"Type":131072}
+    {"BaseAddress":"0x2ACCA500000","AllocationBase":"0x2ACCA500000","AllocationProtect":4,"RegionSize":4096,"State":4096,"Protect":2,"Type":131072},
+    {"BaseAddress":"0x2ACCA501000","AllocationBase":"0x2ACCA500000","AllocationProtect":4,"RegionSize":12288,"State":8192,"Protect":0,"Type":131072},
+    {"BaseAddress":"0x2ACCA504000","AllocationBase":"0x2ACCA500000","AllocationProtect":4,"RegionSize":4096,"State":4096,"Protect":32,"Type":131072},
+    {"BaseAddress":"0x2ACCA505000","AllocationBase":"0x2ACCA500000","AllocationProtect":4,"RegionSize":45056,"State":8192,"Protect":0,"Type":131072}
   ],
-  "recommit": {"addr":"0x2D91D0F1000","protect":4,"result":"success"},
+  "recommit": {"addr":"0x2ACCA501000","protect":4,"result":"success"},
   "query_after_recommit": [
-    {"BaseAddress":"0x2D91D0F0000","AllocationBase":"0x2D91D0F0000","AllocationProtect":4,"RegionSize":4096,"State":4096,"Protect":2,"Type":131072},
-    {"BaseAddress":"0x2D91D0F1000","AllocationBase":"0x2D91D0F0000","AllocationProtect":4,"RegionSize":4096,"State":4096,"Protect":4,"Type":131072},
-    {"BaseAddress":"0x2D91D0F2000","AllocationBase":"0x2D91D0F0000","AllocationProtect":4,"RegionSize":8192,"State":8192,"Protect":0,"Type":131072},
-    {"BaseAddress":"0x2D91D0F4000","AllocationBase":"0x2D91D0F0000","AllocationProtect":4,"RegionSize":4096,"State":4096,"Protect":32,"Type":131072},
-    {"BaseAddress":"0x2D91D0F5000","AllocationBase":"0x2D91D0F0000","AllocationProtect":4,"RegionSize":45056,"State":8192,"Protect":0,"Type":131072}
+    {"BaseAddress":"0x2ACCA500000","AllocationBase":"0x2ACCA500000","AllocationProtect":4,"RegionSize":4096,"State":4096,"Protect":2,"Type":131072},
+    {"BaseAddress":"0x2ACCA501000","AllocationBase":"0x2ACCA500000","AllocationProtect":4,"RegionSize":4096,"State":4096,"Protect":4,"Type":131072},
+    {"BaseAddress":"0x2ACCA502000","AllocationBase":"0x2ACCA500000","AllocationProtect":4,"RegionSize":8192,"State":8192,"Protect":0,"Type":131072},
+    {"BaseAddress":"0x2ACCA504000","AllocationBase":"0x2ACCA500000","AllocationProtect":4,"RegionSize":4096,"State":4096,"Protect":32,"Type":131072},
+    {"BaseAddress":"0x2ACCA505000","AllocationBase":"0x2ACCA500000","AllocationProtect":4,"RegionSize":45056,"State":8192,"Protect":0,"Type":131072}
   ],
   "alloc_protect_check": {"AllocationProtect":4,"Protect":2,"note":"AllocationProtect should be initial reserve protect, Protect is current commit protect"},
-  "release": {"addr":"0x2D91D0F0000","success":true, "lasterror":0},
-  "after_release": {"BaseAddress":"0x2D91D0F0000","State":65536,"RegionSize":196608}
+  "release": {"addr":"0x2ACCA500000","success":true, "lasterror":0},
+  "after_release": {"BaseAddress":"0x2ACCA500000","State":65536,"RegionSize":720896}
 }

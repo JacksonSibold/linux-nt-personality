@@ -43,7 +43,18 @@ except ImportError:  # pragma: no cover
 # Constants and schema
 # ---------------------------------------------------------------------------
 
-RESULT_STATES = ["PASS", "FAIL", "ERROR", "TIMEOUT", "SKIP", "UNIMPLEMENTED", "GATED"]
+RESULT_STATES = ["PASS", "FAIL", "ERROR", "TIMEOUT", "SKIP", "UNIMPLEMENTED", "GATED", "BLOCKED-ON-GOLDEN"]
+
+def golden_blocked_map(registry: Dict[str, Any]) -> Dict[str, List[Tuple[str, str]]]:
+    """criterion -> [(probe, reason)] for registry entries whose requires_golden lists a known gap
+    of the accepted golden build. These criteria are reported BLOCKED-ON-GOLDEN, never PASS."""
+    import importlib.util as _ilu
+    spec = _ilu.spec_from_file_location("check_golden_integrity", project_root() / "tests" / "differential" / "check_golden_integrity.py")
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    host = mod.get_host_build()
+    gaps = mod.known_gaps_for_build(host) if host else {}
+    return mod.blocked_criteria(mod.golden_requirements(registry), gaps)
 
 TIER_GATES = {
     "P0": 1.0,   # 100%
@@ -183,6 +194,7 @@ def run_command(cmd: List[str], timeout: float, cwd: Path, env: Dict[str, str]) 
       * exit code 124/137      -> TIMEOUT (VM harness timeout, GNU timeout KILL)
       * exit code 125          -> ERROR (harness/missing artifact)
       * negative exit code     -> ERROR (signal/crash)
+      * exit code >= 0xC0000000 -> ERROR (Windows NTSTATUS exception)
       * non-zero exit code     -> FAIL
       * subprocess timeout     -> TIMEOUT
       * command not found      -> ERROR
@@ -209,7 +221,9 @@ def run_command(cmd: List[str], timeout: float, cwd: Path, env: Dict[str, str]) 
             state = "TIMEOUT"
         elif proc.returncode == 125:
             state = "ERROR"
-        elif proc.returncode < 0:
+        elif proc.returncode < 0 or proc.returncode >= 0xC0000000:
+            # Negative: POSIX signal. >= 0xC0000000: Windows NTSTATUS exception
+            # (access violation etc.), reported unsigned by subprocess. Both are crashes.
             state = "ERROR"
         else:
             state = "FAIL"
@@ -251,13 +265,19 @@ def run_command(cmd: List[str], timeout: float, cwd: Path, env: Dict[str, str]) 
         }
 
 
-def resolve_command(cmd: List[str]) -> List[str]:
-    """Map a bare 'python3' (as used in registry.yaml) to the running interpreter.
+PYTHON_ALIASES = ("python3", "python")
 
-    Windows hosts commonly have no 'python3' on PATH; the harness itself was
-    started with a working interpreter, so reuse it rather than fail with ERROR.
+
+def resolve_command(cmd: List[str]) -> List[str]:
+    """Map a bare 'python3' or 'python' (as used in registry.yaml) to the running interpreter.
+
+    This applies on every platform and does not depend on PATH lookup. On Windows,
+    shutil.which('python3') finds the Microsoft Store alias in WindowsApps, which
+    is not None, so a which-guard skips the mapping and the alias exits 9009
+    ("Python was not found"). The harness runs under a working interpreter, so
+    that interpreter is the one to use for command checks.
     """
-    if cmd and cmd[0] in ("python3", "python") and shutil.which(cmd[0]) is None:
+    if cmd and cmd[0] in PYTHON_ALIASES:
         return [sys.executable] + list(cmd[1:])
     return list(cmd)
 
@@ -279,6 +299,7 @@ def evaluate_criterion(
     registry: Dict[str, Any],
     default_timeout: float,
     env: Dict[str, str],
+    blocked: Optional[Dict[str, List[Tuple[str, str]]]] = None,
 ) -> Dict[str, Any]:
     """
     Evaluate a single criterion and return a result record.
@@ -305,6 +326,13 @@ def evaluate_criterion(
         "duration_seconds": 0.0,
         "note": "",
     }
+
+    # 0. Golden dependency on a known gap of the accepted build: BLOCKED, never PASS.
+    if blocked and cid in blocked:
+        gaps_txt = ", ".join(f"{p} [{r}]" for p, r in blocked[cid])
+        result["state"] = "BLOCKED-ON-GOLDEN"
+        result["note"] = f"requires golden for {gaps_txt}; no golden on the accepted build"
+        return result
 
     # 1. GATED check.
     if dep_class == "EXT-GATED":
@@ -539,6 +567,11 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def canary_command(exit_code: int) -> List[str]:
+    """Command that exits with exit_code, using the interpreter running the harness."""
+    return [sys.executable, "-c", f"import sys; sys.exit({int(exit_code)})"]
+
+
 def verify_positive_controls(env: Dict[str, str], timeout: float, cwd: Path) -> Tuple[bool, str]:
     """
     Positive-control: run a known-PASS (true) and known-FAIL (false) through
@@ -546,10 +579,14 @@ def verify_positive_controls(env: Dict[str, str], timeout: float, cwd: Path) -> 
     either incorrectly, the entire run is untrustworthy.
     Returns (ok, message).
     """
-    pass_res = run_command(["true"], timeout, cwd, env)
-    fail_res = run_command(["false"], timeout, cwd, env)
+    # The canaries use the running interpreter, not true/false/sh: those are
+    # POSIX binaries that are missing from PATH on Windows hosts (ERROR, rc 125).
+    # The interpreter is always resolvable, and the exit codes exercised are
+    # the same: 0 -> PASS, 1 -> FAIL, 2 -> UNIMPLEMENTED.
+    pass_res = run_command(canary_command(0), timeout, cwd, env)
+    fail_res = run_command(canary_command(1), timeout, cwd, env)
     # also test UNIMPLEMENTED path (exit 2)
-    unimpl_res = run_command(["sh", "-c", "exit 2"], timeout, cwd, env)
+    unimpl_res = run_command(canary_command(2), timeout, cwd, env)
     errors = []
     if pass_res["state"] != "PASS":
         errors.append(f"CANARY-PASS: 'true' returned {pass_res['state']} (exit {pass_res['exit_code']}) expected PASS")
@@ -604,6 +641,7 @@ def main(argv: List[str] | None = None) -> int:
 
     criteria = load_json(args.criteria)
     registry = load_registry(args.registry)
+    blocked = golden_blocked_map(registry)
 
     env = os.environ.copy()
     env["DODRUN_PROJECT_ROOT"] = str(root)
@@ -639,7 +677,7 @@ def main(argv: List[str] | None = None) -> int:
 
     results: List[Dict[str, Any]] = []
     for criterion in criteria:
-        result = evaluate_criterion(criterion, registry, args.timeout, env)
+        result = evaluate_criterion(criterion, registry, args.timeout, env, blocked=blocked)
         results.append(result)
 
     summary = summarize(results)

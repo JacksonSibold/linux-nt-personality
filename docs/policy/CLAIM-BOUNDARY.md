@@ -1,34 +1,37 @@
-# Claim boundary
+# Claim boundary: third-party drivers
 
-This document states what the project does not claim about third-party drivers and
-hardware. It is checked by `tools/docs_lint.py --policy --criterion DOD-DRV-B003`,
-which is registered for `DOD-DRV-B003` in `tests/harness/registry.yaml`. The claim
-surface is the same as in `INTEGRITY-POLICY.md`.
+This document is the claim boundary for third-party driver code. It is checked by
+`tools/docs_lint.py --policy --criterion DOD-DRV-B003`, which is the artifact of
+`DOD-DRV-B003`. The integrity rules for kernel mechanisms are in `INTEGRITY-POLICY.md`.
 
-## Boundary statement
+## Statement
 
-No third-party NT `.sys` executes on the Personality. A third-party driver is any
-NT kernel-mode driver not built and signed by this project. Production WHQL-signed
-vendor drivers are gated: their owners are Microsoft and each vendor (see the
-EXT-GATED register, `docs/phase0/DEFINITION-OF-DONE.md` section 3.1).
+No third-party NT `.sys` executes in the Personality. The project does not load, run,
+or ship a vendor driver that carries a production signature from a third party.
 
-## Hardware claims
+## Basis
 
-A sentence that claims hardware support must name the API subset and the device
-class it covers, in the same sentence. The lint checks for the phrase "hardware
-support", and requires both "API subset" and "device class" in that sentence.
+The statement rests on the absence of a driver-load path in the tracked tree. A
+`git grep` for `NtLoadDriver`, `ZwLoadDriver`, `IoCreateDriver` and `DriverEntry`
+over `src/`, `arch/`, `build/` and `tests/` finds no match, and `git ls-files` lists
+no `.sys` file. This is evidence about the source snapshot, not a test result: no
+test loads a driver, and no harness run covers this statement.
 
-## Gated claims and waivers
+## Gated driver criteria
 
-The criterion refers to a waiver under DoD section 11. This repository's DoD
-document does not contain a section 11; sections 5 to 13 are summarized in one
-line. The waiver form is therefore not defined here. Until it is, the lint treats
-any affirmed third-party or gated driver claim as a violation, and no waiver path
-exists.
+These criteria need a third-party artifact the project cannot produce. They are not
+implemented and are not claimed:
 
-## Cross-references
+- `DOD-DRV-A001` and `DOD-DRV-B005` concern a production-signed vendor `.sys`. Owner:
+  Microsoft signing infrastructure and each vendor. See the EXT-GATED register in
+  `docs/phase0/DEFINITION-OF-DONE.md` section 3.1.
 
-- `DOD-DRV-B003`: this document is its artifact.
-- `DOD-DRV-A001`, `DOD-DRV-B005`: production WHQL-signed third-party `.sys` (gated).
-- `DOD-DRV-A002`, `DOD-DRV-B004`: the project's own device model, signed by the project's test CA.
-- `INTEGRITY-POLICY.md`: the kernel-integrity claims that sit alongside this boundary.
+A public statement that a gated driver runs needs a waiver under section 11 of the
+definition of done. Without one, the statement is a violation. The repository has no
+section 11 of its own: `docs/phase0/DEFINITION-OF-DONE.md` incorporates sections 5 to 13
+by reference from documents outside this repository. The repository records no waiver.
+
+## Device support wording
+
+Any statement about device support must name the API subset and the device class it
+covers. A statement that names neither is a violation of `DOD-DRV-B003`.

@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
 """
-check_golden_integrity.py - Golden corpus integrity gate
+check_golden_integrity.py - Golden corpus integrity gate (accepted-builds policy)
 
-Validates every golden under tests/differential/golden/<build>/:
-  1. parseable JSON (utf-8-sig), non-empty
-  2. records windows_build matching host (and policy pinned build) and version.json
-  3. case count consistent with what probe actually produces AND matches policy volume
-  4. no golden older than probe source that produced it (staleness)
+A golden directory is accepted only through tests/differential/golden/ACCEPTED_BUILDS.json:
+  1. The running host build must be a listed build, and the entry's directory must verify:
+     version.json and manifest.json sha256 equal the hashes pinned in the entry; version.json
+     windows_build equals the build and its oracle equals the entry's provenance; manifest.json
+     schema and host.build equal the build.
+  2. The golden build must equal the host build (build-drift guard).
+  3. Completeness: every policy probe has a golden. A golden is probe.json, or probe.json.gz whose
+     decompressed bytes match the manifest sha256_published, or a summary (schema
+     ntpers-golden-summary/1) stored under the probe name that validates against the manifest. A
+     probe may instead be listed in the entry's known_gaps with a reason code. A known gap does not
+     fail completeness. A criterion that declares requires_golden on a known-gap probe is reported
+     BLOCKED-ON-GOLDEN by dodrun.py and lint_integrity.py, never passed.
+  4. Per-probe checks (format, build, volume, staleness, sentinels) are unchanged.
 
-If any check fails, exits 1 with loud FAIL. Called by:
-  - tests/harness/lint_integrity.py (structural gate, blocks dodrun)
-  - tests/differential/dualrun.py (pre-run guard, fails loudly)
-  - tests/differential/harness.ps1 (post-capture verification)
-
-Do NOT lower policy volume to match small golden - this check enforces that policy
-and golden agree; a small golden (policy > actual) is reported as PROBE NEEDS SCALING.
+There is no environment-variable bypass. Listing a build is the only way to accept one.
 """
 from __future__ import annotations
+
+import gzip
+import hashlib
 import json
-import os
 import re
 import sys
 import time
@@ -26,186 +30,292 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 GOLDEN_ROOT = ROOT / "tests/differential/golden"
+ACCEPTED_PATH = GOLDEN_ROOT / "ACCEPTED_BUILDS.json"
 POLICY_PATH = ROOT / "tests/differential/dualrun_policy.json"
 PROBE_DIR = ROOT / "tests/differential/probes"
+# Full capture outputs live outside the repo. A summary is checked against them when present.
+GOLDEN_OUT_RUN = ROOT.parent / "golden-out" / "run"
 
-# Explicit opt-in dev mode (not a policy change). Unset, the checker is strict:
-# only the pinned build is accepted. Set to a build that differs from the pin,
-# the checker accepts golden/windows-<build>/ only when that build is the host
-# build and the directory declares host-captured provenance.
-OPT_IN_ENV = "NTPERS_GOLDEN_BUILD"
+ACCEPTED_SCHEMA = "ntpers-accepted-golden-builds/1"
+MANIFEST_SCHEMA_PREFIX = "ntpers-golden-manifest/"
+SUMMARY_SCHEMA = "ntpers-golden-summary/1"
+PROVENANCES = ("host-captured", "pinned-reference")
+GAP_REASONS = ("unsafe-on-host", "too-large-kept-out", "not-portable")
+SUMMARY_FIELDS = ("schema", "probe", "build", "size_bytes", "sha256", "records", "record_digest", "regenerate")
+SENTINEL_PROBE = "probe_path"  # volume sentinel: must be over SENTINEL_MIN_BYTES when present
+SENTINEL_MIN_BYTES = 100000
+MIN_GOLDEN_BYTES = 10
 
-# --- Golden resolution helpers (symlink-independent, reproducible) ---
+_BUILD_RE = re.compile(r"^\d+\.\d+$")
+_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _VERSION_RE = re.compile(r"^\d+(\.\d+)+$")
+
+
+def sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def load_json_file(path: Path):
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
 
 def _is_version_dir_name(name: str) -> bool:
     return bool(_VERSION_RE.match(name))
 
-def _version_sort_key(name: str) -> tuple[int, ...]:
+
+def _version_sort_key(name: str) -> tuple:
     try:
         return tuple(int(x) for x in name.split("."))
     except Exception:
         return (0,)
 
-def _is_valid_golden_dir(d: Path) -> bool:
-    """Check that dir contains expected probe golden files before using it."""
-    try:
-        if not d.is_dir():
-            return False
-        # Required sentinels: version.json + representative probe files
-        if not (d / "version.json").exists():
-            return False
-        # Large files that prove 27 MB corpus present (10015 / 32781 lines)
-        if not (d / "probe_path.json").exists():
-            return False
-        if not (d / "probe_path_direct.json").exists():
-            return False
-        # At least one more small probe to avoid partial set
-        if not (d / "probe_ntstatus.json").exists():
-            return False
-        # Also ensure version.json is parseable and probes are non-empty
-        try:
-            # quick size guard: probe_path should be >1MB
-            if (d / "probe_path.json").stat().st_size < 100000:
-                return False
-        except Exception:
-            return False
-        return True
-    except Exception:
-        return False
 
-def resolve_golden_dir(pinned_build: str) -> Path | None:
-    """Resolve golden dir robustly: pinned -> latest -> newest version dir.
+# --- Accepted builds list -----------------------------------------------------
 
-    Returns Path or None on failure (caller must fail loudly).
-    """
-    # 1. Pinned version dir if present and valid
-    pinned = GOLDEN_ROOT / pinned_build
-    try:
-        if pinned.is_dir():
-            if _is_valid_golden_dir(pinned):
-                return pinned
-            else:
-                print(f"FAIL: pinned golden dir {pinned} exists but is incomplete/invalid (missing expected probe golden files)", file=sys.stderr)
-                return None
-    except OSError as e:
-        # On Windows, is_dir on broken symlink may raise; fall through
-        print(f"WARN: pinned check failed for {pinned}: {e}", file=sys.stderr)
+def entry_schema_errors(entry, probes) -> list[str]:
+    """Return schema violations for one ACCEPTED_BUILDS.json entry."""
+    if not isinstance(entry, dict):
+        return ["accepted entry is not an object"]
+    build = entry.get("build")
+    tag = f"accepted entry {build!r}"
+    errs = []
+    if not isinstance(build, str) or not _BUILD_RE.match(build):
+        errs.append("accepted entry build must be BuildNumber.UBR")
+    directory = entry.get("directory")
+    if (not isinstance(directory, str) or not directory or directory in (".", "..")
+            or "/" in directory or "\\" in directory):
+        errs.append(f"{tag}: directory must be a single directory name")
+    if entry.get("provenance") not in PROVENANCES:
+        errs.append(f"{tag}: provenance must be one of {', '.join(PROVENANCES)}")
+    for key in ("captured_on", "accepted_on"):
+        if not isinstance(entry.get(key), str) or not _DATE_RE.match(entry[key]):
+            errs.append(f"{tag}: {key} must be YYYY-MM-DD")
+    for key in ("manifest_sha256", "version_json_sha256"):
+        if not isinstance(entry.get(key), str) or not _SHA_RE.match(entry[key]):
+            errs.append(f"{tag}: {key} must be a 64-digit lowercase sha256")
+    if not isinstance(entry.get("rationale"), str) or not entry["rationale"].strip():
+        errs.append(f"{tag}: rationale must be a non-empty string")
+    gaps = entry.get("known_gaps", {})
+    if not isinstance(gaps, dict):
+        errs.append(f"{tag}: known_gaps must be an object")
+    else:
+        for probe, gap in gaps.items():
+            if probe not in probes:
+                errs.append(f"{tag}: known gap {probe} is not a policy probe")
+            if not isinstance(gap, dict) or gap.get("reason") not in GAP_REASONS:
+                errs.append(f"{tag}: known gap {probe} needs a reason in {', '.join(GAP_REASONS)}")
+            elif not isinstance(gap.get("note"), str) or not gap["note"].strip():
+                errs.append(f"{tag}: known gap {probe} needs a note")
+    return errs
 
-    # 2. latest symlink or directory if present
-    latest = GOLDEN_ROOT / "latest"
+
+def load_accepted(probes, path: Path | None = None):
+    """Return (accepted_dict or None, errors). The list is validated as a whole."""
+    path = path or ACCEPTED_PATH
     try:
-        # is_symlink may be True on WSL, False on Windows reparse; check both
-        exists = False
-        is_sym = False
-        try:
-            is_sym = latest.is_symlink()
-        except OSError:
-            is_sym = False
-        try:
-            exists = latest.exists()
-        except OSError:
-            exists = is_sym  # broken symlink counts as exists for symlink check
-        if is_sym or exists:
-            target: Path | None = None
-            if is_sym:
-                try:
-                    target = latest.resolve()
-                except Exception:
-                    target = None
-                # If resolve fails or target missing, skip
-                if target is not None and target.exists() and target.is_dir():
-                    if _is_valid_golden_dir(target):
-                        print(f"INFO: resolved golden via latest symlink -> {target}", file=sys.stderr)
-                        return target
-                    else:
-                        print(f"FAIL: latest target {target} (via {latest}) is incomplete/invalid", file=sys.stderr)
-                        return None
-                # Broken symlink -> fall through
-            # Fallback: latest itself as directory (Windows reparse or plain dir)
-            try:
-                if latest.exists() and latest.is_dir():
-                    # If it's a symlink, latest already resolves via exists/is_dir; use resolved if possible
-                    cand = latest.resolve() if is_sym else latest
-                    if cand.exists() and cand.is_dir() and _is_valid_golden_dir(cand):
-                        print(f"INFO: resolved golden via latest dir -> {cand}", file=sys.stderr)
-                        return cand
-            except OSError:
-                pass
+        data = load_json_file(path)
     except Exception as e:
-        print(f"WARN: latest check failed: {e}", file=sys.stderr)
+        return None, [f"accepted builds list unreadable at {path}: {e}"]
+    if not isinstance(data, dict) or data.get("schema") != ACCEPTED_SCHEMA:
+        return None, [f"accepted builds list {path} must declare schema {ACCEPTED_SCHEMA}"]
+    entries = data.get("accepted")
+    if not isinstance(entries, list) or not entries:
+        return None, ["accepted builds list must contain a non-empty 'accepted' array"]
+    errs, seen = [], set()
+    for entry in entries:
+        errs += entry_schema_errors(entry, probes)
+        build = entry.get("build") if isinstance(entry, dict) else None
+        if build in seen:
+            errs.append(f"duplicate accepted build {build}")
+        seen.add(build)
+    return data, errs
 
-    # 3. Newest version directory under GOLDEN_ROOT, numeric sort, verified
-    candidates: list[Path] = []
-    try:
-        entries: list[Path] = []
-        try:
-            entries = list(GOLDEN_ROOT.iterdir())
-        except OSError as e:
-            print(f"FAIL: cannot list golden root {GOLDEN_ROOT}: {e}", file=sys.stderr)
-            return None
-        for entry in entries:
-            try:
-                if not _is_version_dir_name(entry.name):
-                    continue
-                # Guard is_dir against Function not implemented (Windows latest)
-                try:
-                    if not entry.is_dir():
-                        continue
-                except OSError:
-                    continue
-                if _is_valid_golden_dir(entry):
-                    candidates.append(entry)
-            except OSError:
-                continue
-    except Exception as e:
-        print(f"FAIL: candidate scan failed: {e}", file=sys.stderr)
-        return None
 
-    if not candidates:
-        print(f"FAIL: no valid golden build directory under {GOLDEN_ROOT} (pinned {pinned_build} missing, latest missing, no version dirs found)", file=sys.stderr)
-        return None
-
-    candidates_sorted = sorted(candidates, key=lambda p: _version_sort_key(p.name))
-    newest = candidates_sorted[-1]
-    print(f"WARN: using newest golden dir {newest} (pinned {pinned_build} missing, latest missing)", file=sys.stderr)
-    return newest
-
-def host_captured_override_error(build: str, host_build: str, d: Path) -> str | None:
-    """Return None when d is an accepted host-captured golden for build, else the reason.
-
-    Used only when OPT_IN_ENV names a build that differs from the pin. The
-    build must be the running host build, the directory must be
-    windows-<build>, version.json must declare oracle host-captured with
-    windows_build == build, and manifest.json must record the same build as
-    its capture host.
-    """
-    if build != host_build:
-        return f"{build} is not the host build {host_build} (goldens must be captured on the host)"
-    if d.name != f"windows-{build}":
-        return f"expected directory windows-{build}, got {d.name}"
-    if not d.is_dir():
-        return f"no directory {d}"
-    try:
-        version = json.loads((d / "version.json").read_text(encoding="utf-8-sig"))
-    except Exception as e:
-        return f"version.json unreadable in {d}: {e}"
-    if version.get("oracle") != "host-captured":
-        return f"version.json in {d} does not declare oracle host-captured"
-    if version.get("windows_build") != build:
-        return f"version.json windows_build {version.get('windows_build')} != {build}"
-    try:
-        manifest = json.loads((d / "manifest.json").read_text(encoding="utf-8-sig"))
-    except Exception as e:
-        return f"manifest.json unreadable in {d}: {e}"
-    if not str(manifest.get("schema", "")).startswith("ntpers-golden-manifest/"):
-        return f"manifest.json in {d} has no ntpers-golden-manifest schema"
-    host = manifest.get("host") or {}
-    if host.get("build") != build:
-        return f"manifest.json host.build {host.get('build')} != {build}"
+def entry_for_build(accepted, build: str):
+    for entry in accepted["accepted"]:
+        if entry.get("build") == build:
+            return entry
     return None
 
-def get_host_build() -> str:
+
+def accepted_builds(path: Path | None = None) -> list[str]:
+    """Builds listed in ACCEPTED_BUILDS.json (empty if the list is unreadable)."""
+    accepted, errs = load_accepted(policy_probe_names(), path)
+    if errs or accepted is None:
+        return []
+    return [e["build"] for e in accepted["accepted"]]
+
+
+def verify_accepted_dir(entry, golden_root: Path | None = None):
+    """Return (directory or None, errors) for one accepted entry."""
+    golden_root = golden_root or GOLDEN_ROOT
+    build = entry["build"]
+    d = golden_root / entry["directory"]
+    if not d.is_dir():
+        return None, [f"accepted build {build}: directory {d} is missing"]
+    vpath, mpath = d / "version.json", d / "manifest.json"
+    errs = [f"accepted build {build}: {p.name} is missing in {d}" for p in (vpath, mpath) if not p.is_file()]
+    if errs:
+        return None, errs
+    if sha256_hex(vpath.read_bytes()) != entry["version_json_sha256"]:
+        errs.append(f"accepted build {build}: version.json sha256 does not match the accepted list")
+    if sha256_hex(mpath.read_bytes()) != entry["manifest_sha256"]:
+        errs.append(f"accepted build {build}: manifest.json sha256 does not match the accepted list")
+    try:
+        version = load_json_file(vpath)
+    except Exception as e:
+        version = None
+        errs.append(f"version.json unreadable in {d}: {e}")
+    try:
+        manifest = load_json_file(mpath)
+    except Exception as e:
+        manifest = None
+        errs.append(f"manifest.json unreadable in {d}: {e}")
+    if version is not None:
+        if version.get("windows_build") != build:
+            errs.append(f"version.json windows_build {version.get('windows_build')} != accepted build {build}")
+        if version.get("oracle") != entry["provenance"]:
+            errs.append(f"provenance mismatch: version.json oracle {version.get('oracle')!r}, "
+                        f"accepted provenance {entry['provenance']!r}")
+    if manifest is not None:
+        if not str(manifest.get("schema", "")).startswith(MANIFEST_SCHEMA_PREFIX):
+            errs.append(f"manifest.json in {d} has no {MANIFEST_SCHEMA_PREFIX} schema")
+        host = manifest.get("host") or {}
+        if host.get("build") != build:
+            errs.append(f"manifest.json host.build {host.get('build')} != accepted build {build}")
+    return (None if errs else d), errs
+
+
+def resolve_golden_dir(build: str) -> Path | None:
+    """Verified golden directory for an accepted build, or None. Callers must fail loudly on None."""
+    accepted, errs = load_accepted(policy_probe_names())
+    if errs or accepted is None:
+        for e in errs:
+            print(f"FAIL: {e}", file=sys.stderr)
+        return None
+    entry = entry_for_build(accepted, build)
+    if entry is None:
+        print(f"FAIL: build {build} is not in {ACCEPTED_PATH.name}", file=sys.stderr)
+        return None
+    d, errs = verify_accepted_dir(entry)
+    for e in errs:
+        print(f"FAIL: {e}", file=sys.stderr)
+    return d
+
+
+def known_gaps_for_build(build: str) -> dict:
+    """known_gaps of the accepted entry for build ({} if none or not accepted)."""
+    accepted, errs = load_accepted(policy_probe_names())
+    if errs or accepted is None:
+        return {}
+    entry = entry_for_build(accepted, build)
+    return dict(entry.get("known_gaps", {})) if entry else {}
+
+
+def golden_requirements(registry) -> dict[str, list[str]]:
+    """criterion -> probes its registry entry declares in requires_golden."""
+    if not isinstance(registry, dict):
+        return {}
+    # Accept the raw registry.yaml mapping (with a "tests" key) or the flat subtree dodrun uses.
+    tests = registry["tests"] if isinstance(registry.get("tests"), dict) else registry
+    reqs = {}
+    for cid, entry in tests.items():
+        if isinstance(entry, dict) and entry.get("requires_golden"):
+            reqs[cid] = list(entry["requires_golden"])
+    return reqs
+
+
+def blocked_criteria(requirements: dict[str, list[str]], gaps: dict) -> dict[str, list[tuple[str, str]]]:
+    """Criteria whose required probes are known gaps, as criterion -> [(probe, reason)]."""
+    out = {}
+    for cid, probes in requirements.items():
+        hit = [(p, gaps[p]["reason"]) for p in probes if p in gaps]
+        if hit:
+            out[cid] = hit
+    return out
+
+
+# --- Golden file reading ------------------------------------------------------
+
+def manifest_record(manifest, probe: str):
+    for rec in (manifest or {}).get("probes_run", []):
+        if rec.get("probe") == probe:
+            return rec
+    return None
+
+
+def read_golden(d: Path, probe: str, manifest):
+    """Return (bytes or None when absent, error or None)."""
+    plain, gz = d / f"{probe}.json", d / f"{probe}.json.gz"
+    if plain.exists() and gz.exists():
+        return None, f"{probe}: both {probe}.json and {probe}.json.gz are present"
+    rec = manifest_record(manifest, probe)
+    if gz.exists():
+        try:
+            raw = gzip.decompress(gz.read_bytes())
+        except Exception as e:
+            return None, f"{probe}: corrupt gzip golden: {e}"
+        expected = (rec or {}).get("sha256_published")
+        if expected is None:
+            return None, f"{probe}: gzip golden has no sha256_published in the manifest"
+        if sha256_hex(raw) != expected:
+            return None, f"{probe}: decompressed golden sha256 does not match the manifest"
+        return raw, None
+    if plain.exists():
+        raw = plain.read_bytes()
+        expected = (rec or {}).get("sha256_published")
+        if expected and sha256_hex(raw) != expected:
+            return raw, f"{probe}: golden sha256 does not match the manifest sha256_published"
+        return raw, None
+    return None, None
+
+
+def validate_summary(summary: dict, probe: str, build: str, rec) -> list[str]:
+    """Validate a sentinel summary. Fields are strict; the full output is compared if it is local."""
+    missing = [f for f in SUMMARY_FIELDS if summary.get(f) in (None, "")]
+    if missing:
+        return [f"{probe}: summary missing fields {', '.join(missing)}"]
+    errs = []
+    if summary["schema"] != SUMMARY_SCHEMA:
+        errs.append(f"{probe}: summary schema {summary['schema']!r} != {SUMMARY_SCHEMA}")
+    if summary["probe"] != probe:
+        errs.append(f"{probe}: summary probe {summary['probe']!r} != {probe}")
+    if summary["build"] != build:
+        errs.append(f"{probe}: summary build {summary['build']} != accepted build {build}")
+    if not isinstance(summary["size_bytes"], int) or summary["size_bytes"] <= 0:
+        errs.append(f"{probe}: summary size_bytes must be a positive integer")
+    if not isinstance(summary["records"], int) or summary["records"] <= 0:
+        errs.append(f"{probe}: summary records must be a positive integer")
+    for key in ("sha256", "record_digest"):
+        if not isinstance(summary[key], str) or not _SHA_RE.match(summary[key]):
+            errs.append(f"{probe}: summary {key} must be a 64-digit lowercase sha256")
+    if not isinstance(summary["regenerate"], str) or not summary["regenerate"].strip():
+        errs.append(f"{probe}: summary regenerate must name the capture script")
+    if rec is None or rec.get("stdout_sha256_raw") is None:
+        errs.append(f"{probe}: no manifest record with stdout_sha256_raw to verify the summary against")
+    else:
+        if summary.get("sha256") != rec["stdout_sha256_raw"]:
+            errs.append(f"{probe}: summary sha256 does not match the manifest stdout_sha256_raw")
+        if rec.get("stdout_bytes_raw") is not None and summary.get("size_bytes") != rec["stdout_bytes_raw"]:
+            errs.append(f"{probe}: summary size_bytes does not match the manifest stdout_bytes_raw")
+    full = GOLDEN_OUT_RUN / f"{probe}.json"
+    if full.exists() and not errs:
+        data = full.read_bytes()
+        if sha256_hex(data) != summary["sha256"] or len(data) != summary["size_bytes"]:
+            errs.append(f"{probe}: full output present locally but sha256 or size differs from the summary")
+    return errs
+
+
+def policy_probe_names() -> dict:
+    try:
+        return load_json_file(POLICY_PATH).get("probes", {})
+    except Exception:
+        return {}
+
+
+def get_host_build():
+    """Host build as BuildNumber.UBR, or None if it cannot be read."""
     try:
         import winreg
         key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
@@ -218,7 +328,6 @@ def get_host_build() -> str:
         return f"{build}.{ubr}"
     except Exception:
         pass
-    # fallback via powershell
     try:
         import subprocess
         out = subprocess.check_output(
@@ -230,13 +339,8 @@ def get_host_build() -> str:
             return b
     except Exception:
         pass
-    # fallback to policy
-    try:
-        data = json.loads(POLICY_PATH.read_text(encoding='utf-8-sig'))
-        return data.get("windows_golden_build", "26200.9168")
-    except Exception:
-        pass
-    return "26200.9168"
+    return None
+
 
 def actual_volume(probe: str, data: dict) -> tuple[int, str]:
     """Return (actual_count, description) for volume gate."""
@@ -263,20 +367,14 @@ def actual_volume(probe: str, data: dict) -> tuple[int, str]:
         return v, f"matrix={v}"
     if probe in ('probe_process_thread', 'probe_process_thread_direct'):
         # Policy volume 48 is byte-size gate for ProcessBasicInformation, not list length
-        # Actual probe produces process_info 13 etc, but policy volume is 48 bytes.
-        # For integrity, we treat probe_process_thread as volume 48 (bytes) and verify
-        # that ProcessBasicInformation size probe reports 48 as expected success length.
-        # The list lengths are secondary.
-        # So we return policy volume if the golden's process_basic_size_probe shows 48 success.
-        # Check that golden contains expected size probe
         pb = data.get('process_basic_size_probe', [])
-        # Find len 48 entry
         for e in pb:
             if e.get('len') == 48 and e.get('ntstatus') == 0:
                 return 48, "process_basic_size_probe len 48 success"
-        # fallback: return 48 if probe indicates correct
         return 48, "process_thread volume 48 byte gate"
-    if probe in ('probe_sync', 'probe_sync_direct', 'probe_teb_peb', 'probe_section', 'probe_peloader', 'probe_handles', 'probe_handles_direct', 'probe_registry', 'probe_namedpipe', 'probe_directory', 'probe_fileinfo'):
+    if probe in ('probe_sync', 'probe_sync_direct', 'probe_teb_peb', 'probe_section', 'probe_section_direct',
+                 'probe_peloader', 'probe_handles', 'probe_handles_direct', 'probe_registry', 'probe_namedpipe',
+                 'probe_directory', 'probe_fileinfo'):
         return 1, "single-case probe"
     # fallback: largest list
     largest = 0
@@ -289,108 +387,97 @@ def actual_volume(probe: str, data: dict) -> tuple[int, str]:
         return largest, f"largest {largest_k}={largest}"
     return 1, "single-case fallback"
 
+
 def check_golden_integrity() -> int:
     violations = []
     host_build = get_host_build()
+    if not host_build:
+        print("FAIL: cannot determine the host Windows build", file=sys.stderr)
+        return 1
     print(f"Golden integrity check: host build {host_build}")
-    # Load policy
-    if not POLICY_PATH.exists():
-        print(f"FAIL: policy missing at {POLICY_PATH}", file=sys.stderr)
-        return 1
     try:
-        policy = json.loads(POLICY_PATH.read_text(encoding='utf-8-sig'))
+        policy = load_json_file(POLICY_PATH)
     except Exception as e:
-        print(f"FAIL: policy JSON invalid: {e}", file=sys.stderr)
+        print(f"FAIL: policy missing or invalid at {POLICY_PATH}: {e}", file=sys.stderr)
         return 1
-    pinned_build = policy.get("windows_golden_build", host_build)
-    if pinned_build != host_build:
-        # This is not necessarily a golden failure, but warn that host drift would cause phantom divergences
-        print(f"WARN: policy pinned build {pinned_build} != host {host_build} - goldens must be regenerated on host build, else dualrun will fail build guard", file=sys.stderr)
-        # Do not fail yet, but goldens themselves must match host, so next checks will fail
+    probes = policy.get("probes", {})
 
-    # Build the goldens are checked against. Strict unless OPT_IN_ENV names another build.
-    expected_build = pinned_build
-    override = os.environ.get(OPT_IN_ENV, "").strip()
-    if override and override != pinned_build:
-        golden_build_dir = GOLDEN_ROOT / f"windows-{override}"
-        err = host_captured_override_error(override, host_build, golden_build_dir)
+    accepted, errs = load_accepted(probes)
+    if errs:
+        for e in errs:
+            print(f"FAIL: {e}", file=sys.stderr)
+        return 1
+    entry = entry_for_build(accepted, host_build)
+    if entry is None:
+        listed = ", ".join(e["build"] for e in accepted["accepted"])
+        print(f"FAIL: host build {host_build} is not in the accepted builds list ({listed})", file=sys.stderr)
+        return 1
+    build = entry["build"]
+    d, errs = verify_accepted_dir(entry)
+    if errs:
+        for e in errs:
+            print(f"FAIL: {e}", file=sys.stderr)
+        return 1
+    print(f"INFO: accepted build {build} ({entry['provenance']}) verified at {d}", file=sys.stderr)
+
+    gaps = entry.get("known_gaps", {})
+    manifest = load_json_file(d / "manifest.json")
+    version = load_json_file(d / "version.json")
+    if version.get("windows_build") != host_build:
+        violations.append(f"version.json windows_build {version.get('windows_build')} != host {host_build} (stale golden build)")
+
+    for probe in sorted(probes):
+        raw, err = read_golden(d, probe, manifest)
+        if probe in gaps:
+            if raw is not None:
+                violations.append(f"{probe}: listed in known_gaps but a golden is present; remove the gap")
+            else:
+                gap = gaps[probe]
+                print(f"KNOWN GAP {probe} [{gap['reason']}]: {gap['note']}")
+            continue
         if err:
-            print(f"FAIL: {OPT_IN_ENV}={override} rejected: {err}", file=sys.stderr)
-            return 1
-        print(f"WARN: {OPT_IN_ENV}={override} opt-in dev mode: accepting host-captured golden {golden_build_dir} (policy pin stays {pinned_build})", file=sys.stderr)
-        expected_build = override
-    else:
-        # Resolve golden build dir: pinned -> latest symlink/dir -> newest version (numeric sort), verified
-        golden_build_dir = resolve_golden_dir(pinned_build)
-    if golden_build_dir is None or not golden_build_dir.exists():
-        print(f"FAIL: unable to resolve golden build directory for pinned {pinned_build} under {GOLDEN_ROOT}", file=sys.stderr)
-        return 1
-    # Final verification: selected dir must contain expected probe golden files (never silently pick wrong/incomplete set)
-    if not _is_valid_golden_dir(golden_build_dir):
-        print(f"FAIL: resolved golden dir {golden_build_dir} is incomplete/invalid (missing expected probe golden files)", file=sys.stderr)
-        return 1
-
-    version_path = golden_build_dir / "version.json"
-    if version_path.exists():
-        try:
-            version_data = json.loads(version_path.read_text(encoding='utf-8-sig'))
-            v_build = version_data.get("windows_build")
-            if v_build and v_build != host_build:
-                violations.append(f"version.json windows_build {v_build} != host {host_build} (stale golden build)")
-            if v_build and v_build != expected_build:
-                violations.append(f"version.json windows_build {v_build} != policy pinned {expected_build}")
-        except Exception as e:
-            violations.append(f"version.json corrupt: {e}")
-    else:
-        violations.append(f"version.json missing at {version_path}")
-
-    # Check each golden
-    for probe, cfg in policy.get("probes", {}).items():
-        golden_path = golden_build_dir / f"{probe}.json"
-        if not golden_path.exists():
-            violations.append(f"{probe}: missing golden at {golden_path}")
+            violations.append(err)
+        if raw is None:
+            if not err:
+                violations.append(f"{probe}: missing golden in {d.name} and not listed in known_gaps")
             continue
-        # 1. parseable
-        try:
-            raw = golden_path.read_text(encoding='utf-8-sig')
-            if len(raw.strip()) < 10:
-                violations.append(f"{probe}: golden empty or too small ({len(raw)} bytes)")
-                continue
-            data = json.loads(raw)
-        except Exception as e:
-            violations.append(f"{probe}: corrupt JSON: {e} (raw len {golden_path.stat().st_size})")
+        if len(raw.strip()) < MIN_GOLDEN_BYTES:
+            violations.append(f"{probe}: empty or placeholder golden ({len(raw)} bytes)")
             continue
-        # also try latest copy consistency
+        try:
+            data = json.loads(raw.decode("utf-8-sig"))
+        except Exception as e:
+            violations.append(f"{probe}: corrupt JSON: {e} (raw len {len(raw)})")
+            continue
+
+        # Summary sentinel: validated against the manifest, not treated as a full golden.
+        if isinstance(data, dict) and data.get("schema") == SUMMARY_SCHEMA:
+            violations.extend(validate_summary(data, probe, build, manifest_record(manifest, probe)))
+            continue
+
+        # Latest copy consistency (kept from the original gate; latest is optional).
         latest_path = GOLDEN_ROOT / "latest" / f"{probe}.json"
-        if latest_path.exists():
-            try:
-                if golden_path.read_bytes() != latest_path.read_bytes():
-                    # If latest is supposed to be alias, mismatch is warning but not necessarily fail
-                    # However for integrity we require they match when pinned build is latest
-                    if pinned_build == host_build:
-                        violations.append(f"{probe}: golden latest mismatch with {golden_build_dir.name} (latest stale)")
-            except Exception:
-                pass
-        # 2. windows_build matches host
+        if latest_path.exists() and latest_path.read_bytes() != raw:
+            violations.append(f"{probe}: golden latest mismatch with {d.name} (latest stale)")
+
         wb = data.get("windows_build")
         if not wb:
             violations.append(f"{probe}: missing windows_build in golden")
         elif wb != host_build:
             violations.append(f"{probe}: golden windows_build {wb} != host {host_build} (build drift - regenerated golden required, see two-target rule)")
-        elif wb != expected_build:
-            violations.append(f"{probe}: golden windows_build {wb} != policy pinned {expected_build}")
-        # Check windows_version arch present
+        elif wb != build:
+            violations.append(f"{probe}: golden windows_build {wb} != accepted build {build}")
         if not data.get("windows_version"):
             violations.append(f"{probe}: missing windows_version")
         if not data.get("arch"):
             violations.append(f"{probe}: missing arch")
-        # 3. case count matches policy volume
+
+        cfg = probes.get(probe, {})
         policy_vol = cfg.get("volume")
         try:
             actual, desc = actual_volume(probe, data)
             if policy_vol is not None and isinstance(policy_vol, int):
                 if actual != policy_vol:
-                    # Determine if policy > actual => probe needs scaling (do not paper over)
                     if policy_vol > actual:
                         violations.append(f"{probe}: policy volume {policy_vol} > actual {actual} ({desc}) -> PROBE NEEDS SCALING (golden small, do not lower policy)")
                     else:
@@ -399,61 +486,44 @@ def check_golden_integrity() -> int:
                 violations.append(f"{probe}: policy missing volume for {probe}")
         except Exception as e:
             violations.append(f"{probe}: volume check error: {e}")
-        # 4. no golden older than probe source
+
+        golden_file = d / f"{probe}.json"
+        if not golden_file.exists():
+            golden_file = d / f"{probe}.json.gz"
         probe_src = PROBE_DIR / f"{probe}.c"
         if not probe_src.exists():
-            # try without _direct suffix for fallback? But direct probes have own source
-            probe_src = None
-        # For direct probes, source is probe_<name>_direct.c or probe_<name>.c?
-        # We already checked probe.c, which exists for directs as probe_sync_direct.c etc
-        # If not found, try base name
-        if probe_src is None or not probe_src.exists():
-            base = probe.replace("_direct", "")
-            cand = PROBE_DIR / f"{base}.c"
-            if cand.exists():
-                probe_src = cand
-        if probe_src and probe_src.exists():
+            cand = PROBE_DIR / f"{probe.replace('_direct', '')}.c"
+            probe_src = cand if cand.exists() else None
+        if probe_src is not None:
             try:
-                g_mtime = golden_path.stat().st_mtime
+                g_mtime = golden_file.stat().st_mtime
                 s_mtime = probe_src.stat().st_mtime
-                if g_mtime < s_mtime:
-                    # allow 2 second grace for filesystem
-                    if g_mtime + 2 < s_mtime:
-                        violations.append(f"{probe}: golden older than probe source (golden {time.ctime(g_mtime)} < source {time.ctime(s_mtime)}) -> stale golden, regenerate via Windows two-target build")
+                if g_mtime + 2 < s_mtime:
+                    violations.append(f"{probe}: golden older than probe source (golden {time.ctime(g_mtime)} < source {time.ctime(s_mtime)}) -> stale golden, regenerate via Windows two-target build")
             except Exception as e:
                 violations.append(f"{probe}: staleness check error: {e}")
-        else:
-            # No source? e.g., for virtualquery_direct etc source exists as probe_virtualquery_direct.c
-            # We already handled, but if still missing, warn
-            pass
-        # 5. sentinel check for process_thread
+
+        if probe == SENTINEL_PROBE and len(raw) < SENTINEL_MIN_BYTES:
+            violations.append(f"{probe}: sentinel golden is {len(raw)} bytes, under the {SENTINEL_MIN_BYTES}-byte volume sentinel")
+
         if probe in ("probe_process_thread", "probe_process_thread_direct"):
-            raw_str = golden_path.read_text(encoding='utf-8-sig', errors='replace')
+            raw_str = raw.decode("utf-8-sig", errors="replace")
             cnt = raw_str.count("3735928559")
-            # Expected 12 for direct, maybe similar for non-direct
-            # Verify each sentinel is intentional: check that it appears as retLen for fixed-size classes where Windows leaves ReturnLength untouched
-            # For now, just ensure count is not zero and not excessively large
             if cnt == 0:
                 violations.append(f"{probe}: expected sentinel 3735928559 (DEADBEEF) missing - probe may not be checking ReturnLength preservation correctly")
             elif cnt > 20:
                 violations.append(f"{probe}: sentinel count {cnt} unexpectedly high, may indicate capture artifact leaking sentinel as value")
-            # Also check that golden's process_info entries with retLen DEADBEEF are legitimate (status indicates error)
             try:
-                for entry in data.get("process_info", []):
-                    if entry.get("retLen") == 3735928559:
-                        st = entry.get("ntstatus")
-                        # DEADBEEF should only appear when ntstatus is error (not SUCCESS)
-                        if st == 0:
-                            violations.append(f"{probe}: sentinel retLen with SUCCESS status for {entry.get('name')} - likely capture artifact")
+                for item in data.get("process_info", []):
+                    if item.get("retLen") == 3735928559 and item.get("ntstatus") == 0:
+                        violations.append(f"{probe}: sentinel retLen with SUCCESS status for {item.get('name')} - likely capture artifact")
             except Exception:
                 pass
 
-    # Also check for extra goldens not in policy
-    if golden_build_dir.exists():
-        for gf in golden_build_dir.glob("probe_*.json"):
-            probe_name = gf.stem
-            if probe_name not in policy.get("probes", {}):
-                print(f"WARN: golden {probe_name} exists but no policy entry (volume gate not enforced) at {gf}", file=sys.stderr)
+    for gf in sorted(d.glob("probe_*.json*")):
+        name = gf.name.split(".")[0]
+        if name not in probes:
+            print(f"WARN: golden {gf.name} exists but no policy entry (volume gate not enforced) at {gf}", file=sys.stderr)
 
     if violations:
         print("\nGolden integrity FAILED - violations:", file=sys.stderr)
@@ -462,9 +532,9 @@ def check_golden_integrity() -> int:
         print(f"\nTotal violations: {len(violations)}", file=sys.stderr)
         print("A bad golden fails loudly rather than silently producing phantom divergences. Regenerate goldens via Windows two-target build.", file=sys.stderr)
         return 1
-    else:
-        print("Golden integrity PASS - all goldens parseable, build matches host, volumes match policy, sources fresh, sentinels intentional", file=sys.stderr)
-        return 0
+    print("Golden integrity PASS - accepted build verified, all goldens parseable, build matches host, volumes match policy, sources fresh, sentinels intentional", file=sys.stderr)
+    return 0
+
 
 if __name__ == "__main__":
     sys.exit(check_golden_integrity())

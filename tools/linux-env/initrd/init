@@ -1,0 +1,55 @@
+#!/bin/busybox sh
+# Provisioning initramfs for the Debian 12 cloud image (kernel 6.1.0-53-cloud-amd64).
+# Loads the virtio drivers (not built in), mounts the image root read-write, and
+# switch_roots into it with /bin/bash as PID 1 so the disk can be provisioned over serial.
+B=/bin/busybox
+$B mkdir -p /proc /sys /dev /newroot
+$B mount -t proc proc /proc
+$B mount -t sysfs sysfs /sys
+$B mount -t devtmpfs devtmpfs /dev
+echo "ntpers-initrd: loading virtio modules"
+pending="failover net_failover virtio virtio_ring virtio_pci_legacy_dev virtio_pci_modern_dev virtio_pci virtio_blk virtio_net"
+for pass in 1 2 3 4 5; do
+    next=""
+    for m in $pending; do
+        if $B insmod /modules/$m.ko >/dev/null 2>&1; then
+            echo "ntpers-initrd: loaded $m"
+        else
+            next="$next $m"
+        fi
+    done
+    pending="$next"
+done
+echo "ntpers-initrd: not loaded:$pending"
+$B sleep 2
+
+root=""
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    for d in /dev/vda1 /dev/vda2 /dev/vda3 /dev/vda4 /dev/vda5; do
+        [ -b "$d" ] || continue
+        if $B mount -o rw "$d" /newroot 2>/dev/null; then
+            if [ -f /newroot/etc/os-release ]; then
+                root="$d"
+                break 2
+            fi
+            $B umount /newroot
+        fi
+    done
+    $B sleep 1
+done
+
+if [ -z "$root" ]; then
+    echo "ntpers-initrd: no Debian root found; dropping to shell"
+    exec $B sh
+fi
+echo "ntpers-initrd: root=$root"
+# Kernel cmdline selects the target: ntpers.shell=bash for provisioning, otherwise systemd.
+target=/sbin/init
+if $B grep -q 'ntpers.shell=bash' /proc/cmdline; then
+    target=/bin/bash
+fi
+echo "ntpers-initrd: switching to $target"
+for m in dev proc sys; do
+    $B mount --move /$m /newroot/$m
+done
+exec $B switch_root /newroot $target

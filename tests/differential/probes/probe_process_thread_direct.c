@@ -188,6 +188,22 @@ static LONG exit_thread_func(PVOID arg){
     return 777;
 }
 
+#ifndef NTPERS_VM
+/* Host build read from the running system: RtlGetVersion for the build number, UBR from the registry. */
+typedef LONG (WINAPI *PFN_RtlGetVersion_host)(OSVERSIONINFOEXW*);
+static void host_build_strings(char *build, size_t bn, char *ver, size_t vn){
+    OSVERSIONINFOEXW ovi={0}; DWORD ubr=0, v=0, cb=sizeof v; HKEY hk;
+    PFN_RtlGetVersion_host pr=(PFN_RtlGetVersion_host)GetProcAddress(GetModuleHandleA("ntdll.dll"),"RtlGetVersion");
+    ovi.dwOSVersionInfoSize=sizeof ovi;
+    if(pr) pr(&ovi);
+    if(RegOpenKeyExA(HKEY_LOCAL_MACHINE,"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",0,KEY_READ,&hk)==ERROR_SUCCESS){
+        if(RegQueryValueExA(hk,"UBR",NULL,NULL,(BYTE*)&v,&cb)==ERROR_SUCCESS) ubr=v;
+        RegCloseKey(hk);
+    }
+    snprintf(build,bn,"%lu.%lu",(unsigned long)ovi.dwBuildNumber,(unsigned long)ubr);
+    snprintf(ver,vn,"%lu.%lu.%lu",(unsigned long)ovi.dwMajorVersion,(unsigned long)ovi.dwMinorVersion,(unsigned long)ovi.dwBuildNumber);
+}
+#endif
 static void do_probe(void){
     __asm__ volatile("sub $128, %rsp");
     PVOID base=0; ULONGLONG sz=json_cap;
@@ -232,8 +248,14 @@ static void do_probe(void){
     // Build JSON header
     j_add("{\n");
     j_add("  \"probe\": \"probe_process_thread\",\n");
+#ifdef NTPERS_VM
     j_add("  \"windows_build\": \"26200.9168\",\n");
     j_add("  \"windows_version\": \"10.0.26200\",\n");
+#else
+    { char wb[32], wv[32]; host_build_strings(wb, sizeof wb, wv, sizeof wv);
+      j_add("  \"windows_build\": \""); j_add(wb); j_add("\",\n");
+      j_add("  \"windows_version\": \""); j_add(wv); j_add("\",\n"); }
+#endif
     j_add("  \"arch\": \"x64\",\n");
     j_add("  \"teb_peb\": {\"teb\":\""); {char tmp[32]; u64_hex(tmp, teb_addr); j_add(tmp);} j_add("\",\"peb\":\""); {char tmp[32]; u64_hex(tmp, peb_addr); j_add(tmp);} j_add("\",\"teb_peb\":\""); {char tmp[32]; u64_hex(tmp, teb_peb); j_add(tmp);} j_add("\",\"teb_peb_match\":"); j_add(teb_peb==peb_addr?"true":"false"); j_add("},\n");
 

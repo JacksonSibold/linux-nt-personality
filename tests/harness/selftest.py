@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -27,7 +28,8 @@ HARNESS = Path(__file__).resolve().with_name("dodrun.py")
 
 
 def make_script(tmp: Path, name: str, code: str) -> Path:
-    """Write a bash helper script and make it executable."""
+    """Write a Python helper script. Run it as [sys.executable, path]: a bash shebang
+    cannot be executed by CreateProcess on Windows (WinError 193)."""
     p = tmp / name
     p.write_text(code, encoding="utf-8")
     os.chmod(p, 0o755)
@@ -52,15 +54,19 @@ def run_dodrun(tmp: Path, registry_name: str) -> tuple[int, dict]:
         "--timeout", "2",
         "--no-gate-exit",
     ]
+    started = time.time()
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
-    result_files = sorted(reports.glob("results-*.json"))
-    if not result_files:
+    # Only a results file written by THIS invocation counts. Earlier tests share
+    # the same reports directory, so an older file must never be read as this run's
+    # record (that gave a KeyError for the criterion of the current test).
+    fresh = [p for p in reports.glob("results-*.json") if p.stat().st_mtime_ns >= int(started * 1e9) - 1_000_000]
+    if not fresh:
         print("STDOUT:", proc.stdout)
         print("STDERR:", proc.stderr)
-        raise AssertionError("dodrun.py produced no results-*.json")
+        raise AssertionError(f"dodrun.py (rc {proc.returncode}) wrote no results-*.json in this run")
 
-    run_record = json.loads(result_files[-1].read_text(encoding="utf-8"))
+    run_record = json.loads(sorted(fresh)[-1].read_text(encoding="utf-8"))
     return proc.returncode, run_record
 
 
@@ -155,7 +161,7 @@ def test_gated_with_evidence_can_pass(tmp: Path) -> None:
         f"tests:\n"
         f"  CRIT-GATED-OK:\n"
         f"    command: [\"true\"]\n"
-        f"    evidence: \"{tmp / 'CRIT-GATED-OK.evidence.json'}\"\n",
+        f"    evidence: {json.dumps(str(tmp / 'CRIT-GATED-OK.evidence.json'))}\n",
         encoding="utf-8",
     )
 
@@ -180,9 +186,9 @@ def test_crashing_test_is_error(tmp: Path) -> None:
         }
     ]
     write_json(tmp / "criteria.json", criteria)
-    crash_script = make_script(tmp, "crash.sh", "#!/bin/bash\nkill -SEGV $$\n")
+    crash_script = make_script(tmp, "crash.py", "import os\nos._exit(-1073741819)  # 0xC0000005 access violation\n")
     (tmp / "registry.yaml").write_text(
-        f"tests:\n  CRIT-CRASH:\n    command: [\"{crash_script}\"]\n",
+        f"tests:\n  CRIT-CRASH:\n    command: {json.dumps([sys.executable, str(crash_script)])}\n",
         encoding="utf-8",
     )
 
@@ -207,9 +213,9 @@ def test_hanging_test_is_timeout(tmp: Path) -> None:
         }
     ]
     write_json(tmp / "criteria.json", criteria)
-    hang_script = make_script(tmp, "hang.sh", "#!/bin/bash\nsleep 300\n")
+    hang_script = make_script(tmp, "hang.py", "import time\ntime.sleep(300)\n")
     (tmp / "registry.yaml").write_text(
-        f"tests:\n  CRIT-HANG:\n    command: [\"{hang_script}\"]\n",
+        f"tests:\n  CRIT-HANG:\n    command: {json.dumps([sys.executable, str(hang_script)])}\n",
         encoding="utf-8",
     )
 
@@ -235,12 +241,12 @@ def test_regression_exits_nonzero(tmp: Path) -> None:
     ]
     write_json(tmp / "criteria.json", criteria)
 
-    pass_script = make_script(tmp, "pass.sh", "#!/bin/bash\nexit 0\n")
-    fail_script = make_script(tmp, "fail.sh", "#!/bin/bash\nexit 1\n")
+    pass_script = make_script(tmp, "pass.py", "import sys\nsys.exit(0)\n")
+    fail_script = make_script(tmp, "fail.py", "import sys\nsys.exit(1)\n")
 
     # First run: passes.
     (tmp / "registry.yaml").write_text(
-        f"tests:\n  CRIT-PASS:\n    command: [\"{pass_script}\"]\n",
+        f"tests:\n  CRIT-PASS:\n    command: {json.dumps([sys.executable, str(pass_script)])}\n",
         encoding="utf-8",
     )
     code1, run1 = run_dodrun(tmp, "registry.yaml")
@@ -249,7 +255,7 @@ def test_regression_exits_nonzero(tmp: Path) -> None:
 
     # Second run: fails.  Point registry at the failing script.
     (tmp / "registry.yaml").write_text(
-        f"tests:\n  CRIT-PASS:\n    command: [\"{fail_script}\"]\n",
+        f"tests:\n  CRIT-PASS:\n    command: {json.dumps([sys.executable, str(fail_script)])}\n",
         encoding="utf-8",
     )
     # Clear reports so the previous run is picked up explicitly.
@@ -280,9 +286,9 @@ def test_timeout_ignores_stale_file(tmp: Path) -> None:
         }
     ]
     write_json(tmp / "criteria.json", criteria)
-    hang_script = make_script(tmp, "hang_stale.sh", "#!/bin/bash\nsleep 300\n")
+    hang_script = make_script(tmp, "hang_stale.py", "import time\ntime.sleep(300)\n")
     (tmp / "registry.yaml").write_text(
-        f"tests:\n  CRIT-STALE-TIMEOUT:\n    command: [\"{hang_script}\"]\n",
+        f"tests:\n  CRIT-STALE-TIMEOUT:\n    command: {json.dumps([sys.executable, str(hang_script)])}\n",
         encoding="utf-8",
     )
     # Create stale reports file before run - simulates previous run left PASS
@@ -362,9 +368,9 @@ def test_missing_result_is_error_not_pass(tmp: Path) -> None:
     ]
     write_json(tmp / "criteria.json", criteria)
     # Create a script that exits 125 (harness error) - represents missing result
-    err_script = make_script(tmp, "err125.sh", "#!/bin/bash\nexit 125\n")
+    err_script = make_script(tmp, "err125.py", "import sys\nsys.exit(125)\n")
     (tmp / "registry.yaml").write_text(
-        f"tests:\n  CRIT-MISSING:\n    command: [\"{err_script}\"]\n",
+        f"tests:\n  CRIT-MISSING:\n    command: {json.dumps([sys.executable, str(err_script)])}\n",
         encoding="utf-8",
     )
     reports = tmp / "reports"
@@ -390,9 +396,9 @@ def test_missing_result_is_error_not_pass(tmp: Path) -> None:
     print("  [OK] missing result (exit 125) -> ERROR, not stale PASS")
 
     # Also test VM timeout case: exit 124 must be TIMEOUT not PASS
-    timeout_script = make_script(tmp, "timeout124.sh", "#!/bin/bash\nexit 124\n")
+    timeout_script = make_script(tmp, "timeout124.py", "import sys\nsys.exit(124)\n")
     (tmp / "registry.yaml").write_text(
-        f"tests:\n  CRIT-MISSING:\n    command: [\"{timeout_script}\"]\n",
+        f"tests:\n  CRIT-MISSING:\n    command: {json.dumps([sys.executable, str(timeout_script)])}\n",
         encoding="utf-8",
     )
     code2, run2 = run_dodrun(tmp, "registry.yaml")
@@ -417,11 +423,11 @@ def test_positive_control_canary(tmp: Path) -> None:
         {"id": "CRIT-CANARY-UNIMPL","domain": "TEST","tier": "P0","dependency_class": "SELF","criterion": "Canary UNIMPL","verification": "selftest","threshold": "unimpl","source": ["TEST"],"status": "not_implemented"},
     ]
     write_json(tmp / "criteria.json", criteria)
-    pass_script = make_script(tmp, "true_canary.sh", "#!/bin/bash\nexit 0\n")
-    fail_script = make_script(tmp, "false_canary.sh", "#!/bin/bash\nexit 1\n")
-    unimpl_script = make_script(tmp, "unimpl_canary.sh", "#!/bin/bash\nexit 2\n")
+    pass_script = make_script(tmp, "true_canary.py", "import sys\nsys.exit(0)\n")
+    fail_script = make_script(tmp, "false_canary.py", "import sys\nsys.exit(1)\n")
+    unimpl_script = make_script(tmp, "unimpl_canary.py", "import sys\nsys.exit(2)\n")
     (tmp / "registry.yaml").write_text(
-        f"tests:\n  CRIT-CANARY-PASS:\n    command: [\"{pass_script}\"]\n  CRIT-CANARY-FAIL:\n    command: [\"{fail_script}\"]\n  CRIT-CANARY-UNIMPL:\n    command: [\"{unimpl_script}\"]\n",
+        f"tests:\n  CRIT-CANARY-PASS:\n    command: {json.dumps([sys.executable, str(pass_script)])}\n  CRIT-CANARY-FAIL:\n    command: {json.dumps([sys.executable, str(fail_script)])}\n  CRIT-CANARY-UNIMPL:\n    command: {json.dumps([sys.executable, str(unimpl_script)])}\n",
         encoding="utf-8",
     )
     code, run = run_dodrun(tmp, "registry.yaml")
@@ -1357,11 +1363,11 @@ def test_golden_resolution_without_symlink(tmp: Path) -> None:
             spec.loader.exec_module(mod)
             if hasattr(mod, "resolve_golden_dir"):
                 policy = _json.loads((root / "tests" / "differential" / "dualrun_policy.json").read_text(encoding="utf-8-sig"))
-                pinned = policy.get("windows_golden_build", "26200.9168")
+                pinned = mod.accepted_builds()[0]
                 resolved = mod.resolve_golden_dir(pinned)
                 assert resolved is not None, "resolve_golden_dir returned None without latest"
                 assert resolved.exists(), f"resolved {resolved} should exist"
-                assert (resolved / "probe_path.json").exists(), "resolved dir missing probe_path.json"
+                assert (resolved / "probe_ntstatus.json").exists(), "resolved dir missing probe_ntstatus.json"
                 assert (resolved / "version.json").exists(), "resolved dir missing version.json"
                 assert mod._is_version_dir_name(resolved.name), f"resolved {resolved.name} should be version dir"
         finally:

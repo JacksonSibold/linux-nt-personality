@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "windows_golden_build": "26200.9168",
+  "accepted_builds_file": "tests/differential/golden/ACCEPTED_BUILDS.json",
   "windows_version": "10.0.26200",
   "arch": "x64",
   "timing_tolerance_ms": 15,

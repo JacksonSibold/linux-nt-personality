@@ -185,8 +185,12 @@ def main(argv=None):
         print(f"INFO: probe {args.probe} volume {probe_vol} - no threshold supplied for {args.criterion}, volume check skipped (must supply --threshold for volume-gated criteria)", file=sys.stderr)
 
     # Also check windows_build pin - must match, otherwise GATED/FAIL not PASS
-    if data.get("windows_build") != "26200.9168":
-        print(f"FAIL: windows_build {data.get('windows_build')} != 26200.9168 (expected pinned build) for {args.criterion}", file=sys.stderr)
+    import importlib.util as _ilu
+    _gspec = _ilu.spec_from_file_location("check_golden_integrity", root / "tests" / "differential" / "check_golden_integrity.py")
+    _gmod = _ilu.module_from_spec(_gspec)
+    _gspec.loader.exec_module(_gmod)
+    if data.get("windows_build") not in _gmod.accepted_builds():
+        print(f"FAIL: windows_build {data.get('windows_build')} is not an accepted golden build ({', '.join(_gmod.accepted_builds())}) for {args.criterion}", file=sys.stderr)
         return 1
 
     # Verify golden identity: check_golden_integrity must pass for build/stale/corrupt (volume desync is warning, not hard fail for selftest synthetic policy)
@@ -208,8 +212,8 @@ def main(argv=None):
         # (goldens record ntpers_digest at capture)
         try:
             import pathlib as _pl
-            pinned = json.loads((root / "tests" / "differential" / "dualrun_policy.json").read_text(encoding="utf-8-sig")).get("windows_golden_build", "26200.9168")
-            golden_path = root / "tests" / "differential" / "golden" / pinned / f"{args.probe}.json"
+            _gdir = _gmod.resolve_golden_dir(data.get("windows_build"))
+            golden_path = (_gdir / f"{args.probe}.json") if _gdir is not None else root / "tests" / "differential" / "golden" / "unaccepted" / f"{args.probe}.json"
             if golden_path.exists():
                 # Check if golden has ntpers_digest field (new) - if present verify, else warn but not fail yet (backward compat)
                 gdata = json.loads(golden_path.read_text(encoding="utf-8-sig"))

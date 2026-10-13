@@ -440,6 +440,30 @@ def check_file_missing_is_error():
     # for the owning agent; this lint does not yet enforce it to keep the current tree green.
     return violations
 
+def golden_blocked_report():
+    """Print criteria that declare requires_golden on a known gap of the accepted build (informational)."""
+    import importlib.util as _ilu
+    checker = ROOT / "tests" / "differential" / "check_golden_integrity.py"
+    spec = _ilu.spec_from_file_location("check_golden_integrity_report", checker)
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    try:
+        import yaml
+    except ImportError:
+        print("BLOCKED-ON-GOLDEN report: unavailable (PyYAML not installed; registry.yaml not read)")
+        return
+    registry = yaml.safe_load((ROOT / "tests" / "harness" / "registry.yaml").read_text(encoding="utf-8")) or {}
+    host = mod.get_host_build()
+    gaps = mod.known_gaps_for_build(host) if host else {}
+    blocked = mod.blocked_criteria(mod.golden_requirements(registry), gaps)
+    if not blocked:
+        print(f"BLOCKED-ON-GOLDEN report: 0 criteria (known gaps on {host}: {len(gaps)})")
+        return
+    print(f"BLOCKED-ON-GOLDEN report: {len(blocked)} criteria")
+    for cid in sorted(blocked):
+        for probe, reason in blocked[cid]:
+            print(f"  BLOCKED-ON-GOLDEN {cid}: {probe} [{reason}]")
+
 def main(argv=None):
     violations = []
     violations.extend(check_policy())
@@ -453,6 +477,8 @@ def main(argv=None):
     violations.extend(check_volume_not_claim_based())
     violations.extend(check_evidence_bundle_hash_covers_all_files())
     violations.extend(check_file_missing_is_error())
+
+    golden_blocked_report()
 
     # Deduplicate
     violations = sorted(set(violations))

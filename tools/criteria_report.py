@@ -30,12 +30,39 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 CRITERIA_PATH = REPO / "tests" / "conformance" / "criteria.json"
 README_PATH = REPO / "README.md"
-DOD_DOC_PATH = REPO / "docs" / "phase0" / "DEFINITION-OF-DONE.md"
-NO_EVIDENCE = "none recorded"
 
 REQUIRED_FIELDS = ("id", "domain", "tier", "dependency_class", "criterion", "status")
 PLACEHOLDER_STATUSES = {"", "not_implemented"}
 README_RE = re.compile(r"\*\*(\d+) of (\d+)\*\*\s+full conformance criteria passing")
+ASSESSMENTS_PATH = REPO / "tools" / "criteria_evidence_assessments.yaml"
+REGISTRY_PATH = REPO / "tests" / "harness" / "registry.yaml"
+ASSESSMENT_RE = re.compile(r"^(DOD-[A-Z]+-[AB]\d{3}):[ \t]*\n[ \t]+verdict:[ \t]*(\w+)", re.MULTILINE)
+REGISTRY_RE = re.compile(r"^  (DOD-[A-Z]+-[AB]\d{3}):[ \t]*$", re.MULTILINE)
+# Reviewed NONE/PARTIAL/FULL verdicts (criteria_evidence_map.py) in matrix wording.
+VERDICT_WORDS = {"FULL": "implemented", "PARTIAL": "partial", "NONE": "not demonstrated"}
+ASSESSMENT_LINK = "CRITERIA-EVIDENCE.md"
+REGISTRY_LINK = "../../tests/harness/registry.yaml"
+BOUNDARY_LINK = "../policy/CLAIM-BOUNDARY.md"
+DRV_STATEMENT = "No third-party NT `.sys` executes in the Personality."
+
+
+def load_assessments(path=ASSESSMENTS_PATH):
+    """Map criterion ID to its matrix verdict wording. Empty when the file is absent."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    return {cid: VERDICT_WORDS.get(v, "not demonstrated")
+            for cid, v in ASSESSMENT_RE.findall(text)}
+
+
+def load_registered(path=REGISTRY_PATH):
+    """Criterion IDs that have a registered command (uncommented entries under tests:)."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    return set(REGISTRY_RE.findall(text))
 
 
 def load_criteria(path=CRITERIA_PATH):
@@ -66,46 +93,53 @@ def read_readme_count(path=README_PATH):
     return {"passing": int(m.group(1)), "total": int(m.group(2)), "source": "README.md"}
 
 
-GATED_ID_RE = re.compile(r"`(DOD-[A-Z]+-[AB]\d{3})`")
-
-
-def load_gated_owners(path=DOD_DOC_PATH):
-    """Map each criterion ID in the DoD section 3.1 EXT-GATED register to its controlling party.
-
-    Only the register table is read: rows from the heading "### §3.1" to the next
-    level-2 heading. The owner is the table's last column.
-    """
-    owners = {}
-    in_register = False
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
-        if line.startswith("### §3.1"):
-            in_register = True
-            continue
-        if in_register and line.startswith("## "):
-            break
-        if in_register and line.startswith("|"):
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            if len(cells) >= 3:
-                for cid in GATED_ID_RE.findall(cells[0]):
-                    owners[cid] = cells[-1]
-    return owners
-
-
 def status_of(entry):
     raw = (entry.get("status") or "").strip()
     return "unknown" if raw in PLACEHOLDER_STATUSES else raw
 
 
-def build_rows(criteria):
+def verdict_of(cid, dependency, assessed):
+    """Matrix verdict: a reviewed assessment when one exists, else gated or not assessed."""
+    if cid in assessed:
+        return assessed[cid]
+    if dependency == "EXT-GATED":
+        return "gated"
+    return "not assessed"
+
+
+def evidence_of(cid, assessed, registered):
+    """Local link to the record that says what is known about the row. No row links a bundle:
+    the repository holds none."""
+    if cid in assessed:
+        return f"[assessment]({ASSESSMENT_LINK}); no bundle"
+    if cid in registered:
+        return f"[registry]({REGISTRY_LINK}); no bundle"
+    return f"none; [registry]({REGISTRY_LINK}) has no entry"
+
+
+def owner_of(dependency):
+    """The project owns every row except the EXT-GATED ones, whose artifacts a third party controls."""
+    if dependency == "EXT-GATED":
+        return "project owner (third party, DEFINITION-OF-DONE section 3.1)"
+    return "project owner"
+
+
+def build_rows(criteria, assessed=None, registered=None):
+    assessed = assessed or {}
+    registered = registered or set()
     rows = []
     for c in criteria:
+        dep = c["dependency_class"]
         rows.append(OrderedDict([
             ("id", c["id"]),
             ("area", c["domain"]),
             ("description", " ".join(str(c["criterion"]).split())),
             ("tier", c["tier"]),
-            ("dependency_class", c["dependency_class"]),
+            ("dependency_class", dep),
             ("status", status_of(c)),
+            ("verdict", verdict_of(c["id"], dep, assessed)),
+            ("evidence", evidence_of(c["id"], assessed, registered)),
+            ("owner", owner_of(dep)),
         ]))
     return rows
 
@@ -129,8 +163,7 @@ def md_cell(text):
     return str(text).replace("|", "\\|")
 
 
-def render_markdown(rows, summary, owners=None):
-    owners = owners or {}
+def render_markdown(rows, summary):
     readme = summary["readme_passing"]
     lines = [
         "# Conformance criteria status",
@@ -139,10 +172,12 @@ def render_markdown(rows, summary, owners=None):
         "Do not edit by hand; regenerate with the script.",
         "",
     ]
+    lines += [f"Claim boundary: {DRV_STATEMENT} See [CLAIM-BOUNDARY.md]({BOUNDARY_LINK}).", ""]
     if readme:
         lines.append(
-            f"README.md records **{readme['passing']} of {readme['total']}** criteria passing. "
-            "It does not name them, so per-row status stays `unknown` until a result is recorded."
+            f"README.md records **{readme['passing']} of {readme['total']}** criteria passing, "
+            "but no signed bundle is linked, so the count is unverified. It does not name them, "
+            "so per-row status stays `unknown` until a result is recorded."
         )
     else:
         lines.append("README.md records no pass count.")
@@ -152,17 +187,13 @@ def render_markdown(rows, summary, owners=None):
     lines += ["", "| Tier | Count |", "|---|---|"]
     lines += [f"| {md_cell(k)} | {v} |" for k, v in summary["tier_counts"].items()]
     lines += ["", "## Criteria", "",
-              "| ID | Area | Description | Tier | Dependency | Status | Evidence | Owner |",
-              "|---|---|---|---|---|---|---|---|"]
+              "| ID | Area | Description | Tier | Dependency | Status | Verdict | Evidence | Owner |",
+              "|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
-        if r["dependency_class"] == "EXT-GATED":
-            owner = owners.get(r["id"], "")
-        else:
-            owner = "-"
         lines.append("| " + " | ".join([
             md_cell(r["id"]), md_cell(r["area"]), md_cell(r["description"]),
             md_cell(r["tier"]), md_cell(r["dependency_class"]), md_cell(r["status"]),
-            md_cell(NO_EVIDENCE), md_cell(owner),
+            md_cell(r["verdict"]), r["evidence"], md_cell(r["owner"]),
         ]) + " |")
     return "\n".join(lines) + "\n"
 
@@ -215,7 +246,7 @@ def selftest():
 
     md = render_markdown(rows, summary)
     check("markdown escapes pipe", "Plain \\| pipe and newline" in md)
-    check("markdown has criteria header", "| ID | Area | Description | Tier | Dependency | Status |" in md)
+    check("markdown has criteria header", "| ID | Area | Description | Tier | Dependency | Status | Verdict | Evidence | Owner |" in md)
     check("markdown reports readme count", "**3 of 423**" in md)
 
     doc = json.loads(render_json(rows, summary))
@@ -256,13 +287,13 @@ def main(argv=None):
     except (OSError, ValueError) as exc:  # bad JSON, wrong shape, duplicate id, unreadable
         print(f"criteria_report: error: cannot load {CRITERIA_PATH}: {exc}", file=sys.stderr)
         return 1
-    rows = build_rows(criteria)
+    rows = build_rows(criteria, load_assessments(ASSESSMENTS_PATH), load_registered(REGISTRY_PATH))
     summary = summarize(rows, read_readme_count(README_PATH))
 
     if args.json:
         text = render_json(rows, summary)
     elif args.markdown:
-        text = render_markdown(rows, summary, load_gated_owners(DOD_DOC_PATH))
+        text = render_markdown(rows, summary)
     else:
         text = render_text(rows, summary)
 

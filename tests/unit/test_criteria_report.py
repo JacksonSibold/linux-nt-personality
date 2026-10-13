@@ -51,7 +51,8 @@ class BuildRowsTests(unittest.TestCase):
     def test_row_fields_and_order(self):
         rows = criteria_report.build_rows([entry("DOD-AA-A001", criterion="One")])
         self.assertEqual(list(rows[0].keys()),
-                         ["id", "area", "description", "tier", "dependency_class", "status"])
+                         ["id", "area", "description", "tier", "dependency_class", "status",
+                          "verdict", "evidence", "owner"])
         self.assertEqual(rows[0]["area"], "AA")
 
     def test_description_whitespace_collapsed(self):
@@ -137,8 +138,21 @@ class RenderTests(unittest.TestCase):
 
     def test_markdown_has_table_header_and_readme_note(self):
         md = criteria_report.render_markdown(self.rows, self.summary)
-        self.assertIn("| ID | Area | Description | Tier | Dependency | Status | Evidence | Owner |", md)
+        self.assertIn("| ID | Area | Description | Tier | Dependency | Status | Verdict | Evidence | Owner |", md)
         self.assertIn("**3 of 423**", md)
+
+    def test_markdown_states_claim_boundary(self):
+        md = criteria_report.render_markdown(self.rows, self.summary)
+        self.assertIn("No third-party NT `.sys` executes in the Personality.", md)
+        self.assertIn("(../policy/CLAIM-BOUNDARY.md)", md)
+
+    def test_markdown_row_has_verdict_evidence_owner(self):
+        md = criteria_report.render_markdown(self.rows, self.summary)
+        row = next(ln for ln in md.splitlines() if ln.startswith("| DOD-AA-A001 |"))
+        self.assertIn("| not assessed |", row)
+        self.assertIn("(../../tests/harness/registry.yaml)", row)
+        self.assertTrue(row.endswith("| project owner |"))
+
 
     def test_json_round_trips(self):
         doc = json.loads(criteria_report.render_json(self.rows, self.summary))
@@ -149,6 +163,51 @@ class RenderTests(unittest.TestCase):
         txt = criteria_report.render_text(self.rows, self.summary)
         for r in self.rows:
             self.assertIn(r["id"], txt)
+
+
+class MatrixColumnTests(unittest.TestCase):
+
+    def test_assessed_verdict_is_used(self):
+        rows = criteria_report.build_rows(
+            [entry("DOD-AA-A001"), entry("DOD-AA-A002")],
+            assessed={"DOD-AA-A001": "partial"})
+        self.assertEqual(rows[0]["verdict"], "partial")
+        self.assertEqual(rows[1]["verdict"], "not assessed")
+
+    def test_assessed_row_links_assessment(self):
+        self.assertEqual(criteria_report.evidence_of("DOD-AA-A001", {"DOD-AA-A001": "partial"}, set()),
+                         "[assessment](CRITERIA-EVIDENCE.md); no bundle")
+
+    def test_registered_row_links_registry(self):
+        self.assertEqual(criteria_report.evidence_of("DOD-AA-A001", {}, {"DOD-AA-A001"}),
+                         "[registry](../../tests/harness/registry.yaml); no bundle")
+
+    def test_unregistered_row_says_no_entry(self):
+        self.assertIn("has no entry", criteria_report.evidence_of("DOD-AA-A001", {}, set()))
+
+    def test_gated_row_has_gated_verdict_and_third_party_owner(self):
+        rows = criteria_report.build_rows([entry("DOD-AA-A001", dep="EXT-GATED")])
+        self.assertEqual(rows[0]["verdict"], "gated")
+        self.assertIn("third party", rows[0]["owner"])
+
+    def test_load_assessments_maps_verdict_words(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = pathlib.Path(tmp) / "a.yaml"
+            p.write_text("DOD-AA-A001:\n  verdict: PARTIAL\n  candidates:\n    - x\n"
+                         "DOD-AA-A002:\n  verdict: NONE\n", encoding="utf-8")
+            self.assertEqual(criteria_report.load_assessments(p),
+                             {"DOD-AA-A001": "partial", "DOD-AA-A002": "not demonstrated"})
+
+    def test_load_assessments_missing_file_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(criteria_report.load_assessments(pathlib.Path(tmp) / "no.yaml"), {})
+
+    def test_load_registered_ignores_commented_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = pathlib.Path(tmp) / "r.yaml"
+            p.write_text("tests:\n  DOD-AA-A001:\n    command: [x]\n  # DOD-AA-A002:\n"
+                         "  #   command: [y]\n", encoding="utf-8")
+            self.assertEqual(criteria_report.load_registered(p), {"DOD-AA-A001"})
 
 
 class SelftestTests(unittest.TestCase):
@@ -162,7 +221,20 @@ class RealDataTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.criteria = criteria_report.load_criteria(CRITERIA)
-        cls.rows = criteria_report.build_rows(cls.criteria)
+        cls.rows = criteria_report.build_rows(
+            cls.criteria, criteria_report.load_assessments(),
+            criteria_report.load_registered())
+
+    def test_every_evidence_link_resolves(self):
+        import re
+        for r in self.rows:
+            for target in re.findall(r"\]\(([^)]+)\)", r["evidence"]):
+                self.assertTrue((DOC.parent / target).is_file(), target)
+
+    def test_gated_rows_name_an_owner(self):
+        gated = [r for r in self.rows if r["dependency_class"] == "EXT-GATED"]
+        self.assertEqual(len(gated), 17)
+        self.assertTrue(all(r["owner"] for r in gated))
 
     def test_total_is_423(self):
         self.assertEqual(len(self.rows), 423)
@@ -186,37 +258,9 @@ class RealDataTests(unittest.TestCase):
     def test_generated_doc_is_current(self):
         readme = criteria_report.read_readme_count(REPO / "README.md")
         summary = criteria_report.summarize(self.rows, readme)
-        owners = criteria_report.load_gated_owners()
-        expected = criteria_report.render_markdown(self.rows, summary, owners)
+        expected = criteria_report.render_markdown(self.rows, summary)
         self.assertTrue(DOC.exists(), "docs/status/CRITERIA.md missing; regenerate it")
         self.assertEqual(DOC.read_text(encoding="utf-8"), expected)
-
-
-class GatedOwnerTests(unittest.TestCase):
-    """The owner column comes only from the DoD section 3.1 register."""
-
-    def test_every_gated_criterion_has_an_owner(self):
-        owners = criteria_report.load_gated_owners()
-        criteria = criteria_report.load_criteria(CRITERIA)
-        gated = [c["id"] for c in criteria if c["dependency_class"] == "EXT-GATED"]
-        self.assertEqual([g for g in gated if not owners.get(g)], [])
-
-    def test_owner_is_last_column_of_register_row(self):
-        owners = criteria_report.load_gated_owners()
-        self.assertEqual(owners["DOD-AC-A002"], "Valve")
-
-    def test_non_gated_rows_show_dash_owner(self):
-        row = {"id": "DOD-AA-A001", "area": "AA", "description": "x", "tier": "P0",
-               "dependency_class": "SELF", "status": "unknown"}
-        md = criteria_report.render_markdown(
-            [row], criteria_report.summarize([row], None), {"DOD-AA-A001": "Nobody"})
-        self.assertIn("| DOD-AA-A001 | AA | x | P0 | SELF | unknown | none recorded | - |", md)
-
-    def test_missing_register_entry_renders_empty_owner(self):
-        row = {"id": "DOD-AA-A001", "area": "AA", "description": "x", "tier": "P0",
-               "dependency_class": "EXT-GATED", "status": "unknown"}
-        md = criteria_report.render_markdown([row], criteria_report.summarize([row], None), {})
-        self.assertIn("| DOD-AA-A001 | AA | x | P0 | EXT-GATED | unknown | none recorded |  |", md)
 
 
 if __name__ == "__main__":

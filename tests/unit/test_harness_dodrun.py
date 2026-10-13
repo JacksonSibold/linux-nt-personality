@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -53,6 +54,14 @@ class RunCommandStateMapping(unittest.TestCase):
         r = dodrun.run_command(_py("import sys; sys.exit(125)"), 30, self.cwd, self.env)
         self.assertEqual(r["state"], "ERROR")
 
+    def test_windows_ntstatus_exit_is_error_not_fail(self):
+        # Windows reports an access violation (0xC0000005) as an unsigned exit
+        # code; it is a crash, so it must map to ERROR like a POSIX signal.
+        done = subprocess.CompletedProcess(args=["x"], returncode=0xC0000005, stdout="", stderr="")
+        with mock.patch.object(dodrun.subprocess, "run", return_value=done):
+            r = dodrun.run_command(["x"], 30, self.cwd, self.env)
+        self.assertEqual(r["state"], "ERROR")
+
     def test_timeout_is_timeout(self):
         r = dodrun.run_command(_py("import time; time.sleep(30)"), 0.5, self.cwd, self.env)
         self.assertEqual(r["state"], "TIMEOUT")
@@ -70,6 +79,32 @@ class PositiveControls(unittest.TestCase):
         # otherwise the harness refuses to run on a Windows host.
         ok, msg = dodrun.verify_positive_controls(os.environ.copy(), 10.0, REPO)
         self.assertTrue(ok, msg)
+
+
+class PositiveControlsPortability(unittest.TestCase):
+    def test_canaries_pass_with_no_posix_binaries_on_path(self):
+        # PATH holds only the interpreter's directory: true/false/sh cannot be found.
+        env = {"PATH": os.path.dirname(sys.executable)}
+        for key in ("SYSTEMROOT", "SystemRoot"):
+            if key in os.environ:
+                env[key] = os.environ[key]
+        ok, msg = dodrun.verify_positive_controls(env, 10.0, REPO)
+        self.assertTrue(ok, msg)
+
+    def test_canary_commands_use_interpreter_not_posix_tools(self):
+        for code in (0, 1, 2):
+            cmd = dodrun.canary_command(code)
+            self.assertEqual(cmd[0], sys.executable)
+            self.assertNotIn(cmd[0], ("true", "false", "sh"))
+
+    def test_canary_fails_when_runner_maps_fail_to_pass(self):
+        # The canary must catch a runner that reports PASS for a known failure.
+        always_pass = {"state": "PASS", "exit_code": 0, "stdout": "", "stderr": "", "duration_seconds": 0.0, "note": ""}
+        with mock.patch.object(dodrun, "run_command", return_value=always_pass):
+            ok, msg = dodrun.verify_positive_controls(os.environ.copy(), 10.0, REPO)
+        self.assertFalse(ok)
+        self.assertIn("CANARY-FAIL", msg)
+        self.assertIn("CANARY-UNIMPL", msg)
 
 
 class RegistryAndCommands(unittest.TestCase):
@@ -219,18 +254,42 @@ class RollupAndRegressions(unittest.TestCase):
 
 class CommandResolution(unittest.TestCase):
     def test_python3_maps_to_running_interpreter_when_absent(self):
-        # On Windows hosts there is commonly no 'python3' on PATH; the registry
-        # uses it, so it must fall back to the interpreter running the harness.
         with mock.patch("shutil.which", return_value=None):
             self.assertEqual(dodrun.resolve_command(["python3", "t.py"]), [sys.executable, "t.py"])
 
-    def test_python3_kept_when_present(self):
-        with mock.patch("shutil.which", return_value="/usr/bin/python3"):
-            self.assertEqual(dodrun.resolve_command(["python3", "t.py"]), ["python3", "t.py"])
+    def test_python3_maps_even_when_path_lookup_finds_store_alias(self):
+        # Regression: on Windows shutil.which('python3') finds the Store alias in
+        # WindowsApps. The old which-guard then kept 'python3', which exits 9009.
+        alias = r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\python3.exe"
+        with mock.patch("shutil.which", return_value=alias):
+            self.assertEqual(dodrun.resolve_command(["python3", "t.py"]), [sys.executable, "t.py"])
+
+    def test_bare_python_maps_to_running_interpreter(self):
+        with mock.patch("shutil.which", return_value="/usr/bin/python"):
+            self.assertEqual(dodrun.resolve_command(["python", "-V"]), [sys.executable, "-V"])
+
+    def test_mapping_applies_on_every_platform(self):
+        with mock.patch.object(sys, "platform", "linux"), mock.patch("shutil.which", return_value="/usr/bin/python3"):
+            self.assertEqual(dodrun.resolve_command(["python3", "t.py"]), [sys.executable, "t.py"])
+        with mock.patch.object(sys, "platform", "win32"), mock.patch("shutil.which", return_value=None):
+            self.assertEqual(dodrun.resolve_command(["python3", "t.py"]), [sys.executable, "t.py"])
+
+    def test_python_not_first_argument_untouched(self):
+        with mock.patch("shutil.which", return_value=None):
+            self.assertEqual(dodrun.resolve_command(["make", "python3"]), ["make", "python3"])
 
     def test_other_commands_untouched(self):
         with mock.patch("shutil.which", return_value=None):
             self.assertEqual(dodrun.resolve_command(["make", "test"]), ["make", "test"])
+
+    def test_registry_python3_entry_runs_to_pass_end_to_end(self):
+        # A registry entry using 'python3' must reach the interpreter, not the
+        # Windows Store alias (exit 9009). Runs a real process.
+        crit = {"id": "T-PY3", "tier": "P0", "dependency_class": "SELF"}
+        reg = {"T-PY3": {"command": ["python3", "-c", "import sys; sys.exit(0)"], "timeout": 30}}
+        res = dodrun.evaluate_criterion(crit, reg, 30, os.environ.copy())
+        self.assertEqual(res["state"], "PASS", res)
+        self.assertNotEqual(res["exit_code"], 9009)
 
 
 if __name__ == "__main__":

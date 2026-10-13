@@ -5,42 +5,42 @@
   "arch": "x64",
   "page_size": 4096,
   "alloc_gran": 65536,
-  "sec_commit": {"ntstatus":0,"hex":"0x00000000","handle":"0xE8"},
-  "map_commit": {"ntstatus":0,"hex":"0x00000000","base":"0x1BBE8B20000","viewSize":65536},
+  "sec_commit": {"ntstatus":0,"hex":"0x00000000","handle":"0xEC"},
+  "map_commit": {"ntstatus":0,"hex":"0x00000000","base":"0x28CC8740000","viewSize":65536},
   "vquery_commit": [
-      {"label":"commit_base","addr":"0x1BBE8B20000","Base":"0x1BBE8B20000","AllocBase":"0x1BBE8B20000","AllocProt":4,"RegionSize":65536,"State":4096,"StateStr":"COMMIT","Protect":4,"Type":262144,"TypeStr":"MAPPED"},
-      {"label":"commit_mid","addr":"0x1BBE8B21000","Base":"0x1BBE8B21000","AllocBase":"0x1BBE8B20000","AllocProt":4,"RegionSize":61440,"State":4096,"StateStr":"COMMIT","Protect":4,"Type":262144,"TypeStr":"MAPPED"},
+      {"label":"commit_base","addr":"0x28CC8740000","Base":"0x28CC8740000","AllocBase":"0x28CC8740000","AllocProt":4,"RegionSize":65536,"State":4096,"StateStr":"COMMIT","Protect":4,"Type":262144,"TypeStr":"MAPPED"},
+      {"label":"commit_mid","addr":"0x28CC8741000","Base":"0x28CC8741000","AllocBase":"0x28CC8740000","AllocProt":4,"RegionSize":61440,"State":4096,"StateStr":"COMMIT","Protect":4,"Type":262144,"TypeStr":"MAPPED"},
       {"sentinel":true}
   ],
   "cow_write": {"value":305419896},
   "map_commit_offset_8192": {"ntstatus":-1073741280,"hex":"0xC0000220","base":"0x0"},
   "map_misaligned_offset_1": {"ntstatus":-1073741280,"hex":"0xC0000220"},
   "map_oversized_128k": {"ntstatus":-1073741793,"hex":"0xC000001F"},
-  "sec_reserve": {"ntstatus":0,"hex":"0x00000000","handle":"0xEC"},
-  "map_reserve": {"ntstatus":0,"hex":"0x00000000","base":"0x1BBE8B20000","viewSize":4096},
+  "sec_reserve": {"ntstatus":0,"hex":"0x00000000","handle":"0xF0"},
+  "map_reserve": {"ntstatus":0,"hex":"0x00000000","base":"0x28CC8740000","viewSize":4096},
   "vquery_reserve": [
-      {"label":"reserve_base","addr":"0x1BBE8B20000","Base":"0x1BBE8B20000","AllocBase":"0x1BBE8B20000","AllocProt":4,"RegionSize":4096,"State":8192,"StateStr":"RESERVE","Protect":0,"Type":262144,"TypeStr":"MAPPED"},
+      {"label":"reserve_base","addr":"0x28CC8740000","Base":"0x28CC8740000","AllocBase":"0x28CC8740000","AllocProt":4,"RegionSize":4096,"State":8192,"StateStr":"RESERVE","Protect":0,"Type":262144,"TypeStr":"MAPPED"},
       {"sentinel":true}
   ],
   "sec_image": {"ntstatus":-1073741521,"hex":"0xC000012F","handle":"0x0"},
-  "sec_file_commit": {"ntstatus":0,"hex":"0x00000000","handle":"0xF0"},
-  "map_file_commit": {"ntstatus":0,"hex":"0x00000000","base":"0x1BBE8B20000","viewSize":65536},
+  "sec_file_commit": {"ntstatus":0,"hex":"0x00000000","handle":"0xF4"},
+  "map_file_commit": {"ntstatus":0,"hex":"0x00000000","base":"0x28CC8740000","viewSize":65536},
   "vquery_file_mapped": [
-      {"label":"file_base","addr":"0x1BBE8B20000","Base":"0x1BBE8B20000","AllocBase":"0x1BBE8B20000","AllocProt":4,"RegionSize":65536,"State":4096,"StateStr":"COMMIT","Protect":4,"Type":262144,"TypeStr":"MAPPED"},
+      {"label":"file_base","addr":"0x28CC8740000","Base":"0x28CC8740000","AllocBase":"0x28CC8740000","AllocProt":4,"RegionSize":65536,"State":4096,"StateStr":"COMMIT","Protect":4,"Type":262144,"TypeStr":"MAPPED"},
       {"sentinel":true}
   ],
-  "sec_real_image": {"ntstatus":0,"hex":"0x00000000","handle":"0xF8"},
-  "map_real_image": {"ntstatus":1073741827,"hex":"0x40000003","base":"0x1BBE8FA0000","viewSize":2519040},
+  "sec_real_image": {"ntstatus":0,"hex":"0x00000000","handle":"0xFC"},
+  "map_real_image": {"ntstatus":1073741827,"hex":"0x40000003","base":"0x28CC88F0000","viewSize":2519040},
   "vquery_real_image": [
-      {"label":"real_image_base","addr":"0x1BBE8FA0000","Base":"0x1BBE8FA0000","AllocBase":"0x1BBE8FA0000","AllocProt":128,"RegionSize":4096,"State":4096,"StateStr":"COMMIT","Protect":2,"Type":16777216,"TypeStr":"IMAGE"},
+      {"label":"real_image_base","addr":"0x28CC88F0000","Base":"0x28CC88F0000","AllocBase":"0x28CC88F0000","AllocProt":128,"RegionSize":4096,"State":4096,"StateStr":"COMMIT","Protect":2,"Type":16777216,"TypeStr":"IMAGE"},
       {"sentinel":true}
   ],
   "win32_commit_vquery": [
-      {"label":"win32_commit","addr":"0x1BBE8B20000","Base":"0x1BBE8B20000","AllocBase":"0x1BBE8B20000","AllocProt":4,"RegionSize":65536,"State":4096,"StateStr":"COMMIT","Protect":4,"Type":262144,"TypeStr":"MAPPED"},
+      {"label":"win32_commit","addr":"0x28CC8740000","Base":"0x28CC8740000","AllocBase":"0x28CC8740000","AllocProt":4,"RegionSize":65536,"State":4096,"StateStr":"COMMIT","Protect":4,"Type":262144,"TypeStr":"MAPPED"},
       {"sentinel":true}
   ],
   "win32_reserve_vquery": [
-      {"label":"win32_reserve","addr":"0x1BBE8B20000","Base":"0x1BBE8B20000","AllocBase":"0x1BBE8B20000","AllocProt":4,"RegionSize":4096,"State":8192,"StateStr":"RESERVE","Protect":0,"Type":262144,"TypeStr":"MAPPED"},
+      {"label":"win32_reserve","addr":"0x28CC8740000","Base":"0x28CC8740000","AllocBase":"0x28CC8740000","AllocProt":4,"RegionSize":4096,"State":8192,"StateStr":"RESERVE","Protect":0,"Type":262144,"TypeStr":"MAPPED"},
       {"sentinel":true}
   ],
   "done": true

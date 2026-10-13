@@ -30,7 +30,6 @@ POLICY_DOC = Path("docs/policy/INTEGRITY-POLICY.md")
 BOUNDARY_DOC = Path("docs/policy/CLAIM-BOUNDARY.md")
 CRITERIA_DOC = Path("docs/status/CRITERIA.md")
 CRITERIA_JSON = Path("tests/conformance/criteria.json")
-RESTATEMENT_DOCS = {"CRITERIA.md", "CRITERIA-ROADMAP.md", "CRITERIA-PROGRESS.md"}
 
 DOD_ID_RE = re.compile(r"\bDOD-[A-Z]+-[AB]\d{3}\b")
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?;])\s+")
@@ -60,6 +59,24 @@ DRV_TOPIC = re.compile(
     r"\bwhql\b",
     re.IGNORECASE,
 )
+# Negation for the driver, evidence and pass rules. Narrower than QUALIFIER: a
+# disclaimer must say the thing is absent, not merely that a waiver exists.
+NEGATION = re.compile(
+    r"\b(not|never|no|none|nothing|cannot|can't|does not|do not|out[- ]of[- ]scope|"
+    r"excluded|absent|missing|refused|refuses)\b",
+    re.IGNORECASE,
+)
+BOUNDARY_STATEMENT = re.compile(r"No third-party NT `?\.sys`? executes", re.IGNORECASE)
+WAIVER_REF = re.compile(r"§\s*11|section 11", re.IGNORECASE)
+STATEMENT_SITES = [BOUNDARY_DOC, Path("README.md"), CRITERIA_DOC]
+# A hyphen before the word makes it part of an identifier (SECOND-PASS), not a result.
+PASS_CLAIM = re.compile(r"(?<![\w-])(pass|passes|passing|passed|certified|green)(?!\w)", re.IGNORECASE)
+PASS_COUNT = re.compile(r"criteria\s+passing", re.IGNORECASE)
+TABLE_ID = re.compile(r"^\|\s*`?(DOD-[A-Z]+-[AB]\d{3})`?\s*\|")
+MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+BUNDLE_PATH = re.compile(r"[\w./-]*(?:bundle|\.evidence\.json)[\w./-]*", re.IGNORECASE)
+MATRIX_COLUMNS = ("ID", "Tier", "Verdict", "Evidence", "Owner")
+
 POLICY_HEADINGS = ["## Scope", "## Claims", "## Out-of-scope mechanisms",
                    "## Rules for public text", "## Cross-references"]
 
@@ -77,57 +94,20 @@ def read(root, rel):
 
 
 def claim_surface(root):
-    """Root Markdown files plus docs/status and docs/policy Markdown, sorted.
-
-    The criteria restatements quote requirements such as "load a third-party
-    driver", so they are not claims and are left out. The capability-matrix
-    rule reads them directly.
-    """
+    """Root Markdown files plus docs/status and docs/policy Markdown, sorted."""
     files = sorted(root.glob("*.md"))
     files += sorted((root / "docs" / "status").glob("*.md"))
     files += sorted((root / "docs" / "policy").glob("*.md"))
-    return [p for p in files if p.is_file() and p.name not in RESTATEMENT_DOCS]
-
-
-UNIT_START = ("|", "#", "- ", "* ")
-LIST_ITEM = re.compile(r"\d+\. ")
+    return [p for p in files if p.is_file()]
 
 
 def sentences(text):
-    """Yield (line_number, sentence) for every sentence in the text.
-
-    Wrapped prose lines are joined into one paragraph before splitting, so a
-    sentence broken across lines is still one sentence. Table rows, headings and
-    list items are single units.
-    """
-    buf = []
-    start = 1
-
-    def flush():
-        if not buf:
-            return
-        for piece in SENTENCE_SPLIT.split(" ".join(buf)):
+    """Yield (line_number, sentence) for every sentence in the text."""
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        for piece in SENTENCE_SPLIT.split(line.strip()):
             piece = piece.strip()
             if piece:
-                yield start, piece
-        buf.clear()
-
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        s = line.strip()
-        if not s:
-            yield from flush()
-            continue
-        if s.startswith(UNIT_START) or LIST_ITEM.match(s):
-            yield from flush()
-            for piece in SENTENCE_SPLIT.split(s):
-                piece = piece.strip()
-                if piece:
-                    yield lineno, piece
-            continue
-        if not buf:
-            start = lineno
-        buf.append(s)
-    yield from flush()
+                yield lineno, piece
 
 
 def is_claim(sentence, topic):
@@ -158,6 +138,10 @@ def check_policy_doc(root, violations):
     if not re.search(r"secure kernel.*out[- ]of[- ]scope|out[- ]of[- ]scope.*secure kernel",
                      text, re.IGNORECASE):
         violations.append(f"{POLICY_DOC}: Secure Kernel is not declared out of scope")
+    flat = " ".join(text.split())  # a declaration may wrap across lines
+    if not re.search(r"windows[- ]update[- ]signed[^.]*out[- ]of[- ]scope|out[- ]of[- ]scope[^.]*windows[- ]update[- ]signed",
+                     flat, re.IGNORECASE):
+        violations.append(f"{POLICY_DOC}: Windows-update-signed kernel is not declared out of scope")
     known = load_criteria_ids(root)
     for cid in sorted(set(DOD_ID_RE.findall(text))):
         if cid not in known:
@@ -179,64 +163,136 @@ def lint_sec_a008(root):
     return violations
 
 
-def lint_drv_b003(root):
-    violations = []
+def normalize(text):
+    """Lower case, no markdown emphasis or code marks, single spaces."""
+    return " ".join(text.replace("*", "").replace("`", "").split()).lower()
+
+
+def criterion_texts(root):
+    """Map each criterion ID to its normalized criterion text from criteria.json."""
     try:
-        boundary = read(root, BOUNDARY_DOC)
-    except LintError:
-        return [f"{BOUNDARY_DOC}: claim-boundary document is missing"]
-    if not re.search(r"no third-party NT .?\.sys.? executes", boundary, re.IGNORECASE):
-        violations.append(f"{BOUNDARY_DOC}: required statement 'No third-party NT .sys executes' is missing")
+        data = json.loads(read(root, CRITERIA_JSON))
+    except ValueError as exc:
+        raise LintError(f"cannot load criteria text: {exc}")
+    return {c["id"]: normalize(c.get("criterion", "")) for c in data}
+
+
+def is_restatement(line, texts):
+    """True when a table row restates its criterion's own text. That is the
+    requirement, not a claim that the requirement is met."""
+    m = TABLE_ID.match(line)
+    if not m or not texts.get(m.group(1)):
+        return False
+    return texts[m.group(1)] in normalize(line)
+
+
+def claim_sentences(root, texts):
+    """Yield (rel, lineno, sentence) for the claim surface, minus criterion restatements."""
     for path in claim_surface(root):
         rel = path.relative_to(root).as_posix()
-        for lineno, sentence in sentences(path.read_text(encoding="utf-8")):
-            low = sentence.lower()
-            if "hardware support" in low and not ("api subset" in low and "device class" in low):
-                violations.append(f"{rel}:{lineno}: 'hardware support' claim does not name an API subset and device class: {sentence[:120]}")
-            if is_claim(sentence, DRV_TOPIC):
-                violations.append(f"{rel}:{lineno}: affirms a third-party or gated driver claim: {sentence[:120]}")
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for lineno, line in enumerate(lines, start=1):
+            if is_restatement(line, texts):
+                continue
+            for piece in SENTENCE_SPLIT.split(line.strip()):
+                piece = piece.strip()
+                if piece:
+                    yield rel, lineno, piece
+
+
+def lint_drv_b003(root):
+    """DOD-DRV-B003: the no-third-party-.sys statement is stated in the claim
+    boundary, the public README and the capability matrix; a 'hardware support'
+    claim names an API subset and a device class; an affirmed third-party or
+    production-signed driver claim needs a section 11 waiver."""
+    violations = []
+    texts = criterion_texts(root)
+    for site in STATEMENT_SITES:
+        try:
+            lines = read(root, site).splitlines()
+        except LintError:
+            violations.append(f"{site}: document is missing (required to state the claim boundary)")
+            continue
+        # A criterion row that quotes the requirement does not state the boundary.
+        if not any(BOUNDARY_STATEMENT.search(ln) and not is_restatement(ln, texts) for ln in lines):
+            violations.append(f"{site}: required statement 'No third-party NT .sys executes' is missing")
+    for rel, lineno, sentence in claim_sentences(root, texts):
+        low = sentence.lower()
+        negated = bool(NEGATION.search(sentence))
+        if "hardware support" in low and not negated and not ("api subset" in low and "device class" in low):
+            violations.append(f"{rel}:{lineno}: 'hardware support' claim does not name an API subset and device class: {sentence[:120]}")
+        if DRV_TOPIC.search(sentence) and CLAIM_VERB.search(sentence) and not negated:
+            if not (WAIVER_REF.search(sentence) and "waiver" in low):
+                violations.append(f"{rel}:{lineno}: affirms a third-party or gated driver claim without a section 11 waiver: {sentence[:120]}")
     return violations
 
 
-CELL_SPLIT = re.compile(r"(?<!\\)\|")
+def split_row(line):
+    return [c.strip() for c in line.strip().strip("|").split("|")]
 
 
-def table_cells(line):
-    """Split a Markdown table row on unescaped pipes; the outer pipes give empty ends."""
-    parts = [c.strip() for c in CELL_SPLIT.split(line.strip())]
-    return parts[1:-1]
+def bundle_linked(root, sentence):
+    """True when the sentence links a bundle file that exists in the tree.
+    The lint checks that the file exists; it does not verify the signature."""
+    for token in BUNDLE_PATH.findall(sentence):
+        if (root / token.strip("`.,;:()")).is_file():
+            return True
+    return False
 
 
 def lint_evi_b006(root):
+    """DOD-EVI-B006: the capability matrix has ID, tier, verdict and evidence
+    columns; every row shows a local evidence link that resolves; gated rows
+    name an owner. A sentence that claims a criterion passes, or a pass count,
+    needs a linked bundle that exists."""
     violations = []
     try:
-        table = read(root, CRITERIA_DOC).splitlines()
+        lines = read(root, CRITERIA_DOC).splitlines()
     except LintError:
         return [f"{CRITERIA_DOC}: capability matrix is missing"]
-    rows = [ln for ln in table if ln.startswith("| DOD-")]
+    header_line = next((ln for ln in lines if ln.startswith("| ID |")), None)
+    if header_line is None:
+        violations.append(f"{CRITERIA_DOC}: capability matrix has no header row beginning '| ID |'")
+        header = []
+    else:
+        header = split_row(header_line)
+    for col in MATRIX_COLUMNS:
+        if col not in header:
+            violations.append(f"{CRITERIA_DOC}: capability matrix lacks required column '{col}'")
+    rows = [ln for ln in lines if TABLE_ID.match(ln)]
     if not rows:
         violations.append(f"{CRITERIA_DOC}: capability matrix has no criterion rows")
     for ln in rows:
-        cells = table_cells(ln)
-        if len(cells) < 8:
-            violations.append(f"{CRITERIA_DOC}: row lacks ID, tier, verdict, evidence or owner: {ln[:100]}")
+        cells = split_row(ln)
+        if not header or len(cells) != len(header):
+            violations.append(f"{CRITERIA_DOC}: row does not match the matrix header: {ln[:100]}")
             continue
-        cid, _area, _desc, tier, dep, status, evidence, owner = cells[:8]
-        if not tier:
+        row = dict(zip(header, cells))
+        cid = row.get("ID", "?")
+        if "Tier" in row and not row["Tier"]:
             violations.append(f"{CRITERIA_DOC}: {cid} has no tier")
-        if status.lower() == "pass" and evidence in ("", "none recorded"):
-            violations.append(f"{CRITERIA_DOC}: {cid} claims pass without an evidence link")
-        if dep == "EXT-GATED" and not owner:
-            violations.append(f"{CRITERIA_DOC}: gated {cid} has no owner name")
-    # A pass-count claim is unlinked unless its paragraph also says it is historical
-    # or not reproduced. The qualifier may be in the next sentence of the paragraph.
-    pass_count = re.compile(r"criteria passing", re.IGNORECASE)
-    for path in claim_surface(root):
-        rel = path.relative_to(root).as_posix()
-        for block in re.split(r"\n\s*\n", path.read_text(encoding="utf-8")):
-            flat = " ".join(block.split())
-            if pass_count.search(flat) and not QUALIFIER.search(flat):
-                violations.append(f"{rel}: unqualified pass-count claim without a linked bundle: {flat[:120]}")
+        if "Verdict" in row and not row["Verdict"]:
+            violations.append(f"{CRITERIA_DOC}: {cid} has no verdict")
+        if "Evidence" in row:
+            links = MARKDOWN_LINK.findall(row["Evidence"])
+            if not links:
+                violations.append(f"{CRITERIA_DOC}: {cid} shows no evidence link")
+            for target in links:
+                local = target.split("#")[0]
+                if not local or "://" in local or not (root / CRITERIA_DOC.parent / local).exists():
+                    violations.append(f"{CRITERIA_DOC}: {cid} evidence link does not resolve to a local file: {target}")
+        gated = row.get("Dependency") == "EXT-GATED" or "deviation" in row.get("Verdict", "").lower()
+        if gated and "Owner" in row and not row["Owner"]:
+            violations.append(f"{CRITERIA_DOC}: gated or deviation row {cid} has no owner name")
+    texts = criterion_texts(root)
+    for rel, lineno, sentence in claim_sentences(root, texts):
+        if not PASS_CLAIM.search(sentence):
+            continue
+        if not (DOD_ID_RE.search(sentence) or PASS_COUNT.search(sentence)):
+            continue
+        if NEGATION.search(sentence) or bundle_linked(root, sentence):
+            continue
+        violations.append(f"{rel}:{lineno}: pass claim without a linked green bundle: {sentence[:120]}")
     return violations
 
 
