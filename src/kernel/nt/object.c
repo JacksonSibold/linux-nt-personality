@@ -1337,6 +1337,10 @@ NTSTATUS ObCreateProcessObject(struct nt_eprocess **out, ULONG pid, const char *
     p->peb_base = 0x7FF00000ULL + (p->pid * 0x10000ULL);
     p->affinity_mask = 0xFF;
     p->base_priority = 8;
+    p->priority_class = 2;          /* PROCESS_PRIORITY_CLASS_NORMAL */
+    p->priority_foreground = 0;
+    p->default_hard_error_mode = 0;
+    p->break_on_termination = 0;
     p->peb = NULL;
     p->peb_teb_reservation = NULL;
     p->image_path[0]=0;
