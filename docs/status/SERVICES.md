@@ -10,8 +10,8 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 75 |
-| STUB-NOT-IMPLEMENTED | 3 |
+| IMPLEMENTED | 76 |
+| STUB-NOT-IMPLEMENTED | 2 |
 | WEAK-FALLBACK | 0 |
 | MISSING | 93 |
 
@@ -27,7 +27,7 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | security | 10 | 0 | 0 | 0 | 10 |
 | registry | 11 | 11 | 0 | 0 | 0 |
 | ports | 10 | 0 | 0 | 0 | 10 |
-| object | 6 | 4 | 1 | 0 | 1 |
+| object | 6 | 5 | 0 | 0 | 1 |
 
 ## Area: system
 
@@ -241,6 +241,6 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | 0x000f | `NtClose` | 1 | IMPLEMENTED | `src/kernel/nt/io.c` |
 | 0x003c | `NtDuplicateObject` | 7 | IMPLEMENTED | `src/kernel/nt/nt_obj.c` |
 | 0x0010 | `NtQueryObject` | 5 | IMPLEMENTED | `src/kernel/nt/nt_obj.c` |
-| 0x005c | `NtSetInformationObject` | 4 | STUB-NOT-IMPLEMENTED | `src/kernel/nt/nt_obj.c` |
+| 0x005c | `NtSetInformationObject` | 4 | IMPLEMENTED | `src/kernel/nt/nt_obj.c` |
 | 0x0115 | `NtMakeTemporaryObject` | 1 | IMPLEMENTED | `src/kernel/nt/nt_obj.c` |
 | 0x0114 | `NtMakePermanentObject` | 1 | MISSING |  |

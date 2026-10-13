@@ -94,6 +94,8 @@ NTSTATUS ObCreateHandle(struct nt_eprocess *proc,
                          PHANDLE out_handle);
 
 NTSTATUS ObCloseHandle(struct nt_eprocess *proc, HANDLE handle);
+NTSTATUS ObSetHandleFlags(struct nt_eprocess *proc, HANDLE handle,
+                          bool inherit, bool protect_from_close);
 
 NTSTATUS ObReferenceObjectByHandle(struct nt_eprocess *proc,
                                     HANDLE handle,
