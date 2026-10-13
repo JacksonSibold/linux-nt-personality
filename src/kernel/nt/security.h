@@ -583,6 +583,35 @@ ULONG    sd_length(const SECURITY_DESCRIPTOR *sd);
                                      TOKEN_ADJUST_GROUPS | TOKEN_ADJUST_DEFAULT)
 #define TOKEN_EXECUTE               (STANDARD_RIGHTS_EXECUTE)
 
+/* TOKEN_INFORMATION_CLASS values used by NtQueryInformationToken (winnt.h) */
+typedef enum _TOKEN_INFORMATION_CLASS {
+    TokenUser = 1,
+    TokenGroups,
+    TokenPrivileges,
+    TokenOwner,
+    TokenPrimaryGroup,
+    TokenDefaultDacl,
+    TokenSource,
+    TokenType,
+    TokenImpersonationLevel,
+    TokenStatistics,
+    TokenRestrictedSids,
+    TokenSessionId,
+    TokenGroupsAndPrivileges,
+    TokenSessionReference,
+    TokenSandBoxInert,
+    TokenAuditPolicy,
+    TokenOrigin,
+    TokenElevationType,
+    TokenLinkedToken,
+    TokenElevation,
+    TokenHasRestrictions,
+    TokenAccessInformation,
+    TokenVirtualizationAllowed,
+    TokenVirtualizationEnabled,
+    TokenIntegrityLevel = 25
+} TOKEN_INFORMATION_CLASS;
+
 /* -------------------------------------------------------------------------- */
 /* Token API                                                                  */
 /* -------------------------------------------------------------------------- */

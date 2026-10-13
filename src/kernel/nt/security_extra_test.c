@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 
 #define PROCESS_ALL_ACCESS_TEST 0x001FFFFFUL
 #define THREAD_ALL_ACCESS_TEST  0x001FFFFFUL
@@ -22,6 +23,10 @@ NTSTATUS nt_svc_NtOpenProcessToken(HANDLE ProcessHandle, ACCESS_MASK DesiredAcce
 NTSTATUS nt_svc_NtOpenProcessTokenEx(HANDLE ProcessHandle, ACCESS_MASK DesiredAccess, ULONG HandleAttributes, PHANDLE TokenHandle);
 NTSTATUS nt_svc_NtOpenThreadToken(HANDLE ThreadHandle, ACCESS_MASK DesiredAccess, BOOLEAN OpenAsSelf, PHANDLE TokenHandle);
 NTSTATUS nt_svc_NtOpenThreadTokenEx(HANDLE ThreadHandle, ACCESS_MASK DesiredAccess, BOOLEAN OpenAsSelf, ULONG HandleAttributes, PHANDLE TokenHandle);
+
+/* Layouts of TOKEN_GROUPS and TOKEN_PRIVILEGES (the variable tail is indexed). */
+struct tg_hdr { ULONG GroupCount; SID_AND_ATTRIBUTES Groups[1]; };
+struct tp_hdr { ULONG PrivilegeCount; LUID_AND_ATTRIBUTES Privileges[1]; };
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -406,6 +411,185 @@ TEST(open_thread_token_impersonation)
 }
 
 /* -------------------------------------------------------------------------- */
+/* NtQueryInformationToken                                                    */
+/* -------------------------------------------------------------------------- */
+
+NTSTATUS nt_svc_NtQueryInformationToken(HANDLE TokenHandle, ULONG TokenInformationClass,
+                                        PVOID TokenInformation, ULONG TokenInformationLength,
+                                        PULONG ReturnLength);
+
+/* A primary token with two groups, one privilege, owner, primary group,
+ * session 3 and the default medium integrity label. */
+static ACCESS_TOKEN *make_rich_token(void)
+{
+    PSID user = make_sid("S-1-5-21-11-22-33-1001");
+    PSID users = make_sid("S-1-5-32-545");
+    PSID admins = make_sid("S-1-5-32-544");
+    SID_AND_ATTRIBUTES groups[2];
+    LUID_AND_ATTRIBUTES priv;
+    ACCESS_TOKEN *tok = NULL;
+    if (!user || !users || !admins) goto out;
+    groups[0].Sid = users;
+    groups[0].Attributes = SE_GROUP_ENABLED | SE_GROUP_MANDATORY;
+    groups[1].Sid = admins;
+    groups[1].Attributes = SE_GROUP_USE_FOR_DENY_ONLY;
+    priv.Luid.LowPart = SE_DEBUG_PRIVILEGE;
+    priv.Luid.HighPart = 0;
+    priv.Attributes = SE_PRIVILEGE_ENABLED;
+    tok = token_create_primary(user, groups, 2, &priv, 1, user, users, NULL, NULL, 3);
+out:
+    if (user) sid_free(user);
+    if (users) sid_free(users);
+    if (admins) sid_free(admins);
+    return tok;
+}
+
+static NTSTATUS query_token(HANDLE h, ULONG cls, void *buf, ULONG len, ULONG *ret)
+{
+    return nt_svc_NtQueryInformationToken(h, cls, buf, len, ret);
+}
+
+TEST(query_token_user_groups_privs)
+{
+    struct nt_eprocess *caller = make_current_process("qtk_caller");
+    ASSERT(caller != NULL);
+    ACCESS_TOKEN *tok = make_rich_token();
+    ASSERT(tok != NULL);
+    HANDLE h = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, tok, TOKEN_QUERY, 0, &h), STATUS_SUCCESS);
+    token_dereference(tok);
+
+    unsigned char buf[1024];
+    ULONG ret = 0;
+
+    /* TokenUser: header followed by the user SID; the Sid pointer targets it. */
+    ASSERT_STATUS(query_token(h, TokenUser, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    SID_AND_ATTRIBUTES *u = (SID_AND_ATTRIBUTES *)buf;
+    PSID want = make_sid("S-1-5-21-11-22-33-1001");
+    ASSERT(want != NULL && u->Sid != NULL && sid_equal(u->Sid, want) == TRUE);
+    ASSERT((unsigned char *)u->Sid >= buf && (unsigned char *)u->Sid < buf + sizeof(buf));
+    sid_free(want);
+    ASSERT(ret >= sizeof(SID_AND_ATTRIBUTES) + sid_length(u->Sid));
+
+    /* TokenGroups: count, then one entry per group with its attributes. */
+    ASSERT_STATUS(query_token(h, TokenGroups, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    ULONG gcount = *(ULONG *)buf;
+    ASSERT(gcount == 2);
+    SID_AND_ATTRIBUTES *g = (SID_AND_ATTRIBUTES *)(buf + offsetof(struct tg_hdr, Groups));
+    PSID users = make_sid("S-1-5-32-545");
+    ASSERT(users != NULL && sid_equal(g[0].Sid, users) == TRUE);
+    ASSERT(g[0].Attributes == (SE_GROUP_ENABLED | SE_GROUP_MANDATORY));
+    ASSERT(g[1].Attributes == SE_GROUP_USE_FOR_DENY_ONLY);
+    sid_free(users);
+
+    /* TokenPrivileges: one entry with the debug LUID, enabled. */
+    ASSERT_STATUS(query_token(h, TokenPrivileges, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    ULONG pcount = *(ULONG *)buf;
+    ASSERT(pcount == 1);
+    LUID_AND_ATTRIBUTES *pv = (LUID_AND_ATTRIBUTES *)(buf + offsetof(struct tp_hdr, Privileges));
+    ASSERT(pv[0].Luid.LowPart == SE_DEBUG_PRIVILEGE && pv[0].Luid.HighPart == 0);
+    ASSERT(pv[0].Attributes == SE_PRIVILEGE_ENABLED);
+
+    ASSERT_STATUS(ObCloseHandle(caller, h), STATUS_SUCCESS);
+    ObDestroyProcessObject(caller);
+    PASS();
+}
+
+TEST(query_token_owner_group_type_stats_session_il)
+{
+    struct nt_eprocess *caller = make_current_process("qtk_more");
+    ASSERT(caller != NULL);
+    ACCESS_TOKEN *tok = make_rich_token();
+    ASSERT(tok != NULL);
+    HANDLE h = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, tok, TOKEN_QUERY, 0, &h), STATUS_SUCCESS);
+    token_dereference(tok);
+    unsigned char buf[512];
+    ULONG ret = 0;
+
+    /* TokenOwner and TokenPrimaryGroup: a pointer to a SID stored in the buffer. */
+    ASSERT_STATUS(query_token(h, TokenOwner, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    PSID want = make_sid("S-1-5-21-11-22-33-1001");
+    ASSERT(want != NULL && sid_equal(*(PSID *)buf, want) == TRUE);
+    sid_free(want);
+    ASSERT_STATUS(query_token(h, TokenPrimaryGroup, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    want = make_sid("S-1-5-32-545");
+    ASSERT(want != NULL && sid_equal(*(PSID *)buf, want) == TRUE);
+    sid_free(want);
+
+    /* TokenType and TokenImpersonationLevel. */
+    ASSERT_STATUS(query_token(h, TokenType, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    ASSERT(*(ULONG *)buf == TokenPrimary);
+    ASSERT(ret == sizeof(ULONG));
+    ASSERT_STATUS(query_token(h, TokenImpersonationLevel, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    ASSERT(*(ULONG *)buf == SecurityAnonymous);
+
+    /* TokenStatistics: counts and the token type. */
+    ASSERT_STATUS(query_token(h, TokenStatistics, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    struct {
+        ULONG TokenIdLow; LONG TokenIdHigh;
+        ULONG AuthIdLow;  LONG AuthIdHigh;
+        long long Expiration;
+        ULONG TokenType; ULONG ImpLevel; ULONG DynCharged; ULONG DynAvail;
+        ULONG GroupCount; ULONG PrivilegeCount;
+        ULONG ModLow; LONG ModHigh;
+    } *stats = (void *)buf;
+    ASSERT(stats->TokenType == TokenPrimary);
+    ASSERT(stats->GroupCount == 2);
+    ASSERT(stats->PrivilegeCount == 1);
+    ASSERT(ret == sizeof(*stats));
+
+    /* TokenSessionId and TokenIntegrityLevel (default medium). */
+    ASSERT_STATUS(query_token(h, TokenSessionId, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    ASSERT(*(ULONG *)buf == 3);
+    ASSERT_STATUS(query_token(h, TokenIntegrityLevel, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    SID_AND_ATTRIBUTES *label = (SID_AND_ATTRIBUTES *)buf;
+    PSID medium = sid_well_known(SID_WK_IL_MEDIUM);
+    ASSERT(medium != NULL && sid_equal(label->Sid, medium) == TRUE);
+    sid_free(medium);
+
+    ASSERT_STATUS(ObCloseHandle(caller, h), STATUS_SUCCESS);
+    ObDestroyProcessObject(caller);
+    PASS();
+}
+
+TEST(query_token_buffer_and_errors)
+{
+    struct nt_eprocess *caller = make_current_process("qtk_err");
+    ASSERT(caller != NULL);
+    ACCESS_TOKEN *tok = make_rich_token();
+    ASSERT(tok != NULL);
+    HANDLE h = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, tok, TOKEN_QUERY, 0, &h), STATUS_SUCCESS);
+    token_dereference(tok);
+    unsigned char buf[512];
+    ULONG ret = 0;
+
+    /* Short buffer: BUFFER_TOO_SMALL with the required length. */
+    ASSERT_STATUS(query_token(h, TokenGroups, buf, 4, &ret), STATUS_BUFFER_TOO_SMALL);
+    ASSERT(ret > 4);
+    ULONG needed = ret;
+    ASSERT_STATUS(query_token(h, TokenGroups, buf, needed, &ret), STATUS_SUCCESS);
+    ASSERT(ret == needed);
+
+    /* Unknown class. */
+    ASSERT_STATUS(query_token(h, 999, buf, sizeof(buf), &ret), STATUS_INVALID_INFO_CLASS);
+    /* Invalid handle, and a handle without TOKEN_QUERY. */
+    ASSERT_STATUS(query_token(NULL, TokenUser, buf, sizeof(buf), &ret), STATUS_INVALID_HANDLE);
+    HANDLE noq = NULL;
+    ACCESS_TOKEN *tok2 = make_user_token("S-1-5-21-1-2-3-9");
+    ASSERT(tok2 != NULL);
+    ASSERT_STATUS(ObCreateTokenHandle(caller, tok2, TOKEN_ASSIGN_PRIMARY, 0, &noq), STATUS_SUCCESS);
+    token_dereference(tok2);
+    ASSERT_STATUS(query_token(noq, TokenUser, buf, sizeof(buf), &ret), STATUS_ACCESS_DENIED);
+    ASSERT_STATUS(ObCloseHandle(caller, noq), STATUS_SUCCESS);
+
+    ASSERT_STATUS(ObCloseHandle(caller, h), STATUS_SUCCESS);
+    ObDestroyProcessObject(caller);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* Driver                                                                     */
 /* -------------------------------------------------------------------------- */
 int main(void)
@@ -422,6 +606,9 @@ int main(void)
     RUN(open_process_token_dacl_denies_query);
     RUN(open_process_token_bad_arguments);
     RUN(open_thread_token_impersonation);
+    RUN(query_token_user_groups_privs);
+    RUN(query_token_owner_group_type_stats_session_il);
+    RUN(query_token_buffer_and_errors);
     printf("security extra tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <stddef.h>
+#include <stdint.h>
 #else
 #include <linux/kstrtox.h>
 #include <linux/string.h>
@@ -2010,5 +2012,273 @@ NTSTATUS nt_svc_NtOpenThreadTokenEx(unsigned long a0, unsigned long a1, unsigned
     NTSTATUS st = ntsec_open_thread_token((HANDLE)a0, (ACCESS_MASK)a1,
                                           (BOOLEAN)(a2 != 0), (ULONG)a3, &h);
     return ntsec_return_handle(h, (PHANDLE)a4, st);
+}
+#endif /* __KERNEL__ */
+
+/* -------------------------------------------------------------------------- */
+/* NtQueryInformationToken                                                    */
+/* -------------------------------------------------------------------------- */
+
+/* Fixed layouts returned to the caller (LP64 natural alignment). */
+struct ntsec_token_groups_hdr { ULONG GroupCount; SID_AND_ATTRIBUTES Groups[1]; };
+struct ntsec_token_privs_hdr  { ULONG PrivilegeCount; LUID_AND_ATTRIBUTES Privileges[1]; };
+struct ntsec_token_default_dacl { PACL DefaultDacl; };
+struct ntsec_token_owner      { PSID Owner; };
+struct ntsec_token_primary_grp { PSID PrimaryGroup; };
+struct ntsec_token_label      { SID_AND_ATTRIBUTES Label; };
+struct ntsec_token_stats {
+    LUID   TokenId;
+    LUID   AuthenticationId;
+    long long ExpirationTime;
+    ULONG  TokenType;
+    ULONG  ImpersonationLevel;
+    ULONG  DynamicCharged;
+    ULONG  DynamicAvailable;
+    ULONG  GroupCount;
+    ULONG  PrivilegeCount;
+    LUID   ModifiedId;
+};
+
+/*
+ * Builder cursor. With buf == NULL the builder only measures (c.off becomes
+ * the required size). Otherwise it writes into buf, and pointers stored in the
+ * output point at base + offset, where base is the address the caller will
+ * see the buffer at (the user address in the kernel, buf itself in userspace).
+ */
+struct ntsec_cur {
+    char  *buf;
+    char  *base;
+    size_t off;
+};
+
+#define NTSEC_NO_SID ((size_t)-1)
+
+static size_t ntsec_reserve(struct ntsec_cur *c, const void *src, size_t n)
+{
+    size_t at = (c->off + 7) & ~(size_t)7;
+    if (c->buf && src && n) memcpy(c->buf + at, src, n);
+    c->off = at + n;
+    return at;
+}
+
+static size_t ntsec_put_sid(struct ntsec_cur *c, PCSID sid)
+{
+    if (!sid) return NTSEC_NO_SID;
+    return ntsec_reserve(c, sid, sid_length(sid));
+}
+
+static PSID ntsec_sid_at(const struct ntsec_cur *c, size_t off)
+{
+    return (off == NTSEC_NO_SID) ? NULL : (PSID)(c->base + off);
+}
+
+static NTSTATUS ntsec_fill_token_info(const ACCESS_TOKEN *tok, ULONG cls, struct ntsec_cur *c)
+{
+    size_t h, o;
+    switch (cls) {
+    case TokenUser:
+        h = ntsec_reserve(c, NULL, sizeof(SID_AND_ATTRIBUTES));
+        o = ntsec_put_sid(c, tok->user);
+        if (c->buf) {
+            SID_AND_ATTRIBUTES *out = (SID_AND_ATTRIBUTES *)(c->buf + h);
+            out->Sid = ntsec_sid_at(c, o);
+            out->Attributes = 0;
+        }
+        return STATUS_SUCCESS;
+
+    case TokenGroups: {
+        ULONG n = tok->group_count;
+        size_t hdr = offsetof(struct ntsec_token_groups_hdr, Groups);
+        size_t hsz = hdr + sizeof(SID_AND_ATTRIBUTES) * n;
+        size_t *offs = NULL;
+        h = ntsec_reserve(c, NULL, hsz);
+        if (n) {
+            offs = (size_t *)kmalloc(sizeof(size_t) * n, GFP_KERNEL);
+            if (!offs) return STATUS_NO_MEMORY;
+        }
+        for (ULONG i = 0; i < n; i++)
+            offs[i] = ntsec_put_sid(c, tok->groups[i].Sid);
+        if (c->buf) {
+            struct ntsec_token_groups_hdr *out = (struct ntsec_token_groups_hdr *)(c->buf + h);
+            SID_AND_ATTRIBUTES *arr = (SID_AND_ATTRIBUTES *)(c->buf + h + hdr);
+            out->GroupCount = n;
+            for (ULONG i = 0; i < n; i++) {
+                arr[i].Sid = ntsec_sid_at(c, offs[i]);
+                arr[i].Attributes = tok->groups[i].Attributes;
+            }
+        }
+        kfree(offs);
+        return STATUS_SUCCESS;
+    }
+
+    case TokenPrivileges: {
+        ULONG n = tok->privilege_count;
+        size_t hdr = offsetof(struct ntsec_token_privs_hdr, Privileges);
+        size_t hsz = hdr + sizeof(LUID_AND_ATTRIBUTES) * n;
+        h = ntsec_reserve(c, NULL, hsz);
+        if (c->buf) {
+            struct ntsec_token_privs_hdr *out = (struct ntsec_token_privs_hdr *)(c->buf + h);
+            out->PrivilegeCount = n;
+            if (n)
+                memcpy(c->buf + h + hdr, tok->privileges, sizeof(LUID_AND_ATTRIBUTES) * n);
+        }
+        return STATUS_SUCCESS;
+    }
+
+    case TokenOwner:
+    case TokenPrimaryGroup: {
+        const PSID src = (cls == TokenOwner) ? tok->owner : tok->primary_group;
+        h = ntsec_reserve(c, NULL, sizeof(PSID));
+        o = ntsec_put_sid(c, src);
+        if (c->buf) {
+            if (cls == TokenOwner)
+                ((struct ntsec_token_owner *)(c->buf + h))->Owner = ntsec_sid_at(c, o);
+            else
+                ((struct ntsec_token_primary_grp *)(c->buf + h))->PrimaryGroup = ntsec_sid_at(c, o);
+        }
+        return STATUS_SUCCESS;
+    }
+
+    case TokenDefaultDacl: {
+        size_t used = tok->default_dacl ? acl_used_size(tok->default_dacl) : 0;
+        h = ntsec_reserve(c, NULL, sizeof(PACL));
+        o = used ? ntsec_reserve(c, tok->default_dacl, used) : NTSEC_NO_SID;
+        if (c->buf) {
+            ((struct ntsec_token_default_dacl *)(c->buf + h))->DefaultDacl =
+                (o == NTSEC_NO_SID) ? NULL : (PACL)(c->base + o);
+        }
+        return STATUS_SUCCESS;
+    }
+
+    case TokenType:
+        h = ntsec_reserve(c, NULL, sizeof(ULONG));
+        if (c->buf) *(ULONG *)(c->buf + h) = (ULONG)tok->token_type;
+        return STATUS_SUCCESS;
+
+    case TokenImpersonationLevel:
+        h = ntsec_reserve(c, NULL, sizeof(ULONG));
+        if (c->buf) *(ULONG *)(c->buf + h) = (ULONG)tok->impersonation_level;
+        return STATUS_SUCCESS;
+
+    case TokenSessionId:
+        h = ntsec_reserve(c, NULL, sizeof(ULONG));
+        if (c->buf) *(ULONG *)(c->buf + h) = tok->session_id;
+        return STATUS_SUCCESS;
+
+    case TokenStatistics:
+        h = ntsec_reserve(c, NULL, sizeof(struct ntsec_token_stats));
+        if (c->buf) {
+            struct ntsec_token_stats *st = (struct ntsec_token_stats *)(c->buf + h);
+            memset(st, 0, sizeof(*st));
+            /* The token has no id counter of its own: its address stands in. */
+            st->TokenId.LowPart = (ULONG)(uintptr_t)tok;
+            st->TokenType = (ULONG)tok->token_type;
+            st->ImpersonationLevel = (ULONG)tok->impersonation_level;
+            st->GroupCount = tok->group_count;
+            st->PrivilegeCount = tok->privilege_count;
+        }
+        return STATUS_SUCCESS;
+
+    case TokenIntegrityLevel: {
+        const PSID il = tok->integrity_level;
+        h = ntsec_reserve(c, NULL, sizeof(struct ntsec_token_label));
+        o = ntsec_put_sid(c, il);
+        if (c->buf) {
+            struct ntsec_token_label *out = (struct ntsec_token_label *)(c->buf + h);
+            out->Label.Sid = ntsec_sid_at(c, o);
+            out->Label.Attributes = SE_GROUP_INTEGRITY;
+        }
+        return STATUS_SUCCESS;
+    }
+
+    default:
+        return STATUS_INVALID_INFO_CLASS;
+    }
+}
+
+/* Two passes: measure, then fill. Returns BUFFER_TOO_SMALL with the required
+ * length when the caller's buffer is short. */
+static NTSTATUS ntsec_query_token(const ACCESS_TOKEN *tok, ULONG cls,
+                                  char *user_buf, ULONG user_len, ULONG *ret_len,
+                                  char *scratch)
+{
+    struct ntsec_cur c = { NULL, NULL, 0 };
+    NTSTATUS st = ntsec_fill_token_info(tok, cls, &c);
+    if (!NT_SUCCESS(st)) return st;
+    if (ret_len) *ret_len = (ULONG)c.off;
+    if (c.off > user_len) return STATUS_BUFFER_TOO_SMALL;
+    if (c.off == 0) return STATUS_SUCCESS;
+    if (!scratch) return STATUS_INVALID_PARAMETER;
+    memset(scratch, 0, c.off);
+    c.buf = scratch;
+    c.base = user_buf;
+    c.off = 0;
+    return ntsec_fill_token_info(tok, cls, &c);
+}
+
+#ifndef __KERNEL__
+NTSTATUS nt_svc_NtQueryInformationToken(HANDLE TokenHandle, ULONG TokenInformationClass,
+                                        PVOID TokenInformation, ULONG TokenInformationLength,
+                                        PULONG ReturnLength)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st;
+    if (!caller) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(caller, TokenHandle, &nt_token_type, KernelMode,
+                                   TOKEN_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    {
+        struct nt_token_body *body = (struct nt_token_body *)nt_object_body(hdr);
+        st = ntsec_query_token(body->token, TokenInformationClass,
+                               (char *)TokenInformation, TokenInformationLength,
+                               ReturnLength, (char *)TokenInformation);
+    }
+    ObDereferenceObject(hdr);
+    return st;
+}
+#else
+#define NTSEC_QUERY_SCRATCH_MAX (64 * 1024)
+
+NTSTATUS nt_svc_NtQueryInformationToken(unsigned long a0, unsigned long a1, unsigned long a2,
+                                        unsigned long a3, unsigned long a4, unsigned long a5,
+                                        unsigned long a6, unsigned long a7, unsigned long a8,
+                                        unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE TokenHandle = (HANDLE)a0;
+    ULONG cls = (ULONG)a1;
+    char *user_buf = (char *)a2;
+    ULONG user_len = (ULONG)a3;
+    PULONG user_ret = (PULONG)a4;
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    char *scratch = NULL;
+    ULONG ret = 0;
+    NTSTATUS st;
+    (void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+
+    if (!caller) return STATUS_INVALID_PARAMETER;
+    if (user_len > NTSEC_QUERY_SCRATCH_MAX) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(caller, TokenHandle, &nt_token_type, KernelMode,
+                                   TOKEN_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    if (user_len) {
+        scratch = (char *)kmalloc(user_len, GFP_KERNEL);
+        if (!scratch) { ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
+    }
+    {
+        struct nt_token_body *body = (struct nt_token_body *)nt_object_body(hdr);
+        st = ntsec_query_token(body->token, cls, user_buf, user_len, &ret,
+                               scratch);
+    }
+    if (NT_SUCCESS(st) && ret && user_buf && scratch) {
+        if (!access_ok(user_buf, ret) || copy_to_user(user_buf, scratch, ret))
+            st = STATUS_ACCESS_VIOLATION;
+    }
+    kfree(scratch);
+    if (user_ret && access_ok(user_ret, sizeof(*user_ret)))
+        copy_to_user(user_ret, &ret, sizeof(ret));
+    ObDereferenceObject(hdr);
+    return st;
 }
 #endif /* __KERNEL__ */
