@@ -1070,6 +1070,73 @@ static int test_query_region_info(void) {
     return 1;
 }
 
+/* NtReadVirtualMemory / NtWriteVirtualMemory: current process only. */
+static int test_rw_virtual_memory(void) {
+    PVOID base = NULL;
+    SIZE_T size = 0x20000;
+    NTSTATUS st = NtAllocateVirtualMemory((HANDLE)-1, &base, 0, &size, MEM_RESERVE, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "reserve 0x%lx", (unsigned long)st);
+    PVOID commit = base;
+    SIZE_T csize = 0x10000;
+    st = NtAllocateVirtualMemory((HANDLE)-1, &commit, 0, &csize, MEM_COMMIT, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "commit 0x%lx", (unsigned long)st);
+
+    unsigned char src[256], dst[256];
+    for (int i = 0; i < 256; i++) src[i] = (unsigned char)(i * 7 + 1);
+
+    /* Round trip inside the committed range. */
+    SIZE_T n = 0;
+    st = NtWriteVirtualMemory((HANDLE)-1, (PVOID)((ULONG_PTR)base + 0x123), src, 100, &n);
+    ASSERT(st == STATUS_SUCCESS && n == 100, "write st 0x%lx n %zu", (unsigned long)st, (size_t)n);
+    memset(dst, 0, sizeof(dst));
+    st = NtReadVirtualMemory((HANDLE)-1, (PVOID)((ULONG_PTR)base + 0x123), dst, 100, &n);
+    ASSERT(st == STATUS_SUCCESS && n == 100, "read st 0x%lx n %zu", (unsigned long)st, (size_t)n);
+    ASSERT(memcmp(src, dst, 100) == 0, "round trip data differs");
+
+    /* Zero-length transfer succeeds and moves nothing. */
+    n = 0xdead;
+    st = NtReadVirtualMemory((HANDLE)-1, base, dst, 0, &n);
+    ASSERT(st == STATUS_SUCCESS && n == 0, "zero read st 0x%lx n %zu", (unsigned long)st, (size_t)n);
+
+    /* A transfer that runs off the committed range copies the prefix only. */
+    n = 0;
+    st = NtWriteVirtualMemory((HANDLE)-1, (PVOID)((ULONG_PTR)base + 0xff00), src, 0x400, &n);
+    ASSERT(st == STATUS_PARTIAL_COPY, "cross-end write st 0x%lx", (unsigned long)st);
+    ASSERT(n == 0x100, "cross-end write n %zu", (size_t)n);
+    /* Reading from the reserved tail copies nothing. */
+    n = 0xdead;
+    st = NtReadVirtualMemory((HANDLE)-1, (PVOID)((ULONG_PTR)base + 0x10000), dst, 16, &n);
+    ASSERT(st == STATUS_PARTIAL_COPY && n == 0, "reserved read st 0x%lx n %zu", (unsigned long)st, (size_t)n);
+
+    /* Read-only pages: readable, not writable. */
+    PVOID pbase = base;
+    SIZE_T psize = 0x10000;
+    ULONG old = 0;
+    st = NtProtectVirtualMemory((HANDLE)-1, &pbase, &psize, PAGE_READONLY, &old);
+    ASSERT(st == STATUS_SUCCESS, "protect ro 0x%lx", (unsigned long)st);
+    n = 0;
+    st = NtReadVirtualMemory((HANDLE)-1, base, dst, 16, &n);
+    ASSERT(st == STATUS_SUCCESS && n == 16, "ro read st 0x%lx", (unsigned long)st);
+    n = 0;
+    st = NtWriteVirtualMemory((HANDLE)-1, base, src, 16, &n);
+    ASSERT(st == STATUS_PARTIAL_COPY && n == 0, "ro write st 0x%lx n %zu", (unsigned long)st, (size_t)n);
+
+    /* Another process handle is not supported; the output count is untouched. */
+    n = 0xdead;
+    st = NtReadVirtualMemory((HANDLE)0x1234, base, dst, 16, &n);
+    ASSERT(st == STATUS_NOT_SUPPORTED, "other process read st 0x%lx", (unsigned long)st);
+    ASSERT(n == 0xdead, "other process read touched count");
+    st = NtWriteVirtualMemory((HANDLE)0x1234, base, src, 16, &n);
+    ASSERT(st == STATUS_NOT_SUPPORTED, "other process write st 0x%lx", (unsigned long)st);
+
+    /* An address range that wraps past the top of the address space is refused. */
+    n = 0;
+    st = NtReadVirtualMemory((HANDLE)-1, (PVOID)(~(ULONG_PTR)0 - 10), dst, 100, &n);
+    ASSERT(st == STATUS_PARTIAL_COPY && n == 0, "wrap read st 0x%lx n %zu", (unsigned long)st, (size_t)n);
+    ntmm_reset();
+    return 1;
+}
+
 int main(void) {
     printf("=== ntmm tests ===\n");
     RUN_TEST(test_reserve_commit_subrange);
@@ -1091,6 +1158,7 @@ int main(void) {
     RUN_TEST(test_vad_long_random_invariant);
     RUN_TEST(test_probe_direct_windows_rule);
     RUN_TEST(test_query_region_info);
+    RUN_TEST(test_rw_virtual_memory);
     printf("\n=== RESULT %d/%d passed, %d failed ===\n", tests_pass, tests_run, tests_fail);
     extern _Atomic long kshim_alloc_count;
     long leaks = atomic_load(&kshim_alloc_count);

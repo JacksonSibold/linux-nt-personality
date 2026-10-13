@@ -267,6 +267,12 @@ NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                             PSIZE_T ViewSize, ULONG InheritDisposition,
                             ULONG AllocationType, ULONG Win32Protect);
 NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress);
+NTSTATUS NtReadVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
+                             PVOID Buffer, SIZE_T BufferSize,
+                             PSIZE_T NumberOfBytesRead);
+NTSTATUS NtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
+                              PVOID Buffer, SIZE_T BufferSize,
+                              PSIZE_T NumberOfBytesWritten);
 
 /* Guard fault helper: simulate access to addr. Returns STATUS_GUARD_PAGE_VIOLATION
  * on first access to a guarded page and clears the guard bit. Returns STATUS_SUCCESS

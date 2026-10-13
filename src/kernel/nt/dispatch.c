@@ -152,6 +152,8 @@ extern NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress
 extern NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG FreeType);
 extern NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG NewProtect, ULONG *OldProtect);
 extern NTSTATUS NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, ULONG MemoryInformationClass, PVOID MemoryInformation, SIZE_T MemoryInformationLength, PSIZE_T ReturnLength);
+extern NTSTATUS NtReadVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, PVOID Buffer, SIZE_T BufferSize, PSIZE_T NumberOfBytesRead);
+extern NTSTATUS NtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, PVOID Buffer, SIZE_T BufferSize, PSIZE_T NumberOfBytesWritten);
 
 NTSTATUS nt_svc_NtAllocateVirtualMemory(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {
@@ -269,6 +271,42 @@ NTSTATUS nt_svc_NtQueryVirtualMemory(unsigned long a0, unsigned long a1, unsigne
         }
     }
     kfree(kbuf);
+    return st;
+}
+
+NTSTATUS nt_svc_NtReadVirtualMemory(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE ProcessHandle = (HANDLE)a0;
+    PVOID BaseAddress = (PVOID)a1;
+    PVOID Buffer = (PVOID)a2;
+    SIZE_T BufferSize = (SIZE_T)a3;
+    PSIZE_T NumberOfBytesRead = (PSIZE_T)a4;
+    (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (NumberOfBytesRead && !access_ok(NumberOfBytesRead, sizeof(SIZE_T)))
+        return STATUS_ACCESS_VIOLATION;
+    SIZE_T done = 0;
+    NTSTATUS st = NtReadVirtualMemory(ProcessHandle, BaseAddress, Buffer, BufferSize, &done);
+    if (st != STATUS_NOT_SUPPORTED && NumberOfBytesRead &&
+        copy_to_user(NumberOfBytesRead, &done, sizeof(done)))
+        return STATUS_ACCESS_VIOLATION;
+    return st;
+}
+
+NTSTATUS nt_svc_NtWriteVirtualMemory(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE ProcessHandle = (HANDLE)a0;
+    PVOID BaseAddress = (PVOID)a1;
+    PVOID Buffer = (PVOID)a2;
+    SIZE_T BufferSize = (SIZE_T)a3;
+    PSIZE_T NumberOfBytesWritten = (PSIZE_T)a4;
+    (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (NumberOfBytesWritten && !access_ok(NumberOfBytesWritten, sizeof(SIZE_T)))
+        return STATUS_ACCESS_VIOLATION;
+    SIZE_T done = 0;
+    NTSTATUS st = NtWriteVirtualMemory(ProcessHandle, BaseAddress, Buffer, BufferSize, &done);
+    if (st != STATUS_NOT_SUPPORTED && NumberOfBytesWritten &&
+        copy_to_user(NumberOfBytesWritten, &done, sizeof(done)))
+        return STATUS_ACCESS_VIOLATION;
     return st;
 }
 
