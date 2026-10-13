@@ -1563,7 +1563,7 @@ static NTSTATUS ntmm_transfer(ULONG_PTR addr, PVOID user, SIZE_T size, SIZE_T *d
         SIZE_T want = size - off;
         SIZE_T run;
         unsigned char *ubuf = (unsigned char *)user + off;
-        if (want > sizeof(kbuf)) want = sizeof(kbuf);
+        if (want > NTMM_PAGE_SIZE) want = NTMM_PAGE_SIZE;
         run = ntmm_access_run(cur, want, write);
         if (run == 0) break;
         if (write) {
