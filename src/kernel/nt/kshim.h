@@ -215,6 +215,9 @@ void *kshim_mmap_reserve(void *addr, size_t size);
 int kshim_mmap_commit(void *addr, size_t size, int prot);
 int kshim_munmap(void *addr, size_t size);
 int kshim_mprotect(void *addr, size_t size, int prot);
+/* Page locking (userspace shim only; mm.c calls these under !__KERNEL__). */
+int kshim_mlock(void *addr, size_t size);
+int kshim_munlock(void *addr, size_t size);
 void kshim_madvise_free(void *addr, size_t size);
 int kshim_section_create(struct kshim_section_backing *b, size_t size);
 int kshim_section_create_file(struct kshim_section_backing *b, const char *path, size_t *size);

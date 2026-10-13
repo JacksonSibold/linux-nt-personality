@@ -83,10 +83,11 @@ highest SSN (0x1db) plus one (`nt_internal.h:16`). Checked at this commit:
   (`NtCreateProcess`, `NtCreateProcessEx`), 1 refuses in userspace and is implemented
   in the kernel build, and 3 are stubs in both builds (`NtGetContextThread`,
   `NtSetContextThread`, `NtExtendSection`).
-- The 31 missing names resolve to NULL and return `STATUS_NOT_IMPLEMENTED`. They
+- The 27 missing names resolve to NULL and return `STATUS_NOT_IMPLEMENTED`. They
   include the port services, the debug and job-object services, `NtCreateSectionEx`,
-  `NtMapViewOfSectionEx`, `NtUnmapViewOfSectionEx`, `NtLockVirtualMemory`,
-  `NtUnlockVirtualMemory` and `NtWaitForAlertByThreadId`. The section services
+  `NtMapViewOfSectionEx` and `NtUnmapViewOfSectionEx`. `NtWaitForAlertByThreadId`,
+  `NtContinue`, `NtContinueEx`, `NtRaiseException`, `NtLockVirtualMemory` and
+  `NtUnlockVirtualMemory` are defined now (`proc_thread.c` and `mm.c`). The section services
   `NtCreateSection`, `NtOpenSection`, `NtMapViewOfSection`, `NtUnmapViewOfSection`
   and `NtQuerySection` are defined now (`mm.c`). `NtAllocateVirtualMemoryEx` is
   defined at `dispatch.c:352`, and `NtAlertResumeThread` in `proc_thread.c`.

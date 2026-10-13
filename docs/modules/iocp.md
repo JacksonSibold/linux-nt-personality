@@ -29,7 +29,7 @@ Service entry points (native-style signatures):
 - `nt_svc_NtQueryIoCompletion(HANDLE IoCompletionHandle, ...)` - query port information (see gaps).
 - `nt_svc_NtQueueApcThread(HANDLE ThreadHandle, ...)` and `nt_svc_NtQueueApcThreadEx(HANDLE ThreadHandle, ...)` - queue a user APC on a thread.
 - `nt_svc_NtTestAlert(void)` - deliver pending APCs for the current thread.
-- `nt_svc_NtAlertThread(HANDLE ThreadHandle)` and `nt_svc_NtAlertThreadByThreadId(HANDLE ThreadId)` - alert a thread.
+- `nt_svc_NtAlertThread(HANDLE ThreadHandle)` - alert a thread (sets the alertable flag). `nt_svc_NtAlertThreadByThreadId(HANDLE ThreadId)` sets the separate by-thread-id token instead, which `NtWaitForAlertByThreadId` consumes; it does not satisfy `NtTestAlert` or alertable waits.
 
 ## Key data structures
 

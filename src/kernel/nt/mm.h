@@ -245,6 +245,21 @@ extern struct nt_object_type nt_section_type;
 /* Per-process address space                                                  */
 /* -------------------------------------------------------------------------- */
 
+/* MapType for NtLockVirtualMemory / NtUnlockVirtualMemory. Only these two. */
+#define NTMM_MAP_PROCESS 1UL
+#define NTMM_MAP_SYSTEM  2UL
+
+/* A run of pages locked by NtLockVirtualMemory. The runs of one address space
+ * are disjoint and page-aligned, each with the MapType it was locked with. They
+ * are kept per address space (nt_mm.locks), not in each VAD: a VAD split or merge
+ * would otherwise have to re-slice the lock state. */
+struct nt_lock_range {
+    ULONG_PTR start;            /* inclusive */
+    ULONG_PTR end;              /* exclusive */
+    ULONG     map_type;         /* NTMM_MAP_PROCESS or NTMM_MAP_SYSTEM */
+    struct nt_lock_range *next;
+};
+
 struct nt_mm {
     struct rb_root  vad_root;
 #ifdef __KERNEL__
@@ -254,6 +269,7 @@ struct nt_mm {
     struct nt_vad  *vad_head; /* shim list head; vad_root unused in userspace */
 #endif
     ULONG_PTR       highest_vad;
+    struct nt_lock_range *locks; /* locked page runs, see struct nt_lock_range */
 };
 
 /* -------------------------------------------------------------------------- */

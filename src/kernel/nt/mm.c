@@ -13,6 +13,7 @@
 #include "object.h"
 #include "handle.h"
 #include "io.h"
+#include "security.h"
 #ifndef __KERNEL__
 #include <limits.h>
 #include <string.h>
@@ -746,6 +747,181 @@ static void nt_coalesce_all(struct nt_mm *mm)
 /* Init / destroy / reset / invariants                                        */
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* Locked page runs (NtLockVirtualMemory bookkeeping, see struct nt_lock_range)*/
+/* -------------------------------------------------------------------------- */
+
+/* Frees every run. ntmm_destroy calls it: unmapping releases the host locks. */
+static void nt_lock_free_all(struct nt_mm *mm) {
+    struct nt_lock_range *r = mm->locks;
+    while (r) {
+        struct nt_lock_range *next = r->next;
+        kfree(r);
+        r = next;
+    }
+    mm->locks = NULL;
+}
+
+/* True when one run strictly contains [s, e), so removing [s, e) splits it. */
+static int nt_lock_needs_split(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e) {
+    struct nt_lock_range *r;
+    for (r = mm->locks; r; r = r->next)
+        if (r->start < s && r->end > e) return 1;
+    return 0;
+}
+
+/* Removes [s, e) from the runs. No host call: the caller releases the host lock
+ * first when that applies. *spare is the node for the right half of a split and
+ * is consumed (set to NULL) when used. With no spare, a split drops the whole
+ * run; nt_lock_forget accepts that case (see its comment). Caller holds the mm
+ * lock. */
+static void nt_lock_carve(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e, struct nt_lock_range **spare) {
+    struct nt_lock_range **pp = &mm->locks;
+    while (*pp) {
+        struct nt_lock_range *r = *pp;
+        if (r->end <= s || r->start >= e) { pp = &r->next; continue; }
+        if (r->start < s && r->end > e) {
+            if (*spare) {
+                struct nt_lock_range *right = *spare;
+                *spare = NULL;
+                right->start = e;
+                right->end = r->end;
+                right->map_type = r->map_type;
+                right->next = r->next;
+                r->next = right;
+                r->end = s;
+                pp = &r->next;
+                continue;
+            }
+            *pp = r->next;
+            kfree(r);
+            continue;
+        }
+        if (r->start < s) { r->end = s; pp = &r->next; continue; }
+        if (r->end > e) { r->start = e; pp = &r->next; continue; }
+        *pp = r->next;
+        kfree(r);
+    }
+}
+
+/* Drops the runs in [s, e) once the pages are freed or decommitted. The OS has
+ * already released those pages, so the host is not called. If a split needs a
+ * node and none can be allocated, the whole containing run is dropped: a page
+ * that stays locked then has no record, which is a bookkeeping loss, not a
+ * crash. Caller holds the mm lock. */
+static void nt_lock_forget(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e) {
+    struct nt_lock_range *spare = NULL;
+    if (!mm->locks) return;
+    if (nt_lock_needs_split(mm, s, e))
+        spare = (struct nt_lock_range *)kzalloc(sizeof(*spare), GFP_KERNEL);
+    nt_lock_carve(mm, s, e, &spare);
+    if (spare) kfree(spare);
+}
+
+#ifndef __KERNEL__
+/* True when every page of [s, e) is in a run with map_type. Runs are disjoint,
+ * so each page is in at most one. */
+static int nt_lock_covered(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e, ULONG map_type) {
+    ULONG_PTR pos = s;
+    while (pos < e) {
+        struct nt_lock_range *r;
+        for (r = mm->locks; r; r = r->next)
+            if (r->map_type == map_type && pos >= r->start && pos < r->end) break;
+        if (!r) return 0;
+        pos = r->end;
+    }
+    return 1;
+}
+
+/* True when a run of the other MapType overlaps [s, e). Such pages cannot be
+ * re-tagged, so the lock is refused. */
+static int nt_lock_has_other_type(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e, ULONG map_type) {
+    struct nt_lock_range *r;
+    for (r = mm->locks; r; r = r->next)
+        if (r->map_type != map_type && r->start < e && r->end > s) return 1;
+    return 0;
+}
+
+/* Next unlocked run in [*pos, e), as [*gs, *ge). Advances *pos past locked runs
+ * of any type. Returns 0 when there is none. */
+static int nt_lock_next_gap(struct nt_mm *mm, ULONG_PTR *pos, ULONG_PTR e, ULONG_PTR *gs, ULONG_PTR *ge) {
+    struct nt_lock_range *r = NULL;
+    while (*pos < e) {
+        for (r = mm->locks; r; r = r->next)
+            if (*pos >= r->start && *pos < r->end) break;
+        if (!r) break;
+        *pos = r->end;
+    }
+    if (*pos >= e) return 0;
+    *gs = *pos;
+    *ge = e;
+    for (r = mm->locks; r; r = r->next)
+        if (r->start > *gs && r->start < *ge) *ge = r->start;
+    return 1;
+}
+
+/* Locks the unlocked pages of [s, e) with map_type and records each gap as a
+ * run. Each gap is mlock'd once, so one unlock releases exactly the pages this
+ * call added. A host refusal releases the gaps locked so far and leaves the
+ * list unchanged. Caller holds the mm lock. */
+static NTSTATUS nt_lock_add(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e, ULONG map_type) {
+    struct nt_lock_range *pending = NULL;
+    struct nt_lock_range *n;
+    ULONG_PTR pos = s, gs = 0, ge = 0;
+    NTSTATUS st = STATUS_SUCCESS;
+    while (nt_lock_next_gap(mm, &pos, e, &gs, &ge)) {
+        n = (struct nt_lock_range *)kzalloc(sizeof(*n), GFP_KERNEL);
+        if (!n) { st = STATUS_NO_MEMORY; break; }
+        if (kshim_mlock((void *)gs, (size_t)(ge - gs)) != 0) {
+            kfree(n);
+            st = STATUS_WORKING_SET_QUOTA;
+            break;
+        }
+        n->start = gs;
+        n->end = ge;
+        n->map_type = map_type;
+        n->next = pending;
+        pending = n;
+        pos = ge;
+    }
+    if (!NT_SUCCESS(st)) {
+        while (pending) {
+            n = pending;
+            pending = n->next;
+            kshim_munlock((void *)n->start, (size_t)(n->end - n->start));
+            kfree(n);
+        }
+        return st;
+    }
+    while (pending) {
+        n = pending;
+        pending = n->next;
+        n->next = mm->locks;
+        mm->locks = n;
+    }
+    return STATUS_SUCCESS;
+}
+
+/* True when [base, end) lies in committed VADs with no gap. Caller holds the mm lock. */
+static int ntmm_range_committed(struct nt_mm *mm, ULONG_PTR base, ULONG_PTR end) {
+    ULONG_PTR pos = base;
+    struct nt_vad *vad = nt_vad_find(mm, base);
+    while (pos < end) {
+        if (!vad || vad->state != MEM_COMMIT || vad->start > pos) return 0;
+        pos = vad->end;
+        vad = nt_vad_right_neighbor(mm, vad);
+    }
+    return 1;
+}
+
+/* The process must hold SeLockMemoryPrivilege to lock into the system working
+ * set (MAP_SYSTEM). A missing process means it is not held. */
+static int nt_lock_privilege_held(void) {
+    struct nt_eprocess *caller = kshim_current_process();
+    return caller && se_caller_has_privilege(caller, SE_LOCK_MEMORY_PRIVILEGE);
+}
+#endif /* !__KERNEL__ */
+
 NTSTATUS ntmm_init(struct nt_mm *mm) {
     mm->vad_root.rb_node = NULL;
 #ifndef __KERNEL__
@@ -755,10 +931,12 @@ NTSTATUS ntmm_init(struct nt_mm *mm) {
     init_rwsem(&mm->lock);
 #endif
     mm->highest_vad = NTMM_LOW_ADDRESS;
+    mm->locks = NULL;
     return STATUS_SUCCESS;
 }
 
 void ntmm_destroy(struct nt_mm *mm) {
+    nt_lock_free_all(mm);
 #ifndef __KERNEL__
     struct nt_vad *cur = mm->vad_head;
     while (cur) {
@@ -1199,6 +1377,7 @@ NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
             }
             cur = next;
         }
+        nt_lock_forget(mm, rel_start, rel_end);
         ntmm_unlock(mm);
         kshim_munmap((void *)rel_start, (size_t)(rel_end - rel_start));
 #else
@@ -1223,6 +1402,7 @@ NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
             }
             n = next;
         }
+        nt_lock_forget(mm, rel_start, rel_end);
         ntmm_unlock(mm);
         /* Kernel: drop mapping with mmap_lock and vm_munmap.
          * R1 integration note: caller must hold mmap_write_lock or use vm_munmap()
@@ -1270,6 +1450,7 @@ NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
         if (!vad || vad->start != pos) { ntmm_unlock(mm); return STATUS_INVALID_PARAMETER; }
     }
     nt_coalesce_all(mm);
+    nt_lock_forget(mm, base, end);
     ntmm_unlock(mm);
 #ifdef __KERNEL__
     /* Kernel: use mprotect_fixup or vm_mprotect with mmap_lock.
@@ -1362,6 +1543,109 @@ NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     *BaseAddress = (PVOID)base;
     *RegionSize = size;
     return STATUS_SUCCESS;
+}
+
+/* -------------------------------------------------------------------------- */
+/* NtLockVirtualMemory and NtUnlockVirtualMemory                              */
+/* -------------------------------------------------------------------------- */
+
+/* Common argument rules. BaseAddress and RegionSize are required and non-zero
+ * in size. MapType is NTMM_MAP_PROCESS or NTMM_MAP_SYSTEM, else
+ * STATUS_INVALID_PARAMETER. The range is rounded out to whole pages, as in
+ * NtProtectVirtualMemory, with the same overflow checks. */
+static NTSTATUS ntmm_lock_args(PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType,
+                               ULONG_PTR *base_out, ULONG_PTR *end_out) {
+    ULONG_PTR base;
+    SIZE_T size;
+    if (!BaseAddress || !RegionSize) return STATUS_INVALID_PARAMETER;
+    if (MapType != NTMM_MAP_PROCESS && MapType != NTMM_MAP_SYSTEM) return STATUS_INVALID_PARAMETER;
+    base = ntmm_round_down((ULONG_PTR)*BaseAddress, NTMM_PAGE_SIZE);
+    size = *RegionSize;
+    if (size == 0) return STATUS_INVALID_PARAMETER;
+    if (base > ~(ULONG_PTR)0 - NTMM_PAGE_SIZE || size > (SIZE_T)(~(ULONG_PTR)0 - NTMM_PAGE_SIZE - base)) return STATUS_INVALID_PARAMETER;
+    size = (SIZE_T)ntmm_round_up(size, NTMM_PAGE_SIZE);
+    if ((ULONG_PTR)size > (ULONG_PTR)-1 - base) return STATUS_INVALID_PARAMETER;
+    *base_out = base;
+    *end_out = base + size;
+    return STATUS_SUCCESS;
+}
+
+/* NtLockVirtualMemory(ProcessHandle, BaseAddress, RegionSize, MapType).
+ * Locks the pages of the range into physical memory on the host (mlock, or
+ * VirtualLock in the host shim) and records them in the address space's lock
+ * runs. The range must be committed (STATUS_NOT_COMMITTED otherwise). A page
+ * already locked with the same MapType stays locked and is not locked again. A
+ * page locked with the other MapType is STATUS_INVALID_PARAMETER (NT's status
+ * for this case is not confirmed here). MAP_SYSTEM needs
+ * SeLockMemoryPrivilege (STATUS_PRIVILEGE_NOT_HELD). A host refusal (the
+ * working-set quota) is STATUS_WORKING_SET_QUOTA and nothing stays locked.
+ * On success BaseAddress and RegionSize return the rounded range.
+ *
+ * Kernel build: the page-lock primitive is not wired into the kernel, so the
+ * arguments are checked and then STATUS_NOT_SUPPORTED is returned. */
+NTSTATUS NtLockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType) {
+    struct nt_mm *mm = &g_nt_mm;
+    ULONG_PTR base = 0, end = 0;
+    NTSTATUS st;
+    (void)ProcessHandle;
+    st = ntmm_lock_args(BaseAddress, RegionSize, MapType, &base, &end);
+    if (!NT_SUCCESS(st)) return st;
+#ifdef __KERNEL__
+    return STATUS_NOT_SUPPORTED;
+#else
+    if (MapType == NTMM_MAP_SYSTEM && !nt_lock_privilege_held()) return STATUS_PRIVILEGE_NOT_HELD;
+    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
+    ntmm_lock(mm);
+    if (!ntmm_range_committed(mm, base, end)) { ntmm_unlock(mm); return STATUS_NOT_COMMITTED; }
+    if (nt_lock_has_other_type(mm, base, end, (ULONG)MapType)) { ntmm_unlock(mm); return STATUS_INVALID_PARAMETER; }
+    st = nt_lock_add(mm, base, end, (ULONG)MapType);
+    ntmm_unlock(mm);
+    if (!NT_SUCCESS(st)) return st;
+    *BaseAddress = (PVOID)base;
+    *RegionSize = (SIZE_T)(end - base);
+    return STATUS_SUCCESS;
+#endif
+}
+
+/* NtUnlockVirtualMemory(ProcessHandle, BaseAddress, RegionSize, MapType).
+ * Every page of the range must be locked with MapType, else STATUS_NOT_LOCKED
+ * and nothing changes. The host locks are released for those pages, and the
+ * runs are cut back. Unlike a host lock count, a page locked by two calls is
+ * unlocked by one unlock call. Kernel build: STATUS_NOT_SUPPORTED, as for the
+ * lock. */
+NTSTATUS NtUnlockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType) {
+    struct nt_mm *mm = &g_nt_mm;
+    ULONG_PTR base = 0, end = 0;
+    NTSTATUS st;
+    (void)ProcessHandle;
+    st = ntmm_lock_args(BaseAddress, RegionSize, MapType, &base, &end);
+    if (!NT_SUCCESS(st)) return st;
+#ifdef __KERNEL__
+    return STATUS_NOT_SUPPORTED;
+#else
+    struct nt_lock_range *spare = NULL;
+    struct nt_lock_range *r;
+    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
+    ntmm_lock(mm);
+    if (!nt_lock_covered(mm, base, end, (ULONG)MapType)) { ntmm_unlock(mm); return STATUS_NOT_LOCKED; }
+    if (nt_lock_needs_split(mm, base, end)) {
+        spare = (struct nt_lock_range *)kzalloc(sizeof(*spare), GFP_KERNEL);
+        if (!spare) { ntmm_unlock(mm); return STATUS_NO_MEMORY; }
+    }
+    for (r = mm->locks; r; r = r->next) {
+        if (r->map_type == (ULONG)MapType && r->start < end && r->end > base) {
+            ULONG_PTR ps = r->start > base ? r->start : base;
+            ULONG_PTR pe = r->end < end ? r->end : end;
+            kshim_munlock((void *)ps, (size_t)(pe - ps));
+        }
+    }
+    nt_lock_carve(mm, base, end, &spare);
+    if (spare) kfree(spare);
+    ntmm_unlock(mm);
+    *BaseAddress = (PVOID)base;
+    *RegionSize = (SIZE_T)(end - base);
+    return STATUS_SUCCESS;
+#endif
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2349,6 +2633,7 @@ NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
         n = next;
     }
 #endif
+    nt_lock_forget(mm, unmap_start, unmap_end);
 #ifdef __KERNEL__
     /* Kernel: vm_munmap takes mmap_lock, so it stays outside the VAD lock. */
     ntmm_unlock(mm);

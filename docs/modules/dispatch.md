@@ -62,7 +62,7 @@ Virtual-memory wrappers defined in `dispatch.c`: `nt_svc_NtAllocateVirtualMemory
 - Debug logging on the hot path: `do_nt_syscall` calls `pr_debug` for six hard-coded SSNs (`dispatch.c:114`) on every call. The calls are silent unless dynamic debug is enabled, but the branch and the format arguments stay in the hot path. They are not gated by a compile-time option. (An earlier per-call `pr_info` was removed in `8ccc960`.)
 - `nt_can_sysret` is a stub that always returns `true`.
 - The table is sized for SSNs up to 0x1db, but only 171 entries are listed in `nt_service_list.h`. The other slots resolve to NULL and return `STATUS_NOT_IMPLEMENTED`.
-- Names in `nt_service_list.h` with no `nt_svc_` definition: 31 services, all `MISSING` in `docs/status/SERVICES.md`. Examples are `NtWaitForAlertByThreadId`, `NtCreateSectionEx`, `NtLockVirtualMemory`, the port services and the debug and job-object services.
+- Names in `nt_service_list.h` with no `nt_svc_` definition: 27 services, all `MISSING` in `docs/status/SERVICES.md`. Examples are `NtCreateSectionEx`, `NtMapViewOfSectionEx`, the port services and the debug and job-object services.
 - `NtAllocateVirtualMemoryEx` and `NtAlertResumeThread` now have definitions (`dispatch.c:352` and `proc_thread.c`). The earlier notes that they were missing are stale.
 - The virtual-memory declarations in `dispatch.c` are `extern` prototypes for the functions in `mm.c`. There is no `dispatch.h`, so callers outside this module have no declared interface other than the symbols listed above.
 - `tools/check_syscall_tables.py` checks the names, SSNs and argument counts across the copies of the table. It does not compare the C signatures of the `nt_svc_` wrappers with `argc`.

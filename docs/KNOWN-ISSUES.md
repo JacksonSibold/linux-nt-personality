@@ -36,9 +36,9 @@ Of these, <!-- counts:fix_fixed:begin -->113<!-- counts:fix_fixed:end --> are fi
 - `nt_can_sysret` is a stub that always returns `true`.
 - The table covers SSNs up to 0x1db, but only 171 entries are listed. The rest
   return `STATUS_NOT_IMPLEMENTED`.
-- 31 of the 171 listed services have no `nt_svc_` definition (for example
-  `NtWaitForAlertByThreadId`, `NtCreateSectionEx`, `NtLockVirtualMemory`, and the
-  port, debug and job-object services). See [status/SERVICES.md](status/SERVICES.md).
+- 27 of the 171 listed services have no `nt_svc_` definition (for example
+  `NtCreateSectionEx`, `NtMapViewOfSectionEx`, and the port, debug and job-object
+  services). See [status/SERVICES.md](status/SERVICES.md).
 - The virtual-memory wrappers are defined in `dispatch.c` and declared `extern`
   there. There is no `dispatch.h`.
 
@@ -89,8 +89,9 @@ Of these, <!-- counts:fix_fixed:begin -->113<!-- counts:fix_fixed:end --> are fi
 ### mm ([modules/mm.md](modules/mm.md))
 
 - Section services have `nt_svc_` wrappers now. `NtCreateSectionEx`,
-  `NtMapViewOfSectionEx`, `NtUnmapViewOfSectionEx`, `NtLockVirtualMemory` and
-  `NtUnlockVirtualMemory` are not in the service table.
+  `NtMapViewOfSectionEx` and `NtUnmapViewOfSectionEx` are not in the service table.
+  `NtLockVirtualMemory` and `NtUnlockVirtualMemory` are implemented (host page lock in
+  the userspace build, `STATUS_NOT_SUPPORTED` in the kernel build).
 - `SEC_IMAGE` sections are built in the userspace build only. The kernel build
   returns `STATUS_NOT_IMPLEMENTED` (process-creation milestone M6, kernel side).
 - `NtQuerySection(SectionImageInformation)` returns `STATUS_NOT_IMPLEMENTED`.
