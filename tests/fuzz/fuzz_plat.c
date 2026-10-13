@@ -3,8 +3,9 @@
  * Kept in its own translation unit because windows.h defines PE image types
  * that clash with src/loader/pe_format.h, which fuzz_pe.c includes.
  */
+/* -std=c11 hides MAP_ANONYMOUS and sigaction on glibc unless these are set. */
 #if !defined(_WIN32)
-#define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE 1
 #endif
 #include <stddef.h>
 #include <stdint.h>

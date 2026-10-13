@@ -30,6 +30,10 @@
  *   - every walker makes at most a bounded number of callbacks, derived from
  *     the input size (the walk cannot do unbounded work).
  */
+/* -std=c11 hides WIFEXITED and friends on glibc unless these are set. */
+#if !defined(_WIN32)
+#define _DEFAULT_SOURCE 1
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
