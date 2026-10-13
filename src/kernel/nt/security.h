@@ -668,6 +668,15 @@ BOOLEAN  token_has_privilege(const ACCESS_TOKEN *token, const LUID *luid,
 BOOLEAN  token_sid_enabled(const ACCESS_TOKEN *token, PCSID sid);
 BOOLEAN  token_sid_restricted(const ACCESS_TOKEN *token, PCSID sid);
 
+/* Token that decides a request made by caller: the current thread's
+ * impersonation token when it has one, else caller's primary token. NULL when
+ * caller is NULL and the thread has no impersonation token. */
+struct nt_eprocess;
+const ACCESS_TOKEN *se_effective_token(struct nt_eprocess *caller);
+/* True when the effective token of caller holds privilege (an SE_*_PRIVILEGE
+ * value) enabled. */
+BOOLEAN se_caller_has_privilege(struct nt_eprocess *caller, ULONG privilege);
+
 /* -------------------------------------------------------------------------- */
 /* Access check                                                               */
 /* -------------------------------------------------------------------------- */

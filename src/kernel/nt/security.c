@@ -2616,6 +2616,22 @@ static const ACCESS_TOKEN *ntsec_effective_token(struct nt_eprocess *caller)
     return caller ? caller->primary_token : NULL;
 }
 
+const ACCESS_TOKEN *se_effective_token(struct nt_eprocess *caller)
+{
+    return ntsec_effective_token(caller);
+}
+
+BOOLEAN se_caller_has_privilege(struct nt_eprocess *caller, ULONG privilege)
+{
+    LUID luid;
+    const ACCESS_TOKEN *tok = ntsec_effective_token(caller);
+    if (!tok)
+        return FALSE;
+    luid.LowPart = privilege;
+    luid.HighPart = 0;
+    return token_has_privilege(tok, &luid, TRUE);
+}
+
 /* Frees the components of an absolute descriptor, and the struct. */
 static void ntsec_free_abs_sd(SECURITY_DESCRIPTOR *sd)
 {

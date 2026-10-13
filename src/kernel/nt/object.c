@@ -779,6 +779,14 @@ NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj)
     return STATUS_SUCCESS;
 }
 
+NTSTATUS ObMakePermanentObject(struct nt_object_header *obj)
+{
+    if (!obj) return STATUS_INVALID_PARAMETER;
+    obj->flags |= OBJ_PERMANENT;
+    obj->is_permanent = true;
+    return STATUS_SUCCESS;
+}
+
 struct nt_object_header *ObGetRootDirectory(void) { return &ob_root_hdr; }
 struct nt_object_header *ObGetDosDevicesDirectory(void) { return ob_dosdevices_hdr; }
 struct nt_object_header *ObGetBaseNamedObjects(void) { return ob_basenamedobjects_hdr; }

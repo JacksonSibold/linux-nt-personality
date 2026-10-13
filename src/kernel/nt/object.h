@@ -230,6 +230,10 @@ NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs,
 
 NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj);
 
+/* Sets OBJ_PERMANENT on obj. Does not check SeCreatePermanentPrivilege; the
+ * caller does. */
+NTSTATUS ObMakePermanentObject(struct nt_object_header *obj);
+
 /* Attaches a copy of the self-relative descriptor sd (length bytes) to obj,
  * replacing and freeing any previous one. sd == NULL clears it. The object
  * takes ownership of the copy; the caller's buffer is not retained. */

@@ -19,6 +19,7 @@
 #include "handle.h"
 #include "sync.h"
 #include "io.h"
+#include "security.h"
 #include "kshim.h"
 #include "../../ntdll/nt_types.h"
 #include "../../ntdll/ntstatus.h"
@@ -774,6 +775,22 @@ NTSTATUS nt_svc_NtMakeTemporaryObject(HANDLE Handle)
     return st;
 }
 
+/* Needs SeCreatePermanentPrivilege on the effective token, checked before the
+ * handle is looked up (as NT does). */
+NTSTATUS nt_svc_NtMakePermanentObject(HANDLE Handle)
+{
+    struct nt_eprocess *proc = kshim_current_process();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    if (!se_caller_has_privilege(proc, SE_CREATE_PERMANENT_PRIVILEGE))
+        return STATUS_PRIVILEGE_NOT_HELD;
+    struct nt_object_header *hdr=NULL;
+    NTSTATUS st=ObReferenceObjectByHandle(proc, Handle, NULL, UserMode, 0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObMakePermanentObject(hdr);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
 NTSTATUS nt_svc_NtClose(HANDLE Handle)
 {
     struct nt_eprocess *proc = kshim_current_process();
@@ -1119,6 +1136,40 @@ NTSTATUS nt_svc_NtDuplicateObject(unsigned long a0, unsigned long a1, unsigned l
             return STATUS_SUCCESS;
         }
     }
+    return st;
+}
+
+NTSTATUS nt_svc_NtMakeTemporaryObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                      unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                      unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE Handle = (HANDLE)a0;
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    struct nt_eprocess *proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = ObReferenceObjectByHandle(proc, Handle, NULL, UserMode, 0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObMakeTemporaryObject(hdr);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+NTSTATUS nt_svc_NtMakePermanentObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                      unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                      unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE Handle = (HANDLE)a0;
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    struct nt_eprocess *proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    if (!se_caller_has_privilege(proc, SE_CREATE_PERMANENT_PRIVILEGE))
+        return STATUS_PRIVILEGE_NOT_HELD;
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = ObReferenceObjectByHandle(proc, Handle, NULL, UserMode, 0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObMakePermanentObject(hdr);
+    ObDereferenceObject(hdr);
     return st;
 }
 
