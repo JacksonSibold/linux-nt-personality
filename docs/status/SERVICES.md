@@ -10,10 +10,10 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 121 |
-| STUB-NOT-IMPLEMENTED | 2 |
+| IMPLEMENTED | 126 |
+| STUB-NOT-IMPLEMENTED | 3 |
 | WEAK-FALLBACK | 0 |
-| MISSING | 48 |
+| MISSING | 42 |
 
 ## By area
 
@@ -21,7 +21,7 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 |---|---:|---:|---:|---:|---:|
 | system | 10 | 10 | 0 | 0 | 0 |
 | process-thread | 43 | 26 | 2 | 0 | 15 |
-| memory | 19 | 8 | 0 | 0 | 11 |
+| memory | 19 | 13 | 1 | 0 | 5 |
 | io | 30 | 24 | 0 | 0 | 6 |
 | sync | 32 | 32 | 0 | 0 | 0 |
 | security | 10 | 5 | 0 | 0 | 5 |
@@ -106,15 +106,15 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | 0x00f0 | `NtFlushVirtualMemory` | 4 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x0113 | `NtLockVirtualMemory` | 4 | MISSING |  |
 | 0x01d3 | `NtUnlockVirtualMemory` | 4 | MISSING |  |
-| 0x004a | `NtCreateSection` | 7 | MISSING |  |
+| 0x004a | `NtCreateSection` | 7 | IMPLEMENTED | `src/kernel/nt/mm.c` |
 | 0x00c2 | `NtCreateSectionEx` | 9 | MISSING |  |
-| 0x0037 | `NtOpenSection` | 3 | MISSING |  |
-| 0x0028 | `NtMapViewOfSection` | 10 | MISSING |  |
+| 0x0037 | `NtOpenSection` | 3 | IMPLEMENTED | `src/kernel/nt/mm.c` |
+| 0x0028 | `NtMapViewOfSection` | 10 | IMPLEMENTED | `src/kernel/nt/mm.c` |
 | 0x011a | `NtMapViewOfSectionEx` | 9 | MISSING |  |
-| 0x002a | `NtUnmapViewOfSection` | 2 | MISSING |  |
+| 0x002a | `NtUnmapViewOfSection` | 2 | IMPLEMENTED | `src/kernel/nt/mm.c` |
 | 0x01d4 | `NtUnmapViewOfSectionEx` | 3 | MISSING |  |
-| 0x00e7 | `NtExtendSection` | 2 | MISSING |  |
-| 0x0051 | `NtQuerySection` | 5 | MISSING |  |
+| 0x00e7 | `NtExtendSection` | 2 | STUB-NOT-IMPLEMENTED | `src/kernel/nt/mm.c` |
+| 0x0051 | `NtQuerySection` | 5 | IMPLEMENTED | `src/kernel/nt/mm.c` |
 
 ## Area: io
 
