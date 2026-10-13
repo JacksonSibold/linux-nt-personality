@@ -11,7 +11,7 @@ Implements the NT object manager model: object headers with a reference count an
 
 Lifecycle and creation:
 
-- `NTSTATUS ObInitObjectManager(void)` (`object.c:1556`) - creates the root and well-known directories and registers the built-in types.
+- `NTSTATUS ObInitObjectManager(void)` (`object.c:1551`) - creates the root and well-known directories and registers the built-in types.
 - `void ObCleanupObjectManager(void)` - tears down the namespace.
 - `NTSTATUS ObCreateObjectType(...)` - declared at `object.h:226`. **No definition exists** in `src/kernel/nt`.
 - `NTSTATUS ObRegisterObjectType(struct nt_object_type *type)` (`object.c:1533`) - adds a type to the type list, rejecting a duplicate name.
