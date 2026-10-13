@@ -1,6 +1,6 @@
 # Process creation
 
-Status: design note, 2026-10-12. Nothing in the process-creation plan is implemented. Prerequisite P1 is partly done: file-backed data sections are built, and `SEC_IMAGE` is not. It
+Status: design note, 2026-10-12. No VM path creates a process yet. The host-testable parts of M1, M4 and M5 are built (see the status table after the milestone plan in section 6). Prerequisite P1 is partly done: file-backed data sections are built, and `SEC_IMAGE` is not. It
 describes the code as it is, what `NtCreateUserProcess` would need on top of
 it, three implementation options, and a plan. The decision is recorded in
 [0037](../decisions/0037-process-creation.md), which is open.
@@ -282,6 +282,19 @@ the `kshim` model) or in the VM (`vm/` scripts that run `/tests_kernel/*.exe`).
 | M6 | `SEC_IMAGE` sections (P1; file-backed data sections are done). Add a file-handle image source to `NtCreateUserProcess`. | Host: section creation and mapping with a file. VM: `NtCreateUserProcess` from a file handle. |
 | M7 | Remove the shim's dummy-address use of `NtCreateUserProcess`, and the eprocess-only path, once the kernel path covers them. | Shim build: existing tests pass, and the dummy address no longer appears. |
 
+### Milestone status (2026-10-12)
+
+| Milestone | State | Built | Not built |
+|-----------|-------|-------|-----------|
+| M0 | Not started | Nothing. The kernel-build stubs are unchanged and have no status assertions. | Status assertions for the kernel build. These need a VM run or a kernel-branch build. |
+| M1 | Host part done | `src/kernel/nt/process_params.h`: builder and validator for a relocatable block (offsets, not pointers), with normalization. Host tests: `tests/kernel-host/process_params_test.c`. | `binfmt_pe` reads the block from a memfd and fills `ProcessParameters` (P7). VM test. |
+| M2 | Not started | Nothing. | Spawn primitive, suspended child, and kill on a failed exec (P3, P6, P11). |
+| M3 | Not started | Nothing. | Suspended initial thread and resume. |
+| M4 | Host part done | `ObInheritHandleTable` in `handle.c`: copies OBJ_INHERIT entries at the same indices with the same access. All or nothing, with undo on failure. `ObInheritHandles` wraps it. Host tests: `tests/kernel-host/handle_inherit_test.c`. | No kernel path calls it (P2). VM test. |
+| M5 | Partial | `src/kernel/nt/proc_create_args.h`: probe and copy-in of PS_CREATE_INFO and PS_ATTRIBUTE_LIST with size checks and a double-fetch check. Both kernel-branch `NtCreateUserProcess` stubs call it, then return `STATUS_NOT_IMPLEMENTED`. Host tests: `tests/kernel-host/proc_create_args_test.c`. | The wrapper over M2 to M4. `CreateProcessW` calling it. The file-handle source (M6). ProcessParameters is not checked by the stub. |
+| M6 | Not started | Nothing. | `SEC_IMAGE` (P1). |
+| M7 | Not started | Nothing. | Removal of the shim's dummy-address path. |
+
 ## 7. Prerequisites in this repo
 
 Each prerequisite lists the findings or decisions that already cover it.
@@ -296,7 +309,8 @@ Each prerequisite lists the findings or decisions that already cover it.
   [0021](../decisions/0021-arch-section-handle-pointer.md) (section handle is a
   kernel pointer, open).
 - **P2. Handle inheritance.** `ObInheritHandles` exists (`handle.c:574`), but
-  nothing in the kernel build calls it. The shim calls it unconditionally.
+  nothing in the kernel build calls it. The shim calls it unconditionally. M4 added
+  `ObInheritHandleTable`, an all-or-nothing copy with host tests. No kernel path calls it yet.
   Handle values are per task and the table is not shown to be reset on exec. See
   [handle.md](../modules/handle.md), [0003](../decisions/0003-handle-slot-reuse.md)
   (slot reuse, one option fixed), [0007](../decisions/0007-file-handle-ownership.md)
@@ -326,7 +340,8 @@ Each prerequisite lists the findings or decisions that already cover it.
   and the parameter block. See the module note in [proc_thread.md](../modules/proc_thread.md).
 - **P7. Parameter block in `binfmt_pe`.** `pe_build_process_parameters`
   (`binfmt_pe.c:562`) produces an empty page. It needs fields and the
-  block reader from M1. No prior decision covers this.
+  block reader from M1. No prior decision covers this. The M1 block format and
+  validator now exist in `process_params.h` and are host-tested. `binfmt_pe` does not use them yet.
 - **P8. Fork policy.** Research-2 decides that a PE task's `fork`, `vfork` and
   `clone` return `-ENOSYS`. The code does not do this. Option A and option C both
   add a spawn exception, so the policy must be written down first. No ADR
