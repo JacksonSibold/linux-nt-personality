@@ -814,6 +814,25 @@ NTSTATUS nt_svc_NtCreateDirectoryObject(PHANDLE DirectoryHandle, ACCESS_MASK Des
     return st;
 }
 
+/* NtOpenDirectoryObject: opens the directory the name refers to. A symbolic
+ * link in the path is followed; a link at the last component is a type mismatch. */
+NTSTATUS nt_svc_NtOpenDirectoryObject(PHANDLE DirectoryHandle, ACCESS_MASK DesiredAccess,
+                                      POBJECT_ATTRIBUTES ObjectAttributes)
+{
+    struct nt_eprocess *proc = kshim_current_process();
+    HANDLE h = NULL;
+    NTSTATUS st;
+    if (!DirectoryHandle || !ObjectAttributes || !proc)
+        return STATUS_INVALID_PARAMETER;
+    if (ObjectAttributes->Length != sizeof(*ObjectAttributes))
+        return STATUS_INVALID_PARAMETER;
+    st = ObOpenObjectByName(ObjectAttributes, &nt_directory_type, UserMode,
+                            nt_map_directory_access(DesiredAccess), proc, &h);
+    if (NT_SUCCESS(st))
+        *DirectoryHandle = h;
+    return st;
+}
+
 /* Needs SeCreatePermanentPrivilege on the effective token, checked before the
  * handle is looked up (as NT does). */
 NTSTATUS nt_svc_NtMakePermanentObject(HANDLE Handle)
@@ -1234,6 +1253,34 @@ NTSTATUS nt_svc_NtCreateDirectoryObject(unsigned long a0, unsigned long a1, unsi
     if (!NT_SUCCESS(st)) return st;
     st = ObInsertOrOpenNamedObject(hdr, oa, nt_map_directory_access(DesiredAccess), proc, &h);
     ObDereferenceObject(hdr);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(DirectoryHandle, &h, sizeof(h))) {
+        ObCloseHandle(proc, h);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return st;
+}
+
+NTSTATUS nt_svc_NtOpenDirectoryObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                      unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                      unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    PHANDLE DirectoryHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    HANDLE h = NULL; OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL; NTSTATUS st; struct nt_eprocess *proc;
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!DirectoryHandle || !access_ok(DirectoryHandle, sizeof(*DirectoryHandle)))
+        return STATUS_ACCESS_VIOLATION;
+    proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    st = nt_ensure_handle_table(proc);
+    if (!NT_SUCCESS(st)) return st;
+    st = k_copy_oa(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    if (!oa) return STATUS_INVALID_PARAMETER;
+    st = ObOpenObjectByName(oa, &nt_directory_type, UserMode, nt_map_directory_access(DesiredAccess), proc, &h);
     if (!NT_SUCCESS(st)) return st;
     if (copy_to_user(DirectoryHandle, &h, sizeof(h))) {
         ObCloseHandle(proc, h);
