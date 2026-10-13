@@ -117,6 +117,26 @@
 #define ThreadBasicInformation 0
 #define ThreadTimes 1
 #define ThreadPriority 2
+#define ThreadBasePriority 3
+#define ThreadAffinityMask 4
+
+/* Effective scheduling values reported by ThreadBasicInformation. There is no
+ * dynamic boost model, so Priority and BasePriority are the same value: the
+ * process base priority plus the thread's relative priority, clamped to the
+ * 0..31 range. A zero affinity_mask means the thread inherits the process mask. */
+static inline LONG pt_thread_base_priority(const struct nt_ethread *t)
+{
+    LONG b = (t->process ? t->process->base_priority : 8) + t->priority;
+    if (b < 0) b = 0;
+    if (b > 31) b = 31;
+    return b;
+}
+
+static inline ULONG_PTR pt_thread_affinity(const struct nt_ethread *t)
+{
+    if (t->affinity_mask) return t->affinity_mask;
+    return t->process ? t->process->affinity_mask : 0;
+}
 
 /* NTSTATUS helpers already in ntstatus.h */
 
@@ -841,9 +861,9 @@ NTSTATUS nt_svc_NtQueryInformationThread(HANDLE ThreadHandle, ULONG ThreadInform
         tbi->TebBaseAddress = (PVOID)(ULONG_PTR)target->teb_base;
         tbi->ClientId.UniqueProcess = (HANDLE)(ULONG_PTR)target->process->pid;
         tbi->ClientId.UniqueThread = (HANDLE)(ULONG_PTR)target->tid;
-        tbi->AffinityMask = target->process->affinity_mask;
-        tbi->Priority = 0;
-        tbi->BasePriority = target->process->base_priority;
+        tbi->AffinityMask = pt_thread_affinity(target);
+        tbi->Priority = pt_thread_base_priority(target);
+        tbi->BasePriority = pt_thread_base_priority(target);
         pthread_mutex_unlock(&target->lock);
         return STATUS_SUCCESS;
     }
@@ -930,12 +950,6 @@ NTSTATUS nt_svc_NtSetInformationProcess(HANDLE ProcessHandle, ULONG Class, PVOID
     /* Windows returns INVALID_INFO_CLASS for unknown Set class, not NOT_IMPLEMENTED */
     return STATUS_INVALID_INFO_CLASS;
 }
-NTSTATUS nt_svc_NtSetInformationThread(HANDLE ThreadHandle, ULONG Class, PVOID Info, ULONG Length)
-{
-    (void)ThreadHandle; (void)Info; (void)Length;
-    return STATUS_INVALID_INFO_CLASS;
-}
-
 NTSTATUS nt_svc_NtGetContextThread(HANDLE ThreadHandle, PCONTEXT Context)
 {
     (void)ThreadHandle; (void)Context;
@@ -1855,9 +1869,9 @@ NTSTATUS nt_svc_NtQueryInformationThread(HANDLE ThreadHandle, ULONG ThreadInform
             tbi.TebBaseAddress = (PVOID)(ULONG_PTR)target->teb_base;
             tbi.ClientId.UniqueProcess = (HANDLE)(ULONG_PTR)target->process->pid;
             tbi.ClientId.UniqueThread = (HANDLE)(ULONG_PTR)target->tid;
-            tbi.AffinityMask = target->process->affinity_mask;
-            tbi.Priority = 0;
-            tbi.BasePriority = target->process->base_priority;
+            tbi.AffinityMask = pt_thread_affinity(target);
+            tbi.Priority = pt_thread_base_priority(target);
+            tbi.BasePriority = pt_thread_base_priority(target);
             spin_unlock(&target->lock);
             if (copy_to_user(ThreadInformation, &tbi, sizeof(tbi))) return STATUS_ACCESS_VIOLATION;
         }
@@ -1947,8 +1961,137 @@ NTSTATUS nt_svc_NtSetSystemInformation(ULONG SystemInformationClass, PVOID Syste
     return STATUS_INVALID_INFO_CLASS;
 }
 NTSTATUS nt_svc_NtSetInformationProcess(HANDLE a, ULONG b, PVOID c, ULONG d){ (void)a;(void)c;(void)d; return STATUS_INVALID_INFO_CLASS; }
-NTSTATUS nt_svc_NtSetInformationThread(HANDLE a, ULONG b, PVOID c, ULONG d){ (void)a;(void)c;(void)d; return STATUS_INVALID_INFO_CLASS; }
 NTSTATUS nt_svc_NtGetContextThread(HANDLE a, PCONTEXT b){ (void)a;(void)b; return STATUS_NOT_IMPLEMENTED; }
 NTSTATUS nt_svc_NtSetContextThread(HANDLE a, PCONTEXT b){ (void)a;(void)b; return STATUS_NOT_IMPLEMENTED; }
 
+#endif /* shim / kernel branch */
+
+/* ------------------------------------------------------------------ */
+/* Thread scheduling and alert services (both branches)                */
+/* ------------------------------------------------------------------ */
+#ifdef __KERNEL__
+#define PT_CUR_THREAD()  nt_current_ethread()
+#define PT_CUR_PROCESS() nt_current_eprocess()
+#else
+#define PT_CUR_THREAD()  kshim_current_thread()
+#define PT_CUR_PROCESS() kshim_current_process()
 #endif
+
+/* Resolve a thread handle (or NtCurrentThread) to its object. Takes no
+ * reference beyond the one ObReferenceObjectByHandle drops before return; the
+ * caller must hold the thread alive through its own handle. */
+static NTSTATUS pt_thread_from_handle(HANDLE h, struct nt_ethread **out)
+{
+    struct nt_eprocess *proc = PT_CUR_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    *out = NULL;
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    if (h == NtCurrentThread()) {
+        struct nt_ethread *cur = PT_CUR_THREAD();
+        if (!cur) return STATUS_INVALID_HANDLE;
+        *out = cur;
+        return STATUS_SUCCESS;
+    }
+    NTSTATUS st = ObReferenceObjectByHandle(proc, h, &nt_thread_type, UserMode, 0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return STATUS_INVALID_HANDLE;
+    struct nt_ethread *thr = ObFindThreadByHeader(hdr);
+    ObDereferenceObject(hdr);
+    if (!thr) return STATUS_INVALID_HANDLE;
+    *out = thr;
+    return STATUS_SUCCESS;
+}
+
+/* Set the pending-alert flag under the thread lock. A terminated thread
+ * cannot be alerted. */
+static NTSTATUS pt_thread_post_alert(struct nt_ethread *thr)
+{
+    spin_lock(&thr->lock);
+    if (thr->terminated) {
+        spin_unlock(&thr->lock);
+        return STATUS_THREAD_IS_TERMINATING;
+    }
+    thr->alerted = true;
+    spin_unlock(&thr->lock);
+    return STATUS_SUCCESS;
+}
+
+/* NtSetInformationThread: ThreadPriority (2) and ThreadBasePriority (3) take one
+ * LONG relative to the process base priority in -15..15 (THREAD_PRIORITY_IDLE
+ * to THREAD_PRIORITY_TIME_CRITICAL). ThreadAffinityMask (4) takes one ULONG_PTR,
+ * which must be non-empty and a subset of the process affinity mask. Other
+ * classes are invalid for set. Terminated threads refuse every set. */
+NTSTATUS nt_svc_NtSetInformationThread(HANDLE ThreadHandle, ULONG Class, PVOID Info, ULONG Length)
+{
+    LONG pri = 0;
+    ULONG_PTR mask = 0;
+    struct nt_ethread *thr = NULL;
+    NTSTATUS st;
+
+    switch (Class) {
+    case ThreadPriority:
+    case ThreadBasePriority:
+        if (Length != sizeof(LONG)) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!Info) return STATUS_INVALID_PARAMETER;
+        pri = *(LONG *)Info;
+        if (pri < -15 || pri > 15) return STATUS_INVALID_PARAMETER;
+        break;
+    case ThreadAffinityMask:
+        if (Length != sizeof(ULONG_PTR)) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!Info) return STATUS_INVALID_PARAMETER;
+        mask = *(ULONG_PTR *)Info;
+        break;
+    default:
+        return STATUS_INVALID_INFO_CLASS;
+    }
+
+    st = pt_thread_from_handle(ThreadHandle, &thr);
+    if (!NT_SUCCESS(st)) return st;
+
+    if (Class == ThreadAffinityMask) {
+        ULONG_PTR proc_mask = thr->process ? thr->process->affinity_mask : 0;
+        if (mask == 0 || (mask & ~proc_mask)) return STATUS_INVALID_PARAMETER;
+    }
+
+    spin_lock(&thr->lock);
+    if (thr->terminated) {
+        spin_unlock(&thr->lock);
+        return STATUS_THREAD_IS_TERMINATING;
+    }
+    if (Class == ThreadAffinityMask)
+        thr->affinity_mask = mask;
+    else
+        thr->priority = pri;
+    spin_unlock(&thr->lock);
+    return STATUS_SUCCESS;
+}
+
+/* NtAlertThread: sets the pending alert. The next NtTestAlert on that thread
+ * returns STATUS_ALERTED. The suspend count is not changed. */
+NTSTATUS nt_svc_NtAlertThread(HANDLE ThreadHandle)
+{
+    struct nt_ethread *thr = NULL;
+    NTSTATUS st = pt_thread_from_handle(ThreadHandle, &thr);
+    if (!NT_SUCCESS(st)) return st;
+    return pt_thread_post_alert(thr);
+}
+
+/* NtAlertThreadByThreadId: as NtAlertThread, looked up by thread id. An
+ * unknown id is STATUS_INVALID_CID. */
+NTSTATUS nt_svc_NtAlertThreadByThreadId(HANDLE ThreadId)
+{
+    struct nt_ethread *thr = ObFindThreadByTid((ULONG)(ULONG_PTR)ThreadId);
+    if (!thr) return STATUS_INVALID_CID;
+    return pt_thread_post_alert(thr);
+}
+
+/* NtAlertResumeThread: resume (as NtResumeThread, same previous-count rules)
+ * and then set the pending alert. A running thread is alerted too. */
+NTSTATUS nt_svc_NtAlertResumeThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount)
+{
+    struct nt_ethread *thr = NULL;
+    NTSTATUS st = pt_thread_from_handle(ThreadHandle, &thr);
+    if (!NT_SUCCESS(st)) return st;
+    st = nt_svc_NtResumeThread(ThreadHandle, PreviousSuspendCount);
+    if (!NT_SUCCESS(st)) return st;
+    return pt_thread_post_alert(thr);
+}

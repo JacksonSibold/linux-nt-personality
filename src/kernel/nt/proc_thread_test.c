@@ -362,6 +362,130 @@ static void test_query_returnlength_discipline(void){
     PASS();
 }
 
+/* ---- Thread set-information: ThreadPriority / ThreadBasePriority / ThreadAffinityMask ---- */
+static void test_set_thread_priority(void){
+    setup_proc();
+    struct nt_ethread *thr=kshim_current_thread();
+    LONG pri; NTSTATUS s; ULONG ret=0;
+    THREAD_BASIC_INFORMATION tbi;
+    /* ThreadPriority takes exactly one LONG */
+    pri=5;
+    s=nt_svc_NtSetInformationThread(NtCurrentThread(),2,&pri,8);
+    ASSERT(s==STATUS_INFO_LENGTH_MISMATCH);
+    s=nt_svc_NtSetInformationThread(NtCurrentThread(),2,NULL,4);
+    ASSERT(s==STATUS_INVALID_PARAMETER);
+    /* Relative range is -15 (THREAD_PRIORITY_LOWEST band) .. 15 */
+    pri=16; s=nt_svc_NtSetInformationThread(NtCurrentThread(),2,&pri,4);
+    ASSERT(s==STATUS_INVALID_PARAMETER);
+    pri=-16; s=nt_svc_NtSetInformationThread(NtCurrentThread(),2,&pri,4);
+    ASSERT(s==STATUS_INVALID_PARAMETER);
+    /* Rejected values must not change the stored priority */
+    s=nt_svc_NtQueryInformationThread(NtCurrentThread(),0,&tbi,48,&ret);
+    ASSERT(s==STATUS_SUCCESS && tbi.Priority==8 && tbi.BasePriority==8);
+    /* Valid set is visible in ThreadBasicInformation */
+    pri=15; s=nt_svc_NtSetInformationThread(NtCurrentThread(),2,&pri,4);
+    ASSERT(s==STATUS_SUCCESS);
+    s=nt_svc_NtQueryInformationThread(NtCurrentThread(),0,&tbi,48,&ret);
+    ASSERT(s==STATUS_SUCCESS && tbi.Priority==23);
+    ASSERT(tbi.BasePriority==23);   /* process base 8 + relative 15 */
+    /* ThreadBasePriority (3) shares the same rules */
+    pri=-2; s=nt_svc_NtSetInformationThread(NtCurrentThread(),3,&pri,4);
+    ASSERT(s==STATUS_SUCCESS);
+    s=nt_svc_NtQueryInformationThread(NtCurrentThread(),0,&tbi,48,&ret);
+    ASSERT(s==STATUS_SUCCESS && tbi.Priority==6);
+    /* ThreadPriority is set-only: query is an invalid class */
+    LONG qbuf=0;
+    s=nt_svc_NtQueryInformationThread(NtCurrentThread(),2,&qbuf,4,&ret);
+    ASSERT(s==STATUS_INVALID_INFO_CLASS);
+    /* Terminated threads refuse the set */
+    pthread_mutex_lock(&thr->lock); thr->terminated=true; pthread_mutex_unlock(&thr->lock);
+    pri=1; s=nt_svc_NtSetInformationThread(NtCurrentThread(),2,&pri,4);
+    ASSERT(s==STATUS_THREAD_IS_TERMINATING);
+    pthread_mutex_lock(&thr->lock); thr->terminated=false; pthread_mutex_unlock(&thr->lock);
+    /* Bad handle */
+    s=nt_svc_NtSetInformationThread((HANDLE)(ULONG_PTR)0x1234,2,&pri,4);
+    ASSERT(s==STATUS_INVALID_HANDLE);
+    PASS();
+}
+
+static void test_set_thread_affinity(void){
+    setup_proc();
+    ULONG_PTR mask; NTSTATUS s; ULONG ret=0;
+    THREAD_BASIC_INFORMATION tbi;
+    /* ThreadAffinityMask takes exactly one ULONG_PTR */
+    mask=0x3;
+    s=nt_svc_NtSetInformationThread(NtCurrentThread(),4,&mask,4);
+    ASSERT(s==STATUS_INFO_LENGTH_MISMATCH);
+    s=nt_svc_NtSetInformationThread(NtCurrentThread(),4,NULL,sizeof(ULONG_PTR));
+    ASSERT(s==STATUS_INVALID_PARAMETER);
+    /* Empty mask is invalid */
+    mask=0;
+    s=nt_svc_NtSetInformationThread(NtCurrentThread(),4,&mask,sizeof(ULONG_PTR));
+    ASSERT(s==STATUS_INVALID_PARAMETER);
+    /* Must be a subset of the process mask (0xFF in this build) */
+    mask=0x100;
+    s=nt_svc_NtSetInformationThread(NtCurrentThread(),4,&mask,sizeof(ULONG_PTR));
+    ASSERT(s==STATUS_INVALID_PARAMETER);
+    /* Untouched thread reports the process mask */
+    s=nt_svc_NtQueryInformationThread(NtCurrentThread(),0,&tbi,48,&ret);
+    ASSERT(s==STATUS_SUCCESS && tbi.AffinityMask==0xFF);
+    /* Valid subset is reported back */
+    mask=0x3;
+    s=nt_svc_NtSetInformationThread(NtCurrentThread(),4,&mask,sizeof(ULONG_PTR));
+    ASSERT(s==STATUS_SUCCESS);
+    s=nt_svc_NtQueryInformationThread(NtCurrentThread(),0,&tbi,48,&ret);
+    ASSERT(s==STATUS_SUCCESS && tbi.AffinityMask==0x3);
+    /* ThreadAffinityMask is set-only */
+    ULONG_PTR qbuf=0;
+    s=nt_svc_NtQueryInformationThread(NtCurrentThread(),4,&qbuf,sizeof(ULONG_PTR),&ret);
+    ASSERT(s==STATUS_INVALID_INFO_CLASS);
+    PASS();
+}
+
+/* ---- NtAlertResumeThread, NtAlertThread, NtTestAlert alert state ---- */
+static void test_alert_resume_thread(void){
+    setup_proc();
+    struct nt_eprocess *proc=kshim_current_process();
+    struct nt_ethread *cur=kshim_current_thread();
+    HANDLE th=NULL; ULONG prev=99;
+    NTSTATUS s;
+    /* Open a second thread object to act on (current thread is a pseudo handle) */
+    CLIENT_ID cid; cid.UniqueProcess=0; cid.UniqueThread=(HANDLE)(ULONG_PTR)cur->tid;
+    s=nt_svc_NtOpenThread(&th,0,NULL,&cid);
+    ASSERT(s==STATUS_SUCCESS);
+    /* Suspend, then AlertResume: previous count 1, count back to 0, alert pending */
+    s=nt_svc_NtSuspendThread(th,&prev);
+    ASSERT(s==STATUS_SUCCESS && prev==0);
+    ASSERT(atomic_load(&cur->suspend_count)==1);
+    prev=99;
+    s=nt_svc_NtAlertResumeThread(th,&prev);
+    ASSERT(s==STATUS_SUCCESS && prev==1);
+    ASSERT(atomic_load(&cur->suspend_count)==0);
+    ASSERT(cur->alerted);
+    /* Alerting a running thread still alerts it; previous count is 0 */
+    cur->alerted=false;
+    prev=99;
+    s=nt_svc_NtAlertResumeThread(th,&prev);
+    ASSERT(s==STATUS_SUCCESS && prev==0);
+    ASSERT(cur->alerted);
+    /* NtAlertThread alerts without touching the suspend count */
+    cur->alerted=false;
+    s=nt_svc_NtAlertThread(th);
+    ASSERT(s==STATUS_SUCCESS && cur->alerted);
+    ASSERT(atomic_load(&cur->suspend_count)==0);
+    cur->alerted=false;
+    /* Terminated thread refuses alert and alert-resume */
+    pthread_mutex_lock(&cur->lock); cur->terminated=true; pthread_mutex_unlock(&cur->lock);
+    ASSERT(nt_svc_NtAlertThread(th)==STATUS_THREAD_IS_TERMINATING);
+    ASSERT(nt_svc_NtAlertResumeThread(th,&prev)==STATUS_THREAD_IS_TERMINATING);
+    pthread_mutex_lock(&cur->lock); cur->terminated=false; pthread_mutex_unlock(&cur->lock);
+    /* NULL PreviousSuspendCount is allowed; bad handle is INVALID_HANDLE */
+    ASSERT(nt_svc_NtAlertResumeThread(th,NULL)==STATUS_SUCCESS);
+    ASSERT(nt_svc_NtAlertResumeThread((HANDLE)(ULONG_PTR)0x1234,&prev)==STATUS_INVALID_HANDLE);
+    ObCloseHandle(proc,th);
+    PASS();
+}
+
 int main(void){
     printf("proc_thread tests\n");
     RUN(test_thread_create_join);
@@ -376,6 +500,9 @@ int main(void){
     RUN(test_mutant_abandon_process_exit);
     RUN(test_thread_exit_frees_sync_thread);
     RUN(test_query_returnlength_discipline);
+    RUN(test_set_thread_priority);
+    RUN(test_set_thread_affinity);
+    RUN(test_alert_resume_thread);
     printf("proc_thread tests: %d passed, %d failed\n", g_pass, g_fail);
     long leaks=atomic_load(&kshim_alloc_count);
     printf("leaks %ld\n", leaks);
