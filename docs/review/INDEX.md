@@ -7,12 +7,12 @@ Type: static review. The review itself modified no source file and ran no build,
 
 | Area | File | High | Medium | Low | Info |
 |---|---|---|---|---|---|
-| PE parser and protection mapping | [loader.md](loader.md) | 2 | 3 | 9 | 1 |
+| PE parser and protection mapping | [loader.md](loader.md) | 2 | 5 | 9 | 1 |
 | PE exec loader and test shim | [kernel-fs.md](kernel-fs.md) | 5 | 7 | 9 | 3 |
 | NT personality (dispatch, VM, I/O, processes, services) | [arch-x86-nt.md](arch-x86-nt.md) | 14 | 24 | 24 | 1 |
 | NT kernel objects, handles, registry, sync, security, VM, I/O, IOCP, processes, dispatch (`src/kernel/nt`) | [kernel-nt.md](kernel-nt.md) | 7 | 9 | 18 | 1 |
 | NT user-mode runtime: loader, startup, unwind, exception dispatch, C runtime, Win32 shims, NTSTATUS mapping (`src/ntdll`, base `7e75069`) | [ntdll.md](ntdll.md) | 20 | 24 | 22 | 8 |
-| **Total** | | **48** | **67** | **82** | **14** |
+| **Total** | | **48** | **69** | **82** | **14** |
 
 ## Fix status
 
@@ -20,14 +20,14 @@ Counts are per report and were recounted on 2026-10-12 from each finding's recor
 
 | Report | Findings | Fixed | Partly | Blocked | No change | Open |
 |---|---|---|---|---|---|---|
-| [loader.md](loader.md) | 15 | 9 | 0 | 1 | 2 | 3 |
+| [loader.md](loader.md) | 17 | 10 | 0 | 2 | 2 | 3 |
 | [kernel-fs.md](kernel-fs.md) | 24 | 16 | 1 | 4 | 0 | 3 |
 | [arch-x86-nt.md](arch-x86-nt.md) | 63 | 33 | 2 | 17 | 2 | 9 |
 | [kernel-nt.md](kernel-nt.md) | 35 | 21 | 1 | 4 | 2 | 7 |
 | [ntdll.md](ntdll.md) | 74 | 42 | 5 | 15 | 0 | 12 |
-| **Total** | **211** | **121** | **9** | **41** | **6** | **34** |
+| **Total** | **213** | **122** | **9** | **42** | **6** | **34** |
 
-Totals match the severity table above (211 findings in both tables; the per-report rows sum to the total row in each). Open findings by severity are not split out here; each report lists them. The per-report `Fix status` sections name the commits.
+Totals match the severity table above (213 findings in both tables; the per-report rows sum to the total row in each). Open findings by severity are not split out here; each report lists them. The per-report `Fix status` sections name the commits.
 
 Decision records: [docs/decisions/INDEX.md](../decisions/INDEX.md) lists the 35 records with status (11 fixed, 16 open, 7 blocked, 1 no-change).
 

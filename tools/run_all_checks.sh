@@ -12,7 +12,8 @@
 #   7. lint                  vm/lint.sh
 #   8. syntax                tests/syntax/check.sh
 #   9. host                  make -C tests/host test
-#  10. kernel-host           make -C tests/kernel-host check
+#  10. fuzz                  make -C tests/fuzz smoke
+#  11. kernel-host           make -C tests/kernel-host check
 #
 # Python: $PYTHON when set and working, otherwise the WinPython path below,
 # otherwise python3 or python. A candidate counts only if it runs.
@@ -121,8 +122,10 @@ fi
 
 if command -v make >/dev/null 2>&1 && command -v gcc >/dev/null 2>&1; then
     run_section host make -C tests/host test
+    run_section fuzz make -C tests/fuzz smoke
 else
     skip host "make or gcc not on PATH"
+    skip fuzz "make or gcc not on PATH"
 fi
 
 # kernel-host: one result row per module, parsed from the "NAME rc=N" lines.

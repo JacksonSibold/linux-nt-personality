@@ -1030,6 +1030,8 @@ static pe_status_t pe_export_build(const pe_context_t *ctx,
     ent->name = name;
     ent->name_len = name_len;
     if (ent->rva == 0) return PE_OK;
+    /* A function RVA must lie inside the image (L-15). */
+    if (ent->rva >= ctx->size_of_image) return PE_ERR_CORRUPT;
 
     /* An RVA inside the export directory is a forwarder string. */
     if (ent->rva >= t->dir.rva && ent->rva < t->dir_end) {
@@ -1203,6 +1205,10 @@ pe_status_t pe_relocs_walk(const pe_context_t *ctx,
         IMAGE_BASE_RELOCATION block;
         s = pe_read_base_relocation(ctx, reloc_off + cursor, &block);
         if (s != PE_OK) return s;
+        /* The page must lie inside the image, or the loader would write
+         * outside it (L-15). */
+        if (block.VirtualAddress >= ctx->size_of_image)
+            return PE_ERR_CORRUPT;
 
         if (block.SizeOfBlock == 0) break;
         if (block.SizeOfBlock < sizeof(IMAGE_BASE_RELOCATION))
@@ -1268,6 +1274,12 @@ pe_status_t pe_exception_walk(const pe_context_t *ctx,
         u32 off = exc_off + i * sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY);
         s = pe_read_runtime_function(ctx, off, &rf);
         if (s != PE_OK) return s;
+        /* Begin and unwind must lie inside the image; End is exclusive and may
+         * equal SizeOfImage (L-15). */
+        if (rf.BeginAddress >= ctx->size_of_image ||
+            rf.EndAddress > ctx->size_of_image ||
+            rf.DUMMYUNIONNAME.UnwindInfoAddress >= ctx->size_of_image)
+            return PE_ERR_CORRUPT;
 
         pe_runtime_function_t out = {
             .begin = rf.BeginAddress,
