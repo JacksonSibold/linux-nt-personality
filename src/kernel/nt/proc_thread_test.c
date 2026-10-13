@@ -362,6 +362,38 @@ static void test_query_returnlength_discipline(void){
     PASS();
 }
 
+/* Open by an unknown process or thread id is STATUS_INVALID_CID; a missing
+ * ClientId is STATUS_INVALID_PARAMETER. */
+static void test_open_bad_cid(void){
+    setup_proc();
+    HANDLE h=NULL;
+    CLIENT_ID cid; cid.UniqueProcess=(HANDLE)(ULONG_PTR)0x7FFFFFF0; cid.UniqueThread=0;
+    ASSERT(nt_svc_NtOpenProcess(&h,0,NULL,&cid)==STATUS_INVALID_CID);
+    cid.UniqueProcess=0; cid.UniqueThread=(HANDLE)(ULONG_PTR)0x7FFFFFF0;
+    ASSERT(nt_svc_NtOpenThread(&h,0,NULL,&cid)==STATUS_INVALID_CID);
+    ASSERT(nt_svc_NtOpenProcess(&h,0,NULL,NULL)==STATUS_INVALID_PARAMETER);
+    ASSERT(nt_svc_NtOpenThread(&h,0,NULL,NULL)==STATUS_INVALID_PARAMETER);
+    PASS();
+}
+
+/* An exiting process refuses a second terminate and any suspend; the first
+ * exit status is kept. */
+static void test_process_terminate_twice(void){
+    setup_proc();
+    struct nt_eprocess *proc=kshim_current_process();
+    HANDLE ph=NULL;
+    NTSTATUS st=nt_svc_NtCreateProcessEx(&ph,0,NULL,NtCurrentProcess(),0,NULL,NULL,NULL,NULL);
+    ASSERT(st==STATUS_SUCCESS);
+    ASSERT(nt_svc_NtTerminateProcess(ph,7)==STATUS_SUCCESS);
+    ASSERT(nt_svc_NtTerminateProcess(ph,8)==STATUS_PROCESS_IS_TERMINATING);
+    ASSERT(nt_svc_NtSuspendProcess(ph)==STATUS_PROCESS_IS_TERMINATING);
+    PROCESS_BASIC_INFORMATION pbi; ULONG ret=0;
+    NTSTATUS q=nt_svc_NtQueryInformationProcess(ph,0,&pbi,48,&ret);
+    ASSERT(q==STATUS_SUCCESS && pbi.ExitStatus==7);
+    ObCloseHandle(proc,ph);
+    PASS();
+}
+
 /* ---- Thread set-information: ThreadPriority / ThreadBasePriority / ThreadAffinityMask ---- */
 static void test_set_thread_priority(void){
     setup_proc();
@@ -503,6 +535,8 @@ int main(void){
     RUN(test_set_thread_priority);
     RUN(test_set_thread_affinity);
     RUN(test_alert_resume_thread);
+    RUN(test_process_terminate_twice);
+    RUN(test_open_bad_cid);
     printf("proc_thread tests: %d passed, %d failed\n", g_pass, g_fail);
     long leaks=atomic_load(&kshim_alloc_count);
     printf("leaks %ld\n", leaks);

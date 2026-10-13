@@ -555,6 +555,9 @@ NTSTATUS nt_svc_NtSuspendProcess(HANDLE ProcessHandle)
     struct nt_eprocess *target = ObFindProcessByHeader(hdr);
     ObDereferenceObject(hdr);
     if (!target) return STATUS_INVALID_HANDLE;
+    pthread_mutex_lock(&target->lock);
+    if (target->terminated) { pthread_mutex_unlock(&target->lock); return STATUS_PROCESS_IS_TERMINATING; }
+    pthread_mutex_unlock(&target->lock);
     ObSuspendProcessThreads(target);
     return STATUS_SUCCESS;
 }
@@ -625,6 +628,7 @@ NTSTATUS nt_svc_NtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus)
         if (ProcessHandle == NtCurrentProcess()) {
             struct nt_eprocess *p = cur;
             pthread_mutex_lock(&p->lock);
+            if (p->terminated) { pthread_mutex_unlock(&p->lock); return STATUS_PROCESS_IS_TERMINATING; }
             p->exit_status = ExitStatus;
             p->terminated = true;
             pthread_cond_broadcast(&p->exit_cond);
@@ -638,6 +642,7 @@ NTSTATUS nt_svc_NtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus)
     ObDereferenceObject(hdr);
     if (!target) return STATUS_INVALID_HANDLE;
     pthread_mutex_lock(&target->lock);
+    if (target->terminated) { pthread_mutex_unlock(&target->lock); return STATUS_PROCESS_IS_TERMINATING; }
     target->exit_status = ExitStatus;
     target->terminated = true;
     pthread_cond_broadcast(&target->exit_cond);
@@ -653,7 +658,7 @@ NTSTATUS nt_svc_NtOpenProcess(PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess,
     if (!ProcessHandle || !ClientId) return STATUS_INVALID_PARAMETER;
     ULONG pid = (ULONG)(ULONG_PTR)ClientId->UniqueProcess;
     struct nt_eprocess *p = ObFindProcessByPid(pid);
-    if (!p) return STATUS_INVALID_PARAMETER;
+    if (!p) return STATUS_INVALID_CID;
     struct nt_eprocess *cur = kshim_current_process();
     if (!cur) return STATUS_INVALID_PARAMETER;
     HANDLE h=NULL;
@@ -670,7 +675,7 @@ NTSTATUS nt_svc_NtOpenThread(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
     if (!ThreadHandle || !ClientId) return STATUS_INVALID_PARAMETER;
     ULONG tid = (ULONG)(ULONG_PTR)ClientId->UniqueThread;
     struct nt_ethread *t = ObFindThreadByTid(tid);
-    if (!t) return STATUS_INVALID_PARAMETER;
+    if (!t) return STATUS_INVALID_CID;
     struct nt_eprocess *cur = kshim_current_process();
     if (!cur) return STATUS_INVALID_PARAMETER;
     HANDLE h=NULL;
@@ -1515,6 +1520,9 @@ NTSTATUS nt_svc_NtSuspendProcess(HANDLE ProcessHandle)
     target = ObFindProcessByHeader(hdr);
     ObDereferenceObject(hdr);
     if (!target) return STATUS_INVALID_HANDLE;
+    spin_lock(&target->lock);
+    if (target->terminated) { spin_unlock(&target->lock); return STATUS_PROCESS_IS_TERMINATING; }
+    spin_unlock(&target->lock);
     ObSuspendProcessThreads(target);
     return STATUS_SUCCESS;
 }
@@ -1592,6 +1600,7 @@ NTSTATUS nt_svc_NtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus)
     if (!cur) return STATUS_INVALID_PARAMETER;
     if (ProcessHandle == NtCurrentProcess()) {
         spin_lock(&cur->lock);
+        if (cur->terminated) { spin_unlock(&cur->lock); return STATUS_PROCESS_IS_TERMINATING; }
         cur->exit_status = ExitStatus;
         cur->terminated = true;
         wake_up(&cur->exit_wq);
@@ -1606,6 +1615,7 @@ NTSTATUS nt_svc_NtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus)
     ObDereferenceObject(hdr);
     if (!target) return STATUS_INVALID_HANDLE;
     spin_lock(&target->lock);
+    if (target->terminated) { spin_unlock(&target->lock); return STATUS_PROCESS_IS_TERMINATING; }
     target->exit_status = ExitStatus;
     target->terminated = true;
     wake_up(&target->exit_wq);
@@ -1628,7 +1638,7 @@ NTSTATUS nt_svc_NtOpenProcess(PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess,
         return STATUS_ACCESS_VIOLATION;
     if (copy_from_user(&pid, &ClientId->UniqueProcess, sizeof(pid))) return STATUS_ACCESS_VIOLATION;
     p = ObFindProcessByPid(pid);
-    if (!p) return STATUS_INVALID_PARAMETER;
+    if (!p) return STATUS_INVALID_CID;
     proc = nt_current_eprocess();
     st = ObCreateHandle(proc, p->obj, DesiredAccess ? DesiredAccess : 0x1FFFFF, 0, &h);
     if (!NT_SUCCESS(st)) return st;
@@ -1653,7 +1663,7 @@ NTSTATUS nt_svc_NtOpenThread(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
         return STATUS_ACCESS_VIOLATION;
     if (copy_from_user(&tid, &ClientId->UniqueThread, sizeof(tid))) return STATUS_ACCESS_VIOLATION;
     t = ObFindThreadByTid(tid);
-    if (!t) return STATUS_INVALID_PARAMETER;
+    if (!t) return STATUS_INVALID_CID;
     proc = nt_current_eprocess();
     st = ObCreateHandle(proc, t->obj, DesiredAccess ? DesiredAccess : 0x1FFFFF, 0, &h);
     if (!NT_SUCCESS(st)) return st;
