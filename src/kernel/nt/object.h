@@ -235,6 +235,12 @@ NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj);
  * takes ownership of the copy; the caller's buffer is not retained. */
 NTSTATUS ObSetObjectSecurityDescriptor(struct nt_object_header *obj,
                                         const void *sd, ULONG length);
+
+/* Returns a heap copy of obj's descriptor (*out, *out_len), or *out == NULL when
+ * the object has none. The caller frees the copy with kfree. Safe against a
+ * concurrent ObSetObjectSecurityDescriptor. */
+NTSTATUS ObCopyObjectSecurityDescriptor(struct nt_object_header *obj,
+                                        void **out, ULONG *out_len);
 /* Creates a Token object that takes its own reference on tok and inserts it
  * into proc's handle table. The caller keeps its own reference. */
 NTSTATUS ObCreateTokenHandle(struct nt_eprocess *proc,

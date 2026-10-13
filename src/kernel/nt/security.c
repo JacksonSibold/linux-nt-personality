@@ -2582,6 +2582,281 @@ static NTSTATUS ntsec_access_check_core(const void *sr, ULONG sr_len, HANDLE cli
     return STATUS_SUCCESS;
 }
 
+/* -------------------------------------------------------------------------- */
+/* NtQuerySecurityObject, NtSetSecurityObject                                 */
+/* -------------------------------------------------------------------------- */
+
+#define NTSEC_SI_SUPPORTED (OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | \
+                            DACL_SECURITY_INFORMATION | SACL_SECURITY_INFORMATION)
+
+/* Generic rights for object descriptors (no generic bits reach the core, so
+ * this only matters if a caller passes one through se_access_check). */
+static const GENERIC_MAPPING ntsec_object_generic_map = {
+    READ_CONTROL,
+    READ_CONTROL | WRITE_DAC,
+    READ_CONTROL,
+    READ_CONTROL | WRITE_DAC | WRITE_OWNER | ACCESS_SYSTEM_SECURITY,
+};
+
+/* Control bits owned by each part, cleared and re-taken when that part changes. */
+#define NTSEC_CTL_OWNER_BITS  SE_OWNER_DEFAULTED
+#define NTSEC_CTL_GROUP_BITS  SE_GROUP_DEFAULTED
+#define NTSEC_CTL_DACL_BITS   (SE_DACL_PRESENT | SE_DACL_DEFAULTED | SE_DACL_PROTECTED | \
+                               SE_DACL_AUTO_INHERIT_REQ | SE_DACL_AUTO_INHERITED)
+#define NTSEC_CTL_SACL_BITS   (SE_SACL_PRESENT | SE_SACL_DEFAULTED | SE_SACL_PROTECTED | \
+                               SE_SACL_AUTO_INHERIT_REQ | SE_SACL_AUTO_INHERITED)
+
+/* The token whose rights decide an object request: the thread's impersonation
+ * token when it has one, else the process primary token. */
+static const ACCESS_TOKEN *ntsec_effective_token(struct nt_eprocess *caller)
+{
+    struct nt_ethread *thr = NTSEC_CURRENT_THREAD();
+    if (thr && thr->impersonation_token)
+        return thr->impersonation_token;
+    return caller ? caller->primary_token : NULL;
+}
+
+/* Frees the components of an absolute descriptor, and the struct. */
+static void ntsec_free_abs_sd(SECURITY_DESCRIPTOR *sd)
+{
+    if (!sd) return;
+    if (sd->Owner) sid_free(sd->Owner);
+    if (sd->Group) sid_free(sd->Group);
+    if (sd->Dacl) acl_free(sd->Dacl);
+    if (sd->Sacl) acl_free(sd->Sacl);
+    sd_free(sd);
+}
+
+/* Rights the object's owner holds implicitly: READ_CONTROL and WRITE_DAC
+ * (WRITE_OWNER and ACCESS_SYSTEM_SECURITY are not implicit). */
+static NTSTATUS ntsec_object_access(const SECURITY_DESCRIPTOR *sd,
+                                    const ACCESS_TOKEN *tok, ACCESS_MASK desired)
+{
+    ACCESS_MASK granted = 0;
+    NTSTATUS st;
+    if (!sd || !tok) return STATUS_ACCESS_DENIED;
+    st = se_access_check(sd, tok, desired, &ntsec_object_generic_map,
+                         NTSEC_OBJECT_GENERIC, &granted);
+    if (st == STATUS_ACCESS_DENIED) granted = 0;
+    else if (!NT_SUCCESS(st)) return st;
+    if (sd->Owner && ((tok->user && sid_equal(sd->Owner, tok->user)) ||
+                      (tok->owner && sid_equal(sd->Owner, tok->owner))))
+        granted |= (READ_CONTROL | WRITE_DAC);
+    return (granted & desired) == desired ? STATUS_SUCCESS : STATUS_ACCESS_DENIED;
+}
+
+static NTSTATUS ntsec_sd_info_check(ULONG info)
+{
+    if (info == 0 || (info & ~NTSEC_SI_SUPPORTED))
+        return STATUS_INVALID_PARAMETER;
+    return STATUS_SUCCESS;
+}
+
+/* Handle rights a query needs: READ_CONTROL, plus ACCESS_SYSTEM_SECURITY for a SACL. */
+static ACCESS_MASK ntsec_query_access(ULONG info)
+{
+    ACCESS_MASK m = READ_CONTROL;
+    if (info & SACL_SECURITY_INFORMATION) m |= ACCESS_SYSTEM_SECURITY;
+    return m;
+}
+
+/* Handle rights a set needs for the parts it changes. */
+static ACCESS_MASK ntsec_set_access(ULONG info)
+{
+    ACCESS_MASK m = 0;
+    if (info & (OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION)) m |= WRITE_OWNER;
+    if (info & DACL_SECURITY_INFORMATION) m |= WRITE_DAC;
+    if (info & SACL_SECURITY_INFORMATION) m |= ACCESS_SYSTEM_SECURITY;
+    return m;
+}
+
+/* A new owner or primary group must be a SID the caller's token holds. */
+static BOOLEAN ntsec_sid_assignable(const ACCESS_TOKEN *tok, PSID sid)
+{
+    if (!tok || !sid) return FALSE;
+    if (tok->user && sid_equal(sid, tok->user)) return TRUE;
+    if (tok->owner && sid_equal(sid, tok->owner)) return TRUE;
+    return token_sid_enabled(tok, sid);
+}
+
+/* Copies the requested parts of the object's descriptor into a self-relative
+ * buffer. Returns the required length in *needed; a short out_len fails with
+ * BUFFER_TOO_SMALL and copies nothing. */
+static NTSTATUS ntsec_query_sd_core(HANDLE h, ULONG info, void *out, ULONG out_len,
+                                    ULONG *needed)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    ACCESS_MASK want = ntsec_query_access(info);
+    void *sr = NULL;
+    ULONG sr_len = 0;
+    SECURITY_DESCRIPTOR *cur = NULL;
+    SECURITY_DESCRIPTOR view;
+    ULONG control;
+    void *buf = NULL;
+    ULONG buf_len = 0;
+    NTSTATUS st;
+
+    if (!caller) return STATUS_INVALID_PARAMETER;
+    st = ntsec_sd_info_check(info);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObReferenceObjectByHandle(caller, h, NULL, KernelMode, want, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+
+    st = ObCopyObjectSecurityDescriptor(hdr, &sr, &sr_len);
+    if (NT_SUCCESS(st) && sr) {
+        st = sd_from_self_relative(sr, sr_len, &cur);
+        if (NT_SUCCESS(st))
+            st = ntsec_object_access(cur, ntsec_effective_token(caller), want);
+    }
+    if (NT_SUCCESS(st)) {
+        /* An object with no descriptor gives an empty header: nothing to disclose. */
+        control = cur ? cur->Control : 0;
+        if (!(info & OWNER_SECURITY_INFORMATION)) control &= ~NTSEC_CTL_OWNER_BITS;
+        if (!(info & GROUP_SECURITY_INFORMATION)) control &= ~NTSEC_CTL_GROUP_BITS;
+        if (!(info & DACL_SECURITY_INFORMATION)) control &= ~NTSEC_CTL_DACL_BITS;
+        if (!(info & SACL_SECURITY_INFORMATION)) control &= ~NTSEC_CTL_SACL_BITS;
+        view.Revision = 1;
+        view.Sbz1 = 0;
+        view.Control = (USHORT)control;
+        view.Owner = (cur && (info & OWNER_SECURITY_INFORMATION)) ? cur->Owner : NULL;
+        view.Group = (cur && (info & GROUP_SECURITY_INFORMATION)) ? cur->Group : NULL;
+        view.Dacl = (cur && (info & DACL_SECURITY_INFORMATION)) ? cur->Dacl : NULL;
+        view.Sacl = (cur && (info & SACL_SECURITY_INFORMATION)) ? cur->Sacl : NULL;
+        st = sd_to_self_relative(&view, &buf, &buf_len);
+    }
+    if (NT_SUCCESS(st)) {
+        if (needed) *needed = buf_len;
+        if (!out || out_len < buf_len) {
+            st = STATUS_BUFFER_TOO_SMALL;
+        } else {
+            memcpy(out, buf, buf_len);
+        }
+    }
+
+    kfree(buf);
+    ntsec_free_abs_sd(cur);
+    kfree(sr);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+/* Replaces the parts selected by info with those of the self-relative
+ * descriptor sr (sr_len bytes, already copied into this context). Parts not
+ * selected are kept from the object's current descriptor. */
+static NTSTATUS ntsec_set_sd_core(HANDLE h, ULONG info, const void *sr, ULONG sr_len)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    SECURITY_DESCRIPTOR *nsd = NULL;
+    SECURITY_DESCRIPTOR *cur = NULL;
+    SECURITY_DESCRIPTOR merged;
+    const ACCESS_TOKEN *tok;
+    ACCESS_MASK want;
+    void *cur_sr = NULL;
+    ULONG cur_len = 0;
+    void *buf = NULL;
+    ULONG buf_len = 0;
+    ULONG ctl;
+    NTSTATUS st;
+
+    if (!caller) return STATUS_INVALID_PARAMETER;
+    st = ntsec_sd_info_check(info);
+    if (!NT_SUCCESS(st)) return st;
+    memset(&merged, 0, sizeof(merged));
+
+    st = sd_from_self_relative(sr, sr_len, &nsd);
+    if (!NT_SUCCESS(st)) { st = STATUS_INVALID_SECURITY_DESCR; goto out; }
+    if ((info & OWNER_SECURITY_INFORMATION) && !nsd->Owner) { st = STATUS_INVALID_OWNER; goto out; }
+    if ((info & GROUP_SECURITY_INFORMATION) && !nsd->Group) { st = STATUS_INVALID_PRIMARY_GROUP; goto out; }
+
+    want = ntsec_set_access(info);
+    st = ObReferenceObjectByHandle(caller, h, NULL, KernelMode, want, &hdr, NULL);
+    if (!NT_SUCCESS(st)) goto out;
+
+    /* An object with no descriptor is unprotected, and nothing can change it. */
+    st = ObCopyObjectSecurityDescriptor(hdr, &cur_sr, &cur_len);
+    if (!NT_SUCCESS(st)) goto out;
+    if (!cur_sr) { st = STATUS_ACCESS_DENIED; goto out; }
+    st = sd_from_self_relative(cur_sr, cur_len, &cur);
+    if (!NT_SUCCESS(st)) { st = STATUS_INVALID_SECURITY_DESCR; goto out; }
+
+    tok = ntsec_effective_token(caller);
+    st = ntsec_object_access(cur, tok, want);
+    if (!NT_SUCCESS(st)) goto out;
+    if ((info & OWNER_SECURITY_INFORMATION) && !ntsec_sid_assignable(tok, nsd->Owner)) {
+        st = STATUS_INVALID_OWNER;
+        goto out;
+    }
+    if ((info & GROUP_SECURITY_INFORMATION) && !ntsec_sid_assignable(tok, nsd->Group)) {
+        st = STATUS_INVALID_PRIMARY_GROUP;
+        goto out;
+    }
+
+    /* Control bits: start from the current descriptor, then take each changed
+     * part's bits from the new one. */
+    ctl = cur->Control;
+    if (info & OWNER_SECURITY_INFORMATION) ctl = (ctl & ~NTSEC_CTL_OWNER_BITS) | (nsd->Control & NTSEC_CTL_OWNER_BITS);
+    if (info & GROUP_SECURITY_INFORMATION) ctl = (ctl & ~NTSEC_CTL_GROUP_BITS) | (nsd->Control & NTSEC_CTL_GROUP_BITS);
+    if (info & DACL_SECURITY_INFORMATION)  ctl = (ctl & ~NTSEC_CTL_DACL_BITS)  | (nsd->Control & NTSEC_CTL_DACL_BITS);
+    if (info & SACL_SECURITY_INFORMATION)  ctl = (ctl & ~NTSEC_CTL_SACL_BITS)  | (nsd->Control & NTSEC_CTL_SACL_BITS);
+
+    /* Each part is taken from the new descriptor when selected, else from the
+     * current one. The unused copy is freed here; the taken one moves into
+     * merged, which owns it until the end. */
+    if (info & OWNER_SECURITY_INFORMATION) {
+        merged.Owner = nsd->Owner; nsd->Owner = NULL;
+        if (cur->Owner) { sid_free(cur->Owner); cur->Owner = NULL; }
+    } else {
+        merged.Owner = cur->Owner; cur->Owner = NULL;
+        if (nsd->Owner) { sid_free(nsd->Owner); nsd->Owner = NULL; }
+    }
+    if (info & GROUP_SECURITY_INFORMATION) {
+        merged.Group = nsd->Group; nsd->Group = NULL;
+        if (cur->Group) { sid_free(cur->Group); cur->Group = NULL; }
+    } else {
+        merged.Group = cur->Group; cur->Group = NULL;
+        if (nsd->Group) { sid_free(nsd->Group); nsd->Group = NULL; }
+    }
+    if (info & DACL_SECURITY_INFORMATION) {
+        merged.Dacl = nsd->Dacl; nsd->Dacl = NULL;
+        if (cur->Dacl) { acl_free(cur->Dacl); cur->Dacl = NULL; }
+    } else {
+        merged.Dacl = cur->Dacl; cur->Dacl = NULL;
+        if (nsd->Dacl) { acl_free(nsd->Dacl); nsd->Dacl = NULL; }
+    }
+    if (info & SACL_SECURITY_INFORMATION) {
+        merged.Sacl = nsd->Sacl; nsd->Sacl = NULL;
+        if (cur->Sacl) { acl_free(cur->Sacl); cur->Sacl = NULL; }
+    } else {
+        merged.Sacl = cur->Sacl; cur->Sacl = NULL;
+        if (nsd->Sacl) { acl_free(nsd->Sacl); nsd->Sacl = NULL; }
+    }
+    /* A part that is absent must not carry its present bit. */
+    if (!merged.Dacl) ctl &= ~SE_DACL_PRESENT;
+    if (!merged.Sacl) ctl &= ~SE_SACL_PRESENT;
+    merged.Revision = 1;
+    merged.Sbz1 = 0;
+    merged.Control = (USHORT)(ctl & ~SE_SELF_RELATIVE);
+
+    st = sd_to_self_relative(&merged, &buf, &buf_len);
+    if (NT_SUCCESS(st))
+        st = ObSetObjectSecurityDescriptor(hdr, buf, buf_len);
+
+out:
+    kfree(buf);
+    /* Whatever a successful merge moved out of nsd and cur is now in merged. */
+    if (merged.Owner) sid_free(merged.Owner);
+    if (merged.Group) sid_free(merged.Group);
+    if (merged.Dacl) acl_free(merged.Dacl);
+    if (merged.Sacl) acl_free(merged.Sacl);
+    ntsec_free_abs_sd(nsd);
+    ntsec_free_abs_sd(cur);
+    kfree(cur_sr);
+    if (hdr) ObDereferenceObject(hdr);
+    return st;
+}
+
 #ifndef __KERNEL__
 NTSTATUS nt_svc_NtAdjustPrivilegesToken(HANDLE TokenHandle, BOOLEAN DisableAllPrivileges,
                                         PTOKEN_PRIVILEGES NewState, ULONG BufferLength,
@@ -2623,6 +2898,24 @@ NTSTATUS nt_svc_NtAccessCheck(PVOID SecurityDescriptor, HANDLE ClientToken,
         *AccessStatus = astat;
     }
     return st;
+}
+NTSTATUS nt_svc_NtQuerySecurityObject(HANDLE Handle, ULONG SecurityInformation,
+                                      PSECURITY_DESCRIPTOR SecurityDescriptor,
+                                      ULONG Length, PULONG LengthNeeded)
+{
+    return ntsec_query_sd_core(Handle, SecurityInformation, SecurityDescriptor,
+                               Length, LengthNeeded);
+}
+
+NTSTATUS nt_svc_NtSetSecurityObject(HANDLE Handle, ULONG SecurityInformation,
+                                    PSECURITY_DESCRIPTOR SecurityDescriptor)
+{
+    ULONG len = 0;
+    NTSTATUS st;
+    if (!SecurityDescriptor) return STATUS_INVALID_PARAMETER;
+    st = ntsec_sr_length(SecurityDescriptor, &len);
+    if (!NT_SUCCESS(st)) return st;
+    return ntsec_set_sd_core(Handle, SecurityInformation, SecurityDescriptor, len);
 }
 #else
 /* Kernel entry points: the caller's structures are copied in, and results
@@ -2752,5 +3045,61 @@ NTSTATUS nt_svc_NtAccessCheck(unsigned long a0, unsigned long a1, unsigned long 
         copy_to_user(user_psl, &psl_tmp, psl_len))
         return STATUS_ACCESS_VIOLATION;
     return STATUS_SUCCESS;
+}
+
+NTSTATUS nt_svc_NtQuerySecurityObject(unsigned long a0, unsigned long a1, unsigned long a2,
+                                      unsigned long a3, unsigned long a4, unsigned long a5,
+                                      unsigned long a6, unsigned long a7, unsigned long a8,
+                                      unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = (HANDLE)a0;
+    ULONG info = (ULONG)a1;
+    PVOID user_buf = (PVOID)a2;
+    ULONG blen = (ULONG)a3;
+    PULONG user_need = (PULONG)a4;
+    void *kbuf = NULL;
+    ULONG need = 0;
+    NTSTATUS st;
+    (void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+
+    if (blen > NTSEC_SD_MAX_LENGTH) return STATUS_INVALID_PARAMETER;
+    kbuf = kmalloc(blen ? blen : 1, GFP_KERNEL);
+    if (!kbuf) return STATUS_NO_MEMORY;
+    st = ntsec_query_sd_core(h, info, blen ? kbuf : NULL, blen, &need);
+    if (user_need && (st == STATUS_SUCCESS || st == STATUS_BUFFER_TOO_SMALL) &&
+        copy_to_user(user_need, &need, sizeof(need)))
+        st = STATUS_ACCESS_VIOLATION;
+    if (st == STATUS_SUCCESS &&
+        (!user_buf || !access_ok(user_buf, need) || copy_to_user(user_buf, kbuf, need)))
+        st = STATUS_ACCESS_VIOLATION;
+    kfree(kbuf);
+    return st;
+}
+
+NTSTATUS nt_svc_NtSetSecurityObject(unsigned long a0, unsigned long a1, unsigned long a2,
+                                    unsigned long a3, unsigned long a4, unsigned long a5,
+                                    unsigned long a6, unsigned long a7, unsigned long a8,
+                                    unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = (HANDLE)a0;
+    ULONG info = (ULONG)a1;
+    const void *user_sd = (const void *)a2;
+    ULONG len = 0;
+    void *ksd = NULL;
+    NTSTATUS st;
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+
+    if (!user_sd) return STATUS_INVALID_PARAMETER;
+    st = ntsec_sr_length(user_sd, &len);
+    if (!NT_SUCCESS(st)) return st;
+    ksd = kmalloc(len, GFP_KERNEL);
+    if (!ksd) return STATUS_NO_MEMORY;
+    if (ntsec_rd_user(ksd, user_sd, len) != STATUS_SUCCESS) {
+        kfree(ksd);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    st = ntsec_set_sd_core(h, info, ksd, len);
+    kfree(ksd);
+    return st;
 }
 #endif /* __KERNEL__ */

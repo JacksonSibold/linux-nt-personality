@@ -664,6 +664,43 @@ NTSTATUS ObSetObjectSecurityDescriptor(struct nt_object_header *obj,
     return STATUS_SUCCESS;
 }
 
+NTSTATUS ObCopyObjectSecurityDescriptor(struct nt_object_header *obj,
+                                        void **out, ULONG *out_len)
+{
+    void *copy;
+    ULONG len;
+    if (!obj || !out || !out_len)
+        return STATUS_INVALID_PARAMETER;
+    /* The copy is allocated outside the lock (it may sleep), so the length is
+     * re-checked under the lock and the attempt is repeated if the descriptor
+     * was replaced in between. */
+    for (;;) {
+        bool have;
+        spin_lock(&ob_sd_lock);
+        have = obj->security_descriptor != NULL;
+        len = obj->security_descriptor_length;
+        spin_unlock(&ob_sd_lock);
+        if (!have) {
+            *out = NULL;
+            *out_len = 0;
+            return STATUS_SUCCESS;
+        }
+        copy = kmalloc(len, GFP_KERNEL);
+        if (!copy)
+            return STATUS_NO_MEMORY;
+        spin_lock(&ob_sd_lock);
+        if (obj->security_descriptor && obj->security_descriptor_length == len) {
+            memcpy(copy, obj->security_descriptor, len);
+            spin_unlock(&ob_sd_lock);
+            *out = copy;
+            *out_len = len;
+            return STATUS_SUCCESS;
+        }
+        spin_unlock(&ob_sd_lock);
+        kfree(copy);
+    }
+}
+
 NTSTATUS ObpIncrementHandleCount(struct nt_object_header *obj)
 {
     if (!obj) return STATUS_INVALID_PARAMETER;
