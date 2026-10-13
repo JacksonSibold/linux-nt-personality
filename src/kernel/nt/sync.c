@@ -36,6 +36,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #endif
 
@@ -939,12 +940,20 @@ static void *timer_thread_func(void *arg) {
     }
 }
 
+/* Absolute NT expiry (100 ns since 1601) for a due time; negative is relative. */
+static int64_t timer_expiry_100ns(const LARGE_INTEGER *due) {
+    if (due->QuadPart >= 0) return due->QuadPart;
+    struct timespec now;
+    now_realtime(&now);
+    return timespec_to_100ns(&now) + 116444736000000000LL - due->QuadPart;
+}
 NTSTATUS nt_set_timer(struct nt_timer *timer, const LARGE_INTEGER *due_time, LONG period_ms, void (*apc_routine)(void*), void *apc_ctx) {
     if (!timer || !due_time) return STATUS_INVALID_PARAMETER;
     BOOLEAN dummy;
     nt_cancel_timer(timer, &dummy);
     pthread_mutex_lock(&timer->timer_lock);
     timer->due_time = *due_time;
+    timer->expiry_100ns = timer_expiry_100ns(due_time);
     timer->period_ms = period_ms;
     timer->apc_routine = apc_routine;
     timer->apc_ctx = apc_ctx;
@@ -1679,6 +1688,15 @@ static void timer_callback(struct timer_list *tl)
         spin_unlock_irqrestore(&t->timer_lock, flags);
     }
 }
+/* Absolute NT expiry (100 ns since 1601) for a due time; negative is relative. */
+static int64_t timer_expiry_100ns(const LARGE_INTEGER *due)
+{
+    struct timespec64 ts;
+    if (due->QuadPart >= 0) return due->QuadPart;
+    ktime_get_real_ts64(&ts);
+    return (int64_t)ts.tv_sec * 10000000LL + ts.tv_nsec / 100 + 116444736000000000LL - due->QuadPart;
+}
+
 NTSTATUS nt_set_timer(struct nt_timer *timer, const LARGE_INTEGER *due_time, LONG period_ms,
                       void (*apc_routine)(void*), void *apc_ctx)
 {
@@ -1688,6 +1706,7 @@ NTSTATUS nt_set_timer(struct nt_timer *timer, const LARGE_INTEGER *due_time, LON
     unsigned long flags;
     spin_lock_irqsave(&timer->timer_lock, flags);
     timer->due_time = *due_time;
+    timer->expiry_100ns = timer_expiry_100ns(due_time);
     timer->period_ms = period_ms;
     timer->apc_routine = apc_routine;
     timer->apc_ctx = apc_ctx;
@@ -2254,3 +2273,593 @@ NTSTATUS nt_wait_for_single_object(struct nt_dispatcher_header *obj, BOOLEAN ale
 }
 
 #endif /* __KERNEL__ real */
+
+/* ------------------------------------------------------------------ */
+/* Timer and keyed-event objects: syscall wrappers (both modes)        */
+/* One body serves the userspace shim and the kernel. User pointers    */
+/* go through access_ok / copy_*_user, which kshim.h maps to plain     */
+/* memory in the userspace build.                                      */
+/* ------------------------------------------------------------------ */
+#include "object.h"
+#include "handle.h"
+
+#ifdef __KERNEL__
+extern struct nt_eprocess *nt_get_current_eprocess(void);
+#define SYNC_CURRENT_PROCESS() nt_get_current_eprocess()
+#else
+#define SYNC_CURRENT_PROCESS() kshim_current_process()
+#endif
+
+static void timer_obj_delete(struct nt_object_header *hdr);
+static void keyed_event_obj_delete(struct nt_object_header *hdr);
+
+struct nt_object_type nt_timer_type = {
+    .name = "Timer",
+    .ops = { .delete_obj = timer_obj_delete, .close = NULL, },
+    .pool_tag = 0,
+};
+
+struct nt_object_type nt_keyed_event_type = {
+    .name = "KeyedEvent",
+    .ops = { .delete_obj = keyed_event_obj_delete, .close = NULL, },
+    .pool_tag = 0,
+};
+
+/* Initialise a timer body that lives inside an object-manager allocation. */
+static void timer_object_init(struct nt_timer *t, bool manual)
+{
+#ifndef __KERNEL__
+    t->header.type = NT_OBJ_TIMER;
+    pthread_mutex_init(&t->header.lock, NULL);
+    INIT_LIST_HEAD(&t->header.waiters);
+    t->header.signal_state = 0;
+    t->header.manual_reset = manual;
+    atomic_init(&t->header.refcount, 1);
+    pthread_mutex_init(&t->timer_lock, NULL);
+    t->thread_running = false;
+#else
+    t->header.type = NT_OBJ_TIMER;
+    spin_lock_init(&t->header.lock);
+    INIT_LIST_HEAD(&t->header.waiters);
+    t->header.signal_state = 0;
+    t->header.manual_reset = manual;
+    atomic_set(&t->header.refcount, 1);
+    init_waitqueue_head(&t->header.wq);
+    spin_lock_init(&t->timer_lock);
+    timer_setup(&t->timer, timer_callback, 0);
+#endif
+    t->active = false;
+    t->cancel_requested = false;
+    t->period_ms = 0;
+    t->expiry_100ns = 0;
+    t->apc_routine = NULL;
+    t->apc_ctx = NULL;
+    t->apc_thread = NULL;
+}
+
+/* Last reference dropped: stop the timer, then let its thread leave. */
+static void timer_obj_delete(struct nt_object_header *hdr)
+{
+    struct nt_timer *t = (struct nt_timer *)nt_object_body(hdr);
+    BOOLEAN dummy = 0;
+    nt_cancel_timer(t, &dummy);
+#ifndef __KERNEL__
+    /* The timer thread is detached and still reads t, so wait for it to exit. */
+    for (;;) {
+        pthread_mutex_lock(&t->timer_lock);
+        bool running = t->thread_running;
+        pthread_mutex_unlock(&t->timer_lock);
+        if (!running) break;
+        usleep(1000);
+    }
+    pthread_mutex_destroy(&t->timer_lock);
+    pthread_mutex_destroy(&t->header.lock);
+#endif
+}
+
+static void keyed_event_obj_delete(struct nt_object_header *hdr)
+{
+#ifndef __KERNEL__
+    struct nt_keyed_event *k = (struct nt_keyed_event *)nt_object_body(hdr);
+    pthread_mutex_destroy(&k->header.lock);
+#else
+    (void)hdr;
+#endif
+}
+
+/* Copy an OBJECT_ATTRIBUTES and its name from user memory (as nt_obj.c does). */
+static NTSTATUS sync_copy_oa(POBJECT_ATTRIBUTES uptr, OBJECT_ATTRIBUTES *k_oa, UNICODE_STRING *k_name,
+                             WCHAR *k_buf, size_t k_buf_bytes, POBJECT_ATTRIBUTES *out_oa)
+{
+    if (!uptr) { memset(k_oa, 0, sizeof(*k_oa)); k_oa->Length = sizeof(OBJECT_ATTRIBUTES); *out_oa = NULL; return STATUS_SUCCESS; }
+    if (!access_ok(uptr, sizeof(OBJECT_ATTRIBUTES))) return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(k_oa, uptr, sizeof(OBJECT_ATTRIBUTES))) return STATUS_ACCESS_VIOLATION;
+    if (k_oa->Length != sizeof(OBJECT_ATTRIBUTES)) return STATUS_INVALID_PARAMETER;
+    if (k_oa->ObjectName) {
+        if (!access_ok(k_oa->ObjectName, sizeof(UNICODE_STRING))) return STATUS_ACCESS_VIOLATION;
+        UNICODE_STRING tmp;
+        if (copy_from_user(&tmp, k_oa->ObjectName, sizeof(tmp))) return STATUS_ACCESS_VIOLATION;
+        if (tmp.Length) {
+            if (!access_ok(tmp.Buffer, tmp.Length)) return STATUS_ACCESS_VIOLATION;
+            if ((size_t)tmp.Length > k_buf_bytes) return STATUS_NAME_TOO_LONG;
+            if (copy_from_user(k_buf, tmp.Buffer, tmp.Length)) return STATUS_ACCESS_VIOLATION;
+            k_name->Buffer = k_buf; k_name->Length = tmp.Length; k_name->MaximumLength = tmp.Length;
+            k_oa->ObjectName = k_name;
+        } else {
+            k_oa->ObjectName = NULL;
+        }
+    }
+    *out_oa = k_oa;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS sync_ensure_handle_table(struct nt_eprocess *proc)
+{
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    if (proc->handle_table) return STATUS_SUCCESS;
+    return ObCreateHandleTable(proc, &proc->handle_table);
+}
+
+/* Create a timer, or open the existing one when the name is taken (as NtCreateEvent). */
+static NTSTATUS timer_create_internal(struct nt_eprocess *proc, ACCESS_MASK access,
+                                      POBJECT_ATTRIBUTES oa, ULONG timer_type, PHANDLE out)
+{
+    if (timer_type != NotificationTimer && timer_type != SynchronizationTimer)
+        return STATUS_INVALID_PARAMETER;
+    if (oa && oa->ObjectName && oa->ObjectName->Length) {
+        struct nt_object_header *existing = NULL;
+        NTSTATUS st = ObReferenceObjectByName(oa->ObjectName, &nt_timer_type, UserMode, access, &existing);
+        if (NT_SUCCESS(st)) {
+            ULONG hattr = 0;
+            if (oa->Attributes & OBJ_INHERIT) hattr |= OBJ_INHERIT;
+            if (oa->Attributes & OBJ_PROTECT_FROM_CLOSE) hattr |= OBJ_PROTECT_FROM_CLOSE;
+            HANDLE h = NULL;
+            st = ObCreateHandle(proc, existing, access, hattr, &h);
+            ObDereferenceObject(existing);
+            if (NT_SUCCESS(st)) { *out = h; return STATUS_OBJECT_NAME_COLLISION; }
+            return st;
+        }
+    }
+    struct nt_object_header *hdr = NULL;
+    struct nt_timer *t = NULL;
+    OBJECT_ATTRIBUTES tmp = {0};
+    if (oa) tmp = *oa; else tmp.Length = sizeof(tmp);
+    NTSTATUS st = ObCreateObject(&nt_timer_type, &tmp, sizeof(*t), &hdr, (void **)&t);
+    if (!NT_SUCCESS(st)) return st;
+    timer_object_init(t, timer_type == NotificationTimer);
+    st = ObInsertObject(hdr, oa, access, proc, out);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+/* Open an existing named object of the given type. */
+static NTSTATUS sync_open_named(PHANDLE out, ACCESS_MASK access, POBJECT_ATTRIBUTES oa,
+                                struct nt_object_type *type, struct nt_eprocess *proc)
+{
+    if (!oa || !oa->ObjectName) return STATUS_INVALID_PARAMETER;
+    HANDLE h = NULL;
+    NTSTATUS st = ObOpenObjectByName(oa, type, UserMode, access, proc, &h);
+    if (NT_SUCCESS(st)) *out = h;
+    return st;
+}
+
+NTSTATUS nt_svc_NtCreateTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                              ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                              ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    PHANDLE TimerHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    ULONG TimerType = (ULONG)a3;
+    (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (!TimerHandle) return STATUS_INVALID_PARAMETER;
+    if (!access_ok(TimerHandle, sizeof(*TimerHandle))) return STATUS_ACCESS_VIOLATION;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    NTSTATUS st = sync_ensure_handle_table(proc);
+    if (!NT_SUCCESS(st)) return st;
+    OBJECT_ATTRIBUTES k_oa;
+    UNICODE_STRING k_name;
+    WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL;
+    st = sync_copy_oa(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    HANDLE h = NULL;
+    st = timer_create_internal(proc, DesiredAccess, oa, TimerType, &h);
+    if (NT_SUCCESS(st) || st == STATUS_OBJECT_NAME_COLLISION) {
+        if (copy_to_user(TimerHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+    }
+    return st;
+}
+
+NTSTATUS nt_svc_NtOpenTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                            ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                            ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    PHANDLE TimerHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    (void)a3; (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (!TimerHandle) return STATUS_INVALID_PARAMETER;
+    if (!access_ok(TimerHandle, sizeof(*TimerHandle))) return STATUS_ACCESS_VIOLATION;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    NTSTATUS st = sync_ensure_handle_table(proc);
+    if (!NT_SUCCESS(st)) return st;
+    OBJECT_ATTRIBUTES k_oa;
+    UNICODE_STRING k_name;
+    WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL;
+    st = sync_copy_oa(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    HANDLE h = NULL;
+    st = sync_open_named(&h, DesiredAccess, oa, &nt_timer_type, proc);
+    if (NT_SUCCESS(st) && copy_to_user(TimerHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+    return st;
+}
+
+/* Resolve a timer handle to its body; the caller drops *hdr with ObDereferenceObject. */
+static NTSTATUS timer_ref(struct nt_eprocess *proc, HANDLE h, struct nt_timer **out_t,
+                          struct nt_object_header **out_hdr)
+{
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = ObReferenceObjectByHandle(proc, h, &nt_timer_type, UserMode, 0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    *out_t = (struct nt_timer *)nt_object_body(hdr);
+    *out_hdr = hdr;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS nt_svc_NtSetTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                           ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                           ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    HANDLE TimerHandle = (HANDLE)a0;
+    PLARGE_INTEGER DueTime = (PLARGE_INTEGER)a1;
+    void (*TimerApcRoutine)(void *) = (void (*)(void *))a2;
+    void *TimerContext = (void *)a3;
+    /* ResumeTimer: timers here are never suspended, so there is nothing to resume. */
+    LONG Period = (LONG)a5;
+    PBOOLEAN PreviousState = (PBOOLEAN)a6;
+    (void)a4; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (!DueTime) return STATUS_INVALID_PARAMETER;
+    if (!access_ok(DueTime, sizeof(LARGE_INTEGER))) return STATUS_ACCESS_VIOLATION;
+    LARGE_INTEGER due;
+    if (copy_from_user(&due, DueTime, sizeof(due))) return STATUS_ACCESS_VIOLATION;
+    if (Period < 0) return STATUS_INVALID_PARAMETER;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    struct nt_timer *t = NULL;
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = timer_ref(proc, TimerHandle, &t, &hdr);
+    if (!NT_SUCCESS(st)) return st;
+    BOOLEAN prev = 0;
+    st = nt_cancel_timer(t, &prev);   /* stop any earlier arming and read the old state */
+    if (NT_SUCCESS(st)) st = nt_set_timer(t, &due, Period, TimerApcRoutine, TimerContext);
+    if (NT_SUCCESS(st) && PreviousState) {
+        if (!access_ok(PreviousState, sizeof(BOOLEAN)) || copy_to_user(PreviousState, &prev, sizeof(prev)))
+            st = STATUS_ACCESS_VIOLATION;
+    }
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+NTSTATUS nt_svc_NtCancelTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                              ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                              ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    HANDLE TimerHandle = (HANDLE)a0;
+    PBOOLEAN CurrentState = (PBOOLEAN)a1;
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    struct nt_timer *t = NULL;
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = timer_ref(proc, TimerHandle, &t, &hdr);
+    if (!NT_SUCCESS(st)) return st;
+    BOOLEAN cur = 0;
+    st = nt_cancel_timer(t, &cur);
+    if (NT_SUCCESS(st) && CurrentState) {
+        if (!access_ok(CurrentState, sizeof(BOOLEAN)) || copy_to_user(CurrentState, &cur, sizeof(cur)))
+            st = STATUS_ACCESS_VIOLATION;
+    }
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+/* Current time in NT units (100 ns since 1601-01-01). */
+static int64_t timer_now_100ns(void)
+{
+#ifndef __KERNEL__
+    struct timespec now;
+    now_realtime(&now);
+    return timespec_to_100ns(&now) + 116444736000000000LL;
+#else
+    struct timespec64 ts;
+    ktime_get_real_ts64(&ts);
+    return (int64_t)ts.tv_sec * 10000000LL + ts.tv_nsec / 100 + 116444736000000000LL;
+#endif
+}
+
+/* Read the fields NtQueryTimer reports, each under its own lock. */
+static void timer_snapshot(struct nt_timer *t, bool *active, int64_t *expiry, bool *signalled)
+{
+#ifndef __KERNEL__
+    pthread_mutex_lock(&t->timer_lock);
+    *active = t->active;
+    *expiry = t->expiry_100ns;
+    pthread_mutex_unlock(&t->timer_lock);
+    pthread_mutex_lock(&t->header.lock);
+    *signalled = t->header.signal_state != 0;
+    pthread_mutex_unlock(&t->header.lock);
+#else
+    unsigned long flags;
+    spin_lock_irqsave(&t->timer_lock, flags);
+    *active = t->active;
+    *expiry = t->expiry_100ns;
+    spin_unlock_irqrestore(&t->timer_lock, flags);
+    spin_lock_irqsave(&t->header.lock, flags);
+    *signalled = t->header.signal_state != 0;
+    spin_unlock_irqrestore(&t->header.lock, flags);
+#endif
+}
+
+/* TIMER_BASIC_INFORMATION, the only class NtQueryTimer supports. */
+struct sync_timer_basic_info {
+    LARGE_INTEGER RemainingTime;
+    BOOLEAN       TimerState;
+};
+
+NTSTATUS nt_svc_NtQueryTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                             ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                             ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    HANDLE TimerHandle = (HANDLE)a0;
+    ULONG TimerInformationClass = (ULONG)a1;
+    PVOID TimerInformation = (PVOID)a2;
+    ULONG TimerInformationLength = (ULONG)a3;
+    PULONG ReturnLength = (PULONG)a4;
+    (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (TimerInformationClass != 0) return STATUS_INVALID_INFO_CLASS;
+    const ULONG needed = sizeof(struct sync_timer_basic_info);
+    if (ReturnLength) {
+        if (!access_ok(ReturnLength, sizeof(ULONG))) return STATUS_ACCESS_VIOLATION;
+        ULONG n = needed;
+        if (copy_to_user(ReturnLength, &n, sizeof(n))) return STATUS_ACCESS_VIOLATION;
+    }
+    if (TimerInformationLength != needed) return STATUS_INFO_LENGTH_MISMATCH;
+    if (!TimerInformation || !access_ok(TimerInformation, needed)) return STATUS_ACCESS_VIOLATION;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    struct nt_timer *t = NULL;
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = timer_ref(proc, TimerHandle, &t, &hdr);
+    if (!NT_SUCCESS(st)) return st;
+    bool active = false, signalled = false;
+    int64_t expiry = 0;
+    timer_snapshot(t, &active, &expiry, &signalled);
+    struct sync_timer_basic_info info;
+    int64_t remaining = 0;
+    if (active) {
+        int64_t now = timer_now_100ns();
+        if (expiry > now) remaining = expiry - now;
+    }
+    info.RemainingTime.QuadPart = remaining;
+    info.TimerState = signalled ? 1 : 0;
+    st = STATUS_SUCCESS;
+    if (copy_to_user(TimerInformation, &info, needed)) st = STATUS_ACCESS_VIOLATION;
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+extern struct nt_object_type nt_event_type, nt_mutant_type, nt_semaphore_type;
+
+/* Signal one object, then wait on another. Both handles are resolved first so that a
+ * bad handle fails before anything is signalled. */
+NTSTATUS nt_svc_NtSignalAndWaitForSingleObject(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                               ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                               ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    HANDLE SignalHandle = (HANDLE)a0;
+    HANDLE WaitHandle = (HANDLE)a1;
+    BOOLEAN Alertable = (BOOLEAN)a2;
+    PLARGE_INTEGER Timeout = (PLARGE_INTEGER)a3;
+    (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    LARGE_INTEGER k_timeout;
+    PLARGE_INTEGER p_timeout = NULL;
+    if (Timeout) {
+        if (!access_ok(Timeout, sizeof(LARGE_INTEGER))) return STATUS_ACCESS_VIOLATION;
+        if (copy_from_user(&k_timeout, Timeout, sizeof(k_timeout))) return STATUS_ACCESS_VIOLATION;
+        p_timeout = &k_timeout;
+    }
+    struct nt_object_header *sig_hdr = NULL, *wait_hdr = NULL;
+    NTSTATUS st = ObReferenceObjectByHandle(proc, SignalHandle, NULL, UserMode, 0, &sig_hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObReferenceObjectByHandle(proc, WaitHandle, NULL, UserMode, 0, &wait_hdr, NULL);
+    if (!NT_SUCCESS(st)) { ObDereferenceObject(sig_hdr); return st; }
+    if (sig_hdr->type != &nt_event_type && sig_hdr->type != &nt_mutant_type &&
+        sig_hdr->type != &nt_semaphore_type) {
+        st = STATUS_OBJECT_TYPE_MISMATCH;
+    } else if (wait_hdr->type != &nt_event_type && wait_hdr->type != &nt_mutant_type &&
+               wait_hdr->type != &nt_semaphore_type && wait_hdr->type != &nt_timer_type) {
+        st = STATUS_OBJECT_TYPE_MISMATCH;
+    }
+    if (NT_SUCCESS(st)) {
+        LONG prev = 0;
+        void *sbody = nt_object_body(sig_hdr);
+        if (sig_hdr->type == &nt_event_type) st = nt_set_event((struct nt_event *)sbody, &prev);
+        else if (sig_hdr->type == &nt_mutant_type) st = nt_release_mutant((struct nt_mutant *)sbody, &prev);
+        else st = nt_release_semaphore((struct nt_semaphore *)sbody, 1, &prev);
+    }
+    if (NT_SUCCESS(st)) {
+        st = nt_wait_for_single_object((struct nt_dispatcher_header *)nt_object_body(wait_hdr), Alertable, p_timeout);
+    }
+    ObDereferenceObject(wait_hdr);
+    ObDereferenceObject(sig_hdr);
+    return st;
+}
+
+/* Keyed event body: the wait list lives in the global keyed table, so the header only needs init. */
+static void keyed_object_init(struct nt_keyed_event *k)
+{
+#ifndef __KERNEL__
+    k->header.type = NT_OBJ_KEYED_EVENT;
+    pthread_mutex_init(&k->header.lock, NULL);
+    INIT_LIST_HEAD(&k->header.waiters);
+    k->header.signal_state = 0;
+    k->header.manual_reset = false;
+    atomic_init(&k->header.refcount, 1);
+#else
+    k->header.type = NT_OBJ_KEYED_EVENT;
+    spin_lock_init(&k->header.lock);
+    INIT_LIST_HEAD(&k->header.waiters);
+    k->header.signal_state = 0;
+    k->header.manual_reset = false;
+    atomic_set(&k->header.refcount, 1);
+    init_waitqueue_head(&k->header.wq);
+#endif
+}
+
+static NTSTATUS keyed_create_internal(struct nt_eprocess *proc, ACCESS_MASK access,
+                                      POBJECT_ATTRIBUTES oa, PHANDLE out)
+{
+    if (oa && oa->ObjectName && oa->ObjectName->Length) {
+        struct nt_object_header *existing = NULL;
+        NTSTATUS st = ObReferenceObjectByName(oa->ObjectName, &nt_keyed_event_type, UserMode, access, &existing);
+        if (NT_SUCCESS(st)) {
+            ULONG hattr = 0;
+            if (oa->Attributes & OBJ_INHERIT) hattr |= OBJ_INHERIT;
+            if (oa->Attributes & OBJ_PROTECT_FROM_CLOSE) hattr |= OBJ_PROTECT_FROM_CLOSE;
+            HANDLE h = NULL;
+            st = ObCreateHandle(proc, existing, access, hattr, &h);
+            ObDereferenceObject(existing);
+            if (NT_SUCCESS(st)) { *out = h; return STATUS_OBJECT_NAME_COLLISION; }
+            return st;
+        }
+    }
+    struct nt_object_header *hdr = NULL;
+    struct nt_keyed_event *k = NULL;
+    OBJECT_ATTRIBUTES tmp = {0};
+    if (oa) tmp = *oa; else tmp.Length = sizeof(tmp);
+    NTSTATUS st = ObCreateObject(&nt_keyed_event_type, &tmp, sizeof(*k), &hdr, (void **)&k);
+    if (!NT_SUCCESS(st)) return st;
+    keyed_object_init(k);
+    st = ObInsertObject(hdr, oa, access, proc, out);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+NTSTATUS nt_svc_NtCreateKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                   ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                   ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    PHANDLE KeyedEventHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    ULONG Flags = (ULONG)a3;
+    (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (!KeyedEventHandle) return STATUS_INVALID_PARAMETER;
+    if (!access_ok(KeyedEventHandle, sizeof(*KeyedEventHandle))) return STATUS_ACCESS_VIOLATION;
+    if (Flags != 0) return STATUS_INVALID_PARAMETER;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    NTSTATUS st = sync_ensure_handle_table(proc);
+    if (!NT_SUCCESS(st)) return st;
+    OBJECT_ATTRIBUTES k_oa;
+    UNICODE_STRING k_name;
+    WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL;
+    st = sync_copy_oa(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    HANDLE h = NULL;
+    st = keyed_create_internal(proc, DesiredAccess, oa, &h);
+    if (NT_SUCCESS(st) || st == STATUS_OBJECT_NAME_COLLISION) {
+        if (copy_to_user(KeyedEventHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+    }
+    return st;
+}
+
+NTSTATUS nt_svc_NtOpenKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                 ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                 ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    PHANDLE KeyedEventHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    (void)a3; (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (!KeyedEventHandle) return STATUS_INVALID_PARAMETER;
+    if (!access_ok(KeyedEventHandle, sizeof(*KeyedEventHandle))) return STATUS_ACCESS_VIOLATION;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    NTSTATUS st = sync_ensure_handle_table(proc);
+    if (!NT_SUCCESS(st)) return st;
+    OBJECT_ATTRIBUTES k_oa;
+    UNICODE_STRING k_name;
+    WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL;
+    st = sync_copy_oa(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    HANDLE h = NULL;
+    st = sync_open_named(&h, DesiredAccess, oa, &nt_keyed_event_type, proc);
+    if (NT_SUCCESS(st) && copy_to_user(KeyedEventHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+    return st;
+}
+
+/* Shared body of NtWaitForKeyedEvent and NtReleaseKeyedEvent. */
+static NTSTATUS keyed_event_op(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3, bool wait)
+{
+    HANDLE KeyedEventHandle = (HANDLE)a0;
+    void *Key = (void *)a1;
+    BOOLEAN Alertable = (BOOLEAN)a2;
+    PLARGE_INTEGER Timeout = (PLARGE_INTEGER)a3;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    LARGE_INTEGER k_timeout;
+    PLARGE_INTEGER p_timeout = NULL;
+    if (Timeout) {
+        if (!access_ok(Timeout, sizeof(LARGE_INTEGER))) return STATUS_ACCESS_VIOLATION;
+        if (copy_from_user(&k_timeout, Timeout, sizeof(k_timeout))) return STATUS_ACCESS_VIOLATION;
+        p_timeout = &k_timeout;
+    }
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = ObReferenceObjectByHandle(proc, KeyedEventHandle, &nt_keyed_event_type, UserMode, 0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    struct nt_keyed_event *k = (struct nt_keyed_event *)nt_object_body(hdr);
+    if (wait) st = nt_wait_for_keyed_event(k, Key, Alertable, p_timeout);
+    else st = nt_release_keyed_event(k, Key, Alertable, p_timeout);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+NTSTATUS nt_svc_NtWaitForKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                    ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                    ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    return keyed_event_op(a0, a1, a2, a3, true);
+}
+
+NTSTATUS nt_svc_NtReleaseKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                    ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                    ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    return keyed_event_op(a0, a1, a2, a3, false);
+}
+
+/* Give up the processor to another ready thread. Always reports success: sched_yield and
+ * cond_resched do not say whether a switch happened, so STATUS_NO_YIELD_PERFORMED is never returned. */
+NTSTATUS nt_svc_NtYieldExecution(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                 ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                 ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+#ifndef __KERNEL__
+    sched_yield();
+#else
+    cond_resched();
+#endif
+    return STATUS_SUCCESS;
+}

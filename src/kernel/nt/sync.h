@@ -207,6 +207,7 @@ struct nt_timer {
     void                      (*apc_routine)(void *);
     void                       *apc_ctx;
     struct nt_thread           *apc_thread;
+    int64_t                     expiry_100ns; /* absolute NT time of the armed expiry, 0 if none */
 };
 #else
 struct nt_timer {
@@ -220,6 +221,7 @@ struct nt_timer {
     void                      (*apc_routine)(void *);
     void                       *apc_ctx;
     struct nt_thread           *apc_thread;
+    int64_t                     expiry_100ns; /* absolute NT time of the armed expiry, 0 if none */
 };
 #endif
 
