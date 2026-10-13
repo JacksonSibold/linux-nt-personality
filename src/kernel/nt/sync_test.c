@@ -658,6 +658,23 @@ TEST(stress_random) {
     PASS();
 }
 
+/* Iterations for the wait_on_address_extended loop. The default (20000)
+ * is the CI value. SYNC_TEST_ITERATIONS=<n> overrides it (1..10000000);
+ * the Makefile uses a smaller count for "check" and "check-quick". */
+#define SYNC_DEFAULT_ITERATIONS 20000
+static int sync_iterations(void){
+    const char *s = getenv("SYNC_TEST_ITERATIONS");
+    char *end = NULL;
+    long v;
+    if(!s || !*s) return SYNC_DEFAULT_ITERATIONS;
+    v = strtol(s, &end, 10);
+    if(*end != '\0' || v < 1 || v > 10000000L){
+        fprintf(stderr, "SYNC_TEST_ITERATIONS must be 1..10000000, got '%s'\n", s);
+        exit(2);
+    }
+    return (int)v;
+}
+
 int main(void){
     printf("ntsync tests starting\n");
     long before = atomic_load(&kshim_alloc_count);
@@ -718,13 +735,13 @@ int main(void){
             nt_set_current_thread(NULL); nt_thread_destroy(thr);
         }
     }
-    /* WaitOnAddress extended torture — toward 10^7 transitions (we do 20000 here, 10^7 is nightly KASAN soak) */
+    /* WaitOnAddress extended torture — toward 10^7 transitions (20000 by default, see SYNC_TEST_ITERATIONS; 10^7 is nightly KASAN soak) */
     {
         printf("  RUN wait_on_address_extended\n");
         struct nt_thread *thr; if(nt_thread_create(&thr)==STATUS_SUCCESS){ nt_set_current_thread(thr);
             volatile uint32_t val=0;
             atomic_int wakes=0; atomic_init(&wakes,0);
-            const int ITERS=20000;
+            const int ITERS=sync_iterations();
             for(int i=0;i<ITERS;i++){
                 val = (uint32_t)i;
                 /* Single waiter should be woken by WakeByAddressSingle when compare matches */

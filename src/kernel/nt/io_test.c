@@ -77,6 +77,9 @@ static void setup_root(void)
 	} else {
 		snprintf(g_test_root, sizeof(g_test_root),
 			 "/tmp/ntio_test_%d", (int)getpid());
+		/* Removed at exit, pass or fail (KEEP_SCRATCH=1 keeps it).
+		 * A caller-supplied NTIO_TEST_ROOT is never removed. */
+		khost_scratch_arm_cleanup(g_test_root);
 	}
 	kshim_set_root(g_test_root);
 
@@ -1989,14 +1992,8 @@ int main(void)
 
 	printf("ntio tests: %d passed, %d failed\n", g_pass, g_fail);
 
-	/* Remove the default per-pid scratch root after a clean run, so
-	 * %TEMP%/ntio_test_<pid> does not accumulate. Failing runs keep it for
-	 * inspection. A caller-supplied NTIO_TEST_ROOT is never removed here. */
-	if (!g_fail && !getenv("NTIO_TEST_ROOT")) {
-		char cmd[PATH_MAX + 64];
-		snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", g_test_root);
-		(void)system(cmd);
-	}
+	/* The default per-pid scratch root is removed at exit by the shim
+	 * (khost_scratch_arm_cleanup), pass or fail. */
 	return g_fail ? 1 : 0;
 }
 
