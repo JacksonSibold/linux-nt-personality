@@ -14,6 +14,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define PROCESS_ALL_ACCESS_TEST 0x001FFFFFUL
+#define THREAD_ALL_ACCESS_TEST  0x001FFFFFUL
+
+/* Syscall entry points (typed host form, see nt_obj.c). */
+NTSTATUS nt_svc_NtOpenProcessToken(HANDLE ProcessHandle, ACCESS_MASK DesiredAccess, PHANDLE TokenHandle);
+NTSTATUS nt_svc_NtOpenProcessTokenEx(HANDLE ProcessHandle, ACCESS_MASK DesiredAccess, ULONG HandleAttributes, PHANDLE TokenHandle);
+NTSTATUS nt_svc_NtOpenThreadToken(HANDLE ThreadHandle, ACCESS_MASK DesiredAccess, BOOLEAN OpenAsSelf, PHANDLE TokenHandle);
+NTSTATUS nt_svc_NtOpenThreadTokenEx(HANDLE ThreadHandle, ACCESS_MASK DesiredAccess, BOOLEAN OpenAsSelf, ULONG HandleAttributes, PHANDLE TokenHandle);
+
 static int g_pass = 0;
 static int g_fail = 0;
 
@@ -202,6 +211,201 @@ TEST(thread_impersonation_slot_default_null)
 }
 
 /* -------------------------------------------------------------------------- */
+/* NtOpenProcessToken(Ex) / NtOpenThreadToken(Ex) and access checks           */
+/* -------------------------------------------------------------------------- */
+
+/* Process whose primary token belongs to user_sid. */
+static struct nt_eprocess *make_process_as(const char *name, const char *user_sid)
+{
+    struct nt_eprocess *p = NULL;
+    if (ObCreateProcessObject(&p, 0, name) != STATUS_SUCCESS) return NULL;
+    ACCESS_TOKEN *tok = make_user_token(user_sid);
+    if (!tok) { ObDestroyProcessObject(p); return NULL; }
+    token_dereference(p->primary_token);
+    p->primary_token = tok;
+    return p;
+}
+
+/* Handle to target's process object in from's handle table. */
+static HANDLE handle_to_process(struct nt_eprocess *from, struct nt_eprocess *target, ACCESS_MASK access)
+{
+    HANDLE h = NULL;
+    if (ObCreateHandle(from, target->obj, access, 0, &h) != STATUS_SUCCESS) return NULL;
+    return h;
+}
+
+static void set_default_dacl(ACCESS_TOKEN *t, PACL dacl)
+{
+    if (t->default_dacl) acl_free(t->default_dacl);
+    t->default_dacl = dacl;
+}
+
+TEST(open_process_token_same_user)
+{
+    struct nt_eprocess *caller = make_current_process("opt_caller");
+    struct nt_eprocess *target = make_process_as("opt_target", "S-1-5-21-0-0-0-1000");
+    ASSERT(caller != NULL && target != NULL);
+    HANDLE ph = handle_to_process(caller, target, PROCESS_ALL_ACCESS_TEST);
+    ASSERT(ph != NULL);
+
+    LONG before = target->primary_token->ref_count;
+    HANDLE th = NULL;
+    ASSERT_STATUS(nt_svc_NtOpenProcessToken(ph, TOKEN_QUERY, &th), STATUS_SUCCESS);
+    ASSERT(th != NULL);
+    ASSERT(target->primary_token->ref_count == before + 1);
+
+    /* The opened handle is a Token object with the granted access. */
+    struct nt_object_header *hdr = NULL;
+    ASSERT_STATUS(ObReferenceObjectByHandle(caller, th, &nt_token_type, KernelMode,
+                                            TOKEN_QUERY, &hdr, NULL), STATUS_SUCCESS);
+    ObDereferenceObject(hdr);
+    ASSERT_STATUS(ObCloseHandle(caller, th), STATUS_SUCCESS);
+    ASSERT(target->primary_token->ref_count == before);
+
+    /* The owner gets TOKEN_ALL_ACCESS and MAXIMUM_ALLOWED. */
+    HANDLE th2 = NULL;
+    ASSERT_STATUS(nt_svc_NtOpenProcessTokenEx(NtCurrentProcess(), TOKEN_ALL_ACCESS,
+                                              OBJ_INHERIT, &th2), STATUS_SUCCESS);
+    ASSERT(th2 != NULL);
+    ASSERT_STATUS(ObCloseHandle(caller, th2), STATUS_SUCCESS);
+    HANDLE th3 = NULL;
+    ASSERT_STATUS(nt_svc_NtOpenProcessToken(NtCurrentProcess(), MAXIMUM_ALLOWED, &th3), STATUS_SUCCESS);
+    ASSERT_STATUS(ObCloseHandle(caller, th3), STATUS_SUCCESS);
+
+    ASSERT_STATUS(ObCloseHandle(caller, ph), STATUS_SUCCESS);
+    ObDestroyProcessObject(target);
+    ObDestroyProcessObject(caller);
+    PASS();
+}
+
+TEST(open_process_token_other_user_denied)
+{
+    struct nt_eprocess *caller = make_process_as("opt_caller2", "S-1-5-21-7-7-7-42");
+    struct nt_eprocess *target = make_process_as("opt_target2", "S-1-5-21-0-0-0-1000");
+    ASSERT(caller != NULL && target != NULL);
+    kshim_set_current_process(caller);
+    kshim_set_current_thread(NULL);
+    HANDLE ph = handle_to_process(caller, target, PROCESS_ALL_ACCESS_TEST);
+    ASSERT(ph != NULL);
+
+    HANDLE th = NULL;
+    ASSERT_STATUS(nt_svc_NtOpenProcessToken(ph, TOKEN_QUERY, &th), STATUS_ACCESS_DENIED);
+    ASSERT(th == NULL);
+
+    ASSERT_STATUS(ObCloseHandle(caller, ph), STATUS_SUCCESS);
+    ObDestroyProcessObject(target);
+    ObDestroyProcessObject(caller);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(open_process_token_dacl_denies_query)
+{
+    struct nt_eprocess *caller = make_current_process("opt_caller3");
+    struct nt_eprocess *target = make_process_as("opt_target3", "S-1-5-21-0-0-0-1000");
+    ASSERT(caller != NULL && target != NULL);
+    HANDLE ph = handle_to_process(caller, target, PROCESS_ALL_ACCESS_TEST);
+    ASSERT(ph != NULL);
+
+    /* The owner is denied TOKEN_QUERY and allowed everything else. */
+    PSID owner = make_sid("S-1-5-21-0-0-0-1000");
+    ASSERT(owner != NULL);
+    PACL dacl = acl_create(256);
+    ASSERT(dacl != NULL);
+    ULONG idx = 0;
+    ASSERT_STATUS(acl_add_denied_ace(dacl, TOKEN_QUERY, 0, owner, &idx), STATUS_SUCCESS);
+    ASSERT_STATUS(acl_add_allowed_ace(dacl, TOKEN_ALL_ACCESS, 0, owner, &idx), STATUS_SUCCESS);
+    set_default_dacl(target->primary_token, dacl);
+    sid_free(owner);
+
+    HANDLE th = NULL;
+    ASSERT_STATUS(nt_svc_NtOpenProcessToken(ph, TOKEN_QUERY, &th), STATUS_ACCESS_DENIED);
+    ASSERT_STATUS(nt_svc_NtOpenProcessToken(ph, TOKEN_DUPLICATE, &th), STATUS_SUCCESS);
+    ASSERT_STATUS(ObCloseHandle(caller, th), STATUS_SUCCESS);
+
+    ASSERT_STATUS(ObCloseHandle(caller, ph), STATUS_SUCCESS);
+    ObDestroyProcessObject(target);
+    ObDestroyProcessObject(caller);
+    PASS();
+}
+
+TEST(open_process_token_bad_arguments)
+{
+    struct nt_eprocess *caller = make_current_process("opt_args");
+    ASSERT(caller != NULL);
+    HANDLE th = NULL;
+    ASSERT_STATUS(nt_svc_NtOpenProcessToken(NULL, TOKEN_QUERY, &th), STATUS_INVALID_HANDLE);
+    ASSERT_STATUS(nt_svc_NtOpenProcessToken(NtCurrentProcess(), TOKEN_QUERY, NULL),
+                  STATUS_INVALID_PARAMETER);
+
+    /* A token handle is not a process handle. */
+    ACCESS_TOKEN *tok = make_user_token("S-1-5-21-1-1-1-1");
+    ASSERT(tok != NULL);
+    HANDLE wrong = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, tok, TOKEN_ALL_ACCESS, 0, &wrong), STATUS_SUCCESS);
+    token_dereference(tok);
+    ASSERT_STATUS(nt_svc_NtOpenProcessToken(wrong, TOKEN_QUERY, &th), STATUS_OBJECT_TYPE_MISMATCH);
+    ASSERT_STATUS(ObCloseHandle(caller, wrong), STATUS_SUCCESS);
+    ObDestroyProcessObject(caller);
+    PASS();
+}
+
+TEST(open_thread_token_impersonation)
+{
+    struct nt_eprocess *caller = make_current_process("otk_caller");
+    struct nt_eprocess *owner_proc = make_process_as("otk_owner", "S-1-5-21-0-0-0-1000");
+    ASSERT(caller != NULL && owner_proc != NULL);
+    struct nt_ethread *thr = NULL;
+    ASSERT_STATUS(ObCreateThreadObject(&thr, owner_proc, 0), STATUS_SUCCESS);
+    HANDLE thh = NULL;
+    ASSERT_STATUS(ObCreateHandle(caller, thr->obj, THREAD_ALL_ACCESS_TEST, 0, &thh), STATUS_SUCCESS);
+
+    /* Not impersonating: no thread token. */
+    HANDLE tokh = NULL;
+    ASSERT_STATUS(nt_svc_NtOpenThreadToken(thh, TOKEN_QUERY, FALSE, &tokh), STATUS_NO_TOKEN);
+
+    /* The thread impersonates a token of another user. */
+    PSID other = make_sid("S-1-5-21-5-5-5-5");
+    ASSERT(other != NULL);
+    thr->impersonation_token = token_create_primary(other, NULL, 0, NULL, 0, NULL, NULL,
+                                                    NULL, NULL, 0);
+    sid_free(other);
+    ASSERT(thr->impersonation_token != NULL);
+
+    /* The caller runs with its primary token (user 1000), which is denied.
+     * OpenAsSelf only changes which token the access check uses. */
+    ASSERT_STATUS(nt_svc_NtOpenThreadToken(thh, TOKEN_QUERY, FALSE, &tokh), STATUS_ACCESS_DENIED);
+    ASSERT_STATUS(nt_svc_NtOpenThreadToken(thh, TOKEN_QUERY, TRUE, &tokh), STATUS_ACCESS_DENIED);
+
+    /* The caller thread impersonates the same user, so the effective token passes. */
+    ACCESS_TOKEN *caller_imp = token_create_primary(thr->impersonation_token->user,
+                                                    NULL, 0, NULL, 0, NULL, NULL, NULL, NULL, 0);
+    ASSERT(caller_imp != NULL);
+    struct nt_ethread *self = NULL;
+    ASSERT_STATUS(ObCreateThreadObject(&self, caller, 0), STATUS_SUCCESS);
+    self->impersonation_token = caller_imp;
+    kshim_set_current_thread(self);
+    ASSERT_STATUS(nt_svc_NtOpenThreadToken(thh, TOKEN_QUERY, FALSE, &tokh), STATUS_SUCCESS);
+    ASSERT_STATUS(ObCloseHandle(caller, tokh), STATUS_SUCCESS);
+
+    /* NtCurrentThread() is the caller thread, impersonating user 5-5-5-5. With
+     * OpenAsSelf the primary token (user 1000) is checked and denied; without it
+     * the impersonation token is checked and allowed. */
+    ASSERT_STATUS(nt_svc_NtOpenThreadTokenEx(NtCurrentThread(), TOKEN_QUERY, TRUE, OBJ_INHERIT, &tokh),
+                  STATUS_ACCESS_DENIED);
+    ASSERT_STATUS(nt_svc_NtOpenThreadToken(NtCurrentThread(), TOKEN_QUERY, FALSE, &tokh), STATUS_SUCCESS);
+    ASSERT_STATUS(ObCloseHandle(caller, tokh), STATUS_SUCCESS);
+    kshim_set_current_thread(NULL);
+
+    ASSERT_STATUS(ObCloseHandle(caller, thh), STATUS_SUCCESS);
+    ObDestroyThreadObject(self);
+    ObDestroyThreadObject(thr);
+    ObDestroyProcessObject(owner_proc);
+    ObDestroyProcessObject(caller);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* Driver                                                                     */
 /* -------------------------------------------------------------------------- */
 int main(void)
@@ -213,6 +417,11 @@ int main(void)
     RUN(process_default_primary_token);
     RUN(process_token_released_on_destroy);
     RUN(thread_impersonation_slot_default_null);
+    RUN(open_process_token_same_user);
+    RUN(open_process_token_other_user_denied);
+    RUN(open_process_token_dacl_denies_query);
+    RUN(open_process_token_bad_arguments);
+    RUN(open_thread_token_impersonation);
     printf("security extra tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

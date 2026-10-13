@@ -567,6 +567,22 @@ NTSTATUS sd_from_self_relative(const void *sr_buffer, ULONG sr_length,
                                SECURITY_DESCRIPTOR **sd);
 ULONG    sd_length(const SECURITY_DESCRIPTOR *sd);
 
+/* Token access rights (winnt.h) */
+#define TOKEN_ASSIGN_PRIMARY        0x0001
+#define TOKEN_DUPLICATE             0x0002
+#define TOKEN_IMPERSONATE           0x0004
+#define TOKEN_QUERY                 0x0008
+#define TOKEN_QUERY_SOURCE          0x0010
+#define TOKEN_ADJUST_PRIVILEGES     0x0020
+#define TOKEN_ADJUST_GROUPS         0x0040
+#define TOKEN_ADJUST_DEFAULT        0x0080
+#define TOKEN_ADJUST_SESSIONID      0x0100
+#define TOKEN_ALL_ACCESS            (STANDARD_RIGHTS_REQUIRED | 0x1FFUL)
+#define TOKEN_READ                  (STANDARD_RIGHTS_READ | TOKEN_QUERY)
+#define TOKEN_WRITE                 (STANDARD_RIGHTS_WRITE | TOKEN_ADJUST_PRIVILEGES | \
+                                     TOKEN_ADJUST_GROUPS | TOKEN_ADJUST_DEFAULT)
+#define TOKEN_EXECUTE               (STANDARD_RIGHTS_EXECUTE)
+
 /* -------------------------------------------------------------------------- */
 /* Token API                                                                  */
 /* -------------------------------------------------------------------------- */

@@ -10,6 +10,7 @@
 
 #include "security.h"
 #include "object.h"
+#include "handle.h"
 
 #ifndef __KERNEL__
 #include <stdio.h>
@@ -20,6 +21,7 @@
 #include <linux/kstrtox.h>
 #include <linux/string.h>
 #include <linux/slab.h>
+#include <linux/uaccess.h>
 #endif
 
 /* -------------------------------------------------------------------------- */
@@ -1794,3 +1796,219 @@ NTSTATUS se_inherit_dacl(const PACL parent_dacl,
     return STATUS_SUCCESS;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Token services: NtOpenProcessToken(Ex) and NtOpenThreadToken(Ex)          */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Access policy. The token object's security descriptor is its default DACL
+ * with the token owner. A token without a default DACL gets an allow ACE for
+ * the owner with TOKEN_ALL_ACCESS. The caller's token is its impersonation
+ * token when the calling thread has one (and OpenAsSelf is FALSE), otherwise
+ * its primary token. Nothing here reads or writes struct cred.
+ */
+static const GENERIC_MAPPING ntsec_token_generic_map = {
+    TOKEN_READ, TOKEN_WRITE, TOKEN_EXECUTE, TOKEN_ALL_ACCESS
+};
+
+#ifdef __KERNEL__
+extern struct nt_eprocess *nt_get_current_eprocess(void);
+extern struct nt_ethread  *nt_current_ethread(void);
+#define NTSEC_CURRENT_PROCESS() nt_get_current_eprocess()
+#define NTSEC_CURRENT_THREAD()  nt_current_ethread()
+#else
+#define NTSEC_CURRENT_PROCESS() kshim_current_process()
+#define NTSEC_CURRENT_THREAD()  kshim_current_thread()
+#endif
+
+static NTSTATUS ntsec_check_token_object_access(ACCESS_TOKEN *obj_tok,
+                                                const ACCESS_TOKEN *caller_tok,
+                                                ACCESS_MASK desired,
+                                                ACCESS_MASK *granted)
+{
+    PSID owner = obj_tok->owner ? obj_tok->owner : obj_tok->user;
+    PACL dacl = obj_tok->default_dacl;
+    PACL owned_dacl = NULL;
+    SECURITY_DESCRIPTOR *sd;
+    ULONG idx = 0;
+    NTSTATUS st;
+
+    if (!dacl) {
+        owned_dacl = acl_create(256);
+        if (!owned_dacl) return STATUS_NO_MEMORY;
+        st = acl_add_allowed_ace(owned_dacl, TOKEN_ALL_ACCESS, 0, owner, &idx);
+        if (!NT_SUCCESS(st)) { acl_free(owned_dacl); return st; }
+        dacl = owned_dacl;
+    }
+    sd = sd_create_absolute(owner, NULL, dacl, NULL, SE_DACL_PRESENT);
+    if (!sd) {
+        if (owned_dacl) acl_free(owned_dacl);
+        return STATUS_NO_MEMORY;
+    }
+    *granted = 0;
+    st = se_access_check(sd, caller_tok, desired, &ntsec_token_generic_map,
+                         NTSEC_OBJECT_GENERIC, granted);
+    sd_free(sd);
+    if (owned_dacl) acl_free(owned_dacl);
+    return st;
+}
+
+static NTSTATUS ntsec_open_token_for(struct nt_eprocess *caller,
+                                     ACCESS_TOKEN *obj_tok,
+                                     BOOLEAN open_as_self,
+                                     ACCESS_MASK desired,
+                                     ULONG attributes,
+                                     PHANDLE out)
+{
+    const ACCESS_TOKEN *caller_tok = caller->primary_token;
+    struct nt_ethread *thr;
+    ACCESS_MASK granted = 0;
+    NTSTATUS st;
+
+    if (!open_as_self) {
+        thr = NTSEC_CURRENT_THREAD();
+        if (thr && thr->impersonation_token)
+            caller_tok = thr->impersonation_token;
+    }
+    if (!caller_tok) return STATUS_NO_TOKEN;
+
+    st = ntsec_check_token_object_access(obj_tok, caller_tok, desired, &granted);
+    if (!NT_SUCCESS(st)) return st;
+    /* The handle carries the granted access (MAXIMUM_ALLOWED resolves here). */
+    return ObCreateTokenHandle(caller, obj_tok, granted, attributes, out);
+}
+
+static NTSTATUS ntsec_open_process_token(HANDLE process, ACCESS_MASK desired,
+                                         ULONG attributes, PHANDLE out)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    struct nt_eprocess *target;
+    NTSTATUS st;
+
+    if (!out || !caller) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(caller, process, &nt_process_type, KernelMode,
+                                   0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    target = ObFindProcessByHeader(hdr);
+    if (!target || !target->primary_token)
+        st = STATUS_INVALID_HANDLE;
+    else
+        st = ntsec_open_token_for(caller, target->primary_token, FALSE,
+                                  desired, attributes, out);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+static NTSTATUS ntsec_open_thread_token(HANDLE thread, ACCESS_MASK desired,
+                                        BOOLEAN open_as_self, ULONG attributes,
+                                        PHANDLE out)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    struct nt_ethread *target;
+    NTSTATUS st;
+
+    if (!out || !caller) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(caller, thread, &nt_thread_type, KernelMode,
+                                   0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    target = ObFindThreadByHeader(hdr);
+    if (!target)
+        st = STATUS_INVALID_HANDLE;
+    else if (!target->impersonation_token)
+        st = STATUS_NO_TOKEN;
+    else
+        st = ntsec_open_token_for(caller, target->impersonation_token, open_as_self,
+                                  desired, attributes, out);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+#ifndef __KERNEL__
+NTSTATUS nt_svc_NtOpenProcessToken(HANDLE ProcessHandle, ACCESS_MASK DesiredAccess,
+                                   PHANDLE TokenHandle)
+{
+    return ntsec_open_process_token(ProcessHandle, DesiredAccess, 0, TokenHandle);
+}
+
+NTSTATUS nt_svc_NtOpenProcessTokenEx(HANDLE ProcessHandle, ACCESS_MASK DesiredAccess,
+                                     ULONG HandleAttributes, PHANDLE TokenHandle)
+{
+    return ntsec_open_process_token(ProcessHandle, DesiredAccess, HandleAttributes,
+                                    TokenHandle);
+}
+
+NTSTATUS nt_svc_NtOpenThreadToken(HANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
+                                  BOOLEAN OpenAsSelf, PHANDLE TokenHandle)
+{
+    return ntsec_open_thread_token(ThreadHandle, DesiredAccess, OpenAsSelf, 0,
+                                   TokenHandle);
+}
+
+NTSTATUS nt_svc_NtOpenThreadTokenEx(HANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
+                                    BOOLEAN OpenAsSelf, ULONG HandleAttributes,
+                                    PHANDLE TokenHandle)
+{
+    return ntsec_open_thread_token(ThreadHandle, DesiredAccess, OpenAsSelf,
+                                   HandleAttributes, TokenHandle);
+}
+#else
+/* Kernel entry points: generic argument form, the handle is copied out. */
+static NTSTATUS ntsec_return_handle(HANDLE h, PHANDLE user_out, NTSTATUS st)
+{
+    if (!NT_SUCCESS(st)) return st;
+    if (!user_out || !access_ok(user_out, sizeof(*user_out)) ||
+        copy_to_user(user_out, &h, sizeof(h))) {
+        ObCloseHandle(NTSEC_CURRENT_PROCESS(), h);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS nt_svc_NtOpenProcessToken(unsigned long a0, unsigned long a1, unsigned long a2,
+                                   unsigned long a3, unsigned long a4, unsigned long a5,
+                                   unsigned long a6, unsigned long a7, unsigned long a8,
+                                   unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = NULL;
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    NTSTATUS st = ntsec_open_process_token((HANDLE)a0, (ACCESS_MASK)a1, 0, &h);
+    return ntsec_return_handle(h, (PHANDLE)a2, st);
+}
+
+NTSTATUS nt_svc_NtOpenProcessTokenEx(unsigned long a0, unsigned long a1, unsigned long a2,
+                                     unsigned long a3, unsigned long a4, unsigned long a5,
+                                     unsigned long a6, unsigned long a7, unsigned long a8,
+                                     unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = NULL;
+    (void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    NTSTATUS st = ntsec_open_process_token((HANDLE)a0, (ACCESS_MASK)a1, (ULONG)a2, &h);
+    return ntsec_return_handle(h, (PHANDLE)a3, st);
+}
+
+NTSTATUS nt_svc_NtOpenThreadToken(unsigned long a0, unsigned long a1, unsigned long a2,
+                                  unsigned long a3, unsigned long a4, unsigned long a5,
+                                  unsigned long a6, unsigned long a7, unsigned long a8,
+                                  unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = NULL;
+    (void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    NTSTATUS st = ntsec_open_thread_token((HANDLE)a0, (ACCESS_MASK)a1,
+                                          (BOOLEAN)(a2 != 0), 0, &h);
+    return ntsec_return_handle(h, (PHANDLE)a3, st);
+}
+
+NTSTATUS nt_svc_NtOpenThreadTokenEx(unsigned long a0, unsigned long a1, unsigned long a2,
+                                    unsigned long a3, unsigned long a4, unsigned long a5,
+                                    unsigned long a6, unsigned long a7, unsigned long a8,
+                                    unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = NULL;
+    (void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    NTSTATUS st = ntsec_open_thread_token((HANDLE)a0, (ACCESS_MASK)a1,
+                                          (BOOLEAN)(a2 != 0), (ULONG)a3, &h);
+    return ntsec_return_handle(h, (PHANDLE)a4, st);
+}
+#endif /* __KERNEL__ */
