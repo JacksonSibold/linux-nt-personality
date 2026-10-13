@@ -148,15 +148,18 @@ NTSTATUS nt_thread_create(struct nt_thread **out) {
     if (!t) return STATUS_NO_MEMORY;
     t->tid = atomic_fetch_add(&g_tid_seq, 1);
     pthread_mutex_init(&t->lock, NULL);
+    pthread_cond_init(&t->tid_alert_cond, NULL);
     INIT_LIST_HEAD(&t->owned_mutants);
     t->alerted = false;
     t->alert_pending = false;
+    t->tid_alert_token = false;
     *out = t;
     return STATUS_SUCCESS;
 }
 void nt_thread_destroy(struct nt_thread *t) {
     if (!t) return;
     nt_abandon_owned_mutants(t);
+    pthread_cond_destroy(&t->tid_alert_cond);
     pthread_mutex_destroy(&t->lock);
     kfree(t);
 }
@@ -195,6 +198,42 @@ bool nt_thread_consume_alert(struct nt_thread *t) {
     t->alerted = false;
     pthread_mutex_unlock(&t->lock);
     return al;
+}
+
+/* By-thread-id token. Only tid_alert_token is written here; alerted and
+ * alert_pending are left alone, so NtAlertThread and NtTestAlert do not see it. */
+void nt_thread_tid_alert(struct nt_thread *t) {
+    if (!t) return;
+    pthread_mutex_lock(&t->lock);
+    t->tid_alert_token = true;
+    pthread_cond_broadcast(&t->tid_alert_cond);
+    pthread_mutex_unlock(&t->lock);
+}
+NTSTATUS nt_thread_wait_tid_alert(struct nt_thread *t, LARGE_INTEGER *timeout) {
+    struct timespec dl;
+    bool is_zero = false;
+    bool has_dl;
+    int rc = 0;
+    if (!t) return STATUS_INVALID_PARAMETER;
+    has_dl = timeout_to_deadline(timeout, &dl, &is_zero);
+    pthread_mutex_lock(&t->lock);
+    for (;;) {
+        if (t->tid_alert_token) {
+            t->tid_alert_token = false;
+            pthread_mutex_unlock(&t->lock);
+            return STATUS_ALERTED;
+        }
+        if (is_zero || (timeout && timeout->QuadPart == 0)) break;
+        if (!timeout) {
+            pthread_cond_wait(&t->tid_alert_cond, &t->lock);
+            continue;
+        }
+        if (!has_dl) break; /* expired absolute time, or zero-length */
+        rc = pthread_cond_timedwait(&t->tid_alert_cond, &t->lock, &dl);
+        if (rc == ETIMEDOUT) break;
+    }
+    pthread_mutex_unlock(&t->lock);
+    return STATUS_TIMEOUT;
 }
 
 /* --------------------------------------------------------------- */
@@ -1429,6 +1468,7 @@ NTSTATUS nt_thread_create(struct nt_thread **out)
     t->task = current;
     t->tid = (unsigned long)current->pid;
     spin_lock_init(&t->lock);
+    init_waitqueue_head(&t->tid_alert_wq);
     INIT_LIST_HEAD(&t->owned_mutants);
     INIT_LIST_HEAD(&t->global_entry);
     spin_lock(&g_nt_thread_list_lock);
@@ -1436,6 +1476,7 @@ NTSTATUS nt_thread_create(struct nt_thread **out)
     spin_unlock(&g_nt_thread_list_lock);
     t->alerted = false;
     t->alert_pending = false;
+    t->tid_alert_token = false;
     *out = t;
     return STATUS_SUCCESS;
 }
@@ -1491,6 +1532,45 @@ bool nt_thread_consume_alert(struct nt_thread *t)
     t->alerted = false;
     spin_unlock_irqrestore(&t->lock, flags);
     return al;
+}
+
+/* By-thread-id token (see sync.h). Takes the token under the spinlock; used as
+ * the wait_event condition, so it is evaluated again on every wakeup. */
+static bool nt_tid_alert_take(struct nt_thread *t)
+{
+    unsigned long flags;
+    bool got;
+    spin_lock_irqsave(&t->lock, flags);
+    got = t->tid_alert_token;
+    t->tid_alert_token = false;
+    spin_unlock_irqrestore(&t->lock, flags);
+    return got;
+}
+void nt_thread_tid_alert(struct nt_thread *t)
+{
+    unsigned long flags;
+    if (!t) return;
+    spin_lock_irqsave(&t->lock, flags);
+    t->tid_alert_token = true;
+    spin_unlock_irqrestore(&t->lock, flags);
+    wake_up(&t->tid_alert_wq);
+}
+static long timeout_to_jiffies(LARGE_INTEGER *to, bool *is_poll);
+NTSTATUS nt_thread_wait_tid_alert(struct nt_thread *t, LARGE_INTEGER *timeout)
+{
+    bool is_poll = false;
+    long j;
+    if (!t) return STATUS_INVALID_PARAMETER;
+    j = timeout_to_jiffies(timeout, &is_poll);
+    if (j < 0) return STATUS_ACCESS_VIOLATION; /* timeout copy failed */
+    if (is_poll) return nt_tid_alert_take(t) ? STATUS_ALERTED : STATUS_TIMEOUT;
+    if (j == MAX_SCHEDULE_TIMEOUT) {
+        wait_event(t->tid_alert_wq, nt_tid_alert_take(t));
+        return STATUS_ALERTED;
+    }
+    if (!wait_event_timeout(t->tid_alert_wq, nt_tid_alert_take(t), j))
+        return STATUS_TIMEOUT;
+    return STATUS_ALERTED;
 }
 
 /* timeout conversion: return jiffies timeout, -1 for infinite, 0 for poll */

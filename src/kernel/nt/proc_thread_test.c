@@ -558,6 +558,72 @@ static void test_alert_satisfies_alertable_wait(void){
     PASS();
 }
 
+/* ---- NtWaitForAlertByThreadId: the by-thread-id token. NtAlertThreadByThreadId
+ * sets it and the wait consumes it (STATUS_ALERTED). It is separate from the
+ * alertable-wait flag: NtAlertThread does not satisfy this wait, and the token
+ * does not satisfy an alertable wait. ---- */
+NTSTATUS nt_svc_NtWaitForAlertByThreadId(PVOID Address, PLARGE_INTEGER Timeout);
+NTSTATUS nt_svc_NtAlertThreadByThreadId(HANDLE ThreadId);
+NTSTATUS nt_svc_NtCreateEvent(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG, BOOLEAN);
+
+struct pt_test_tid_alert_arg { ULONG tid; long delay_ms; NTSTATUS st; };
+static void *pt_test_tid_alert_thread(void *p){
+    struct pt_test_tid_alert_arg *a=p;
+    usleep(a->delay_ms*1000);
+    a->st=nt_svc_NtAlertThreadByThreadId((HANDLE)(ULONG_PTR)a->tid);
+    return NULL;
+}
+
+static void test_wait_for_alert_by_thread_id(void){
+    setup_proc();
+    struct nt_eprocess *proc=kshim_current_process();
+    struct nt_ethread *cur=kshim_current_thread();
+    struct nt_thread *cursync=NULL;
+    LARGE_INTEGER zero, rel;
+    HANDLE ev=NULL;
+    zero.QuadPart=0;
+    ASSERT(nt_thread_create(&cursync)==STATUS_SUCCESS);
+    cur->sync_thread=cursync;
+    /* Token set before the wait: the wait returns at once and consumes it */
+    ASSERT(nt_svc_NtAlertThreadByThreadId((HANDLE)(ULONG_PTR)cur->tid)==STATUS_SUCCESS);
+    ASSERT(nt_svc_NtWaitForAlertByThreadId(NULL,&zero)==STATUS_ALERTED);
+    ASSERT(nt_svc_NtWaitForAlertByThreadId(NULL,&zero)==STATUS_TIMEOUT);
+    /* NtAlertThreadByThreadId sets the token, not the alertable flag */
+    ASSERT(nt_svc_NtAlertThreadByThreadId((HANDLE)(ULONG_PTR)cur->tid)==STATUS_SUCCESS);
+    ASSERT(!nt_thread_alert_pending(cursync));
+    /* The token does not satisfy an alertable wait (it is not the alert flag) */
+    nt_set_current_thread(cursync);
+    ASSERT(nt_svc_NtCreateEvent(&ev,0x1F0003,NULL,NotificationEvent,0)==STATUS_SUCCESS);
+    ASSERT(nt_svc_NtAlertThreadByThreadId((HANDLE)(ULONG_PTR)cur->tid)==STATUS_SUCCESS);
+    ASSERT(nt_svc_NtWaitForSingleObject(ev,TRUE,&zero)==STATUS_TIMEOUT);
+    ASSERT(nt_svc_NtWaitForAlertByThreadId(NULL,&zero)==STATUS_ALERTED);
+    nt_set_current_thread(NULL);
+    /* NtAlertThread does not satisfy the by-thread-id wait; the alert is kept */
+    ASSERT(nt_svc_NtAlertThread(NtCurrentThread())==STATUS_SUCCESS);
+    ASSERT(nt_svc_NtWaitForAlertByThreadId(NULL,&zero)==STATUS_TIMEOUT);
+    ASSERT(nt_thread_alert_pending(cursync));
+    ASSERT(nt_thread_consume_alert(cursync));
+    /* Relative timeout (10 ms) with no token: STATUS_TIMEOUT */
+    rel.QuadPart=-100000;
+    ASSERT(nt_svc_NtWaitForAlertByThreadId(NULL,&rel)==STATUS_TIMEOUT);
+    /* Blocking wait (NULL timeout) woken by a token from another thread */
+    pthread_t th;
+    struct pt_test_tid_alert_arg arg={ (ULONG)cur->tid, 30, STATUS_UNSUCCESSFUL };
+    ASSERT(pthread_create(&th,NULL,pt_test_tid_alert_thread,&arg)==0);
+    ASSERT(nt_svc_NtWaitForAlertByThreadId(NULL,NULL)==STATUS_ALERTED);
+    pthread_join(th,NULL);
+    ASSERT(arg.st==STATUS_SUCCESS);
+    /* Unknown thread id, and a terminated thread, are refused */
+    ASSERT(nt_svc_NtAlertThreadByThreadId((HANDLE)(ULONG_PTR)0x7777)==STATUS_INVALID_CID);
+    pthread_mutex_lock(&cur->lock); cur->terminated=true; pthread_mutex_unlock(&cur->lock);
+    ASSERT(nt_svc_NtAlertThreadByThreadId((HANDLE)(ULONG_PTR)cur->tid)==STATUS_THREAD_IS_TERMINATING);
+    pthread_mutex_lock(&cur->lock); cur->terminated=false; pthread_mutex_unlock(&cur->lock);
+    ObCloseHandle(proc,ev);
+    cur->sync_thread=NULL;
+    nt_thread_destroy(cursync);
+    PASS();
+}
+
 /* ---- NtSetInformationProcess: priority classes (ProcessBasePriority 5,
  * ProcessPriorityClass 18). Set-only base priority; the class is set/query. ---- */
 #define PT_TEST_PROC_QUERY 0x0400   /* PROCESS_QUERY_INFORMATION */
@@ -832,6 +898,7 @@ int main(void){
     RUN(test_set_thread_affinity);
     RUN(test_alert_resume_thread);
     RUN(test_alert_satisfies_alertable_wait);
+    RUN(test_wait_for_alert_by_thread_id);
     RUN(test_process_terminate_twice);
     RUN(test_open_bad_cid);
     RUN(test_set_process_base_priority);

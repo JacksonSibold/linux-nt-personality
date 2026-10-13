@@ -2091,6 +2091,24 @@ static NTSTATUS pt_thread_post_alert(struct nt_ethread *thr)
     return STATUS_SUCCESS;
 }
 
+/* Post the by-thread-id token (sync.h) under the same thread-state rules as
+ * pt_thread_post_alert: a terminated thread refuses it, and a missing sync record
+ * (allocation failed at creation) cannot record it. */
+static NTSTATUS pt_thread_post_tid_alert(struct nt_ethread *thr)
+{
+    struct nt_thread *st;
+    spin_lock(&thr->lock);
+    if (thr->terminated) {
+        spin_unlock(&thr->lock);
+        return STATUS_THREAD_IS_TERMINATING;
+    }
+    st = thr->sync_thread;
+    spin_unlock(&thr->lock);
+    if (!st) return STATUS_NO_MEMORY;
+    nt_thread_tid_alert(st);
+    return STATUS_SUCCESS;
+}
+
 /* ------------------------------------------------------------------ */
 /* NtSetInformationProcess (shared by the shim and kernel branches)    */
 /* ------------------------------------------------------------------ */
@@ -2335,13 +2353,46 @@ NTSTATUS nt_svc_NtAlertThread(HANDLE ThreadHandle)
     return pt_thread_post_alert(thr);
 }
 
-/* NtAlertThreadByThreadId: as NtAlertThread, looked up by thread id. An
- * unknown id is STATUS_INVALID_CID. */
+/* NtAlertThreadByThreadId: looked up by thread id, and it sets the by-thread-id
+ * token that NtWaitForAlertByThreadId consumes (sync.h). It does NOT set the
+ * alertable flag: NtAlertThread, NtAlertResumeThread and NtTestAlert do not see
+ * it, and NtAlertThreadByThreadId does not satisfy an alertable wait. An unknown
+ * id is STATUS_INVALID_CID. */
 NTSTATUS nt_svc_NtAlertThreadByThreadId(HANDLE ThreadId)
 {
     struct nt_ethread *thr = ObFindThreadByTid((ULONG)(ULONG_PTR)ThreadId);
     if (!thr) return STATUS_INVALID_CID;
-    return pt_thread_post_alert(thr);
+    return pt_thread_post_tid_alert(thr);
+}
+
+/* NtWaitForAlertByThreadId(Address, Timeout): waits until NtAlertThreadByThreadId
+ * targets the calling thread. Returns STATUS_ALERTED when it consumes the token,
+ * STATUS_TIMEOUT when Timeout expires. Timeout is an NT time (negative relative,
+ * positive absolute); NULL waits forever and a zero timeout polls. Address is
+ * not used by this implementation (NT uses it only as a wait-key hint). The
+ * wait is not alertable: NtAlertThread does not end it. A terminated thread is
+ * STATUS_THREAD_IS_TERMINATING; a missing sync record is STATUS_NO_MEMORY. */
+NTSTATUS nt_svc_NtWaitForAlertByThreadId(PVOID Address, PLARGE_INTEGER Timeout)
+{
+    struct nt_ethread *cur = PT_CUR_THREAD();
+    struct nt_thread *st;
+    LARGE_INTEGER to;
+    NTSTATUS s;
+    (void)Address;
+    if (!cur) return STATUS_INVALID_HANDLE;
+    if (Timeout) {
+        s = pt_copy_info_in(Timeout, &to, sizeof(to));
+        if (!NT_SUCCESS(s)) return s;
+    }
+    spin_lock(&cur->lock);
+    if (cur->terminated) {
+        spin_unlock(&cur->lock);
+        return STATUS_THREAD_IS_TERMINATING;
+    }
+    st = cur->sync_thread;
+    spin_unlock(&cur->lock);
+    if (!st) return STATUS_NO_MEMORY;
+    return nt_thread_wait_tid_alert(st, Timeout ? &to : NULL);
 }
 
 /* NtAlertResumeThread: resume (as NtResumeThread, same previous-count rules)

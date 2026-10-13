@@ -75,6 +75,10 @@ struct nt_thread {
     pthread_mutex_t   lock; /* protects alerted / apc_pending */
     bool              alerted;
     bool              alert_pending; /* APC pending -> STATUS_USER_APC */
+    /* NtAlertThreadByThreadId token, consumed by NtWaitForAlertByThreadId.
+     * Separate from alerted (NtAlertThread, alertable waits, NtTestAlert). */
+    bool              tid_alert_token;
+    pthread_cond_t    tid_alert_cond; /* signalled when the token is set */
     struct list_head  owned_mutants; /* list of nt_mutant.owned_entry */
     bool              dying; /* set when thread exiting */
 };
@@ -91,6 +95,8 @@ struct nt_thread {
     spinlock_t        lock;
     bool              alerted;
     bool              alert_pending;
+    bool              tid_alert_token;  /* NtAlertThreadByThreadId token, see shim branch */
+    wait_queue_head_t tid_alert_wq;
     struct list_head  owned_mutants;
     bool              dying;
 };
@@ -109,6 +115,14 @@ void     nt_thread_clear_alert(struct nt_thread *t);
  * by the wait or NtTestAlert that reports it). */
 bool     nt_thread_alert_pending(struct nt_thread *t);
 bool     nt_thread_consume_alert(struct nt_thread *t);
+
+/* By-thread-id alert token (NtAlertThreadByThreadId / NtWaitForAlertByThreadId).
+ * nt_thread_tid_alert sets the token and wakes a waiter. nt_thread_wait_tid_alert
+ * blocks until the token is set (consumes it, STATUS_ALERTED) or the timeout
+ * expires (STATUS_TIMEOUT). A NULL timeout waits forever; a zero timeout polls.
+ * The token does not touch the alerted or alert_pending flags. */
+void     nt_thread_tid_alert(struct nt_thread *t);
+NTSTATUS nt_thread_wait_tid_alert(struct nt_thread *t, LARGE_INTEGER *timeout);
 
 /* ------------------------------------------------------------------ */
 /* Dispatcher object model                                              */
