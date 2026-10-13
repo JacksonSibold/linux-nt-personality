@@ -20,6 +20,36 @@ one that resolves (to `C:/msys64/tmp` there), and it is writable.
 Outputs go to `build/` (ignored by git). Test programs run with `build/` as
 their working directory, so the scratch files they create stay there.
 
+## Make targets
+
+| Target | What it does |
+|---|---|
+| `make all` (default) | Builds every program in `TESTS`, `STRESS_TESTS`, `BUILD_ONLY` and `SHIM_TESTS` into `build/<name>.exe`. Runs nothing. |
+| `make build/<name>.exe` | Builds one program, e.g. `make build/io_test.exe`. |
+| `make check` | Builds, then runs `TESTS` and `mman_test`. `sync_test` gets `SYNC_TEST_ITERATIONS=$(SYNC_CHECK_ITERATIONS)` (default 2000). Exits nonzero if any program fails. |
+| `make check-quick` | Like `check`, but leaves out `sync_test`, the slowest program. Use it for the edit-test loop. |
+| `make check-full` | Like `check`, with `sync_test` at the CI count `SYNC_FULL_ITERATIONS` (default 20000, the program's own default). Takes about 5 to 6 minutes on this host. |
+| `make stress` | Runs `STRESS_TESTS` once per seed in `STRESS_SEEDS`, with `KSHIM_POISON=1`. Not part of any `check` target. |
+| `make clean` | Removes `$(BUILD)/`. |
+| `make clean-scratch` | Removes `ntio_test_*` directories older than one day from the test temp dir (`TEMP_DIR`). Nothing else in that dir is matched. |
+| `make ... TIMEOUT=n` | Per-program wall-clock limit in seconds for the check targets (default 3000). |
+
+Variables that the targets read:
+
+- `SYNC_TEST_ITERATIONS` (environment, read by `sync_test` itself). Count for
+  the `wait_on_address_extended` loop. Unset means 20000. Set it to a value in
+  1..10000000; anything else makes `sync_test` exit with status 2. The
+  `check` targets set it through the Makefile variables above.
+- `SYNC_CHECK_ITERATIONS`, `SYNC_FULL_ITERATIONS` (Makefile) - the counts
+  used by `check` and `check-quick`, and by `check-full`.
+- `KEEP_SCRATCH=1` (environment, read by the shim). Keeps a test's scratch
+  root instead of removing it at exit. The program prints the kept path.
+- `STRESS_SEEDS`, `STRESS_THREADS`, `STRESS_OPS`, `STRESS_TIMEOUT` (Makefile) -
+  the stress run; see "Stress tests" below.
+- `COVERAGE=1`, `OPT=-O2`, `BUILD=...` (Makefile) - coverage and optimiser builds,
+  kept in their own directories (`build-cov/`, `build-*/`).
+- `TEMP_DIR` (Makefile) - the temp dir, see "Scratch root" under Known deviations.
+
 ## Layout
 
 - `Makefile` - build rules. Each program links its test object with the module
@@ -153,18 +183,16 @@ separate `BUILD=build-o2` directory (`build-*/` is git-ignored).
 
 ## Known failures and limits
 
-- **sync_test** (slow). `wait_on_address_extended` runs 20000 iterations, each
-  with a `pthread_create` and `usleep(2000)`. On Windows that takes minutes.
-  `TIMEOUT` (default 3000 s) bounds each program in `check`.
+- **sync_test** (slow). `wait_on_address_extended` runs `SYNC_TEST_ITERATIONS`
+  iterations (default 20000), each with a `pthread_create` and `usleep(2000)`.
+  At 20000 it took about 5 minutes on the 2026-10-12 clean run. `check` and
+  `check-quick` use 2000 (about 45 s); `check-full` uses 20000. `TIMEOUT`
+  (default 3000 s) bounds each program in the check targets.
 - **Trailing dots in unlink, rename, mkdir, rmdir.** `khost_unlink`,
   `khost_rmdir`, `khost_rename` and `khost_raw_mkdir` call the CRT directly,
   not through the `\\?\` path. A name ending in `.` can therefore be stripped
   to the wrong file. No test exercises that yet.
 - **mman_test intermittent failure: fixed** (test bug, see "mman_test flake" above).
-- **sync_test** (slow). `wait_on_address_extended` runs 20000 iterations, each
-  with a `pthread_create` and `usleep(2000)`. On Windows it took about 5 minutes
-  on the 2026-10-12 clean run. `TIMEOUT` (default 3000 s) bounds each program
-  in `check`.
 
 ## Modules that cannot be built here
 
@@ -213,6 +241,12 @@ These do not appear in `TESTS` or `BUILD_ONLY`.
 - **Scratch root.** Tests use `/tmp`. It maps to TMP, else TEMP (absolute
   drive path only), else the current directory. It is always absolute, which
   the `\\?\` prefix requires. Directory opens use `FILE_FLAG_BACKUP_SEMANTICS`.
+- **Scratch cleanup.** A test that creates a root under `/tmp` calls
+  `khost_scratch_arm_cleanup()` (`shim/posix_host.c`). The root is removed at
+  exit after a pass or a failure, so a failing run leaves nothing behind.
+  `KEEP_SCRATCH=1` keeps it for debugging. Only `io_test` creates such a root
+  (`ntio_test_<pid>`). Roots left by runs before this change, or by a process
+  killed before exit, are removed by `make clean-scratch` once they are a day old.
 
 ## Stress tests (not part of `check`)
 

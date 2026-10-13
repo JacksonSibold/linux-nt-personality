@@ -91,7 +91,7 @@ SHIM_TESTS := mman_test
 
 PROGS := $(addprefix $(BUILD)/,$(addsuffix .exe,$(ALL_PROGS) $(SHIM_TESTS)))
 
-.PHONY: all check check-full clean
+.PHONY: all check check-quick check-full clean
 all: $(PROGS)
 
 $(BUILD):
@@ -153,12 +153,14 @@ $(foreach t,$(ALL_PROGS),$(eval $(call PROG_RULE,$(t))))
 TIMEOUT ?= 3000
 
 # Iterations of sync_test's wait_on_address_extended loop (SYNC_TEST_ITERATIONS).
-# "check" uses the reduced count; "check-full" uses the CI
+# "check" and "check-quick" use the reduced count; "check-full" uses the CI
 # count (20000, the program's default). Every program gets the variable, and
 # only sync_test reads it.
 SYNC_CHECK_ITERATIONS ?= 2000
 SYNC_FULL_ITERATIONS  ?= 20000
 
+# Programs run by "check-quick": all of TESTS except sync_test.
+QUICK_TESTS := $(filter-out sync_test,$(TESTS))
 
 # RUN_TESTS, LIST, ITERATIONS: run each program in LIST from $(BUILD), print
 # its rc, and exit nonzero if any failed. Logs go to $(BUILD)/<name>.log.
@@ -169,6 +171,9 @@ RUN_TESTS = fail=0; for t in $(1); do \
 
 check: all
 	@$(call RUN_TESTS,$(TESTS) $(SHIM_TESTS),$(SYNC_CHECK_ITERATIONS))
+
+check-quick: all
+	@$(call RUN_TESTS,$(QUICK_TESTS) $(SHIM_TESTS),$(SYNC_CHECK_ITERATIONS))
 
 check-full: all
 	@$(call RUN_TESTS,$(TESTS) $(SHIM_TESTS),$(SYNC_FULL_ITERATIONS))
