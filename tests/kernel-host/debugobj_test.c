@@ -40,6 +40,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef TRUE
+#define TRUE 1
+#endif
+#ifndef FALSE
+#define FALSE 0
+#endif
+#ifndef PROCESS_TERMINATE
+#define PROCESS_TERMINATE 0x0001UL
+#endif
+
 static int g_pass = 0;
 static int g_fail = 0;
 
@@ -90,18 +100,34 @@ static struct nt_eprocess *new_proc(ULONG pid)
     return p;
 }
 
+/* Handles the tests leave open. Teardown closes them before the processes
+ * and threads they name are destroyed. */
+static HANDLE g_open[64];
+static int g_nopen;
+
+static void track(HANDLE h)
+{
+    if (h && g_nopen < (int)(sizeof(g_open) / sizeof(g_open[0])))
+        g_open[g_nopen++] = h;
+}
+
 /* Inserts a handle to proc into the host's table with the given access. */
 static HANDLE proc_handle(struct nt_eprocess *p, ACCESS_MASK access)
 {
     HANDLE h = NULL;
     if (ObInsertObject(p->obj, NULL, access, g_cur, &h) != STATUS_SUCCESS) return NULL;
+    track(h);
     return h;
 }
 
+/* Inserts a handle to t and drops the creator's reference (ObCreateThreadObject
+ * returns one; the handle holds its own). */
 static HANDLE thread_handle(struct nt_ethread *t, ACCESS_MASK access)
 {
     HANDLE h = NULL;
     if (ObInsertObject(t->obj, NULL, access, g_cur, &h) != STATUS_SUCCESS) return NULL;
+    ObDereferenceObject(t->obj);
+    track(h);
     return h;
 }
 
@@ -109,6 +135,7 @@ static HANDLE new_debug(ULONG flags, ACCESS_MASK access)
 {
     HANDLE h = NULL;
     if (nt_svc_NtCreateDebugObject(&h, access, NULL, flags) != STATUS_SUCCESS) return NULL;
+    track(h);
     return h;
 }
 
@@ -461,8 +488,9 @@ int main(void)
 
     printf("debugobj tests: %d passed, %d failed\n", g_pass, g_fail);
 
-    /* Destroy member processes first, then the host (closes its handles),
-     * then the object manager. */
+    /* Close the handles the tests left open, then destroy the processes, then
+     * the host (closes the rest), then the object manager. */
+    for (i = g_nopen - 1; i >= 0; i--) ObCloseHandle(g_cur, g_open[i]);
     nt_set_current_thread(NULL);
     nt_thread_destroy(g_main_nt);
     for (i = g_nprocs - 1; i >= 0; i--) {
