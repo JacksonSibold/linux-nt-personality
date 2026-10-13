@@ -1160,6 +1160,15 @@ NTSTATUS NtFlushKey(HANDLE KeyHandle) {
     return st;
 }
 
+#ifdef USERSPACE_KSHIM
+/* Test seam (REG-1): runs in NtSetValueKey after the key lock is released and
+   before the value is persisted. Null outside tests. */
+void (*ntreg_test_persist_hook)(void);
+#define REG_TEST_PERSIST_HOOK() do { if (ntreg_test_persist_hook) ntreg_test_persist_hook(); } while (0)
+#else
+#define REG_TEST_PERSIST_HOOK() do { } while (0)
+#endif
+
 NTSTATUS NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleIndex, ULONG Type, PVOID Data, ULONG DataSize) {
     (void)TitleIndex;
     ntreg_init();
@@ -1200,6 +1209,7 @@ NTSTATUS NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleI
         target->type=Type;
         k->last_write_time.QuadPart=(LONGLONG)now_100ns();
         write_unlock(&k->lock);
+        REG_TEST_PERSIST_HOOK();
         persist_write_value(k,target);
         free_us(&vname);
         ObDereferenceObject(hdr);
@@ -1219,6 +1229,7 @@ NTSTATUS NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleI
         list_add_tail(&nv->link,&k->values);
         k->last_write_time.QuadPart=(LONGLONG)now_100ns();
         write_unlock(&k->lock);
+        REG_TEST_PERSIST_HOOK();
         persist_write_value(k,nv);
         ObDereferenceObject(hdr);
         return STATUS_SUCCESS;
