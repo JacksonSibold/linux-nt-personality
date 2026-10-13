@@ -10,21 +10,21 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 88 |
+| IMPLEMENTED | 97 |
 | STUB-NOT-IMPLEMENTED | 2 |
 | WEAK-FALLBACK | 0 |
-| MISSING | 81 |
+| MISSING | 72 |
 
 ## By area
 
 | Area | Total | IMPLEMENTED | STUB-NOT-IMPLEMENTED | WEAK-FALLBACK | MISSING |
 |---|---:|---:|---:|---:|---:|
 | system | 10 | 8 | 0 | 0 | 2 |
-| process-thread | 43 | 20 | 2 | 0 | 21 |
+| process-thread | 43 | 24 | 2 | 0 | 17 |
 | memory | 19 | 4 | 0 | 0 | 15 |
 | io | 30 | 9 | 0 | 0 | 21 |
 | sync | 32 | 31 | 0 | 0 | 1 |
-| security | 10 | 0 | 0 | 0 | 10 |
+| security | 10 | 5 | 0 | 0 | 5 |
 | registry | 11 | 11 | 0 | 0 | 0 |
 | ports | 10 | 0 | 0 | 0 | 10 |
 | object | 6 | 5 | 0 | 0 | 1 |
@@ -72,10 +72,10 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | 0x001c | `NtSetInformationProcess` | 4 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
 | 0x0025 | `NtQueryInformationThread` | 5 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
 | 0x000d | `NtSetInformationThread` | 4 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
-| 0x012e | `NtOpenProcessToken` | 3 | MISSING |  |
-| 0x0030 | `NtOpenProcessTokenEx` | 4 | MISSING |  |
-| 0x0024 | `NtOpenThreadToken` | 4 | MISSING |  |
-| 0x002f | `NtOpenThreadTokenEx` | 5 | MISSING |  |
+| 0x012e | `NtOpenProcessToken` | 3 | IMPLEMENTED | `src/kernel/nt/security.c` |
+| 0x0030 | `NtOpenProcessTokenEx` | 4 | IMPLEMENTED | `src/kernel/nt/security.c` |
+| 0x0024 | `NtOpenThreadToken` | 4 | IMPLEMENTED | `src/kernel/nt/security.c` |
+| 0x002f | `NtOpenThreadTokenEx` | 5 | IMPLEMENTED | `src/kernel/nt/security.c` |
 | 0x0043 | `NtContinue` | 2 | MISSING |  |
 | 0x00a3 | `NtContinueEx` | 2 | MISSING |  |
 | 0x016d | `NtRaiseException` | 3 | MISSING |  |
@@ -192,12 +192,12 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 
 | SSN | Service | Argc | Status | Handler file |
 |---|---|---:|---|---|
-| 0x0042 | `NtDuplicateToken` | 6 | MISSING |  |
-| 0x0021 | `NtQueryInformationToken` | 5 | MISSING |  |
+| 0x0042 | `NtDuplicateToken` | 6 | IMPLEMENTED | `src/kernel/nt/security.c` |
+| 0x0021 | `NtQueryInformationToken` | 5 | IMPLEMENTED | `src/kernel/nt/security.c` |
 | 0x01a3 | `NtSetInformationToken` | 4 | MISSING |  |
-| 0x0041 | `NtAdjustPrivilegesToken` | 6 | MISSING |  |
-| 0x0000 | `NtAccessCheck` | 8 | MISSING |  |
-| 0x013d | `NtPrivilegeCheck` | 3 | MISSING |  |
+| 0x0041 | `NtAdjustPrivilegesToken` | 6 | IMPLEMENTED | `src/kernel/nt/security.c` |
+| 0x0000 | `NtAccessCheck` | 8 | IMPLEMENTED | `src/kernel/nt/security.c` |
+| 0x013d | `NtPrivilegeCheck` | 3 | IMPLEMENTED | `src/kernel/nt/security.c` |
 | 0x01af | `NtSetSecurityObject` | 3 | MISSING |  |
 | 0x0161 | `NtQuerySecurityObject` | 5 | MISSING |  |
 | 0x003b | `NtCloseObjectAuditAlarm` | 3 | MISSING |  |
