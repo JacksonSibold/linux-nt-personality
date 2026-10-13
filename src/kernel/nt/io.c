@@ -2690,14 +2690,22 @@ static NTSTATUS ntio_set_rename(struct nt_file_object *file,
 
 	if (ri->RootDirectory) {
 		struct nt_file_object *root = ntio_handle_lookup(ri->RootDirectory, 0);
-		if (!root || !root->linux_path)
-			return STATUS_INVALID_HANDLE;
 		char rel[PATH_MAX];
+		int n = -1;
+		/* ntio_handle_lookup takes a reference: drop it on every path. */
+		if (!root)
+			return STATUS_INVALID_HANDLE;
+		if (!root->linux_path) {
+			ntio_file_put(root);
+			return STATUS_INVALID_HANDLE;
+		}
 		status = kshim_ntpath_to_linux(&uname, rel, sizeof(rel));
+		if (NT_SUCCESS(status))
+			n = snprintf(newpath, sizeof(newpath), "%s/%s",
+				     root->linux_path, rel);
+		ntio_file_put(root);
 		if (!NT_SUCCESS(status))
 			return status;
-		int n = snprintf(newpath, sizeof(newpath), "%s/%s",
-				 root->linux_path, rel);
 		if (n < 0 || (size_t)n >= sizeof(newpath))
 			return STATUS_NAME_TOO_LONG;
 	} else {
