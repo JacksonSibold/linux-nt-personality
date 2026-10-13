@@ -452,8 +452,53 @@ TEST(keyed_release_wakes_waiter) {
     PASS();
 }
 
+/* With no waiter, a release times out (zero or expired timeout) rather than
+ * succeeding and dropping the release. */
+TEST(keyed_release_without_waiter_times_out) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_keyed(&h, 0x1F0003, NULL, 0), STATUS_SUCCESS);
+    int key_marker = 0;
+    LARGE_INTEGER zero = rel100(0);
+    ASSERT_STATUS(t_release_keyed(h, &key_marker, &zero), STATUS_TIMEOUT);
+    LARGE_INTEGER to = rel100(100);
+    ASSERT_STATUS(t_release_keyed(h, &key_marker, &to), STATUS_TIMEOUT);
+    PASS();
+}
 
+struct keyed_release_arg { HANDLE h; void *key; struct nt_eprocess *proc; NTSTATUS st; _Atomic int done; };
+static void *keyed_releaser_thread(void *p) {
+    struct keyed_release_arg *a = (struct keyed_release_arg *)p;
+    kshim_set_current_process(a->proc);
+    struct nt_thread *t = NULL;
+    if (nt_thread_create(&t) == STATUS_SUCCESS) nt_set_current_thread(t);
+    LARGE_INTEGER to = rel100(3000);
+    a->st = t_release_keyed(a->h, a->key, &to);
+    atomic_store(&a->done, 1);
+    return NULL;
+}
 
+/* A release with no waiter blocks until a waiter arrives, then both return. */
+TEST(keyed_release_blocks_until_waiter) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_keyed(&h, 0x1F0003, NULL, 0), STATUS_SUCCESS);
+    int key_marker = 0;
+    struct keyed_release_arg rel = { h, &key_marker, kshim_current_process(), STATUS_UNSUCCESSFUL, 0 };
+    pthread_t pr;
+    ASSERT(pthread_create(&pr, NULL, keyed_releaser_thread, &rel) == 0);
+    usleep(200000);
+    int returned_early = atomic_load(&rel.done);
+    struct keyed_wait_arg wa = { h, &key_marker, kshim_current_process(), STATUS_UNSUCCESSFUL };
+    pthread_t pw;
+    ASSERT(pthread_create(&pw, NULL, keyed_waiter_thread, &wa) == 0);
+    pthread_join(pw, NULL);
+    pthread_join(pr, NULL);
+    if (returned_early) { fprintf(stderr, "FAIL %s:%d: release returned before any waiter\n", __FILE__, __LINE__); g_fail++; return; }
+    ASSERT_STATUS(wa.st, STATUS_WAIT_0);
+    ASSERT_STATUS(rel.st, STATUS_SUCCESS);
+    PASS();
+}
 
 /* ------------------------------------------------------------------ */
 /* Timers as waitable objects (NtWaitForSingleObject / ...Multiple...)  */
@@ -590,6 +635,8 @@ int main(void) {
     RUN(keyed_create_and_open);
     RUN(keyed_wait_times_out);
     RUN(keyed_release_wakes_waiter);
+    RUN(keyed_release_without_waiter_times_out);
+    RUN(keyed_release_blocks_until_waiter);
     RUN(yield_execution_succeeds);
     printf("sync extra tests: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) return 1;

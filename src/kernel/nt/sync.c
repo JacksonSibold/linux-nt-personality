@@ -48,12 +48,14 @@ __thread struct nt_thread *nt_current_thread_ptr = NULL;
 /* globals for keyed events and address waits */
 static pthread_mutex_t g_keyed_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct list_head g_keyed_waiters;
+static struct list_head g_keyed_releasers; /* NtReleaseKeyedEvent calls blocked until a waiter takes them */
 static pthread_mutex_t g_addr_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct list_head g_addr_waiters;
 static pthread_once_t g_init_once = PTHREAD_ONCE_INIT;
 
 static void g_init(void) {
     INIT_LIST_HEAD(&g_keyed_waiters);
+    INIT_LIST_HEAD(&g_keyed_releasers);
     INIT_LIST_HEAD(&g_addr_waiters);
 }
 static inline void ensure_global_init(void) {
@@ -932,6 +934,16 @@ struct keyed_waiter {
     struct nt_wait_block blk;
 };
 
+/* A release that found no waiter. It stays queued until a waiter with the
+ * same key takes it (matched is set under g_keyed_lock) or its timeout ends. */
+struct keyed_releaser {
+    struct list_head entry;
+    struct nt_keyed_event *kev;
+    void *key;
+    struct nt_wait_ctx *ctx;
+    bool matched;
+};
+
 NTSTATUS nt_wait_for_keyed_event(struct nt_keyed_event *kev, void *key, BOOLEAN alertable, LARGE_INTEGER *timeout) {
     ensure_global_init();
     struct nt_thread *thr = nt_current_thread();
@@ -947,6 +959,20 @@ NTSTATUS nt_wait_for_keyed_event(struct nt_keyed_event *kev, void *key, BOOLEAN 
     has_dl = timeout_to_deadline(timeout, &dl, &zero);
     if (zero) return STATUS_TIMEOUT;
     if (timeout && timeout->QuadPart==0) return STATUS_TIMEOUT;
+
+    /* A release already queued for this key is taken here: it returns without
+     * blocking, and the releaser is woken. Waking happens under g_keyed_lock,
+     * so the releaser cannot free its context while it is being woken. */
+    pthread_mutex_lock(&g_keyed_lock);
+    struct keyed_releaser *rel = NULL;
+    struct list_head *rpos;
+    for (rpos = g_keyed_releasers.next; rpos != &g_keyed_releasers; rpos = rpos->next) {
+        struct keyed_releaser *r = list_entry(rpos, struct keyed_releaser, entry);
+        if (r->kev == kev && r->key == key) { rel = r; list_del(&r->entry); r->matched = true; break; }
+    }
+    if (rel) wake_ctx(rel->ctx);
+    pthread_mutex_unlock(&g_keyed_lock);
+    if (rel) return STATUS_SUCCESS;
 
     struct nt_wait_ctx ctx;
     memset(&ctx,0,sizeof(ctx));
@@ -1004,20 +1030,79 @@ NTSTATUS nt_wait_for_keyed_event(struct nt_keyed_event *kev, void *key, BOOLEAN 
     }
     return STATUS_SUCCESS;
 }
+/* Release one waiter with this key. As in NT, a release with no waiter
+ * blocks until a waiter takes it, or fails with STATUS_TIMEOUT when the
+ * timeout ends first (zero timeout: at once). */
 NTSTATUS nt_release_keyed_event(struct nt_keyed_event *kev, void *key, BOOLEAN alertable, LARGE_INTEGER *timeout) {
-    (void)alertable; (void)timeout;
     ensure_global_init();
+    struct nt_thread *thr = nt_current_thread();
     if (!kev) return STATUS_INVALID_PARAMETER;
+    if (alertable && thr) {
+        pthread_mutex_lock(&thr->lock);
+        bool apc=thr->alert_pending; bool al=thr->alerted;
+        if (apc) { thr->alert_pending=false; pthread_mutex_unlock(&thr->lock); return STATUS_USER_APC; }
+        if (al) { thr->alerted=false; pthread_mutex_unlock(&thr->lock); return STATUS_ALERTED; }
+        pthread_mutex_unlock(&thr->lock);
+    }
+    struct timespec dl; bool has_dl=false; bool zero=false;
+    has_dl = timeout_to_deadline(timeout, &dl, &zero);
+
+    /* A waiter that is already blocked takes the release without waiting. */
     struct nt_wait_ctx *target=NULL;
+    struct keyed_releaser r;
+    r.kev=kev; r.key=key; r.matched=false;
+    INIT_LIST_HEAD(&r.entry);
     pthread_mutex_lock(&g_keyed_lock);
     struct list_head *pos;
     for (pos=g_keyed_waiters.next; pos!=&g_keyed_waiters; pos=pos->next) {
         struct keyed_waiter *w=list_entry(pos, struct keyed_waiter, entry);
         if (w->kev==kev && w->key==key) { target=w->ctx; list_del(&w->entry); w->entry.next=NULL; break; }
     }
+    if (target) { wake_ctx(target); pthread_mutex_unlock(&g_keyed_lock); return STATUS_SUCCESS; }
+    if (zero) { pthread_mutex_unlock(&g_keyed_lock); return STATUS_TIMEOUT; }
+
+    /* No waiter: queue this release and block until a waiter matches it. */
+    struct nt_wait_ctx ctx;
+    memset(&ctx,0,sizeof(ctx));
+    pthread_mutex_init(&ctx.lock,NULL); pthread_cond_init(&ctx.cond,NULL);
+    ctx.woken=false;
+    r.ctx=&ctx;
+    list_add_tail(&r.entry, &g_keyed_releasers);
     pthread_mutex_unlock(&g_keyed_lock);
-    if (target) wake_ctx(target);
-    return STATUS_SUCCESS;
+
+    pthread_mutex_lock(&ctx.lock);
+    while (!ctx.woken) {
+        if (has_dl) {
+            if (pthread_cond_timedwait(&ctx.cond, &ctx.lock, &dl) == ETIMEDOUT) break;
+        } else {
+            pthread_cond_wait(&ctx.cond, &ctx.lock);
+        }
+        if (alertable && thr) {
+            pthread_mutex_lock(&thr->lock);
+            bool apc=thr->alert_pending; bool al=thr->alerted;
+            pthread_mutex_unlock(&thr->lock);
+            if (apc || al) break;
+        }
+    }
+    pthread_mutex_unlock(&ctx.lock);
+
+    /* Decide under g_keyed_lock: a waiter may have matched us after the wait
+     * ended. Matching sets r.matched and wakes ctx under this lock, so after
+     * this block nothing refers to ctx. */
+    pthread_mutex_lock(&g_keyed_lock);
+    bool matched = r.matched;
+    if (!matched) list_del(&r.entry);
+    pthread_mutex_unlock(&g_keyed_lock);
+    pthread_mutex_destroy(&ctx.lock); pthread_cond_destroy(&ctx.cond);
+    if (matched) return STATUS_SUCCESS;
+    if (alertable && thr) {
+        pthread_mutex_lock(&thr->lock);
+        bool apc=thr->alert_pending; bool al=thr->alerted;
+        if (apc) { thr->alert_pending=false; pthread_mutex_unlock(&thr->lock); return STATUS_USER_APC; }
+        if (al) { thr->alerted=false; pthread_mutex_unlock(&thr->lock); return STATUS_ALERTED; }
+        pthread_mutex_unlock(&thr->lock);
+    }
+    return STATUS_TIMEOUT;
 }
 
 /* address waits */
