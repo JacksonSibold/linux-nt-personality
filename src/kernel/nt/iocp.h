@@ -18,6 +18,11 @@
 #define IO_COMPLETION_ALL_ACCESS 0x001F0003
 #endif
 
+/* NtQueryIoCompletion information class (ntdll IO_COMPLETION_INFORMATION_CLASS). */
+#ifndef IoCompletionBasicInformation
+#define IoCompletionBasicInformation 0
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -94,6 +99,10 @@ NTSTATUS nt_svc_NtRemoveIoCompletionEx(HANDLE IoCompletionHandle,
 				       PULONG NumEntriesRemoved,
 				       PLARGE_INTEGER Timeout,
 				       BOOLEAN Alertable);
+
+NTSTATUS nt_svc_NtOpenIoCompletion(PHANDLE CompletionPortHandle,
+				   ACCESS_MASK DesiredAccess,
+				   POBJECT_ATTRIBUTES ObjectAttributes);
 
 NTSTATUS nt_svc_NtQueryIoCompletion(HANDLE IoCompletionHandle,
 				    ULONG IoCompletionInformationClass,

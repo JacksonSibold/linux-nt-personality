@@ -1022,6 +1022,88 @@ TEST(query_attributes_file)
 	PASS();
 }
 
+/* NtOpenIoCompletion: names are not registered by NtCreateIoCompletion in
+ * this build, so every name lookup misses. The NULL object-attributes case
+ * is rejected before any lookup. */
+TEST(iocp_open_by_name)
+{
+	HANDLE iocp = NULL, opened = NULL;
+	OBJECT_ATTRIBUTES oa;
+	NTSTATUS st;
+
+	reset_state();
+	ASSERT_STATUS(nt_svc_NtCreateIoCompletion(&iocp, IO_COMPLETION_ALL_ACCESS,
+						  NULL, 0), STATUS_SUCCESS);
+
+	oa = make_obj_attr("named_iocp");
+	st = nt_svc_NtOpenIoCompletion(&opened, IO_COMPLETION_ALL_ACCESS, &oa);
+	ASSERT_STATUS(st, STATUS_OBJECT_NAME_NOT_FOUND);
+	ASSERT(opened == NULL);
+
+	ASSERT_STATUS(nt_svc_NtOpenIoCompletion(&opened, IO_COMPLETION_ALL_ACCESS,
+						NULL),
+		      STATUS_INVALID_PARAMETER);
+	ASSERT_STATUS(nt_svc_NtOpenIoCompletion(NULL, IO_COMPLETION_ALL_ACCESS,
+						&oa),
+		      STATUS_ACCESS_VIOLATION);
+	nt_svc_NtClose(iocp);
+	PASS();
+}
+
+/* NtQueryIoCompletion(IoCompletionBasicInformation) reports the number of
+ * queued packets as a LONG Depth, and the class/length checks match NT. */
+TEST(iocp_query_depth)
+{
+	HANDLE iocp = NULL;
+	LONG depth = -1;
+	ULONG retlen = 0;
+	ULONG key = 0, value_dummy = 0;
+	IO_STATUS_BLOCK iosb;
+	LARGE_INTEGER zero;
+	NTSTATUS st;
+	int i;
+
+	reset_state();
+	ASSERT_STATUS(nt_svc_NtCreateIoCompletion(&iocp, IO_COMPLETION_ALL_ACCESS,
+						  NULL, 0), STATUS_SUCCESS);
+
+	st = nt_svc_NtQueryIoCompletion(iocp, IoCompletionBasicInformation,
+					&depth, sizeof(depth), &retlen);
+	ASSERT_STATUS(st, STATUS_SUCCESS);
+	ASSERT(depth == 0);
+	ASSERT(retlen == sizeof(LONG));
+
+	for (i = 0; i < 3; i++)
+		ASSERT_STATUS(nt_svc_NtSetIoCompletion(iocp, i, NULL,
+						       STATUS_SUCCESS, i),
+			      STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(iocp, IoCompletionBasicInformation,
+						 &depth, sizeof(depth), &retlen),
+		      STATUS_SUCCESS);
+	ASSERT(depth == 3);
+
+	zero.QuadPart = 0;
+	ASSERT_STATUS(nt_svc_NtRemoveIoCompletion(iocp, &key, &value_dummy,
+						  &iosb, &zero),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(iocp, IoCompletionBasicInformation,
+						 &depth, sizeof(depth), &retlen),
+		      STATUS_SUCCESS);
+	ASSERT(depth == 2);
+
+	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(iocp, IoCompletionBasicInformation,
+						 &depth, 2, &retlen),
+		      STATUS_INFO_LENGTH_MISMATCH);
+	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(iocp, 7,
+						 &depth, sizeof(depth), &retlen),
+		      STATUS_INVALID_INFO_CLASS);
+	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(NULL, IoCompletionBasicInformation,
+						 &depth, sizeof(depth), &retlen),
+		      STATUS_INVALID_HANDLE);
+	nt_svc_NtClose(iocp);
+	PASS();
+}
+
 int main(void)
 {
 	setup_root();
@@ -1041,6 +1123,8 @@ int main(void)
 	RUN(query_set_info);
 	RUN(query_attributes_file);
 	RUN(ci_component_length_limit);
+	RUN(iocp_open_by_name);
+	RUN(iocp_query_depth);
 
 	printf("ntio tests: %d passed, %d failed\n", g_pass, g_fail);
 
