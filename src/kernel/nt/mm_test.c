@@ -911,13 +911,16 @@ static int test_sec_image_view_rules(void) {
     return 1;
 }
 
+static NTSTATUS mmf_custom_image(const char *name, const unsigned char *img, HANDLE *fh, HANDLE *sec);
+static void mmf_reloc_image(unsigned char *img, uint32_t bsize);
+
 /* With the preferred base taken, a relocatable image maps elsewhere and reports
- * STATUS_IMAGE_NOT_AT_BASE. Relocations are not applied (documented gap). A
- * non-relocatable image cannot move, so the map fails. */
+ * STATUS_IMAGE_NOT_AT_BASE, with its fixups applied (test_sec_image_relocated_view).
+ * A non-relocatable image cannot move, so the map fails. */
 static int test_sec_image_not_at_base(void) {
     PVOID pref = (PVOID)(ULONG_PTR)PES_BASE_DEFAULT;
     SIZE_T rsz = 0x1000, zero = 0;
-    pe_synth_opts_t reloc_o = { 0, 1, 0, 0 };
+    unsigned char reloc_img[PES_FILE_SIZE];
     pe_synth_opts_t fixed_o = { 0, 0, 0, 0 };
     HANDLE fh = NULL, sec = NULL;
     PVOID base = NULL;
@@ -928,7 +931,9 @@ static int test_sec_image_not_at_base(void) {
            "occupy the preferred base");
     ASSERT(pref == (PVOID)(ULONG_PTR)PES_BASE_DEFAULT, "reservation at the preferred base");
 
-    ASSERT(mmf_image_section("reloc.exe", &reloc_o, &fh, &sec) == STATUS_SUCCESS, "create relocatable image");
+    /* A well-formed directory: pe_synth's directory bytes are not blocks. */
+    mmf_reloc_image(reloc_img, 12);
+    ASSERT(mmf_custom_image("reloc.exe", reloc_img, &fh, &sec) == STATUS_SUCCESS, "create relocatable image");
     off.QuadPart = 0;
     vs = 0;
     st = NtMapViewOfSection(sec, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READONLY);
@@ -948,6 +953,143 @@ static int test_sec_image_not_at_base(void) {
     ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close fixed section");
     ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close fixed file");
 
+    ASSERT(NtFreeVirtualMemory((HANDLE)-1, &pref, &zero, MEM_RELEASE) == STATUS_SUCCESS, "release preferred base");
+    return 1;
+}
+
+/* Writes a custom image (bytes already built) and creates a SEC_IMAGE section. */
+static NTSTATUS mmf_custom_image(const char *name, const unsigned char *img, HANDLE *fh, HANDLE *sec) {
+    NTSTATUS st;
+    *fh = NULL;
+    *sec = NULL;
+    if (!mmf_write_bytes(name, img, PES_FILE_SIZE)) return STATUS_INVALID_PARAMETER;
+    st = mmf_open(name, FILE_READ_DATA, fh);
+    if (!NT_SUCCESS(st)) return st;
+    return NtCreateSection(sec, SECTION_ALL_ACCESS, NULL, NULL, PAGE_READONLY, SEC_IMAGE, *fh);
+}
+
+/* Builds a relocatable image with one BASERELOC block in .text (file 0x400,
+ * RVA 0x1000) for the DIR64 at .data+0x10 (file 0x610, RVA 0x2010). The block
+ * is bsize bytes long; its entries are the DIR64 and one ABSOLUTE pad. */
+static void mmf_reloc_image(unsigned char *img, uint32_t bsize) {
+    pe_synth_opts_t o = { 0, 1, 0, 0 };
+    pe_synth_build(img, &o);
+    pes_put32(img, 0x400, 0x2000);        /* VirtualAddress: the .data page */
+    pes_put32(img, 0x404, bsize);         /* SizeOfBlock */
+    pes_put16(img, 0x408, 0xA010);        /* DIR64 at offset 0x010 */
+    pes_put16(img, 0x40A, 0);             /* ABSOLUTE pad */
+    pes_put64(img, 0x610, 0x20000100ULL); /* pointer into the image */
+}
+
+/* A relocatable image at a taken base maps elsewhere with STATUS_IMAGE_NOT_AT_BASE.
+ * The DIR64 is rewritten by the base delta in the private copy, and every
+ * segment keeps its protection. The same image at a free base is not relocated. */
+static int test_sec_image_relocated_view(void) {
+    unsigned char img[PES_FILE_SIZE];
+    PVOID pref = (PVOID)(ULONG_PTR)PES_BASE_DEFAULT;
+    SIZE_T rsz = 0x1000, zero = 0;
+    HANDLE fh = NULL, sec = NULL;
+    PVOID base = NULL;
+    LARGE_INTEGER off;
+    SIZE_T vs = 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    unsigned char *b;
+    uint64_t got, delta;
+    NTSTATUS st;
+
+    mmf_reloc_image(img, 12);
+    ASSERT(NtAllocateVirtualMemory((HANDLE)-1, &pref, 0, &rsz, MEM_RESERVE, PAGE_READWRITE) == STATUS_SUCCESS,
+           "occupy the preferred base");
+    ASSERT(mmf_custom_image("reloc_moved.exe", img, &fh, &sec) == STATUS_SUCCESS, "create relocatable image");
+    off.QuadPart = 0;
+    st = NtMapViewOfSection(sec, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READONLY);
+    ASSERT(st == STATUS_IMAGE_NOT_AT_BASE, "relocated view status 0x%lx", (unsigned long)st);
+    ASSERT(base != NULL && base != pref, "relocated view lands elsewhere");
+    b = (unsigned char *)base;
+    delta = (uint64_t)(ULONG_PTR)base - (uint64_t)PES_BASE_DEFAULT;
+    memcpy(&got, b + 0x2010, 8);
+    ASSERT(got == 0x20000100ULL + delta, "DIR64 rewritten by the delta: got 0x%llx want 0x%llx",
+           (unsigned long long)got, (unsigned long long)(0x20000100ULL + delta));
+    ASSERT(memcmp(b + 0x2018, img + 0x618, 0x1E8) == 0, "bytes past the fixup are unchanged");
+    ASSERT(memcmp(b + 0x1000, img + 0x400, 0x100) == 0, ".text bytes unchanged");
+    ASSERT(query((PVOID)(b + 0x1000), &mbi) && mbi.Protect == PAGE_EXECUTE_READ,
+           ".text keeps its protection after relocation");
+    ASSERT(query((PVOID)(b + 0x2000), &mbi) && mbi.Protect == PAGE_WRITECOPY,
+           ".data keeps its copy-on-write protection after relocation");
+
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "unmap relocated view");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close relocated section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close relocated file");
+
+    /* Release the preferred base: the same image maps there and is not relocated. */
+    ASSERT(NtFreeVirtualMemory((HANDLE)-1, &pref, &zero, MEM_RELEASE) == STATUS_SUCCESS, "free preferred base");
+    ASSERT(mmf_custom_image("reloc_fixed.exe", img, &fh, &sec) == STATUS_SUCCESS, "create image again");
+    base = NULL;
+    vs = 0;
+    off.QuadPart = 0;
+    st = NtMapViewOfSection(sec, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READONLY);
+    ASSERT(st == STATUS_SUCCESS, "image at its preferred base: 0x%lx", (unsigned long)st);
+    ASSERT(base == (PVOID)(ULONG_PTR)PES_BASE_DEFAULT, "image at its preferred base");
+    memcpy(&got, (unsigned char *)base + 0x2010, 8);
+    ASSERT(got == 0x20000100ULL, "image at its preferred base is not relocated");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "unmap preferred view");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close preferred section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close preferred file");
+    return 1;
+}
+
+/* RELOCS_STRIPPED with a directory present still cannot move, so it fails with
+ * STATUS_CONFLICTING_ADDRESSES and no view appears. */
+static int test_sec_image_stripped_conflicts(void) {
+    unsigned char img[PES_FILE_SIZE];
+    PVOID pref = (PVOID)(ULONG_PTR)PES_BASE_DEFAULT;
+    SIZE_T rsz = 0x1000, zero = 0;
+    HANDLE fh = NULL, sec = NULL;
+    PVOID base = NULL;
+    LARGE_INTEGER off;
+    SIZE_T vs = 0;
+    NTSTATUS st;
+
+    mmf_reloc_image(img, 12);
+    pes_put16(img, 0x96, 0x0023);         /* RELOCS_STRIPPED set */
+    ASSERT(NtAllocateVirtualMemory((HANDLE)-1, &pref, 0, &rsz, MEM_RESERVE, PAGE_READWRITE) == STATUS_SUCCESS,
+           "occupy the preferred base");
+    ASSERT(mmf_custom_image("stripped.exe", img, &fh, &sec) == STATUS_SUCCESS, "create stripped image");
+    off.QuadPart = 0;
+    st = NtMapViewOfSection(sec, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READONLY);
+    ASSERT(st == STATUS_CONFLICTING_ADDRESSES, "stripped image at a taken base: 0x%lx", (unsigned long)st);
+    ASSERT(base == NULL, "no view for a stripped image at a taken base");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close stripped section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close stripped file");
+    ASSERT(NtFreeVirtualMemory((HANDLE)-1, &pref, &zero, MEM_RELEASE) == STATUS_SUCCESS, "release preferred base");
+    return 1;
+}
+
+/* A malformed directory (a block of 6 bytes) fails the map with
+ * STATUS_INVALID_IMAGE_FORMAT, no view appears, and nothing leaks. */
+static int test_sec_image_bad_reloc_directory(void) {
+    unsigned char img[PES_FILE_SIZE];
+    PVOID pref = (PVOID)(ULONG_PTR)PES_BASE_DEFAULT;
+    SIZE_T rsz = 0x1000, zero = 0;
+    HANDLE fh = NULL, sec = NULL;
+    PVOID base = NULL;
+    LARGE_INTEGER off;
+    SIZE_T vs = 0;
+    NTSTATUS st;
+    long before;
+
+    mmf_reloc_image(img, 6);
+    ASSERT(NtAllocateVirtualMemory((HANDLE)-1, &pref, 0, &rsz, MEM_RESERVE, PAGE_READWRITE) == STATUS_SUCCESS,
+           "occupy the preferred base");
+    before = atomic_load(&kshim_alloc_count);
+    ASSERT(mmf_custom_image("badreloc.exe", img, &fh, &sec) == STATUS_SUCCESS, "create malformed image");
+    off.QuadPart = 0;
+    st = NtMapViewOfSection(sec, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READONLY);
+    ASSERT(st == STATUS_INVALID_IMAGE_FORMAT, "malformed directory refused: 0x%lx", (unsigned long)st);
+    ASSERT(base == NULL, "no view for a malformed directory");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close malformed section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close malformed file");
+    ASSERT(atomic_load(&kshim_alloc_count) == before, "malformed map leaked allocations");
     ASSERT(NtFreeVirtualMemory((HANDLE)-1, &pref, &zero, MEM_RELEASE) == STATUS_SUCCESS, "release preferred base");
     return 1;
 }
@@ -2123,6 +2265,9 @@ int main(void) {
     RUN_TEST(test_sec_image_maps_sections);
     RUN_TEST(test_sec_image_view_rules);
     RUN_TEST(test_sec_image_not_at_base);
+    RUN_TEST(test_sec_image_relocated_view);
+    RUN_TEST(test_sec_image_stripped_conflicts);
+    RUN_TEST(test_sec_image_bad_reloc_directory);
     RUN_TEST(test_sec_image_unmap_frees);
     RUN_TEST(test_file_section_forged_handle);
     RUN_TEST(test_file_section_leak_tracker);

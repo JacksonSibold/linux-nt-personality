@@ -281,7 +281,7 @@ the `kshim` model) or in the VM (`vm/` scripts that run `/tests_kernel/*.exe`).
 | M3 | Suspended start: the child's initial thread is created blocked, and `NtResumeThread` releases it. | VM: a parent checks that the child has not run (for example, it writes a file only after resume). |
 | M4 | Handle and token inheritance from the attribute list, with `ObInheritHandles` gated by the caller's list. | Host: `handle.c` inheritance test with an explicit list. VM: a handle created by the parent is usable in the child at the same value. |
 | M5 | `NtCreateUserProcess` wrapper over M2 to M4, path-based only. Returns `STATUS_INVALID_PARAMETER` for a file-handle image source. `CreateProcessW` calls it. | Host: argument validation. VM: `CreateProcessW` on a PE path. |
-| M6 | `SEC_IMAGE` sections (P1; file-backed data sections are done, and userspace `SEC_IMAGE` sections are done: planner `image_plan.h`, `mm_test.c` and `image_plan_test.c`). Open: the kernel-side `SEC_IMAGE` mapping, base relocation, and a file-handle image source in `NtCreateUserProcess`. | Host: section creation and mapping with a file (done for the userspace build). VM: `NtCreateUserProcess` from a file handle. |
+| M6 | `SEC_IMAGE` sections (P1; file-backed data sections are done, and userspace `SEC_IMAGE` sections are done: planner `image_plan.h`, base relocation `image_reloc.h`, and tests `mm_test.c`, `image_plan_test.c`, `image_reloc_test.c`). Open: the kernel-side `SEC_IMAGE` mapping, and a file-handle image source in `NtCreateUserProcess`. | Host: section creation and mapping with a file (done for the userspace build). VM: `NtCreateUserProcess` from a file handle. |
 | M7 | Remove the shim's dummy-address use of `NtCreateUserProcess`, and the eprocess-only path, once the kernel path covers them. | Shim build: existing tests pass, and the dummy address no longer appears. |
 
 ### Milestone status (2026-10-12)
@@ -305,8 +305,9 @@ Each prerequisite lists the findings or decisions that already cover it.
   (`SEC_COMMIT` with a `FileHandle`) are built (`mm.c:1817`), with access checks,
   size rules, and write-back on the host shim. `SEC_IMAGE` sections are built
   in the userspace build (planned by `src/kernel/nt/image_plan.h`, mapped whole
-  with per-segment protections). Relocations are not applied, and the kernel
-  build still refuses `SEC_IMAGE`. See [memory.md](memory.md) and
+  with per-segment protections). A relocatable image mapped away from its
+  preferred base gets its fixups applied (`image_reloc.h`). The kernel build
+  still refuses `SEC_IMAGE`. See [memory.md](memory.md) and
   [mm.md](../modules/mm.md). Related: [0004](../decisions/0004-section-object-lifetime.md)
   (section object lifetime, open), [0011](../decisions/0011-kernel-wx-sections.md)
   (sections mapped writable and executable, blocked), and

@@ -19,6 +19,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include "image_plan.h"
+#include "image_reloc.h"
 #else
 #include <linux/slab.h>
 #include <linux/mm.h>
@@ -2047,15 +2048,48 @@ NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
 }
 
 #ifndef __KERNEL__
+/* Removes a partly built image view: its VADs come out of the list and are
+ * freed. With unmap set, the host range is released too (the caller has
+ * committed it). */
+static void nt_map_image_drop(struct nt_mm *mm, struct nt_vad **ins, u32 count,
+                              ULONG_PTR base, ULONG_PTR size, int unmap) {
+    u32 k;
+    ntmm_lock(mm);
+    for (k = 0; k < count; k++) nt_list_remove(mm, ins[k]);
+    ntmm_unlock(mm);
+    if (unmap) kshim_munmap((void *)base, (size_t)size);
+    for (k = 0; k < count; k++) nt_vad_free(ins[k]);
+}
+
+/* Applies the base relocations to a copy-on-write image view that is at a base
+ * other than its preferred one (userspace). The view is still read-write, so
+ * the fixups can land in any segment. A directory the planner accepted can
+ * still be malformed; the applier refuses it with the image unchanged. */
+static NTSTATUS nt_image_relocate(ULONG_PTR base, const struct ip_plan *plan) {
+    size_t seen_len = ir_seen_bytes(plan->size_of_image);
+    uint8_t *seen;
+    uint32_t applied = 0;
+    ir_status_t rs;
+
+    seen = (uint8_t *)kzalloc(seen_len, GFP_KERNEL);
+    if (!seen) return STATUS_NO_MEMORY;
+    rs = ir_apply((uint8_t *)base, plan->size_of_image, plan->size_of_image,
+                  plan->preferred_base, (u64)base, plan->reloc_rva, plan->reloc_size,
+                  seen, seen_len, &applied);
+    kfree(seen);
+    return rs == IR_OK ? STATUS_SUCCESS : STATUS_INVALID_IMAGE_FORMAT;
+}
+
 /* Maps a whole image section (userspace). The whole SizeOfImage goes at one
- * base: the preferred base when it is free, else the first free hole. If the
- * base is not the preferred one, a relocatable image returns
- * STATUS_IMAGE_NOT_AT_BASE and is NOT relocated: applying base relocations is
- * not built (a documented gap, docs/modules/mm.md). A non-relocatable image
- * cannot move, so it fails with STATUS_CONFLICTING_ADDRESSES.
+ * base: the preferred base when it is free, else the first free hole.
  * Each segment has its own VAD (MEM_IMAGE, with the planner's protection), so a
  * query sees the header and every section. The bytes are copied from the file
- * here, so every view is private: a write never reaches the file. */
+ * here, so every view is private: a write never reaches the file.
+ * If the base is not the preferred one: a relocatable image gets its base
+ * relocations applied to that private copy (image_reloc.h), before any segment
+ * takes its final protection, and the map returns STATUS_IMAGE_NOT_AT_BASE. A
+ * RELOCS_STRIPPED or non-relocatable image cannot move, so it fails with
+ * STATUS_CONFLICTING_ADDRESSES. */
 static NTSTATUS nt_map_image_view(struct nt_section *sec, PVOID *BaseAddress,
                                   PLARGE_INTEGER SectionOffset, PSIZE_T ViewSize) {
     struct nt_mm *mm = &g_nt_mm;
@@ -2116,13 +2150,12 @@ static NTSTATUS nt_map_image_view(struct nt_section *sec, PVOID *BaseAddress,
     /* Host pages. One commit covers the whole image, zero-filled. The host
      * shim cannot commit a sub-range of a 64 KiB reservation, so the sections
      * are not committed one by one. Each segment's file bytes are copied in, its
-     * zero tail is cleared explicitly (the commit may reuse older pages), and its
-     * final protection is set. The gaps between segments get no access. */
+     * zero tail is cleared explicitly (the commit may reuse older pages). The
+     * view stays read-write until every fixup is in: each segment takes its
+     * final protection only after the copy and, for a moved image, the
+     * relocations. The gaps between segments get no access. */
     if (kshim_mmap_commit((void *)base, (size_t)size, PROT_READ | PROT_WRITE) != 0) {
-        ntmm_lock(mm);
-        for (k = 0; k < count; k++) nt_list_remove(mm, ins[k]);
-        ntmm_unlock(mm);
-        for (k = 0; k < count; k++) nt_vad_free(ins[k]);
+        nt_map_image_drop(mm, ins, count, base, size, 0);
         return STATUS_NO_MEMORY;
     }
     for (i = 0; i < plan->num_segments; i++) {
@@ -2136,18 +2169,25 @@ static NTSTATUS nt_map_image_view(struct nt_section *sec, PVOID *BaseAddress,
             if (n <= 0) { fail = STATUS_IN_PAGE_ERROR; break; }
             done += (size_t)n;
         }
-        if (NT_SUCCESS(fail)) {
-            memset(dst + s->file_size, 0, s->zero_size);
-            if (kshim_mprotect(dst, s->size, ntmm_prot_to_linux(ip_win32_protect(s->prot))) != 0)
-                fail = STATUS_NO_MEMORY;
-        }
         if (!NT_SUCCESS(fail)) {
-            ntmm_lock(mm);
-            for (k = 0; k < count; k++) nt_list_remove(mm, ins[k]);
-            ntmm_unlock(mm);
-            kshim_munmap((void *)base, (size_t)size);
-            for (k = 0; k < count; k++) nt_vad_free(ins[k]);
+            nt_map_image_drop(mm, ins, count, base, size, 1);
             return fail;
+        }
+        memset(dst + s->file_size, 0, s->zero_size);
+    }
+    if ((u64)base != plan->preferred_base) {
+        NTSTATUS rel = nt_image_relocate(base, plan);
+        if (!NT_SUCCESS(rel)) {
+            nt_map_image_drop(mm, ins, count, base, size, 1);
+            return rel;
+        }
+    }
+    for (i = 0; i < plan->num_segments; i++) {
+        const ip_segment_t *s = &plan->seg[i];
+        unsigned char *dst = (unsigned char *)(base + s->rva);
+        if (kshim_mprotect(dst, s->size, ntmm_prot_to_linux(ip_win32_protect(s->prot))) != 0) {
+            nt_map_image_drop(mm, ins, count, base, size, 1);
+            return STATUS_NO_MEMORY;
         }
     }
     /* Segments are in RVA order, header first, so any gap is between the
