@@ -1185,16 +1185,19 @@ NTSTATUS NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleI
         if (eq){ target=iter; break; }
     }
     if (target) {
-        // replace
+        // replace: allocate the new data first, so a failure keeps the old value
+        // whole. Freeing it first left data NULL with data_len set, and the
+        // snapshot then copied from NULL.
+        uint8_t *nd=NULL;
+        if (DataSize) {
+            nd=(uint8_t*)kmalloc(DataSize,GFP_KERNEL);
+            if (!nd){ write_unlock(&k->lock); free_us(&vname); ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
+            if (Data) memcpy(nd,Data,DataSize);
+        }
         if (target->data) kfree(target->data);
-        target->data=NULL;
+        target->data=nd;
         target->data_len=DataSize;
         target->type=Type;
-        if (DataSize) {
-            target->data=(uint8_t*)kmalloc(DataSize,GFP_KERNEL);
-            if (!target->data){ write_unlock(&k->lock); free_us(&vname); ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
-            if (Data && DataSize) memcpy(target->data,Data,DataSize);
-        }
         k->last_write_time.QuadPart=(LONGLONG)now_100ns();
         write_unlock(&k->lock);
         persist_write_value(k,target);
