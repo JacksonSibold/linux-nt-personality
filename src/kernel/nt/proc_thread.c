@@ -77,6 +77,8 @@
 #include "handle.h"
 #include "sync.h"
 #include "kshim.h"
+#include "security.h"
+#include "proc_create_args.h"
 #include "../../ntdll/nt_types.h"
 #include "../../ntdll/ntstatus.h"
 
@@ -95,6 +97,8 @@
 #endif
 #else
 #include <linux/sched.h>
+#include <linux/cpumask.h>
+#include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/mm.h>
@@ -109,14 +113,54 @@
 /* Info class numbers (from Windows SDK)                               */
 /* ------------------------------------------------------------------ */
 #define ProcessBasicInformation 0
+#define ProcessBasePriority 5
+#define ProcessDefaultHardErrorMode 12
 #define ProcessDebugPort 7
+#define ProcessPriorityClass 18
+#define ProcessWx86Information 19
+#define ProcessAffinityMask 21
+#define ProcessForegroundInformation 25
 #define ProcessWow64Information 26
 #define ProcessImageFileName 27
+#define ProcessBreakOnTermination 29
 #define ProcessDebugObjectHandle 30
+#define ProcessHandleTracing 32
+
+/* PROCESS_PRIORITY_CLASS_* (winnt.h). */
+#define PROCESS_PRIORITY_CLASS_IDLE         1
+#define PROCESS_PRIORITY_CLASS_NORMAL       2
+#define PROCESS_PRIORITY_CLASS_HIGH         3
+#define PROCESS_PRIORITY_CLASS_REALTIME     4
+#define PROCESS_PRIORITY_CLASS_BELOW_NORMAL 5
+#define PROCESS_PRIORITY_CLASS_ABOVE_NORMAL 6
+
+#ifndef PROCESS_SET_INFORMATION
+#define PROCESS_SET_INFORMATION 0x0200
+#endif
 
 #define ThreadBasicInformation 0
 #define ThreadTimes 1
 #define ThreadPriority 2
+#define ThreadBasePriority 3
+#define ThreadAffinityMask 4
+
+/* Effective scheduling values reported by ThreadBasicInformation. There is no
+ * dynamic boost model, so Priority and BasePriority are the same value: the
+ * process base priority plus the thread's relative priority, clamped to the
+ * 0..31 range. A zero affinity_mask means the thread inherits the process mask. */
+static inline LONG pt_thread_base_priority(const struct nt_ethread *t)
+{
+    LONG b = (t->process ? t->process->base_priority : 8) + t->priority;
+    if (b < 0) b = 0;
+    if (b > 31) b = 31;
+    return b;
+}
+
+static inline ULONG_PTR pt_thread_affinity(const struct nt_ethread *t)
+{
+    if (t->affinity_mask) return t->affinity_mask;
+    return t->process ? t->process->affinity_mask : 0;
+}
 
 /* NTSTATUS helpers already in ntstatus.h */
 
@@ -535,6 +579,9 @@ NTSTATUS nt_svc_NtSuspendProcess(HANDLE ProcessHandle)
     struct nt_eprocess *target = ObFindProcessByHeader(hdr);
     ObDereferenceObject(hdr);
     if (!target) return STATUS_INVALID_HANDLE;
+    pthread_mutex_lock(&target->lock);
+    if (target->terminated) { pthread_mutex_unlock(&target->lock); return STATUS_PROCESS_IS_TERMINATING; }
+    pthread_mutex_unlock(&target->lock);
     ObSuspendProcessThreads(target);
     return STATUS_SUCCESS;
 }
@@ -605,6 +652,7 @@ NTSTATUS nt_svc_NtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus)
         if (ProcessHandle == NtCurrentProcess()) {
             struct nt_eprocess *p = cur;
             pthread_mutex_lock(&p->lock);
+            if (p->terminated) { pthread_mutex_unlock(&p->lock); return STATUS_PROCESS_IS_TERMINATING; }
             p->exit_status = ExitStatus;
             p->terminated = true;
             pthread_cond_broadcast(&p->exit_cond);
@@ -618,6 +666,7 @@ NTSTATUS nt_svc_NtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus)
     ObDereferenceObject(hdr);
     if (!target) return STATUS_INVALID_HANDLE;
     pthread_mutex_lock(&target->lock);
+    if (target->terminated) { pthread_mutex_unlock(&target->lock); return STATUS_PROCESS_IS_TERMINATING; }
     target->exit_status = ExitStatus;
     target->terminated = true;
     pthread_cond_broadcast(&target->exit_cond);
@@ -633,7 +682,7 @@ NTSTATUS nt_svc_NtOpenProcess(PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess,
     if (!ProcessHandle || !ClientId) return STATUS_INVALID_PARAMETER;
     ULONG pid = (ULONG)(ULONG_PTR)ClientId->UniqueProcess;
     struct nt_eprocess *p = ObFindProcessByPid(pid);
-    if (!p) return STATUS_INVALID_PARAMETER;
+    if (!p) return STATUS_INVALID_CID;
     struct nt_eprocess *cur = kshim_current_process();
     if (!cur) return STATUS_INVALID_PARAMETER;
     HANDLE h=NULL;
@@ -650,7 +699,7 @@ NTSTATUS nt_svc_NtOpenThread(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
     if (!ThreadHandle || !ClientId) return STATUS_INVALID_PARAMETER;
     ULONG tid = (ULONG)(ULONG_PTR)ClientId->UniqueThread;
     struct nt_ethread *t = ObFindThreadByTid(tid);
-    if (!t) return STATUS_INVALID_PARAMETER;
+    if (!t) return STATUS_INVALID_CID;
     struct nt_eprocess *cur = kshim_current_process();
     if (!cur) return STATUS_INVALID_PARAMETER;
     HANDLE h=NULL;
@@ -743,12 +792,12 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
         return STATUS_NOT_IMPLEMENTED;
     case 11:
         return STATUS_INVALID_INFO_CLASS;
-    case 12: {
+    case ProcessDefaultHardErrorMode: {
         const ULONG need = 4;
         if (ProcessInformationLength != need) return STATUS_INFO_LENGTH_MISMATCH;
         if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER;
         if (ReturnLength) *ReturnLength = need;
-        *(ULONG*)ProcessInformation = 0;
+        *(ULONG*)ProcessInformation = target->default_hard_error_mode;
         return STATUS_SUCCESS;
     }
     case 13:
@@ -760,11 +809,18 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
     case 16:
     case 17:
         return STATUS_INVALID_INFO_CLASS;
-    case 18:
-        return STATUS_INFO_LENGTH_MISMATCH;
+    case ProcessPriorityClass: {
+        const ULONG need = 2;
+        if (ProcessInformationLength != need) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!ProcessInformation) return STATUS_INVALID_PARAMETER;
+        if (ReturnLength) *ReturnLength = need;
+        ((UCHAR *)ProcessInformation)[0] = target->priority_foreground;
+        ((UCHAR *)ProcessInformation)[1] = target->priority_class;
+        return STATUS_SUCCESS;
+    }
     case 19: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
     case 20: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
-    case 21: { const ULONG need=8; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG_PTR*)ProcessInformation=0; return STATUS_SUCCESS; }
+    case ProcessAffinityMask: { const ULONG need=8; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG_PTR*)ProcessInformation=target->affinity_mask; return STATUS_SUCCESS; }
     case 22: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
     case 24: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
     case 25:
@@ -793,7 +849,7 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
         return STATUS_SUCCESS;
     }
     case 28: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
-    case 29: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
+    case ProcessBreakOnTermination: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=target->break_on_termination ? 1 : 0; return STATUS_SUCCESS; }
     case ProcessDebugObjectHandle: { const ULONG need=8; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(HANDLE*)ProcessInformation=0; return STATUS_SUCCESS; }
     case 31: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
     case 32:
@@ -841,9 +897,9 @@ NTSTATUS nt_svc_NtQueryInformationThread(HANDLE ThreadHandle, ULONG ThreadInform
         tbi->TebBaseAddress = (PVOID)(ULONG_PTR)target->teb_base;
         tbi->ClientId.UniqueProcess = (HANDLE)(ULONG_PTR)target->process->pid;
         tbi->ClientId.UniqueThread = (HANDLE)(ULONG_PTR)target->tid;
-        tbi->AffinityMask = target->process->affinity_mask;
-        tbi->Priority = 0;
-        tbi->BasePriority = target->process->base_priority;
+        tbi->AffinityMask = pt_thread_affinity(target);
+        tbi->Priority = pt_thread_base_priority(target);
+        tbi->BasePriority = pt_thread_base_priority(target);
         pthread_mutex_unlock(&target->lock);
         return STATUS_SUCCESS;
     }
@@ -924,18 +980,6 @@ NTSTATUS nt_svc_NtSetSystemInformation(ULONG SystemInformationClass, PVOID Syste
     if (SystemInformationClass == 0) return STATUS_SUCCESS; /* allow basic */
     return STATUS_INVALID_INFO_CLASS;
 }
-NTSTATUS nt_svc_NtSetInformationProcess(HANDLE ProcessHandle, ULONG Class, PVOID Info, ULONG Length)
-{
-    (void)ProcessHandle; (void)Info; (void)Length;
-    /* Windows returns INVALID_INFO_CLASS for unknown Set class, not NOT_IMPLEMENTED */
-    return STATUS_INVALID_INFO_CLASS;
-}
-NTSTATUS nt_svc_NtSetInformationThread(HANDLE ThreadHandle, ULONG Class, PVOID Info, ULONG Length)
-{
-    (void)ThreadHandle; (void)Info; (void)Length;
-    return STATUS_INVALID_INFO_CLASS;
-}
-
 NTSTATUS nt_svc_NtGetContextThread(HANDLE ThreadHandle, PCONTEXT Context)
 {
     (void)ThreadHandle; (void)Context;
@@ -1287,7 +1331,7 @@ NTSTATUS nt_svc_NtCreateThreadEx(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess
     /* Register handle in caller's table (Windows creates handle in caller
      * regardless of target process). */
     st = ObCreateHandle(cur_proc, thr->obj, 0x1FFFFF, 0, &h);
-    pr_info("W1_INSTR: ObCreateHandle for tid %lu handle=%p st=0x%x\n", (unsigned long)thr->tid, h, st);
+    NT_TRACE("W1_INSTR: ObCreateHandle for tid %lu handle=%p st=0x%x\n", (unsigned long)thr->tid, h, st);
     if (!NT_SUCCESS(st)) { nt_free_teb_stack_kernel(thr); ObDestroyThreadObject(thr); return st; }
 
     /* Prepare clone args - share VM so NT threads are Linux threads (TIDs) */
@@ -1336,25 +1380,25 @@ NTSTATUS nt_svc_NtCreateThreadEx(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess
         thr->teb->ClientId.UniqueThread = (HANDLE)(ULONG_PTR)thr->tid;
 
         /* W1_INSTR: log TIF before and after set, and before wake */
-        pr_info("W1_INSTR: child creation parent pid=%d TIF_NTABI parent=%d child pid=%d child TIF before set=%d\n", current->pid, test_thread_flag(TIF_NTABI), pid, test_tsk_thread_flag(child, TIF_NTABI));
+        NT_TRACE("W1_INSTR: child creation parent pid=%d TIF_NTABI parent=%d child pid=%d child TIF before set=%d\n", current->pid, test_thread_flag(TIF_NTABI), pid, test_tsk_thread_flag(child, TIF_NTABI));
         /* Wire GS base for child - same helper binfmt_pe uses for initial thread */
         nt_write_gsbase(child, thr->teb_base);
         set_tsk_thread_flag(child, TIF_NTABI);
-        pr_info("W1_INSTR: after set_tsk_thread_flag child pid=%d TIF_NTABI=%d gsbase=0x%lx\n", pid, test_tsk_thread_flag(child, TIF_NTABI), (unsigned long)thr->teb_base);
+        NT_TRACE("W1_INSTR: after set_tsk_thread_flag child pid=%d TIF_NTABI=%d gsbase=0x%lx\n", pid, test_tsk_thread_flag(child, TIF_NTABI), (unsigned long)thr->teb_base);
 
         /* Set child's user registers to RtlUserThreadStart trampoline */
         nt_setup_child_regs(child, thr, StartRoutine, Argument);
-        pr_info("W1_INSTR: after nt_setup_child_regs child pid=%d TIF_NTABI=%d regs ip=0x%lx sp=0x%lx\n", pid, test_tsk_thread_flag(child, TIF_NTABI), (unsigned long)task_pt_regs(child)->ip, (unsigned long)task_pt_regs(child)->sp);
+        NT_TRACE("W1_INSTR: after nt_setup_child_regs child pid=%d TIF_NTABI=%d regs ip=0x%lx sp=0x%lx\n", pid, test_tsk_thread_flag(child, TIF_NTABI), (unsigned long)task_pt_regs(child)->ip, (unsigned long)task_pt_regs(child)->sp);
 
         /* If CREATE_SUSPENDED, set TIF_NTSUSPEND on child so its first return to user blocks */
         if (suspended) {
             set_tsk_thread_flag(child, TIF_NTSUSPEND);
         }
-        pr_info("W1_INSTR: before wake_up_new_task child pid=%d TIF_NTABI=%d TIF_NTSUSPEND=%d\n", pid, test_tsk_thread_flag(child, TIF_NTABI), test_tsk_thread_flag(child, TIF_NTSUSPEND));
+        NT_TRACE("W1_INSTR: before wake_up_new_task child pid=%d TIF_NTABI=%d TIF_NTSUSPEND=%d\n", pid, test_tsk_thread_flag(child, TIF_NTABI), test_tsk_thread_flag(child, TIF_NTSUSPEND));
 
         /* Now wake the child - it will start at the trampoline with correct TIF */
         wake_up_new_task(child);
-        pr_info("W1_INSTR: after wake_up_new_task child pid=%d TIF_NTABI=%d\n", pid, test_tsk_thread_flag(child, TIF_NTABI));
+        NT_TRACE("W1_INSTR: after wake_up_new_task child pid=%d TIF_NTABI=%d\n", pid, test_tsk_thread_flag(child, TIF_NTABI));
 
         /* Store task pointer for suspend/resume target lookup (via tid) and for exit path.
          * We keep task ref until thread exit drops it. Use thr->task if field exists;
@@ -1366,17 +1410,17 @@ NTSTATUS nt_svc_NtCreateThreadEx(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess
     /* Register thread with object manager so handle stays valid and mutant
      * abandonment can find owner. Object already holds ref via handle.
      */
-    ObRegisterThread(thr);
+    /* ObCreateThreadObject has already registered thr. */
     ObDereferenceObject(thr->obj); /* drop creator ref - now owned by handle + registry */
 
-    pr_info("W1_INSTR: copy_to_user handle %p to %p\n", h, ThreadHandle);
+    NT_TRACE("W1_INSTR: copy_to_user handle %p to %p\n", h, ThreadHandle);
     if (copy_to_user(ThreadHandle, &h, sizeof(h))) {
-        pr_info("W1_INSTR: copy_to_user failed handle %p\n", h);
+        NT_TRACE("W1_INSTR: copy_to_user failed handle %p\n", h);
         ObCloseHandle(cur_proc, h);
         /* child is already running; let it exit via termination path */
         return STATUS_ACCESS_VIOLATION;
     }
-    pr_info("W1_INSTR: NtCreateThreadEx success handle %p tid %lu\n", h, (unsigned long)thr->tid);
+    NT_TRACE("W1_INSTR: NtCreateThreadEx success handle %p tid %lu\n", h, (unsigned long)thr->tid);
     return STATUS_SUCCESS;
 }
 
@@ -1396,7 +1440,28 @@ NTSTATUS nt_svc_NtCreateThread(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
  */
 NTSTATUS nt_svc_NtCreateProcessEx(PHANDLE a, ACCESS_MASK b, POBJECT_ATTRIBUTES c, HANDLE d, ULONG e, HANDLE f, HANDLE g, HANDLE h, PVOID i){ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i; return STATUS_NOT_IMPLEMENTED; }
 NTSTATUS nt_svc_NtCreateProcess(PHANDLE a, ACCESS_MASK b, POBJECT_ATTRIBUTES c, HANDLE d, BOOLEAN e, HANDLE f, HANDLE g, HANDLE h){ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h; return STATUS_NOT_IMPLEMENTED; }
-NTSTATUS nt_svc_NtCreateUserProcess(PHANDLE a, PHANDLE b, ACCESS_MASK c, ACCESS_MASK d, POBJECT_ATTRIBUTES e, POBJECT_ATTRIBUTES f, ULONG g, ULONG h, PRTL_USER_PROCESS_PARAMETERS i, PVOID j, PVOID k){ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;(void)j;(void)k; return STATUS_NOT_IMPLEMENTED; }
+/* Copy-in probe for the create arguments: copy_from_user checks the address range. */
+static int pca_copy_from_user(void *to, const void *from, size_t n)
+{
+    return copy_from_user(to, from, n) ? -1 : 0;
+}
+
+/* Argument validation only (process-creation.md, M5). CreateInfo and
+ * AttributeList are copied and checked. The call is then refused, because no
+ * process is created yet. ProcessParameters is not read: the block binfmt_pe
+ * will read is the process_params.h format, not this structure, and nothing
+ * consumes it yet. */
+NTSTATUS nt_svc_NtCreateUserProcess(PHANDLE a, PHANDLE b, ACCESS_MASK c, ACCESS_MASK d, POBJECT_ATTRIBUTES e, POBJECT_ATTRIBUTES f, ULONG g, ULONG h, PRTL_USER_PROCESS_PARAMETERS i, PVOID j, PVOID k)
+{
+    struct pca_create_info ci;
+    struct pca_attr_list al;
+    NTSTATUS st;
+    (void)c; (void)d; (void)e; (void)f; (void)g; (void)h; (void)i;
+    if (!a || !b) return STATUS_INVALID_PARAMETER;
+    st = PcaCopyInUserProcessArgs(pca_copy_from_user, j, k, &ci, &al);
+    if (!NT_SUCCESS(st)) return st;
+    return STATUS_NOT_IMPLEMENTED;
+}
 
 /* --------------------------------------------------------------- */
 /* Suspend / Resume - exact previous-count semantics (golden)       */
@@ -1416,25 +1481,25 @@ NTSTATUS nt_svc_NtSuspendThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount
     if (!proc) return STATUS_INVALID_PARAMETER;
     st = ObReferenceObjectByHandle(proc, ThreadHandle, &nt_thread_type, UserMode, 0, &hdr, NULL);
     if (!NT_SUCCESS(st)) {
-        pr_info("W1_INSTR: NtSuspendThread handle=%p ObReference failed 0x%x\n", ThreadHandle, st);
+        NT_TRACE("W1_INSTR: NtSuspendThread handle=%p ObReference failed 0x%x\n", ThreadHandle, st);
         return STATUS_INVALID_HANDLE;
     }
     thr = ObFindThreadByHeader(hdr);
     ObDereferenceObject(hdr);
     if (!thr) {
-        pr_info("W1_INSTR: NtSuspendThread handle=%p thr not found\n", ThreadHandle);
+        NT_TRACE("W1_INSTR: NtSuspendThread handle=%p thr not found\n", ThreadHandle);
         return STATUS_INVALID_HANDLE;
     }
-    pr_info("W1_INSTR: NtSuspendThread handle=%p tid=%lu terminated=%d suspend_count=%d\n", ThreadHandle, (unsigned long)thr->tid, thr->terminated, atomic_read(&thr->suspend_count));
+    NT_TRACE("W1_INSTR: NtSuspendThread handle=%p tid=%lu terminated=%d suspend_count=%d\n", ThreadHandle, (unsigned long)thr->tid, thr->terminated, atomic_read(&thr->suspend_count));
     spin_lock(&thr->lock);
-    if (thr->terminated) { pr_info("W1_INSTR: NtSuspendThread tid=%lu terminated true, returning THREAD_IS_TERMINATING\n", (unsigned long)thr->tid); spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
+    if (thr->terminated) { NT_TRACE("W1_INSTR: NtSuspendThread tid=%lu terminated true, returning THREAD_IS_TERMINATING\n", (unsigned long)thr->tid); spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
     prev = (ULONG)atomic_read(&thr->suspend_count);
     if (prev >= NT_MAX_SUSPEND_COUNT) { spin_unlock(&thr->lock); return STATUS_SUSPEND_COUNT_EXCEEDED; }
     if (PreviousSuspendCount) {
         if (!access_ok(PreviousSuspendCount, sizeof(*PreviousSuspendCount))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
         if (copy_to_user(PreviousSuspendCount, &prev, sizeof(prev))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
     }
-    pr_info("NtSuspendThread: tid=%lu prev=%lu new=%lu\n", thr->tid, prev, prev+1);
+    NT_TRACE("NtSuspendThread: tid=%lu prev=%lu new=%lu\n", thr->tid, prev, prev+1);
     atomic_inc(&thr->suspend_count);
     if (prev == 0) {
         tsk = pid_task(find_vpid(thr->tid), PIDTYPE_PID);
@@ -1458,25 +1523,25 @@ NTSTATUS nt_svc_NtResumeThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount)
     if (!proc) return STATUS_INVALID_PARAMETER;
     st = ObReferenceObjectByHandle(proc, ThreadHandle, &nt_thread_type, UserMode, 0, &hdr, NULL);
     if (!NT_SUCCESS(st)) {
-        pr_info("W1_INSTR: NtSuspendThread handle=%p ObReference failed 0x%x\n", ThreadHandle, st);
+        NT_TRACE("W1_INSTR: NtSuspendThread handle=%p ObReference failed 0x%x\n", ThreadHandle, st);
         return STATUS_INVALID_HANDLE;
     }
     thr = ObFindThreadByHeader(hdr);
     ObDereferenceObject(hdr);
     if (!thr) {
-        pr_info("W1_INSTR: NtSuspendThread handle=%p thr not found\n", ThreadHandle);
+        NT_TRACE("W1_INSTR: NtSuspendThread handle=%p thr not found\n", ThreadHandle);
         return STATUS_INVALID_HANDLE;
     }
-    pr_info("W1_INSTR: NtSuspendThread handle=%p tid=%lu terminated=%d suspend_count=%d\n", ThreadHandle, (unsigned long)thr->tid, thr->terminated, atomic_read(&thr->suspend_count));
+    NT_TRACE("W1_INSTR: NtSuspendThread handle=%p tid=%lu terminated=%d suspend_count=%d\n", ThreadHandle, (unsigned long)thr->tid, thr->terminated, atomic_read(&thr->suspend_count));
     spin_lock(&thr->lock);
-    if (thr->terminated) { pr_info("W1_INSTR: NtSuspendThread tid=%lu terminated true, returning THREAD_IS_TERMINATING\n", (unsigned long)thr->tid); spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
+    if (thr->terminated) { NT_TRACE("W1_INSTR: NtSuspendThread tid=%lu terminated true, returning THREAD_IS_TERMINATING\n", (unsigned long)thr->tid); spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
     prev = (ULONG)atomic_read(&thr->suspend_count);
     if (PreviousSuspendCount) {
         if (!access_ok(PreviousSuspendCount, sizeof(*PreviousSuspendCount))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
         if (copy_to_user(PreviousSuspendCount, &prev, sizeof(prev))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
     }
     if (prev == 0) { spin_unlock(&thr->lock); return STATUS_SUCCESS; }
-    pr_info("NtResumeThread: tid=%lu prev=%lu new=%lu\n", thr->tid, prev, prev-1);
+    NT_TRACE("NtResumeThread: tid=%lu prev=%lu new=%lu\n", thr->tid, prev, prev-1);
     atomic_dec(&thr->suspend_count);
     cur = prev - 1;
     if (cur == 0) {
@@ -1501,6 +1566,9 @@ NTSTATUS nt_svc_NtSuspendProcess(HANDLE ProcessHandle)
     target = ObFindProcessByHeader(hdr);
     ObDereferenceObject(hdr);
     if (!target) return STATUS_INVALID_HANDLE;
+    spin_lock(&target->lock);
+    if (target->terminated) { spin_unlock(&target->lock); return STATUS_PROCESS_IS_TERMINATING; }
+    spin_unlock(&target->lock);
     ObSuspendProcessThreads(target);
     return STATUS_SUCCESS;
 }
@@ -1558,10 +1626,10 @@ NTSTATUS nt_svc_NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus)
     wake_up(&thr->exit_wq);
     wake_up(&thr->suspend_wq);
     spin_unlock(&thr->lock);
-    pr_err("NtTerminateThread: thr %p tid %lu sync_thread %p tid %lu\n", thr, thr->tid, thr->sync_thread, thr->sync_thread?thr->sync_thread->tid:0);
+    NT_TRACE_ERR("NtTerminateThread: thr %p tid %lu sync_thread %p tid %lu\n", thr, thr->tid, thr->sync_thread, thr->sync_thread?thr->sync_thread->tid:0);
     if (thr->sync_thread) {
         extern void nt_abandon_owned_mutants(struct nt_thread *);
-        pr_err("NtTerminateThread: abandoning for thr %p tid %lu\n", thr, thr->tid);
+        NT_TRACE_ERR("NtTerminateThread: abandoning for thr %p tid %lu\n", thr, thr->tid);
         nt_abandon_owned_mutants(thr->sync_thread);
     }
     tsk = pid_task(find_vpid(thr->tid), PIDTYPE_PID);
@@ -1578,6 +1646,7 @@ NTSTATUS nt_svc_NtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus)
     if (!cur) return STATUS_INVALID_PARAMETER;
     if (ProcessHandle == NtCurrentProcess()) {
         spin_lock(&cur->lock);
+        if (cur->terminated) { spin_unlock(&cur->lock); return STATUS_PROCESS_IS_TERMINATING; }
         cur->exit_status = ExitStatus;
         cur->terminated = true;
         wake_up(&cur->exit_wq);
@@ -1592,6 +1661,7 @@ NTSTATUS nt_svc_NtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus)
     ObDereferenceObject(hdr);
     if (!target) return STATUS_INVALID_HANDLE;
     spin_lock(&target->lock);
+    if (target->terminated) { spin_unlock(&target->lock); return STATUS_PROCESS_IS_TERMINATING; }
     target->exit_status = ExitStatus;
     target->terminated = true;
     wake_up(&target->exit_wq);
@@ -1614,7 +1684,7 @@ NTSTATUS nt_svc_NtOpenProcess(PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess,
         return STATUS_ACCESS_VIOLATION;
     if (copy_from_user(&pid, &ClientId->UniqueProcess, sizeof(pid))) return STATUS_ACCESS_VIOLATION;
     p = ObFindProcessByPid(pid);
-    if (!p) return STATUS_INVALID_PARAMETER;
+    if (!p) return STATUS_INVALID_CID;
     proc = nt_current_eprocess();
     st = ObCreateHandle(proc, p->obj, DesiredAccess ? DesiredAccess : 0x1FFFFF, 0, &h);
     if (!NT_SUCCESS(st)) return st;
@@ -1639,7 +1709,7 @@ NTSTATUS nt_svc_NtOpenThread(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
         return STATUS_ACCESS_VIOLATION;
     if (copy_from_user(&tid, &ClientId->UniqueThread, sizeof(tid))) return STATUS_ACCESS_VIOLATION;
     t = ObFindThreadByTid(tid);
-    if (!t) return STATUS_INVALID_PARAMETER;
+    if (!t) return STATUS_INVALID_CID;
     proc = nt_current_eprocess();
     st = ObCreateHandle(proc, t->obj, DesiredAccess ? DesiredAccess : 0x1FFFFF, 0, &h);
     if (!NT_SUCCESS(st)) return st;
@@ -1743,14 +1813,16 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
         return STATUS_NOT_IMPLEMENTED;
     case 11:
         return STATUS_INVALID_INFO_CLASS;
-    case 12: {
+    case ProcessDefaultHardErrorMode: {
         const ULONG need = 4;
+        ULONG v;
         if (ProcessInformationLength != need) return STATUS_INFO_LENGTH_MISMATCH;
         if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength))
             return STATUS_ACCESS_VIOLATION;
         if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength)))
             copy_to_user(ReturnLength, &need, sizeof(need));
-        { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; }
+        v = target->default_hard_error_mode;
+        if (copy_to_user(ProcessInformation, &v, sizeof(v))) return STATUS_ACCESS_VIOLATION;
         return STATUS_SUCCESS;
     }
     case 13:
@@ -1762,11 +1834,21 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
     case 16:
     case 17:
         return STATUS_INVALID_INFO_CLASS;
-    case 18:
-        return STATUS_INFO_LENGTH_MISMATCH;
+    case ProcessPriorityClass: {
+        const ULONG need = 2;
+        UCHAR pc[2];
+        if (ProcessInformationLength != need) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION;
+        if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength)))
+            copy_to_user(ReturnLength, &need, sizeof(need));
+        pc[0] = target->priority_foreground;
+        pc[1] = target->priority_class;
+        if (copy_to_user(ProcessInformation, pc, sizeof(pc))) return STATUS_ACCESS_VIOLATION;
+        return STATUS_SUCCESS;
+    }
     case 19: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
     case 20: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
-    case 21: { const ULONG need=8; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG_PTR z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
+    case ProcessAffinityMask: { const ULONG need=8; ULONG_PTR v; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); v = target->affinity_mask; if (copy_to_user(ProcessInformation, &v, sizeof(v))) return STATUS_ACCESS_VIOLATION; return STATUS_SUCCESS; }
     case 22: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
     case 24: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
     case 25:
@@ -1803,7 +1885,7 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
         return STATUS_SUCCESS;
     }
     case 28: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
-    case 29: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
+    case ProcessBreakOnTermination: { const ULONG need=4; ULONG v; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); v = target->break_on_termination ? 1 : 0; if (copy_to_user(ProcessInformation, &v, sizeof(v))) return STATUS_ACCESS_VIOLATION; return STATUS_SUCCESS; }
     case 30: { const ULONG need=8; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { HANDLE z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
     case 31: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
     case 32:
@@ -1855,9 +1937,9 @@ NTSTATUS nt_svc_NtQueryInformationThread(HANDLE ThreadHandle, ULONG ThreadInform
             tbi.TebBaseAddress = (PVOID)(ULONG_PTR)target->teb_base;
             tbi.ClientId.UniqueProcess = (HANDLE)(ULONG_PTR)target->process->pid;
             tbi.ClientId.UniqueThread = (HANDLE)(ULONG_PTR)target->tid;
-            tbi.AffinityMask = target->process->affinity_mask;
-            tbi.Priority = 0;
-            tbi.BasePriority = target->process->base_priority;
+            tbi.AffinityMask = pt_thread_affinity(target);
+            tbi.Priority = pt_thread_base_priority(target);
+            tbi.BasePriority = pt_thread_base_priority(target);
             spin_unlock(&target->lock);
             if (copy_to_user(ThreadInformation, &tbi, sizeof(tbi))) return STATUS_ACCESS_VIOLATION;
         }
@@ -1946,9 +2028,330 @@ NTSTATUS nt_svc_NtSetSystemInformation(ULONG SystemInformationClass, PVOID Syste
     if (SystemInformationClass == 0) return STATUS_SUCCESS;
     return STATUS_INVALID_INFO_CLASS;
 }
-NTSTATUS nt_svc_NtSetInformationProcess(HANDLE a, ULONG b, PVOID c, ULONG d){ (void)a;(void)c;(void)d; return STATUS_INVALID_INFO_CLASS; }
-NTSTATUS nt_svc_NtSetInformationThread(HANDLE a, ULONG b, PVOID c, ULONG d){ (void)a;(void)c;(void)d; return STATUS_INVALID_INFO_CLASS; }
 NTSTATUS nt_svc_NtGetContextThread(HANDLE a, PCONTEXT b){ (void)a;(void)b; return STATUS_NOT_IMPLEMENTED; }
 NTSTATUS nt_svc_NtSetContextThread(HANDLE a, PCONTEXT b){ (void)a;(void)b; return STATUS_NOT_IMPLEMENTED; }
 
+#endif /* shim / kernel branch */
+
+/* ------------------------------------------------------------------ */
+/* Thread scheduling and alert services (both branches)                */
+/* ------------------------------------------------------------------ */
+#ifdef __KERNEL__
+#define PT_CUR_THREAD()  nt_current_ethread()
+#define PT_CUR_PROCESS() nt_current_eprocess()
+#else
+#define PT_CUR_THREAD()  kshim_current_thread()
+#define PT_CUR_PROCESS() kshim_current_process()
 #endif
+
+/* Resolve a thread handle (or NtCurrentThread) to its object. Takes no
+ * reference beyond the one ObReferenceObjectByHandle drops before return; the
+ * caller must hold the thread alive through its own handle. */
+static NTSTATUS pt_thread_from_handle(HANDLE h, struct nt_ethread **out)
+{
+    struct nt_eprocess *proc = PT_CUR_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    *out = NULL;
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    if (h == NtCurrentThread()) {
+        struct nt_ethread *cur = PT_CUR_THREAD();
+        if (!cur) return STATUS_INVALID_HANDLE;
+        *out = cur;
+        return STATUS_SUCCESS;
+    }
+    NTSTATUS st = ObReferenceObjectByHandle(proc, h, &nt_thread_type, UserMode, 0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return STATUS_INVALID_HANDLE;
+    struct nt_ethread *thr = ObFindThreadByHeader(hdr);
+    ObDereferenceObject(hdr);
+    if (!thr) return STATUS_INVALID_HANDLE;
+    *out = thr;
+    return STATUS_SUCCESS;
+}
+
+/* Set the pending-alert flag under the thread lock. A terminated thread
+ * cannot be alerted. */
+static NTSTATUS pt_thread_post_alert(struct nt_ethread *thr)
+{
+    struct nt_thread *st;
+
+    /* The alert is set on the sync thread, the flag every alertable wait
+     * tests. A thread gets its sync thread when it is created or enters the
+     * personality (dispatch.c), so one is missing only if that allocation
+     * failed; the alert cannot be recorded then. The sync thread is owned by
+     * the running thread and freed at its exit, so it is not created here. */
+    spin_lock(&thr->lock);
+    if (thr->terminated) {
+        spin_unlock(&thr->lock);
+        return STATUS_THREAD_IS_TERMINATING;
+    }
+    st = thr->sync_thread;
+    spin_unlock(&thr->lock);
+    if (!st) return STATUS_NO_MEMORY;
+    nt_thread_alert(st);
+    return STATUS_SUCCESS;
+}
+
+/* ------------------------------------------------------------------ */
+/* NtSetInformationProcess (shared by the shim and kernel branches)    */
+/* ------------------------------------------------------------------ */
+
+/* Processors a process may be bound to. The kernel uses the online CPU count;
+ * the shim reports eight processors. */
+static ULONG_PTR pt_system_affinity_mask(void)
+{
+#ifdef __KERNEL__
+    unsigned int n = nr_cpu_ids;
+    if (n >= BITS_PER_LONG) return ~(ULONG_PTR)0;
+    return ((ULONG_PTR)1 << n) - 1;
+#else
+    return 0xFF;
+#endif
+}
+
+/* Base priority that a PROCESS_PRIORITY_CLASS_* selects. Unknown classes are
+ * rejected by the caller before this is reached. */
+static LONG pt_priority_class_base(UCHAR cls)
+{
+    switch (cls) {
+    case PROCESS_PRIORITY_CLASS_IDLE:         return 4;
+    case PROCESS_PRIORITY_CLASS_BELOW_NORMAL: return 6;
+    case PROCESS_PRIORITY_CLASS_NORMAL:       return 8;
+    case PROCESS_PRIORITY_CLASS_ABOVE_NORMAL: return 10;
+    case PROCESS_PRIORITY_CLASS_HIGH:         return 13;
+    case PROCESS_PRIORITY_CLASS_REALTIME:     return 24;
+    default:                                  return 8;
+    }
+}
+
+/* Resolve the target of a process Set. NtCurrentProcess is a pseudo handle
+ * with full access. Any other handle must grant `access`; the object manager
+ * returns STATUS_ACCESS_DENIED when it does not. */
+static NTSTATUS pt_process_from_handle(HANDLE h, ULONG access, struct nt_eprocess **out)
+{
+    struct nt_eprocess *caller = PT_CUR_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    struct nt_eprocess *target;
+    NTSTATUS st;
+    *out = NULL;
+    if (!caller) return STATUS_INVALID_PARAMETER;
+    if (h == NtCurrentProcess()) {
+        *out = caller;
+        return STATUS_SUCCESS;
+    }
+    st = ObReferenceObjectByHandle(caller, h, &nt_process_type, UserMode, access, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    target = ObFindProcessByHeader(hdr);
+    ObDereferenceObject(hdr);
+    if (!target) return STATUS_INVALID_HANDLE;
+    *out = target;
+    return STATUS_SUCCESS;
+}
+
+/* Copies n bytes of an NtSetInformationProcess input from user memory. Info is a
+ * user pointer in the kernel build, so it is never dereferenced directly. */
+static NTSTATUS pt_copy_info_in(const void *user, void *dst, size_t n)
+{
+    if (!access_ok(user, n) || copy_from_user(dst, user, n)) return STATUS_ACCESS_VIOLATION;
+    return STATUS_SUCCESS;
+}
+
+/* NtSetInformationProcess. Implemented classes, with the documented rules:
+ *
+ *  ProcessBasePriority (5)        LONG. Clamped to 0..31 and stored as the
+ *                                 process base priority. Set-only.
+ *  ProcessPriorityClass (18)      PROCESS_PRIORITY_CLASS, 2 bytes: Foreground
+ *                                 then PriorityClass. Classes 1..6 are valid
+ *                                 (IDLE, NORMAL, HIGH, REALTIME, BELOW_NORMAL,
+ *                                 ABOVE_NORMAL); others are STATUS_INVALID_PARAMETER.
+ *                                 The class sets the base priority to the value
+ *                                 it selects. REALTIME needs
+ *                                 SeIncreaseBasePriorityPrivilege.
+ *  ProcessDefaultHardErrorMode (12) ULONG SEM_* flags, stored as given.
+ *  ProcessAffinityMask (21)       ULONG_PTR. Must be nonzero and a subset of the
+ *                                 system mask, else STATUS_INVALID_PARAMETER.
+ *  ProcessBreakOnTermination (29) ULONG treated as a flag. Needs
+ *                                 SeDebugPrivilege, else STATUS_PRIVILEGE_NOT_HELD.
+ *  ProcessHandleTracing (32)      Refused with STATUS_NOT_SUPPORTED. Handle
+ *                                 tracing is not built.
+ *
+ * Every class needs PROCESS_SET_INFORMATION on the process handle. Length and
+ * buffer are checked before the handle is opened. Classes not listed above,
+ * including ProcessForegroundInformation (25) and ProcessWx86Information (19),
+ * are STATUS_INVALID_INFO_CLASS: their buffer contract is not confirmed. */
+NTSTATUS nt_svc_NtSetInformationProcess(HANDLE ProcessHandle, ULONG Class, PVOID Info, ULONG Length)
+{
+    struct nt_eprocess *caller = PT_CUR_PROCESS();
+    struct nt_eprocess *target = NULL;
+    LONG base = 0;
+    ULONG value = 0;
+    ULONG_PTR mask = 0;
+    UCHAR cls = 0;
+    BOOLEAN fg = FALSE;
+    NTSTATUS st;
+
+    switch (Class) {
+    case ProcessBasePriority:
+        if (Length != sizeof(LONG)) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!Info) return STATUS_INVALID_PARAMETER;
+        {
+            LONG in_base = 0;
+            st = pt_copy_info_in(Info, &in_base, sizeof(in_base));
+            if (!NT_SUCCESS(st)) return st;
+            base = in_base;
+        }
+        if (base < 0) base = 0;
+        if (base > 31) base = 31;
+        break;
+    case ProcessPriorityClass:
+        if (Length != 2) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!Info) return STATUS_INVALID_PARAMETER;
+        {
+            UCHAR in_pc[2] = { 0, 0 };
+            st = pt_copy_info_in(Info, in_pc, sizeof(in_pc));
+            if (!NT_SUCCESS(st)) return st;
+            fg = in_pc[0] != 0;
+            cls = in_pc[1];
+        }
+        if (cls < PROCESS_PRIORITY_CLASS_IDLE || cls > PROCESS_PRIORITY_CLASS_ABOVE_NORMAL)
+            return STATUS_INVALID_PARAMETER;
+        break;
+    case ProcessDefaultHardErrorMode:
+    case ProcessBreakOnTermination:
+        if (Length != sizeof(ULONG)) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!Info) return STATUS_INVALID_PARAMETER;
+        st = pt_copy_info_in(Info, &value, sizeof(value));
+        if (!NT_SUCCESS(st)) return st;
+        break;
+    case ProcessAffinityMask:
+        if (Length != sizeof(ULONG_PTR)) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!Info) return STATUS_INVALID_PARAMETER;
+        st = pt_copy_info_in(Info, &mask, sizeof(mask));
+        if (!NT_SUCCESS(st)) return st;
+        if (mask == 0 || (mask & ~pt_system_affinity_mask())) return STATUS_INVALID_PARAMETER;
+        break;
+    case ProcessHandleTracing:
+        return STATUS_NOT_SUPPORTED;
+    default:
+        return STATUS_INVALID_INFO_CLASS;
+    }
+
+    st = pt_process_from_handle(ProcessHandle, PROCESS_SET_INFORMATION, &target);
+    if (!NT_SUCCESS(st)) return st;
+
+    if (Class == ProcessPriorityClass && cls == PROCESS_PRIORITY_CLASS_REALTIME &&
+        !se_caller_has_privilege(caller, SE_INC_BASE_PRIORITY_PRIVILEGE))
+        return STATUS_PRIVILEGE_NOT_HELD;
+    if (Class == ProcessBreakOnTermination && !se_caller_has_privilege(caller, SE_DEBUG_PRIVILEGE))
+        return STATUS_PRIVILEGE_NOT_HELD;
+
+    spin_lock(&target->lock);
+    if (target->terminated) {
+        spin_unlock(&target->lock);
+        return STATUS_PROCESS_IS_TERMINATING;
+    }
+    switch (Class) {
+    case ProcessBasePriority:
+        target->base_priority = base;
+        break;
+    case ProcessPriorityClass:
+        target->priority_class = cls;
+        target->priority_foreground = fg;
+        target->base_priority = pt_priority_class_base(cls);
+        break;
+    case ProcessDefaultHardErrorMode:
+        target->default_hard_error_mode = value;
+        break;
+    case ProcessAffinityMask:
+        target->affinity_mask = mask;
+        break;
+    case ProcessBreakOnTermination:
+        target->break_on_termination = (value != 0);
+        break;
+    }
+    spin_unlock(&target->lock);
+    return STATUS_SUCCESS;
+}
+
+/* NtSetInformationThread: ThreadPriority (2) and ThreadBasePriority (3) take one
+ * LONG relative to the process base priority in -15..15 (THREAD_PRIORITY_IDLE
+ * to THREAD_PRIORITY_TIME_CRITICAL). ThreadAffinityMask (4) takes one ULONG_PTR,
+ * which must be non-empty and a subset of the process affinity mask. Other
+ * classes are invalid for set. Terminated threads refuse every set. */
+NTSTATUS nt_svc_NtSetInformationThread(HANDLE ThreadHandle, ULONG Class, PVOID Info, ULONG Length)
+{
+    LONG pri = 0;
+    ULONG_PTR mask = 0;
+    struct nt_ethread *thr = NULL;
+    NTSTATUS st;
+
+    switch (Class) {
+    /* Info is a user pointer in the kernel build: copy it, never dereference it. */
+    case ThreadPriority:
+    case ThreadBasePriority:
+        if (Length != sizeof(LONG)) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!Info) return STATUS_INVALID_PARAMETER;
+        if (!access_ok(Info, sizeof(LONG)) || copy_from_user(&pri, Info, sizeof(pri)))
+            return STATUS_ACCESS_VIOLATION;
+        if (pri < -15 || pri > 15) return STATUS_INVALID_PARAMETER;
+        break;
+    case ThreadAffinityMask:
+        if (Length != sizeof(ULONG_PTR)) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!Info) return STATUS_INVALID_PARAMETER;
+        if (!access_ok(Info, sizeof(ULONG_PTR)) || copy_from_user(&mask, Info, sizeof(mask)))
+            return STATUS_ACCESS_VIOLATION;
+        break;
+    default:
+        return STATUS_INVALID_INFO_CLASS;
+    }
+
+    st = pt_thread_from_handle(ThreadHandle, &thr);
+    if (!NT_SUCCESS(st)) return st;
+
+    if (Class == ThreadAffinityMask) {
+        ULONG_PTR proc_mask = thr->process ? thr->process->affinity_mask : 0;
+        if (mask == 0 || (mask & ~proc_mask)) return STATUS_INVALID_PARAMETER;
+    }
+
+    spin_lock(&thr->lock);
+    if (thr->terminated) {
+        spin_unlock(&thr->lock);
+        return STATUS_THREAD_IS_TERMINATING;
+    }
+    if (Class == ThreadAffinityMask)
+        thr->affinity_mask = mask;
+    else
+        thr->priority = pri;
+    spin_unlock(&thr->lock);
+    return STATUS_SUCCESS;
+}
+
+/* NtAlertThread: sets the pending alert. The next NtTestAlert on that thread
+ * returns STATUS_ALERTED. The suspend count is not changed. */
+NTSTATUS nt_svc_NtAlertThread(HANDLE ThreadHandle)
+{
+    struct nt_ethread *thr = NULL;
+    NTSTATUS st = pt_thread_from_handle(ThreadHandle, &thr);
+    if (!NT_SUCCESS(st)) return st;
+    return pt_thread_post_alert(thr);
+}
+
+/* NtAlertThreadByThreadId: as NtAlertThread, looked up by thread id. An
+ * unknown id is STATUS_INVALID_CID. */
+NTSTATUS nt_svc_NtAlertThreadByThreadId(HANDLE ThreadId)
+{
+    struct nt_ethread *thr = ObFindThreadByTid((ULONG)(ULONG_PTR)ThreadId);
+    if (!thr) return STATUS_INVALID_CID;
+    return pt_thread_post_alert(thr);
+}
+
+/* NtAlertResumeThread: resume (as NtResumeThread, same previous-count rules)
+ * and then set the pending alert. A running thread is alerted too. */
+NTSTATUS nt_svc_NtAlertResumeThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount)
+{
+    struct nt_ethread *thr = NULL;
+    NTSTATUS st = pt_thread_from_handle(ThreadHandle, &thr);
+    if (!NT_SUCCESS(st)) return st;
+    st = nt_svc_NtResumeThread(ThreadHandle, PreviousSuspendCount);
+    if (!NT_SUCCESS(st)) return st;
+    return pt_thread_post_alert(thr);
+}

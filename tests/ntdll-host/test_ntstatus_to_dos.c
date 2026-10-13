@@ -88,6 +88,23 @@ static void loader_symbols_map_to_win32_errors(void)
         mt_fail_eq(__FILE__, __LINE__, "STATUS_ENTRYPOINT_NOT_FOUND", (long)entry, 127);
 }
 
+/* The header values are the real NT codes. 0xC0000228 and 0xC0000233 are
+ * separate statuses with their own oracle values (599 and 1908); they must not
+ * be read as the DLL and entry-point codes. */
+static void loader_header_values_are_real_codes(void)
+{
+    if (STATUS_DLL_NOT_FOUND != (NTSTATUS)0xC0000135L)
+        mt_fail_eq(__FILE__, __LINE__, "STATUS_DLL_NOT_FOUND", (long)STATUS_DLL_NOT_FOUND, 0xC0000135L);
+    if (STATUS_ENTRYPOINT_NOT_FOUND != (NTSTATUS)0xC0000139L)
+        mt_fail_eq(__FILE__, __LINE__, "STATUS_ENTRYPOINT_NOT_FOUND", (long)STATUS_ENTRYPOINT_NOT_FOUND, 0xC0000139L);
+    ULONG a = RtlNtStatusToDosError((NTSTATUS)0xC0000228L);
+    if (a != 599)
+        mt_fail_eq(__FILE__, __LINE__, "STATUS 0xC0000228", (long)a, 599);
+    ULONG b = RtlNtStatusToDosError((NTSTATUS)0xC0000233L);
+    if (b != 1908)
+        mt_fail_eq(__FILE__, __LINE__, "STATUS 0xC0000233", (long)b, 1908);
+}
+
 static void unmapped_status_falls_back_to_317(void)
 {
     /* Not in the table; the golden column gives ERROR_MR_MID_NOT_FOUND. */
@@ -101,6 +118,7 @@ static const mt_case_t cases[] = {
     { "every_entry_round_trips", every_entry_round_trips },
     { "golden_values_match", golden_values_match },
     { "loader_symbols_map_to_win32_errors", loader_symbols_map_to_win32_errors },
+    { "loader_header_values_are_real_codes", loader_header_values_are_real_codes },
     { "unmapped_status_falls_back_to_317", unmapped_status_falls_back_to_317 },
 };
 

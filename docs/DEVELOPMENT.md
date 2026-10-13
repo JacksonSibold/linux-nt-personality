@@ -23,7 +23,7 @@ python tools/check_doc_links.py
 python tools/update_doc_counts.py --check
 ```
 
-- `tests/unit` holds <!-- counts:unit_modules:begin -->22<!-- counts:unit_modules:end --> test modules (<!-- counts:unit_tests:begin -->401<!-- counts:unit_tests:end --> `test_` functions). They cover the scripts in
+- `tests/unit` holds <!-- counts:unit_modules:begin -->26<!-- counts:unit_modules:end --> test modules (<!-- counts:unit_tests:begin -->546<!-- counts:unit_tests:end --> `test_` functions). They cover the scripts in
   `build/` (`fix_gsbase.py`, `fix_iosb.py`, `gen_ntdll_def.py`, `gen_stubs.py`,
   `merge_dod.py`, `validate_criteria.py`), `tools/` (`check_doc_links.py`, `check_repo.py`,
   `coverage_report.py`, `criteria_report.py`, `ntstatus_lookup.py`, `pe_info.py`,
@@ -52,7 +52,7 @@ python tools/update_doc_counts.py --check
 suites, in this order: unit tests, `check_repo.py`, `check_doc_links.py`,
 `update_doc_counts.py --check`,
 `provenance_scan.py --check`, `vm/lint.sh`, `tests/syntax/check.sh`,
-`make -C tests/host test`, and `make -C tests/kernel-host check`. It ends with a
+`make -C tests/host test`, `make -C tests/fuzz smoke`, and `make -C tests/kernel-host check`. It ends with a
 PASS / FAIL / KNOWN-FAIL / SKIP matrix.
 
 - Python is taken from `$PYTHON` if set and working, then from the WinPython
@@ -68,6 +68,32 @@ PASS / FAIL / KNOWN-FAIL / SKIP matrix.
 - The exit status is 1 only when a section reports `FAIL`.
 
 The latest recorded run is in [status/TEST-MATRIX.md](status/TEST-MATRIX.md).
+
+## PE parser fuzzer (tests/fuzz)
+
+`tests/fuzz/fuzz_pe` mutates PE images and runs `src/loader/pe_parse.c` on them.
+It is deterministic: iteration I of seed file F under base seed S always gives
+the same input. Seeds are the synthesized images from `tests/host/pe_image.c`
+(written by `--gen-seeds`) and the MinGW fixtures from `tests/host`, when they
+can be built.
+
+- `make -C tests/fuzz smoke`: 2000 iterations per seed file (CI and
+  `tools/run_all_checks.sh`). `make -C tests/fuzz fuzz` runs 100000.
+- `SEED=N` picks the base seed. `ITERS=N` picks the iteration count.
+- A failure prints the file, seed, iteration, and mutation log, and writes the
+  input to `tests/fuzz/out/fail-*.bin`. The printed `reproduce:` line reruns it.
+- Memory faults are caught with a guard page placed right after each input, so
+  a read past the declared size faults and is reported. Sanitizers are not
+  needed.
+- Invariants checked after each `pe_validate()` success: statuses are in range;
+  name and forwarder pointers lie in the buffer; returned RVAs are below
+  `SizeOfImage`; each walk makes a bounded number of callbacks.
+- `make -C tests/fuzz check-one FILE=...` reruns one input.
+  `make -C tests/fuzz minimise FILE=...` shrinks a failing input to `FILE.min`,
+  keeping the same finding. Each candidate runs in a child process, so a
+  minimise can take minutes on Windows.
+- `fuzz_pe --keep-going` lists each distinct violation once, with the first
+  input that produced it, instead of stopping at the first.
 
 ## Other tools
 
@@ -172,6 +198,7 @@ locations, not host checkout paths, and are not configurable.
 | `build/` | Top-level Makefile and build and generator helpers |
 | `vm/` | VM and kernel build scripts |
 | `docs/` | Architecture, research notes, module reference (`docs/modules/`), review reports (`docs/review/`) |
+| `docs/architecture/` | Mermaid diagrams of the components, the startup path, syscall dispatch, objects, memory, the loader, and the test layers. [build-and-test.md](architecture/build-and-test.md) shows how the test layers relate. |
 
 ## Generated file: `ntstatus_table.inc`
 

@@ -185,6 +185,9 @@ char *strdup(const char *s) {
 /* ------------------------------------------------------------------ */
 /* Minimal stubs for other libc functions used by ldr.c               */
 /* ------------------------------------------------------------------ */
+#ifdef errno
+#undef errno
+#endif
 int errno;
 int * _errno(void) { return &errno; }
 

@@ -97,6 +97,16 @@
 #define SEC_LARGE_PAGES                 0x80000000UL
 
 #define MemoryBasicInformation          0UL
+#define MemoryWorkingSetInformation     1UL
+#define MemoryMappedFilenameInformation 2UL
+#define MemoryRegionInformation         3UL
+#define MemoryWorkingSetExInformation   4UL
+
+/* MEMORY_REGION_INFORMATION.RegionType bits */
+#define MEM_REGION_PRIVATE              0x00000001UL
+#define MEM_REGION_MAPPED_DATA_FILE     0x00000002UL
+#define MEM_REGION_MAPPED_IMAGE         0x00000004UL
+#define MEM_REGION_MAPPED_PAGEFILE      0x00000008UL
 
 #define NTMM_ALLOC_GRANULARITY          0x10000UL
 #define NTMM_ALLOC_GRANULARITY_SHIFT    16
@@ -119,10 +129,19 @@ typedef struct _MEMORY_BASIC_INFORMATION {
     ULONG   Type;
 } MEMORY_BASIC_INFORMATION, *PMEMORY_BASIC_INFORMATION;
 
+/* Layout of the Windows MEMORY_REGION_INFORMATION (64-bit). */
+typedef struct _MEMORY_REGION_INFORMATION {
+    PVOID   AllocationBase;
+    ULONG   AllocationProtect;
+    ULONG   RegionType;         /* MEM_REGION_* bits */
+    SIZE_T  RegionSize;
+    SIZE_T  CommitSize;
+} MEMORY_REGION_INFORMATION, *PMEMORY_REGION_INFORMATION;
+
 typedef struct _SECTION_BASIC_INFORMATION {
-    ULONG_PTR Unknown;
-    ULONG     SectionAttributes;
-    LARGE_INTEGER SectionSize;
+    PVOID     BaseAddress;
+    ULONG     AllocationAttributes;
+    LARGE_INTEGER MaximumSize;
 } SECTION_BASIC_INFORMATION, *PSECTION_BASIC_INFORMATION;
 
 typedef struct _SECTION_IMAGE_INFORMATION {
@@ -183,7 +202,9 @@ struct nt_vad {
 #ifdef __KERNEL__
 #ifndef KSHIM_SECTION_BACKING_DEFINED
 #define KSHIM_SECTION_BACKING_DEFINED
-struct kshim_section_backing { int fd; size_t size; void *mem; };
+/* Kernel backing: a file section holds a struct file reference in file (taken
+ * with get_file, dropped in nt_section_delete). fd is unused in the kernel. */
+struct kshim_section_backing { int fd; size_t size; void *mem; struct file *file; };
 #endif
 #endif
 
@@ -191,13 +212,34 @@ struct kshim_section_backing { int fd; size_t size; void *mem; };
 /* Section object                                                             */
 /* -------------------------------------------------------------------------- */
 
+/* Layout plan of a SEC_IMAGE section (src/kernel/nt/image_plan.h, userspace only). */
+struct ip_plan;
+
 struct nt_section {
     ULONG                   attributes;   /* SEC_* */
     SIZE_T                  size;
     ULONG                   page_protection;
     int                     is_file;
     struct kshim_section_backing backing;
+    /* SEC_IMAGE only: the plan that the section's views are built from. Owned
+     * by the section and freed in nt_section_delete. NULL for other sections. */
+    struct ip_plan         *image;
 };
+
+/* A section is an object-manager object. Its body is struct nt_section and its
+ * handle is a handle-table index (ADR 0001). A VAD that maps a view holds one
+ * object reference (nt_section_ref / nt_section_unref in mm.c). */
+struct nt_object_type;
+extern struct nt_object_type nt_section_type;
+
+#ifndef SECTION_QUERY
+#define SECTION_QUERY                   0x0001UL
+#define SECTION_MAP_WRITE               0x0002UL
+#define SECTION_MAP_READ                0x0004UL
+#define SECTION_MAP_EXECUTE             0x0008UL
+#define SECTION_EXTEND_SIZE             0x0010UL
+#define SECTION_ALL_ACCESS              0x000F001FUL
+#endif
 
 /* -------------------------------------------------------------------------- */
 /* Per-process address space                                                  */
@@ -248,6 +290,42 @@ NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                             PSIZE_T ViewSize, ULONG InheritDisposition,
                             ULONG AllocationType, ULONG Win32Protect);
 NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress);
+
+/* Service entry points for the section services (nt_service_list.h). The
+ * kernel build defines them in mm.c with the generic a0..a11 form that
+ * dispatch.c calls and copies user memory with uaccess helpers. The userspace
+ * (kshim) build defines them with typed arguments that call the functions
+ * above directly. */
+#ifndef __KERNEL__
+NTSTATUS nt_svc_NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                                POBJECT_ATTRIBUTES ObjectAttributes,
+                                PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
+                                ULONG AllocationAttributes, HANDLE FileHandle);
+NTSTATUS nt_svc_NtOpenSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                              POBJECT_ATTRIBUTES ObjectAttributes);
+NTSTATUS nt_svc_NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
+                                   PVOID *BaseAddress, ULONG_PTR ZeroBits,
+                                   SIZE_T CommitSize, PLARGE_INTEGER SectionOffset,
+                                   PSIZE_T ViewSize, ULONG InheritDisposition,
+                                   ULONG AllocationType, ULONG Win32Protect);
+NTSTATUS nt_svc_NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress);
+NTSTATUS nt_svc_NtQuerySection(HANDLE SectionHandle, ULONG SectionInformationClass,
+                               PVOID SectionInformation, SIZE_T SectionInformationLength,
+                               PSIZE_T ReturnLength);
+NTSTATUS nt_svc_NtExtendSection(HANDLE SectionHandle, PLARGE_INTEGER NewSectionSize);
+#endif
+NTSTATUS NtReadVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
+                             PVOID Buffer, SIZE_T BufferSize,
+                             PSIZE_T NumberOfBytesRead);
+NTSTATUS NtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
+                              PVOID Buffer, SIZE_T BufferSize,
+                              PSIZE_T NumberOfBytesWritten);
+NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
+                              PSIZE_T RegionSize, PIO_STATUS_BLOCK IoStatus);
+NTSTATUS NtAllocateVirtualMemoryEx(HANDLE ProcessHandle, PVOID *BaseAddress,
+                                    PSIZE_T RegionSize, ULONG AllocationType,
+                                    ULONG PageProtection, PVOID ExtendedParameters,
+                                    ULONG ExtendedParameterCount);
 
 /* Guard fault helper: simulate access to addr. Returns STATUS_GUARD_PAGE_VIOLATION
  * on first access to a guarded page and clears the guard bit. Returns STATUS_SUCCESS

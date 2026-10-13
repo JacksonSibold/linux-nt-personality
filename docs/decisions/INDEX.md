@@ -9,11 +9,11 @@ Status values:
 - **no-change**: the record is accepted and no code change is needed.
 - **open**: the record is proposed and not implemented.
 
-Snapshot: 2026-10-12, `HEAD` at the time this index was written. 32 records: 11 fixed, 16 open, 4 blocked, 1 no-change.
+Snapshot: 2026-10-12, `HEAD` at the time this index was written. 37 records: 13 fixed, 16 open, 7 blocked, 1 no-change.
 
 | Record | Title | Status | Finding | Commit |
 |---|---|---|---|---|
-| [0001](0001-section-handle-object.md) | Section handles come from the object table | open | kernel-nt M-1 (High) | |
+| [0001](0001-section-handle-object.md) | Section handles come from the object table | fixed | kernel-nt M-1 (High) | c8f479e |
 | [0002](0002-process-open-access-check.md) | Access check and reference counting for NtOpenProcess / NtOpenThread | open | kernel-nt P-1 (High) | |
 | [0003](0003-handle-slot-reuse.md) | Handle slot reuse and index exhaustion | fixed (option 1; option 2 still open) | kernel-nt H-2 (Medium) | d7adc94 |
 | [0004](0004-section-object-lifetime.md) | Section object lifetime | open | kernel-nt M-3 (Medium) | |
@@ -45,6 +45,11 @@ Snapshot: 2026-10-12, `HEAD` at the time this index was written. 32 records: 11 
 | [0030](0030-loader-iat-rva-patch.md) | IAT slot writes use a file offset, not an RVA | fixed | ntdll LDR-2 (High) | a18c03e |
 | [0031](0031-loader-dllmain-tls-order.md) | DllMain and TLS callbacks are never called | open | ntdll LDR-3 (High) | |
 | [0032](0032-loader-tls-callback-table-rva.md) | TLS callback table read at its preferred-base address | fixed | ntdll LDR-4 (High) | bef4d79 |
+| [0033](0033-kernel-exclusive-open-atomicity.md) | Exclusive-open check is not atomic with handle creation | blocked | kernel-nt O-2 (Low) | |
+| [0034](0034-kernel-timeout-pointer-provenance.md) | timeout_to_jiffies dereferences non-user pointers | blocked | kernel-nt SYNC-2 (Low) | |
+| [0035](0035-kernel-acl-capacity-table.md) | ACL capacity table silently drops registrations | blocked | kernel-nt SEC-1 (Low) | |
+| [0036](0036-loader-import-walk-budget.md) | Import walk has no total bound across descriptors | fixed | loader L-16 (Medium) | 7f7e5d1 |
+| [0037](0037-process-creation.md) | How NtCreateUserProcess and CreateProcess create a PE process | open | design (no review finding) | |
 
 ## Notes
 

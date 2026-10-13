@@ -9,12 +9,16 @@
 
 #include "object.h"
 #include "handle.h"
+#include "security.h"
 #ifndef __KERNEL__
 #include <wchar.h>
 #else
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/init.h>
+#ifdef __KERNEL__
+#include <linux/uaccess.h>
+#endif
 #endif
 
 /* -------------------------------------------------------------------------- */
@@ -189,6 +193,21 @@ struct nt_object_type nt_thread_type = {
     .pool_tag = 0,
 };
 
+static void token_delete(struct nt_object_header *hdr)
+{
+    struct nt_token_body *b = (struct nt_token_body *)nt_object_body(hdr);
+    if (b->token) {
+        token_dereference(b->token);
+        b->token = NULL;
+    }
+}
+
+struct nt_object_type nt_token_type = {
+    .name = "Token",
+    .ops = { .delete_obj = token_delete, },
+    .pool_tag = 0,
+};
+
 struct nt_object_type nt_test_type = {
     .name = "TestObject",
     .ops = { .delete_obj = test_delete, .close = test_close, },
@@ -203,6 +222,10 @@ static struct list_head ob_type_list;
 
 static struct nt_directory    ob_root_dir;
 static struct nt_object_header ob_root_hdr;
+
+/* Serializes replacement of an object security descriptor against readers that
+ * copy it (NtQuerySecurityObject). Initialized in ObInitObjectManager. */
+static spinlock_t ob_sd_lock;
 
 static struct nt_object_header *ob_dosdevices_hdr = NULL;
 static struct nt_object_header *ob_device_hdr = NULL;
@@ -288,24 +311,33 @@ static void ObpRemoveFromDirectory(struct nt_object_header *obj)
 {
     struct nt_directory *dir = obj->parent_dir;
     struct nt_dir_entry *de;
+    bool removed = false;
     if (!dir)
         return;
     write_lock(&dir->lock);
-    list_for_each_entry(de, &dir->entries, link) {
-        if (de->obj == obj) {
-            list_del(&de->link);
-            /* Header name points to this entry's name buffer. Clear header name after freeing. */
-            nt_free_unicodestring(&de->name);
-            kfree(de);
-            break;
+    /* Re-check parent_dir under the directory lock. Two callers can read the same
+     * non-NULL parent_dir (concurrent ObMakeTemporaryObject). Only the one that
+     * still finds the entry linked removes it and drops the directory's
+     * reference; the other sees NULL and does nothing. */
+    if (obj->parent_dir == dir) {
+        list_for_each_entry(de, &dir->entries, link) {
+            if (de->obj == obj) {
+                list_del(&de->link);
+                /* Header name points to this entry's name buffer. Clear header name after freeing. */
+                nt_free_unicodestring(&de->name);
+                kfree(de);
+                break;
+            }
         }
+        obj->parent_dir = NULL;
+        obj->name.Buffer = NULL;
+        obj->name.Length = 0;
+        obj->name.MaximumLength = 0;
+        removed = true;
     }
     write_unlock(&dir->lock);
-    obj->parent_dir = NULL;
-    obj->name.Buffer = NULL;
-    obj->name.Length = 0;
-    obj->name.MaximumLength = 0;
-    ObDereferenceObject(obj);
+    if (removed)
+        ObDereferenceObject(obj);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -486,15 +518,17 @@ NTSTATUS ObCreateObject(struct nt_object_type *type,
     hdr->name.Length = 0;
     hdr->name.MaximumLength = 0;
     hdr->parent_dir = NULL;
-    hdr->security_descriptor = NULL;
     hdr->flags = 0;
     hdr->is_permanent = false;
     hdr->is_exclusive = false;
     hdr->exclusive_owned = false;
-    if (attrs) {
+    /* attrs->SecurityDescriptor is not consumed here: the object never
+     * borrows a caller buffer (its length is unknown). Attach an SD with
+     * ObSetObjectSecurityDescriptor. */
+    hdr->security_descriptor = NULL;
+    hdr->security_descriptor_length = 0;
+    if (attrs)
         hdr->flags = attrs->Attributes & OBJ_VALID_ATTRIBUTES;
-        hdr->security_descriptor = attrs->SecurityDescriptor;
-    }
     *out_hdr = hdr;
     if (out_body)
         *out_body = hdr->body;
@@ -577,6 +611,110 @@ NTSTATUS ObInsertObject(struct nt_object_header *obj,
     return status;
 }
 
+NTSTATUS ObCreateDirectoryObject(POBJECT_ATTRIBUTES oa, struct nt_object_header **out_hdr)
+{
+    struct nt_object_header *hdr = NULL;
+    struct nt_directory *dir = NULL;
+    NTSTATUS st;
+    if (!out_hdr)
+        return STATUS_INVALID_PARAMETER;
+    st = ObCreateObject(&nt_directory_type, oa, sizeof(*dir), &hdr, (void **)&dir);
+    if (!NT_SUCCESS(st))
+        return st;
+    INIT_LIST_HEAD(&dir->entries);
+    rwlock_init(&dir->lock);
+    *out_hdr = hdr;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS ObCreateSymbolicLinkObject(POBJECT_ATTRIBUTES oa, PCUNICODE_STRING target,
+                                    struct nt_object_header **out_hdr)
+{
+    struct nt_object_header *hdr = NULL;
+    struct nt_symlink *link = NULL;
+    NTSTATUS st;
+    if (!out_hdr || !target || target->Length == 0 || !target->Buffer)
+        return STATUS_INVALID_PARAMETER;
+    st = ObCreateObject(&nt_symlink_type, oa, sizeof(*link), &hdr, (void **)&link);
+    if (!NT_SUCCESS(st))
+        return st;
+    st = nt_dup_unicodestring(target, &link->target);
+    if (!NT_SUCCESS(st)) {
+        /* symlink_delete frees whatever target holds (nothing, here). */
+        ObDereferenceObject(hdr);
+        return st;
+    }
+    *out_hdr = hdr;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS ObInsertOrOpenNamedObject(struct nt_object_header *obj,
+                                   POBJECT_ATTRIBUTES oa,
+                                   ACCESS_MASK access,
+                                   struct nt_eprocess *proc,
+                                   PHANDLE out_handle)
+{
+    unsigned int attempt;
+    if (!obj || !out_handle)
+        return STATUS_INVALID_PARAMETER;
+    for (attempt = 0; attempt < 2; attempt++) {
+        struct nt_object_header *found = NULL;
+        NTSTATUS st;
+        if (oa && oa->ObjectName && oa->ObjectName->Length) {
+            const UNICODE_STRING *path = oa->ObjectName;
+            size_t len = (size_t)path->Length / sizeof(WCHAR);
+            ssize_t slash = -1;
+            ssize_t i;
+            if (path->Length & (sizeof(WCHAR) - 1))
+                return STATUS_OBJECT_NAME_INVALID;
+            if (len == 0 || path->Buffer[len - 1] == (WCHAR)'\\')
+                return STATUS_OBJECT_NAME_INVALID;
+            for (i = (ssize_t)len - 1; i >= 0; i--) {
+                if (path->Buffer[i] == (WCHAR)'\\') { slash = i; break; }
+            }
+            /* A missing parent is PATH_NOT_FOUND, not NAME_NOT_FOUND. */
+            if (slash > 0) {
+                UNICODE_STRING parent = *path;
+                struct nt_object_header *parent_hdr = NULL;
+                parent.Length = (USHORT)(slash * sizeof(WCHAR));
+                parent.MaximumLength = parent.Length;
+                st = ObpParsePath(&parent, 0, NULL, 0, &parent_hdr);
+                if (st == STATUS_OBJECT_NAME_NOT_FOUND)
+                    return STATUS_OBJECT_PATH_NOT_FOUND;
+                if (NT_SUCCESS(st))
+                    ObDereferenceObject(parent_hdr);
+            }
+            /* OBJ_OPENLINK: look at a symbolic link at the last component
+             * itself, not at its target. */
+            st = ObpParsePath(oa->ObjectName, OBJ_OPENLINK, NULL, 0, &found);
+            if (NT_SUCCESS(st)) {
+                ULONG hattr = 0;
+                if (found->type != obj->type) {
+                    ObDereferenceObject(found);
+                    return STATUS_OBJECT_TYPE_MISMATCH;
+                }
+                if (!(oa->Attributes & OBJ_OPENIF)) {
+                    ObDereferenceObject(found);
+                    return STATUS_OBJECT_NAME_COLLISION;
+                }
+                if (oa->Attributes & OBJ_INHERIT) hattr |= OBJ_INHERIT;
+                if (oa->Attributes & OBJ_PROTECT_FROM_CLOSE) hattr |= OBJ_PROTECT_FROM_CLOSE;
+                st = ObCreateHandle(proc ? proc : kshim_current_process(), found, access, hattr, out_handle);
+                ObDereferenceObject(found);
+                return NT_SUCCESS(st) ? STATUS_OBJECT_NAME_EXISTS : st;
+            }
+        }
+        {
+            NTSTATUS st = ObInsertObject(obj, oa, access, proc, out_handle);
+            if (st != STATUS_OBJECT_NAME_COLLISION)
+                return st;
+            /* Another thread inserted the same name after our lookup: look again
+             * so the result matches the existing object. */
+        }
+    }
+    return STATUS_OBJECT_NAME_COLLISION;
+}
+
 void ObReferenceObject(struct nt_object_header *obj)
 {
     if (!obj) return;
@@ -596,10 +734,78 @@ void ObDereferenceObject(struct nt_object_header *obj)
         ObpRemoveFromDirectory(obj);
     if (obj->type && obj->type->ops.delete_obj)
         obj->type->ops.delete_obj(obj);
+    /* The security descriptor is an owned copy: release it with the header. */
+    if (obj->security_descriptor) {
+        kfree(obj->security_descriptor);
+        obj->security_descriptor = NULL;
+        obj->security_descriptor_length = 0;
+    }
     /* If this is the static root header, don't free it */
     if (obj == &ob_root_hdr)
         return;
     kfree(obj);
+}
+
+NTSTATUS ObSetObjectSecurityDescriptor(struct nt_object_header *obj,
+                                        const void *sd, ULONG length)
+{
+    void *copy = NULL;
+    void *old;
+    if (!obj)
+        return STATUS_INVALID_PARAMETER;
+    if (sd && length == 0)
+        return STATUS_INVALID_PARAMETER;
+    if (sd) {
+        copy = kmalloc(length, GFP_KERNEL);
+        if (!copy)
+            return STATUS_NO_MEMORY;
+        memcpy(copy, sd, length);
+    }
+    spin_lock(&ob_sd_lock);
+    old = obj->security_descriptor;
+    obj->security_descriptor = copy;
+    obj->security_descriptor_length = copy ? length : 0;
+    spin_unlock(&ob_sd_lock);
+    if (old)
+        kfree(old);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS ObCopyObjectSecurityDescriptor(struct nt_object_header *obj,
+                                        void **out, ULONG *out_len)
+{
+    void *copy;
+    ULONG len;
+    if (!obj || !out || !out_len)
+        return STATUS_INVALID_PARAMETER;
+    /* The copy is allocated outside the lock (it may sleep), so the length is
+     * re-checked under the lock and the attempt is repeated if the descriptor
+     * was replaced in between. */
+    for (;;) {
+        bool have;
+        spin_lock(&ob_sd_lock);
+        have = obj->security_descriptor != NULL;
+        len = obj->security_descriptor_length;
+        spin_unlock(&ob_sd_lock);
+        if (!have) {
+            *out = NULL;
+            *out_len = 0;
+            return STATUS_SUCCESS;
+        }
+        copy = kmalloc(len, GFP_KERNEL);
+        if (!copy)
+            return STATUS_NO_MEMORY;
+        spin_lock(&ob_sd_lock);
+        if (obj->security_descriptor && obj->security_descriptor_length == len) {
+            memcpy(copy, obj->security_descriptor, len);
+            spin_unlock(&ob_sd_lock);
+            *out = copy;
+            *out_len = len;
+            return STATUS_SUCCESS;
+        }
+        spin_unlock(&ob_sd_lock);
+        kfree(copy);
+    }
 }
 
 NTSTATUS ObpIncrementHandleCount(struct nt_object_header *obj)
@@ -646,6 +852,8 @@ NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs,
     if (!attrs || !attrs->ObjectName || !out_handle)
         return STATUS_INVALID_PARAMETER;
     ULONG a = attrs->Attributes;
+    if (type == &nt_symlink_type)
+        a |= OBJ_OPENLINK;
     status = ObpParsePath(attrs->ObjectName, a, type, 0, &obj);
     if (!NT_SUCCESS(status))
         return status;
@@ -668,6 +876,31 @@ NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs,
     return status;
 }
 
+#ifdef __KERNEL__
+/* Copies a user OBJECT_ATTRIBUTES and its name into kernel storage. */
+NTSTATUS ObCopyObjectAttributesFromUser(POBJECT_ATTRIBUTES uptr, OBJECT_ATTRIBUTES *k_oa, UNICODE_STRING *k_name, WCHAR *k_buf, size_t k_buf_bytes, POBJECT_ATTRIBUTES *out_oa)
+{
+    if (!uptr) { memset(k_oa,0,sizeof(*k_oa)); k_oa->Length=sizeof(OBJECT_ATTRIBUTES); *out_oa=NULL; return STATUS_SUCCESS; }
+    if (!access_ok(uptr,sizeof(OBJECT_ATTRIBUTES))) return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(k_oa, uptr, sizeof(OBJECT_ATTRIBUTES))) return STATUS_ACCESS_VIOLATION;
+    if (k_oa->Length != sizeof(OBJECT_ATTRIBUTES)) return STATUS_INVALID_PARAMETER;
+    if (k_oa->ObjectName) {
+        if (!access_ok(k_oa->ObjectName, sizeof(UNICODE_STRING))) return STATUS_ACCESS_VIOLATION;
+        UNICODE_STRING tmp;
+        if (copy_from_user(&tmp, k_oa->ObjectName, sizeof(tmp))) return STATUS_ACCESS_VIOLATION;
+        if (tmp.Length) {
+            if (!access_ok(tmp.Buffer, tmp.Length)) return STATUS_ACCESS_VIOLATION;
+            if ((size_t)tmp.Length > k_buf_bytes) return STATUS_NAME_TOO_LONG;
+            if (copy_from_user(k_buf, tmp.Buffer, tmp.Length)) return STATUS_ACCESS_VIOLATION;
+            k_name->Buffer = k_buf; k_name->Length = tmp.Length; k_name->MaximumLength = tmp.Length;
+            k_oa->ObjectName = k_name;
+        } else k_oa->ObjectName=NULL;
+    }
+    *out_oa = k_oa;
+    return STATUS_SUCCESS;
+}
+#endif /* __KERNEL__ */
+
 NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj)
 {
     if (!obj) return STATUS_INVALID_PARAMETER;
@@ -677,6 +910,14 @@ NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj)
     obj->is_permanent = false;
     if (obj->parent_dir)
         ObpRemoveFromDirectory(obj);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS ObMakePermanentObject(struct nt_object_header *obj)
+{
+    if (!obj) return STATUS_INVALID_PARAMETER;
+    obj->flags |= OBJ_PERMANENT;
+    obj->is_permanent = true;
     return STATUS_SUCCESS;
 }
 
@@ -768,9 +1009,16 @@ NTSTATUS ObRegisterThread(struct nt_ethread *t) {
     struct ob_thr_node *n = (struct ob_thr_node*)kzalloc(sizeof(*n), GFP_KERNEL);
     if (!n) return STATUS_NO_MEMORY;
     n->thr = t;
+    /* Idempotent: one node per thread. A repeat registration is a no-op. */
+    bool dup = false;
     pthread_mutex_lock(&g_ob_thr_lock);
-    list_add_tail(&n->link, &g_ob_thr_list);
+    struct list_head *pos;
+    for (pos = g_ob_thr_list.next; pos != &g_ob_thr_list; pos = pos->next) {
+        if (list_entry(pos, struct ob_thr_node, link)->thr == t) { dup = true; break; }
+    }
+    if (!dup) list_add_tail(&n->link, &g_ob_thr_list);
     pthread_mutex_unlock(&g_ob_thr_lock);
+    if (dup) kfree(n);
     return STATUS_SUCCESS;
 }
 void ObUnregisterThread(struct nt_ethread *t) {
@@ -928,9 +1176,16 @@ NTSTATUS ObRegisterThread(struct nt_ethread *t) {
     struct ob_thr_node *n = kzalloc(sizeof(*n), GFP_KERNEL);
     if (!n) return STATUS_NO_MEMORY;
     n->thr = t;
+    /* Idempotent: one node per thread. A repeat registration is a no-op. */
+    bool dup = false;
+    struct list_head *pos;
     spin_lock(&g_ob_thr_lock);
-    list_add_tail(&n->link, &g_ob_thr_list);
+    for (pos = g_ob_thr_list.next; pos != &g_ob_thr_list; pos = pos->next) {
+        if (list_entry(pos, struct ob_thr_node, link)->thr == t) { dup = true; break; }
+    }
+    if (!dup) list_add_tail(&n->link, &g_ob_thr_list);
     spin_unlock(&g_ob_thr_lock);
+    if (dup) { kfree(n); return STATUS_SUCCESS; }
     pr_err("ObRegisterThread: thr=%p tid=%lu obj=%p\n", t, t->tid, t->obj);
     return STATUS_SUCCESS;
 }
@@ -1063,7 +1318,7 @@ struct nt_ethread *nt_current_ethread(void) {
      * The StackBase etc are already correct from binfmt_pe.
      * Just set process and tid for handle lookup.
      */
-    ObRegisterThread(t);
+    /* ObCreateThreadObject has already registered t. */
     return t;
 }
 __attribute__((weak)) struct nt_eprocess *nt_get_current_eprocess(void) { return nt_current_eprocess(); }
@@ -1110,6 +1365,10 @@ NTSTATUS ObCreateProcessObject(struct nt_eprocess **out, ULONG pid, const char *
     p->peb_base = 0x7FF00000ULL + (p->pid * 0x10000ULL);
     p->affinity_mask = 0xFF;
     p->base_priority = 8;
+    p->priority_class = 2;          /* PROCESS_PRIORITY_CLASS_NORMAL */
+    p->priority_foreground = 0;
+    p->default_hard_error_mode = 0;
+    p->break_on_termination = 0;
     p->peb = NULL;
     p->peb_teb_reservation = NULL;
     p->image_path[0]=0;
@@ -1133,6 +1392,8 @@ NTSTATUS ObCreateProcessObject(struct nt_eprocess **out, ULONG pid, const char *
     init_waitqueue_head(&p->exit_wq);
     atomic_set(&p->ref_ext, 1);
 #endif
+    p->primary_token = token_create_default_primary();
+    if (!p->primary_token) { ObDestroyProcessObject(p); return STATUS_NO_MEMORY; }
     st = ob_register_proc(p);
     if (!NT_SUCCESS(st)) { ObDestroyProcessObject(p); return st; }
     *out = p;
@@ -1170,6 +1431,7 @@ NTSTATUS ObCreateThreadObject(struct nt_ethread **out, struct nt_eprocess *proc,
     t->start_routine = NULL;
     t->start_arg = NULL;
     t->create_flags = 0;
+    t->impersonation_token = NULL;
 #ifndef __KERNEL__
     t->pthread_valid = false;
     pthread_mutex_init(&t->lock, NULL);
@@ -1205,6 +1467,10 @@ void ObDestroyProcessObject(struct nt_eprocess *proc)
     if (proc->peb) kfree(proc->peb);
 #endif
     if (proc->handle_table) ObDestroyHandleTable(proc->handle_table);
+    if (proc->primary_token) {
+        token_dereference(proc->primary_token);
+        proc->primary_token = NULL;
+    }
     if (proc->obj) ObDereferenceObject(proc->obj);
     kfree(proc);
 }
@@ -1224,6 +1490,10 @@ void ObDestroyThreadObject(struct nt_ethread *thr)
         kshim_munmap(thr->stack_limit, sz);
     }
 #endif
+    if (thr->impersonation_token) {
+        token_dereference(thr->impersonation_token);
+        thr->impersonation_token = NULL;
+    }
     if (thr->obj) ObDereferenceObject(thr->obj);
     kfree(thr);
 }
@@ -1282,11 +1552,13 @@ NTSTATUS ObInitObjectManager(void)
 {
     NTSTATUS st;
     if (ob_initialized) return STATUS_SUCCESS;
+    spin_lock_init(&ob_sd_lock);
     INIT_LIST_HEAD(&ob_type_list);
     list_add(&nt_directory_type.list, &ob_type_list);
     list_add(&nt_symlink_type.list, &ob_type_list);
     list_add(&nt_process_type.list, &ob_type_list);
     list_add(&nt_thread_type.list, &ob_type_list);
+    list_add(&nt_token_type.list, &ob_type_list);
     list_add(&nt_test_type.list, &ob_type_list);
 #ifndef __KERNEL__
     nt_process_type.ops.delete_obj = process_delete;
@@ -1408,6 +1680,7 @@ void ObCleanupObjectManager(void)
         kfree(n);
         if (p) {
             if (p->handle_table) ObDestroyHandleTable(p->handle_table);
+            if (p->primary_token) { token_dereference(p->primary_token); p->primary_token = NULL; }
             if (p->obj) {
                 /* avoid double delete via header delete callback */
                 p->obj->type = NULL;
@@ -1427,6 +1700,7 @@ void ObCleanupObjectManager(void)
         struct nt_ethread *t = n->thr;
         kfree(n);
         if (t) {
+            if (t->impersonation_token) { token_dereference(t->impersonation_token); t->impersonation_token = NULL; }
             if (t->obj) {
                 t->obj->type = NULL;
                 ObDereferenceObject(t->obj);

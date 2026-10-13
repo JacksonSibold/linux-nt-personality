@@ -83,6 +83,10 @@ void kshim_free_tagged(const void *p) {
     if (*pp) {
         struct kshim_tag *t = *pp;
         *pp = t->next;
+        /* KSHIM_POISON=1: fill freed memory with 0xDD so a use after free reads
+         * a stable bad value (and faults on a pointer read) instead of stale data. */
+        if (kshim_poison_enabled())
+            memset((void *)p, 0xDD, t->size);
         free(t);
     }
     pthread_mutex_unlock(&kshim_tag_lock);
@@ -225,6 +229,29 @@ void *kshim_section_map(struct kshim_section_backing *b, void *addr, size_t offs
     /* Anonymous private */
     void *p = mmap(addr, size, prot, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
     if (p == MAP_FAILED) return NULL;
+    return p;
+}
+
+/* File-backed view on the host. The shim cannot map a host file (the Windows
+ * mmap shim rejects fd-backed mappings), so the view is anonymous memory filled
+ * from the section's fd at map time. Bytes past the end of the file read as zero.
+ * mm.c writes shared writable views back with pwrite on flush and unmap. Copy-on-
+ * write views are never written back. */
+void *kshim_section_map_file(struct kshim_section_backing *b, void *addr, size_t offset, size_t size, int prot, int cow) {
+    (void)cow;
+    void *p = mmap(addr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    if (p == MAP_FAILED) return NULL;
+    size_t done = 0;
+    while (done < size) {
+        ssize_t n = pread(b->fd, (char *)p + done, size - done, (off_t)(offset + done));
+        if (n < 0) { munmap(p, size); return NULL; }
+        if (n == 0) break;
+        done += (size_t)n;
+    }
+    if (prot != (PROT_READ | PROT_WRITE) && mprotect(p, size, prot) != 0) {
+        munmap(p, size);
+        return NULL;
+    }
     return p;
 }
 

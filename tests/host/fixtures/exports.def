@@ -1,0 +1,9 @@
+LIBRARY exports.dll
+EXPORTS
+    alpha_fn                          @1
+    beta_fn                           @2
+    gamma_fwd = ntdll.RtlAllocateHeap @3
+    delta_fwd = kernel32.HeapAlloc    @4
+    exports_counter @5 DATA
+    hidden_fn                         @10 NONAME
+    ord_fwd = ntdll.RtlFreeHeap       @11 NONAME

@@ -94,6 +94,11 @@ NTSTATUS ObCreateHandle(struct nt_eprocess *proc,
                          PHANDLE out_handle);
 
 NTSTATUS ObCloseHandle(struct nt_eprocess *proc, HANDLE handle);
+NTSTATUS ObSetHandleFlags(struct nt_eprocess *proc, HANDLE handle,
+                          bool inherit, bool protect_from_close);
+/* Reads the inherit and protect-from-close flags of a handle of proc. */
+NTSTATUS ObGetHandleFlags(struct nt_eprocess *proc, HANDLE handle,
+                          bool *inherit, bool *protect_from_close);
 
 NTSTATUS ObReferenceObjectByHandle(struct nt_eprocess *proc,
                                     HANDLE handle,
@@ -115,6 +120,10 @@ NTSTATUS NtDuplicateObject(struct nt_eprocess *src_proc,
 #define DUPLICATE_SAME_ACCESS           0x00000002UL
 
 NTSTATUS ObInheritHandles(struct nt_eprocess *src, struct nt_eprocess *dst);
+/* Copies the OBJ_INHERIT entries of src into dst at the same indices, all or
+ * nothing (see handle.c). *copied, if not NULL, receives the copy count. */
+NTSTATUS ObInheritHandleTable(struct nt_handle_table *src, struct nt_handle_table *dst,
+                              u32 *copied);
 
 NTSTATUS ObpCreateHandleAtIndex(struct nt_handle_table *table,
                                  struct nt_object_header *obj,

@@ -572,10 +572,105 @@ ULONG ntio_pointer_count_for_file(struct nt_file_object *f)
 /* File object reference counting                                               */
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* Byte-range locks                                                             */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * A byte-range lock belongs to the file object that took it. It is keyed by
+ * file identity (share_dev, share_ino), so separate opens of one file see each
+ * other's locks. The owner's locks are dropped when the file object is
+ * released. A conflicting request is refused at once: waiting for a lock is
+ * not supported.
+ */
+struct ntio_byte_lock {
+	struct nt_file_object *owner;
+	dev_t dev;
+	ino_t ino;
+	LONGLONG start;
+	LONGLONG length;
+	ULONG key;
+	bool exclusive;
+	struct list_head entry;
+};
+
+static LIST_HEAD(ntio_lock_list);
+static spinlock_t ntio_lock_mutex;
+
+static void ntio_lock_init(void)
+{
+	spin_lock_init(&ntio_lock_mutex);
+	INIT_LIST_HEAD(&ntio_lock_list);
+}
+
+/*
+ * True if a request by another file object conflicts with a held lock. A
+ * request conflicts with an overlapping held lock when either is exclusive.
+ * Reads pass exclusive_request FALSE; writes pass TRUE, so a write is blocked
+ * by a shared lock held by another file object as well as an exclusive one.
+ * Caller holds ntio_lock_mutex.
+ */
+/* End of the byte range [start, start + length), saturated at the largest
+ * LONGLONG so that a range near the offset limit cannot wrap negative. */
+#define NTIO_LLONG_MAX ((LONGLONG)(~0ULL >> 1))
+static LONGLONG ntio_range_end(LONGLONG start, LONGLONG length)
+{
+	if (length > 0 && start > NTIO_LLONG_MAX - length)
+		return NTIO_LLONG_MAX;
+	return start + length;
+}
+
+static bool ntio_lock_conflicts(struct nt_file_object *file, dev_t dev, ino_t ino,
+				LONGLONG start, LONGLONG length, bool exclusive_request)
+{
+	struct ntio_byte_lock *l;
+	LONGLONG end = ntio_range_end(start, length);
+
+	list_for_each_entry(l, &ntio_lock_list, entry) {
+		if (l->owner == file || l->dev != dev || l->ino != ino)
+			continue;
+		if (!(l->start < end && start < ntio_range_end(l->start, l->length)))
+			continue;
+		if (l->exclusive || exclusive_request)
+			return true;
+	}
+	return false;
+}
+
+static bool ntio_io_blocked_by_lock(struct nt_file_object *file, LONGLONG pos,
+				    ULONG len, bool is_write)
+{
+	bool blocked;
+
+	spin_lock(&ntio_lock_mutex);
+	blocked = ntio_lock_conflicts(file, file->share_dev, file->share_ino,
+				      pos, (LONGLONG)len, is_write);
+	spin_unlock(&ntio_lock_mutex);
+	return blocked;
+}
+
+static void ntio_locks_drop_owner(struct nt_file_object *file)
+{
+	struct ntio_byte_lock *l, *tmp;
+
+	spin_lock(&ntio_lock_mutex);
+	list_for_each_entry_safe(l, tmp, &ntio_lock_list, entry) {
+		if (l->owner == file) {
+			list_del(&l->entry);
+			kfree(l);
+		}
+	}
+	spin_unlock(&ntio_lock_mutex);
+}
+
+static void ntio_dir_clear(struct nt_file_object *file);
+
 static void ntio_file_release(struct kref *ref)
 {
 	struct nt_file_object *file = container_of(ref, struct nt_file_object, ref);
 
+	ntio_locks_drop_owner(file);
+	ntio_dir_clear(file);
 	if (file->iocp) {
 		ntio_iocp_disassociate(&file->iocp);
 	}
@@ -599,6 +694,25 @@ void ntio_file_put(struct nt_file_object *file)
 		kref_put(&file->ref, ntio_file_release);
 }
 
+/* File-backed sections: the file's size, and growing it for a read-write
+ * section that is larger than the file. */
+NTSTATUS ntio_file_section_size(struct nt_file_object *file, LONGLONG *size)
+{
+	struct kstat st;
+
+	if (kshim_vfs_getattr(file->filp, &st) != 0)
+		return STATUS_UNSUCCESSFUL;
+	*size = (LONGLONG)st.size;
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS ntio_file_section_extend(struct nt_file_object *file, LONGLONG size)
+{
+	if (kshim_vfs_truncate(file->filp, size) != 0)
+		return STATUS_UNSUCCESSFUL;
+	return STATUS_SUCCESS;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Share-access registry                                                        */
 /* -------------------------------------------------------------------------- */
@@ -617,6 +731,7 @@ static void ntio_share_init(void)
 {
 	spin_lock_init(&ntio_share_mutex);
 	ntio_reset_share_registry();
+	ntio_lock_init();
 }
 
 void ntio_share_lock(void)
@@ -807,10 +922,10 @@ static bool ntio_casefold_lookup(const char *dir, const char *component,
  * Apply case-insensitive re-resolution to a Linux path: for every component,
  * if the exact name does not exist but a case-insensitive match does, use it.
  */
-static void ntio_resolve_ci(char *path)
+static NTSTATUS ntio_resolve_ci(char *path)
 {
 	char resolved[PATH_MAX];
-	char component[NAME_MAX];
+	char component[NAME_MAX + 1];
 	const char *p;
 	size_t rlen = 0;
 	struct stat st;
@@ -828,8 +943,12 @@ static void ntio_resolve_ci(char *path)
 
 	while (*p) {
 		size_t i = 0;
-		while (*p && *p != '/')
+		while (*p && *p != '/') {
+			/* Reject names over NAME_MAX before the copy. */
+			if (i >= NAME_MAX)
+				return STATUS_OBJECT_NAME_INVALID;
 			component[i++] = *p++;
+		}
 		component[i] = '\0';
 		if (i == 0) {
 			if (*p == '/')
@@ -844,7 +963,7 @@ static void ntio_resolve_ci(char *path)
 		rlen += i;
 
 		if (stat(resolved, &st) != 0) {
-			char fold[NAME_MAX];
+			char fold[NAME_MAX + 1];
 			char parent[PATH_MAX];
 			size_t plen = rlen - i;
 
@@ -868,6 +987,7 @@ static void ntio_resolve_ci(char *path)
 	}
 
 	memcpy(path, resolved, rlen + 1);
+	return STATUS_SUCCESS;
 }
 #else
 /* Kernel: case-insensitive lookup via dcache iteration. */
@@ -898,11 +1018,11 @@ static bool ntio_casefold_lookup(const char *dir, const char *component,
 	return found;
 }
 
-static void ntio_resolve_ci(char *path)
+static NTSTATUS ntio_resolve_ci(char *path)
 {
 	char *resolved = kmalloc(PATH_MAX, GFP_KERNEL);
-	if (!resolved) return;
-	char component[NAME_MAX];
+	if (!resolved) return STATUS_NO_MEMORY;
+	char component[NAME_MAX + 1];
 	const char *p;
 	size_t rlen = 0;
 	resolved[0] = '\0';
@@ -915,8 +1035,14 @@ static void ntio_resolve_ci(char *path)
 	}
 	while (*p) {
 		size_t i = 0;
-		while (*p && *p != '/')
+		while (*p && *p != '/') {
+			/* Reject names over NAME_MAX before the copy. */
+			if (i >= NAME_MAX) {
+				kfree(resolved);
+				return STATUS_OBJECT_NAME_INVALID;
+			}
 			component[i++] = *p++;
+		}
 		component[i] = '\0';
 		if (i == 0) {
 			if (*p == '/') p++;
@@ -928,9 +1054,9 @@ static void ntio_resolve_ci(char *path)
 		rlen += i;
 		struct path check;
 		if (kern_path(resolved, LOOKUP_FOLLOW, &check) != 0) {
-			char fold[NAME_MAX];
+			char fold[NAME_MAX + 1];
 			char *parent = kmalloc(PATH_MAX, GFP_KERNEL);
-			if (!parent) { kfree(resolved); return; }
+			if (!parent) { kfree(resolved); return STATUS_NO_MEMORY; }
 			size_t plen = rlen - i;
 			if (plen == 0) {
 				parent[0] = '/';
@@ -956,6 +1082,7 @@ static void ntio_resolve_ci(char *path)
 	}
 	memcpy(path, resolved, rlen + 1);
 	kfree(resolved);
+	return STATUS_SUCCESS;
 }
 #endif
 
@@ -1070,7 +1197,9 @@ NTSTATUS ntio_resolve_path(POBJECT_ATTRIBUTES __user obj_attr, char *linux_path,
 	kfree(k_buf);
 
 	/* Case-insensitive re-resolution for existing paths. */
-	ntio_resolve_ci(linux_path);
+	status = ntio_resolve_ci(linux_path);
+	if (!NT_SUCCESS(status))
+		return status;
 
 	/* Check whether the resolved path is a directory. */
 #ifndef __KERNEL__
@@ -1654,6 +1783,8 @@ static NTSTATUS ntio_do_read(struct nt_file_object *file, PVOID __user Buffer,
 		*out_info = 0;
 		return STATUS_SUCCESS;
 	}
+	if (ntio_io_blocked_by_lock(file, pos, Length, false))
+		return STATUS_FILE_LOCK_CONFLICT;
 
 #ifdef __KERNEL__
 	if (!access_ok(Buffer, Length))
@@ -1745,6 +1876,8 @@ static NTSTATUS ntio_do_write(struct nt_file_object *file, PVOID __user Buffer,
 		*out_info = 0;
 		return STATUS_SUCCESS;
 	}
+	if (ntio_io_blocked_by_lock(file, pos, Length, true))
+		return STATUS_FILE_LOCK_CONFLICT;
 
 #ifdef __KERNEL__
 	if (!access_ok(Buffer, Length))
@@ -2043,6 +2176,46 @@ NTSTATUS nt_svc_NtWriteFile(HANDLE FileHandle, HANDLE Event,
 /* Query / Set information                                                      */
 /* -------------------------------------------------------------------------- */
 
+/* Basic information from a stat result, shared by the handle and path queries. */
+static void ntio_basic_from_stat(PFILE_BASIC_INFORMATION bi, const struct kstat *st)
+{
+	bi->CreationTime.QuadPart = 0;
+	bi->LastAccessTime.QuadPart = (LONGLONG)st->atime.tv_sec * 10000000LL + 116444736000000000LL;
+	bi->LastWriteTime.QuadPart = (LONGLONG)st->mtime.tv_sec * 10000000LL + 116444736000000000LL;
+	bi->ChangeTime.QuadPart = (LONGLONG)st->ctime.tv_sec * 10000000LL + 116444736000000000LL;
+	bi->FileAttributes = FILE_ATTRIBUTE_NORMAL;
+	if (S_ISDIR(st->mode))
+		bi->FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+}
+
+/* Stat a Linux path. The kernel side walks the path with kern_path(). */
+static int ntio_getattr_path(const char *path, struct kstat *st)
+{
+#ifdef __KERNEL__
+	struct path p;
+	struct kstat kst;
+	int err = kern_path(path, LOOKUP_FOLLOW, &p);
+
+	if (err)
+		return err;
+	err = vfs_getattr(&p, &kst, STATX_BASIC_STATS, AT_STATX_SYNC_AS_STAT);
+	path_put(&p);
+	if (!err) {
+		st->dev = kst.dev;
+		st->ino = kst.ino;
+		st->mode = kst.mode;
+		st->size = kst.size;
+		st->atime = kst.atime;
+		st->mtime = kst.mtime;
+		st->ctime = kst.ctime;
+		st->nlink = kst.nlink;
+	}
+	return err;
+#else
+	return kshim_vfs_getattr_path(path, st);
+#endif
+}
+
 static NTSTATUS ntio_query_basic(struct nt_file_object *file,
 				 PVOID buf, ULONG len, PULONG retlen)
 {
@@ -2055,13 +2228,7 @@ static NTSTATUS ntio_query_basic(struct nt_file_object *file,
 		return STATUS_UNSUCCESSFUL;
 
 	bi = (PFILE_BASIC_INFORMATION)buf;
-	bi->CreationTime.QuadPart = 0;
-	bi->LastAccessTime.QuadPart = (LONGLONG)st.atime.tv_sec * 10000000LL + 116444736000000000LL;
-	bi->LastWriteTime.QuadPart = (LONGLONG)st.mtime.tv_sec * 10000000LL + 116444736000000000LL;
-	bi->ChangeTime.QuadPart = (LONGLONG)st.ctime.tv_sec * 10000000LL + 116444736000000000LL;
-	bi->FileAttributes = FILE_ATTRIBUTE_NORMAL;
-	if (S_ISDIR(st.mode))
-		bi->FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+	ntio_basic_from_stat(bi, &st);
 	if (retlen)
 		*retlen = sizeof(*bi);
 	return STATUS_SUCCESS;
@@ -2131,6 +2298,132 @@ static NTSTATUS ntio_query_name(struct nt_file_object *file,
 	return STATUS_SUCCESS;
 }
 
+static NTSTATUS ntio_query_internal(struct nt_file_object *file,
+				    PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_INTERNAL_INFORMATION ii;
+	struct kstat st;
+
+	if (len < sizeof(*ii))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	if (kshim_vfs_getattr(file->filp, &st) != 0)
+		return STATUS_UNSUCCESSFUL;
+	ii = (PFILE_INTERNAL_INFORMATION)buf;
+	ii->IndexNumber.QuadPart = (LONGLONG)st.ino;
+	if (retlen)
+		*retlen = sizeof(*ii);
+	return STATUS_SUCCESS;
+}
+
+/* No extended attributes are stored, so the EA size is always zero. */
+static NTSTATUS ntio_query_ea(PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_EA_INFORMATION ei;
+
+	if (len < sizeof(*ei))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	ei = (PFILE_EA_INFORMATION)buf;
+	ei->EaSize = 0;
+	if (retlen)
+		*retlen = sizeof(*ei);
+	return STATUS_SUCCESS;
+}
+
+static NTSTATUS ntio_query_access(struct nt_file_object *file,
+				  PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_ACCESS_INFORMATION ai;
+
+	if (len < sizeof(*ai))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	ai = (PFILE_ACCESS_INFORMATION)buf;
+	ai->AccessFlags = file->granted_access;
+	if (retlen)
+		*retlen = sizeof(*ai);
+	return STATUS_SUCCESS;
+}
+
+static NTSTATUS ntio_query_mode(struct nt_file_object *file,
+				PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_MODE_INFORMATION mi;
+
+	if (len < sizeof(*mi))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	mi = (PFILE_MODE_INFORMATION)buf;
+	mi->Mode = file->create_options & FILE_MODE_OPTIONS_MASK;
+	if (retlen)
+		*retlen = sizeof(*mi);
+	return STATUS_SUCCESS;
+}
+
+/* Every file is byte aligned in this implementation. */
+static NTSTATUS ntio_query_alignment(PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_ALIGNMENT_INFORMATION ai;
+
+	if (len < sizeof(*ai))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	ai = (PFILE_ALIGNMENT_INFORMATION)buf;
+	ai->AlignmentRequirement = 0; /* FILE_BYTE_ALIGNMENT */
+	if (retlen)
+		*retlen = sizeof(*ai);
+	return STATUS_SUCCESS;
+}
+
+static NTSTATUS ntio_query_network_open(struct nt_file_object *file,
+					PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_NETWORK_OPEN_INFORMATION ni;
+	FILE_BASIC_INFORMATION bi;
+	FILE_STANDARD_INFORMATION si;
+	ULONG blen = 0, slen = 0;
+	NTSTATUS status;
+
+	if (len < sizeof(*ni))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	status = ntio_query_basic(file, &bi, sizeof(bi), &blen);
+	if (!NT_SUCCESS(status))
+		return status;
+	status = ntio_query_standard(file, &si, sizeof(si), &slen);
+	if (!NT_SUCCESS(status))
+		return status;
+
+	ni = (PFILE_NETWORK_OPEN_INFORMATION)buf;
+	ni->CreationTime = bi.CreationTime;
+	ni->LastAccessTime = bi.LastAccessTime;
+	ni->LastWriteTime = bi.LastWriteTime;
+	ni->ChangeTime = bi.ChangeTime;
+	ni->AllocationSize = si.AllocationSize;
+	ni->EndOfFile = si.EndOfFile;
+	ni->FileAttributes = bi.FileAttributes;
+	if (retlen)
+		*retlen = sizeof(*ni);
+	return STATUS_SUCCESS;
+}
+
+/* No reparse points are reported, so the reparse tag is always zero. */
+static NTSTATUS ntio_query_attribute_tag(struct nt_file_object *file,
+					 PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_ATTRIBUTE_TAG_INFORMATION ti;
+	FILE_BASIC_INFORMATION bi;
+	ULONG blen = 0;
+	NTSTATUS status;
+
+	if (len < sizeof(*ti))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	status = ntio_query_basic(file, &bi, sizeof(bi), &blen);
+	if (!NT_SUCCESS(status))
+		return status;
+	ti = (PFILE_ATTRIBUTE_TAG_INFORMATION)buf;
+	ti->FileAttributes = bi.FileAttributes;
+	ti->ReparseTag = 0;
+	if (retlen)
+		*retlen = sizeof(*ti);
+	return STATUS_SUCCESS;
+}
+
 static NTSTATUS ntio_query_all(struct nt_file_object *file,
 			       PVOID buf, ULONG len, PULONG retlen)
 {
@@ -2158,7 +2451,7 @@ static NTSTATUS ntio_query_all(struct nt_file_object *file,
 	ai->InternalInformation.IndexNumber.QuadPart = 0;
 	ai->EaInformation.EaSize = 0;
 	ai->AccessInformation.AccessFlags = file->granted_access;
-	ai->ModeInformation.Mode = file->synchronous ? 0x10 : 0;
+	ai->ModeInformation.Mode = file->create_options & FILE_MODE_OPTIONS_MASK;
 	ai->AlignmentInformation.AlignmentRequirement = 0;
 	ai->NameInformation.FileNameLength = 0;
 
@@ -2219,6 +2512,27 @@ NTSTATUS nt_svc_NtQueryInformationFile(HANDLE FileHandle,
 	case FileAllInformation:
 		status = ntio_query_all(file, kbuf, Length, &retlen);
 		break;
+	case FileInternalInformation:
+		status = ntio_query_internal(file, kbuf, Length, &retlen);
+		break;
+	case FileEaInformation:
+		status = ntio_query_ea(kbuf, Length, &retlen);
+		break;
+	case FileAccessInformation:
+		status = ntio_query_access(file, kbuf, Length, &retlen);
+		break;
+	case FileModeInformation:
+		status = ntio_query_mode(file, kbuf, Length, &retlen);
+		break;
+	case FileAlignmentInformation:
+		status = ntio_query_alignment(kbuf, Length, &retlen);
+		break;
+	case FileNetworkOpenInformation:
+		status = ntio_query_network_open(file, kbuf, Length, &retlen);
+		break;
+	case FileAttributeTagInformation:
+		status = ntio_query_attribute_tag(file, kbuf, Length, &retlen);
+		break;
 	default:
 		status = STATUS_INVALID_INFO_CLASS;
 		break;
@@ -2252,6 +2566,27 @@ NTSTATUS nt_svc_NtQueryInformationFile(HANDLE FileHandle,
 		break;
 	case FileAllInformation:
 		status = ntio_query_all(file, FileInformation, Length, &retlen);
+		break;
+	case FileInternalInformation:
+		status = ntio_query_internal(file, FileInformation, Length, &retlen);
+		break;
+	case FileEaInformation:
+		status = ntio_query_ea(FileInformation, Length, &retlen);
+		break;
+	case FileAccessInformation:
+		status = ntio_query_access(file, FileInformation, Length, &retlen);
+		break;
+	case FileModeInformation:
+		status = ntio_query_mode(file, FileInformation, Length, &retlen);
+		break;
+	case FileAlignmentInformation:
+		status = ntio_query_alignment(FileInformation, Length, &retlen);
+		break;
+	case FileNetworkOpenInformation:
+		status = ntio_query_network_open(file, FileInformation, Length, &retlen);
+		break;
+	case FileAttributeTagInformation:
+		status = ntio_query_attribute_tag(file, FileInformation, Length, &retlen);
 		break;
 	default:
 		status = STATUS_INVALID_INFO_CLASS;
@@ -2303,32 +2638,121 @@ static NTSTATUS ntio_set_disposition(struct nt_file_object *file,
 	return STATUS_SUCCESS;
 }
 
+/*
+ * AllocationSize. Shrinking below EndOfFile truncates the file, as NT does.
+ * Growing the allocation is not tracked separately from EndOfFile in this
+ * implementation, so a larger value is refused rather than silently dropped.
+ */
+static NTSTATUS ntio_set_allocation(struct nt_file_object *file,
+				    PVOID buf, ULONG len)
+{
+	PFILE_ALLOCATION_INFORMATION ai;
+	struct kstat st;
+
+	if (len < sizeof(*ai))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	ai = (PFILE_ALLOCATION_INFORMATION)buf;
+	if (ai->AllocationSize.QuadPart < 0)
+		return STATUS_INVALID_PARAMETER;
+	if (kshim_vfs_getattr(file->filp, &st) != 0)
+		return STATUS_UNSUCCESSFUL;
+	if (ai->AllocationSize.QuadPart == (LONGLONG)st.size)
+		return STATUS_SUCCESS;
+	if (ai->AllocationSize.QuadPart < (LONGLONG)st.size) {
+		if (kshim_vfs_truncate(file->filp, ai->AllocationSize.QuadPart) != 0)
+			return STATUS_DISK_FULL;
+		return STATUS_SUCCESS;
+	}
+	return STATUS_NOT_SUPPORTED;
+}
+
+/* FileDispositionInformationEx: only FILE_DISPOSITION_DELETE is honoured. */
+static NTSTATUS ntio_set_disposition_ex(struct nt_file_object *file,
+					PVOID buf, ULONG len)
+{
+	PFILE_DISPOSITION_INFORMATION_EX di;
+
+	if (len < sizeof(*di))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	di = (PFILE_DISPOSITION_INFORMATION_EX)buf;
+	if (di->Flags & ~FILE_DISPOSITION_DELETE)
+		return STATUS_NOT_SUPPORTED;
+	file->delete_pending = (di->Flags & FILE_DISPOSITION_DELETE) != 0;
+	return STATUS_SUCCESS;
+}
+
+/*
+ * Rename. With ReplaceIfExists FALSE (or Flags without
+ * FILE_RENAME_REPLACE_IF_EXISTS) an existing target is a name collision,
+ * unless it is the source file itself (a case-only rename on a case-folding
+ * volume).
+ */
 static NTSTATUS ntio_set_rename(struct nt_file_object *file,
-				PVOID buf, ULONG len)
+				PVOID buf, ULONG len, bool ex)
 {
 	PFILE_RENAME_INFORMATION ri;
 	char newpath[PATH_MAX];
 	UNICODE_STRING uname;
 	NTSTATUS status;
+	bool replace;
+	char *dup;
 
 	if (len < sizeof(FILE_RENAME_INFORMATION) - sizeof(WCHAR))
 		return STATUS_INFO_LENGTH_MISMATCH;
 
 	ri = (PFILE_RENAME_INFORMATION)buf;
+	/* The name must lie inside the caller's buffer, and fit UNICODE_STRING. */
+	if (ri->FileNameLength > len - offsetof(FILE_RENAME_INFORMATION, FileName))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	if (ri->FileNameLength > 0xFFFF)
+		return STATUS_NAME_TOO_LONG;
+	if (ex) {
+		PFILE_RENAME_INFORMATION_EX rx = (PFILE_RENAME_INFORMATION_EX)buf;
+
+		if (rx->Flags & ~FILE_RENAME_REPLACE_IF_EXISTS)
+			return STATUS_NOT_SUPPORTED;
+		replace = (rx->Flags & FILE_RENAME_REPLACE_IF_EXISTS) != 0;
+	} else {
+		replace = ri->ReplaceIfExists != 0;
+	}
 	uname.Buffer = ri->FileName;
 	uname.Length = (USHORT)ri->FileNameLength;
 	uname.MaximumLength = uname.Length;
 
 	if (ri->RootDirectory) {
 		struct nt_file_object *root = ntio_handle_lookup(ri->RootDirectory, 0);
-		if (!root || !root->linux_path)
-			return STATUS_INVALID_HANDLE;
 		char rel[PATH_MAX];
+		const char *rel_part;
+		int n = -1;
+		/* ntio_handle_lookup takes a reference: drop it on every path. */
+		if (!root)
+			return STATUS_INVALID_HANDLE;
+		if (!root->linux_path) {
+			ntio_file_put(root);
+			return STATUS_INVALID_HANDLE;
+		}
 		status = kshim_ntpath_to_linux(&uname, rel, sizeof(rel));
-		if (!NT_SUCCESS(status))
+		if (!NT_SUCCESS(status)) {
+			ntio_file_put(root);
 			return status;
-		int n = snprintf(newpath, sizeof(newpath), "%s/%s",
-				 root->linux_path, rel);
+		}
+		/* kshim_ntpath_to_linux resolves the name against the scratch root,
+		 * as for an absolute name. Strip that prefix so the name is relative
+		 * to the RootDirectory path, as NtCreateFile does (ntio create path). */
+		rel_part = rel;
+		if (strncmp(rel, g_kshim_root, strlen(g_kshim_root)) == 0) {
+			rel_part = rel + strlen(g_kshim_root);
+			if (*rel_part == '/')
+				rel_part++;
+		}
+		if (*rel_part == '\0') {
+			/* A rename cannot target the RootDirectory itself. */
+			ntio_file_put(root);
+			return STATUS_OBJECT_NAME_INVALID;
+		}
+		n = snprintf(newpath, sizeof(newpath), "%s/%s",
+			     root->linux_path, rel_part);
+		ntio_file_put(root);
 		if (n < 0 || (size_t)n >= sizeof(newpath))
 			return STATUS_NAME_TOO_LONG;
 	} else {
@@ -2337,11 +2761,55 @@ static NTSTATUS ntio_set_rename(struct nt_file_object *file,
 			return status;
 	}
 
-	if (kshim_vfs_rename(file->linux_path, newpath) != 0)
+	if (!replace) {
+		struct kstat src_st, dst_st;
+
+		if (ntio_getattr_path(newpath, &dst_st) == 0) {
+			if (kshim_vfs_getattr(file->filp, &src_st) != 0)
+				return STATUS_UNSUCCESSFUL;
+			if (dst_st.dev != src_st.dev || dst_st.ino != src_st.ino)
+				return STATUS_OBJECT_NAME_COLLISION;
+		}
+	}
+
+	/* Allocate the new path before renaming: a failure after the rename would
+	 * leave the file moved while the object still names the old path (or none). */
+	dup = kstrdup(newpath, GFP_KERNEL);
+	if (!dup)
+		return STATUS_NO_MEMORY;
+	if (kshim_vfs_rename(file->linux_path, newpath) != 0) {
+		kfree(dup);
 		return STATUS_ACCESS_DENIED;
+	}
 
 	kfree(file->linux_path);
-	file->linux_path = kstrdup(newpath, GFP_KERNEL);
+	file->linux_path = dup;
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS nt_svc_NtQueryAttributesFile(POBJECT_ATTRIBUTES ObjectAttributes,
+				      PFILE_BASIC_INFORMATION FileInformation)
+{
+	char path[PATH_MAX];
+	FILE_BASIC_INFORMATION bi;
+	struct kstat st;
+	bool is_dir = false;
+	NTSTATUS status;
+
+	if (!ObjectAttributes || !FileInformation)
+		return STATUS_ACCESS_VIOLATION;
+
+	status = ntio_resolve_path(ObjectAttributes, path, sizeof(path), &is_dir);
+	if (!NT_SUCCESS(status))
+		return status;
+	if (ntio_getattr_path(path, &st) != 0)
+		return STATUS_OBJECT_NAME_NOT_FOUND;
+
+	/* Zero first: sizeof(bi) includes 4 tail padding bytes, and the struct is copied out. */
+	memset(&bi, 0, sizeof(bi));
+	ntio_basic_from_stat(&bi, &st);
+	if (copy_to_user(FileInformation, &bi, sizeof(bi)))
+		return STATUS_ACCESS_VIOLATION;
 	return STATUS_SUCCESS;
 }
 
@@ -2393,7 +2861,16 @@ NTSTATUS nt_svc_NtSetInformationFile(HANDLE FileHandle,
 		status = ntio_set_disposition(file, kbuf, Length);
 		break;
 	case FileRenameInformation:
-		status = ntio_set_rename(file, kbuf, Length);
+		status = ntio_set_rename(file, kbuf, Length, false);
+		break;
+	case FileRenameInformationEx:
+		status = ntio_set_rename(file, kbuf, Length, true);
+		break;
+	case FileAllocationInformation:
+		status = ntio_set_allocation(file, kbuf, Length);
+		break;
+	case FileDispositionInformationEx:
+		status = ntio_set_disposition_ex(file, kbuf, Length);
 		break;
 	default:
 		status = STATUS_INVALID_INFO_CLASS;
@@ -2419,7 +2896,16 @@ NTSTATUS nt_svc_NtSetInformationFile(HANDLE FileHandle,
 		status = ntio_set_disposition(file, FileInformation, Length);
 		break;
 	case FileRenameInformation:
-		status = ntio_set_rename(file, FileInformation, Length);
+		status = ntio_set_rename(file, FileInformation, Length, false);
+		break;
+	case FileRenameInformationEx:
+		status = ntio_set_rename(file, FileInformation, Length, true);
+		break;
+	case FileAllocationInformation:
+		status = ntio_set_allocation(file, FileInformation, Length);
+		break;
+	case FileDispositionInformationEx:
+		status = ntio_set_disposition_ex(file, FileInformation, Length);
 		break;
 	default:
 		status = STATUS_INVALID_INFO_CLASS;
@@ -2559,6 +3045,997 @@ NTSTATUS nt_svc_NtClose(HANDLE Handle)
 	return STATUS_SUCCESS;
 }
 #endif
+
+/*
+ * Device and filesystem control. This build has no device objects and no
+ * IOCTL or FSCTL codes for regular file handles, so every code is refused
+ * with STATUS_INVALID_DEVICE_REQUEST, the status NT drivers return for an
+ * unrecognised control code. The IoStatusBlock is completed synchronously;
+ * Event and ApcRoutine are not signalled or queued.
+ */
+static NTSTATUS ntio_control_common(HANDLE FileHandle,
+				    PIO_STATUS_BLOCK __user IoStatusBlock)
+{
+	struct nt_file_object *file;
+	NTSTATUS status;
+
+	if (!IoStatusBlock)
+		return STATUS_ACCESS_VIOLATION;
+#ifdef __KERNEL__
+	if (!access_ok(IoStatusBlock, sizeof(IO_STATUS_BLOCK)))
+		return STATUS_ACCESS_VIOLATION;
+#endif
+
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file) {
+		status = STATUS_INVALID_HANDLE;
+	} else {
+		ntio_file_put(file);
+		status = STATUS_INVALID_DEVICE_REQUEST;
+	}
+
+#ifdef __KERNEL__
+	{
+		IO_STATUS_BLOCK kiosb;
+
+		kiosb.DUMMYUNIONNAME.Status = status;
+		kiosb.Information = 0;
+		if (copy_to_user(IoStatusBlock, &kiosb, sizeof(kiosb)))
+			status = STATUS_ACCESS_VIOLATION;
+	}
+#else
+	IoStatusBlock->DUMMYUNIONNAME.Status = status;
+	IoStatusBlock->Information = 0;
+#endif
+	return status;
+}
+
+NTSTATUS nt_svc_NtDeviceIoControlFile(HANDLE FileHandle, HANDLE Event,
+				      PVOID ApcRoutine, PVOID ApcContext,
+				      PIO_STATUS_BLOCK __user IoStatusBlock,
+				      ULONG IoControlCode,
+				      PVOID InputBuffer, ULONG InputBufferLength,
+				      PVOID OutputBuffer, ULONG OutputBufferLength)
+{
+	(void)Event;
+	(void)ApcRoutine;
+	(void)ApcContext;
+	(void)IoControlCode;
+	(void)InputBuffer;
+	(void)InputBufferLength;
+	(void)OutputBuffer;
+	(void)OutputBufferLength;
+	return ntio_control_common(FileHandle, IoStatusBlock);
+}
+
+NTSTATUS nt_svc_NtFsControlFile(HANDLE FileHandle, HANDLE Event,
+				PVOID ApcRoutine, PVOID ApcContext,
+				PIO_STATUS_BLOCK __user IoStatusBlock,
+				ULONG FsControlCode,
+				PVOID InputBuffer, ULONG InputBufferLength,
+				PVOID OutputBuffer, ULONG OutputBufferLength)
+{
+	(void)Event;
+	(void)ApcRoutine;
+	(void)ApcContext;
+	(void)FsControlCode;
+	(void)InputBuffer;
+	(void)InputBufferLength;
+	(void)OutputBuffer;
+	(void)OutputBufferLength;
+	return ntio_control_common(FileHandle, IoStatusBlock);
+}
+
+/*
+ * Extended attributes. No EAs are stored for any file in this build, so a
+ * query reports STATUS_NO_EAS_ON_FILE, and setting a non-empty EA list is
+ * refused with STATUS_EAS_NOT_SUPPORTED. Setting an empty list has nothing to
+ * remove and succeeds.
+ */
+static NTSTATUS ntio_complete_iosb(PIO_STATUS_BLOCK __user IoStatusBlock,
+				   NTSTATUS status)
+{
+#ifdef __KERNEL__
+	IO_STATUS_BLOCK kiosb;
+
+	kiosb.DUMMYUNIONNAME.Status = status;
+	kiosb.Information = 0;
+	if (copy_to_user(IoStatusBlock, &kiosb, sizeof(kiosb)))
+		return STATUS_ACCESS_VIOLATION;
+#else
+	IoStatusBlock->DUMMYUNIONNAME.Status = status;
+	IoStatusBlock->Information = 0;
+#endif
+	return status;
+}
+
+NTSTATUS nt_svc_NtQueryEaFile(HANDLE FileHandle,
+			      PIO_STATUS_BLOCK __user IoStatusBlock,
+			      PVOID __user Buffer, ULONG Length,
+			      BOOLEAN ReturnSingleEntry,
+			      PVOID EaList, ULONG EaListLength,
+			      PULONG EaIndex, BOOLEAN RestartScan)
+{
+	struct nt_file_object *file;
+	NTSTATUS status;
+
+	(void)Buffer;
+	(void)Length;
+	(void)ReturnSingleEntry;
+	(void)EaList;
+	(void)EaListLength;
+	(void)EaIndex;
+	(void)RestartScan;
+
+	if (!IoStatusBlock)
+		return STATUS_ACCESS_VIOLATION;
+#ifdef __KERNEL__
+	if (!access_ok(IoStatusBlock, sizeof(IO_STATUS_BLOCK)))
+		return STATUS_ACCESS_VIOLATION;
+#endif
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb(IoStatusBlock, STATUS_INVALID_HANDLE);
+	ntio_file_put(file);
+	status = STATUS_NO_EAS_ON_FILE;
+	return ntio_complete_iosb(IoStatusBlock, status);
+}
+
+NTSTATUS nt_svc_NtSetEaFile(HANDLE FileHandle,
+			    PIO_STATUS_BLOCK __user IoStatusBlock,
+			    PVOID __user Buffer, ULONG Length)
+{
+	struct nt_file_object *file;
+	NTSTATUS status;
+
+	if (!IoStatusBlock)
+		return STATUS_ACCESS_VIOLATION;
+#ifdef __KERNEL__
+	if (!access_ok(IoStatusBlock, sizeof(IO_STATUS_BLOCK)))
+		return STATUS_ACCESS_VIOLATION;
+#endif
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb(IoStatusBlock, STATUS_INVALID_HANDLE);
+	ntio_file_put(file);
+	(void)Buffer;
+	status = Length == 0 ? STATUS_SUCCESS : STATUS_EAS_NOT_SUPPORTED;
+	return ntio_complete_iosb(IoStatusBlock, status);
+}
+
+
+/*
+ * NtFlushBuffersFileEx. The flush flags are validated. A sync-free flush
+ * (FLUSH_FLAGS_NO_SYNC) has nothing to write back and completes without an
+ * fsync. Any other flush uses the same fsync as NtFlushBuffersFile, which is
+ * a superset of FLUSH_FLAGS_FILE_DATA_ONLY and FLUSH_FLAGS_FILE_DATA_SYNC_ONLY.
+ * Parameters (for the redirector commit path) are not supported.
+ */
+
+NTSTATUS nt_svc_NtFlushBuffersFileEx(HANDLE FileHandle, ULONG Flags,
+				     PVOID Parameters, ULONG ParametersSize,
+				     PIO_STATUS_BLOCK __user IoStatusBlock)
+{
+	struct nt_file_object *file;
+
+	if (!IoStatusBlock)
+		return STATUS_ACCESS_VIOLATION;
+	if (Flags & ~FLUSH_FLAGS_VALID_MASK)
+		return STATUS_INVALID_PARAMETER;
+	if (Parameters || ParametersSize)
+		return STATUS_NOT_SUPPORTED;
+	if (!(Flags & FLUSH_FLAGS_NO_SYNC) || ntio_is_console_handle(FileHandle))
+		return nt_svc_NtFlushBuffersFile(FileHandle, IoStatusBlock);
+
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb(IoStatusBlock, STATUS_INVALID_HANDLE);
+	ntio_file_put(file);
+	return ntio_complete_iosb(IoStatusBlock, STATUS_SUCCESS);
+}
+
+
+/*
+ * Cancel. Every request completes synchronously in this build, so a file never
+ * has a pending request to cancel: the async request list stays empty and each
+ * cancel returns STATUS_NOT_FOUND, the status NT reports when no matching I/O
+ * is pending. If a request list is ever populated before cancel support lands,
+ * the call is refused with STATUS_NOT_SUPPORTED rather than reporting a false
+ * NOT_FOUND.
+ */
+static NTSTATUS ntio_cancel_common(HANDLE FileHandle,
+				   PIO_STATUS_BLOCK __user IoStatusBlock)
+{
+	struct nt_file_object *file;
+	NTSTATUS status;
+
+	if (!IoStatusBlock)
+		return STATUS_ACCESS_VIOLATION;
+#ifdef __KERNEL__
+	if (!access_ok(IoStatusBlock, sizeof(IO_STATUS_BLOCK)))
+		return STATUS_ACCESS_VIOLATION;
+#endif
+
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb(IoStatusBlock, STATUS_INVALID_HANDLE);
+	status = list_empty(&file->async_requests) ? STATUS_NOT_FOUND
+						   : STATUS_NOT_SUPPORTED;
+	ntio_file_put(file);
+	return ntio_complete_iosb(IoStatusBlock, status);
+}
+
+NTSTATUS nt_svc_NtCancelIoFile(HANDLE FileHandle,
+			       PIO_STATUS_BLOCK __user IoStatusBlock)
+{
+	return ntio_cancel_common(FileHandle, IoStatusBlock);
+}
+
+NTSTATUS nt_svc_NtCancelIoFileEx(HANDLE FileHandle,
+				 PIO_STATUS_BLOCK __user IoRequestToCancel,
+				 PIO_STATUS_BLOCK __user IoStatusBlock)
+{
+	(void)IoRequestToCancel;
+	return ntio_cancel_common(FileHandle, IoStatusBlock);
+}
+
+
+/*
+ * NtDeleteFile deletes a non-directory by name. A directory is refused with
+ * STATUS_FILE_IS_A_DIRECTORY. The delete is checked like an open with DELETE
+ * access and full sharing, so any open handle without FILE_SHARE_DELETE on the
+ * same file returns STATUS_SHARING_VIOLATION.
+ */
+NTSTATUS nt_svc_NtDeleteFile(POBJECT_ATTRIBUTES ObjectAttributes)
+{
+	char path[PATH_MAX];
+	struct kstat st;
+	bool is_dir = false;
+	NTSTATUS status;
+	bool shared_ok;
+
+	if (!ObjectAttributes)
+		return STATUS_ACCESS_VIOLATION;
+
+	status = ntio_resolve_path(ObjectAttributes, path, sizeof(path), &is_dir);
+	if (!NT_SUCCESS(status))
+		return status;
+	if (ntio_getattr_path(path, &st) != 0)
+		return STATUS_OBJECT_NAME_NOT_FOUND;
+	if (S_ISDIR(st.mode))
+		return STATUS_FILE_IS_A_DIRECTORY;
+
+	spin_lock(&ntio_share_mutex);
+	shared_ok = ntio_check_share_access(st.dev, st.ino, DELETE,
+					    FILE_SHARE_VALID_FLAGS, NULL);
+	spin_unlock(&ntio_share_mutex);
+	if (!shared_ok)
+		return STATUS_SHARING_VIOLATION;
+
+	if (kshim_vfs_unlink(path) != 0)
+		return STATUS_ACCESS_DENIED;
+	return STATUS_SUCCESS;
+}
+
+/*
+ * NtQueryFullAttributesFile. Times and attributes come from the same stat as
+ * NtQueryAttributesFile. AllocationSize is reported as the file size, which is
+ * what FileStandardInformation reports for this implementation.
+ */
+NTSTATUS nt_svc_NtQueryFullAttributesFile(POBJECT_ATTRIBUTES ObjectAttributes,
+					  PFILE_NETWORK_OPEN_INFORMATION FileInformation)
+{
+	char path[PATH_MAX];
+	FILE_NETWORK_OPEN_INFORMATION ni;
+	FILE_BASIC_INFORMATION bi;
+	struct kstat st;
+	bool is_dir = false;
+	NTSTATUS status;
+
+	if (!ObjectAttributes || !FileInformation)
+		return STATUS_ACCESS_VIOLATION;
+
+	status = ntio_resolve_path(ObjectAttributes, path, sizeof(path), &is_dir);
+	if (!NT_SUCCESS(status))
+		return status;
+	if (ntio_getattr_path(path, &st) != 0)
+		return STATUS_OBJECT_NAME_NOT_FOUND;
+
+	/* Zero first: sizeof(ni) has 4 tail padding bytes after FileAttributes, and the struct is copied out. */
+	memset(&ni, 0, sizeof(ni));
+	memset(&bi, 0, sizeof(bi));
+	ntio_basic_from_stat(&bi, &st);
+	ni.CreationTime = bi.CreationTime;
+	ni.LastAccessTime = bi.LastAccessTime;
+	ni.LastWriteTime = bi.LastWriteTime;
+	ni.ChangeTime = bi.ChangeTime;
+	ni.AllocationSize.QuadPart = (LONGLONG)st.size;
+	ni.EndOfFile.QuadPart = (LONGLONG)st.size;
+	ni.FileAttributes = bi.FileAttributes;
+	if (copy_to_user(FileInformation, &ni, sizeof(ni)))
+		return STATUS_ACCESS_VIOLATION;
+	return STATUS_SUCCESS;
+}
+
+
+/* Read a LARGE_INTEGER argument into a plain value. */
+static NTSTATUS ntio_read_large(PLARGE_INTEGER __user p, LONGLONG *out)
+{
+#ifdef __KERNEL__
+	LARGE_INTEGER v;
+
+	if (!access_ok(p, sizeof(v)) || copy_from_user(&v, p, sizeof(v)))
+		return STATUS_ACCESS_VIOLATION;
+	*out = v.QuadPart;
+#else
+	*out = p->QuadPart;
+#endif
+	return STATUS_SUCCESS;
+}
+
+#define NTIO_MAX_LOCK_OFFSET ((LONGLONG)0x7fffffffffffffffLL)
+
+/*
+ * NtLockFile. The lock is refused with STATUS_LOCK_NOT_GRANTED when it
+ * conflicts with a lock held through another file object. FailImmediately is
+ * accepted, but waiting is not supported, so a conflict is always refused.
+ */
+NTSTATUS nt_svc_NtLockFile(HANDLE FileHandle, HANDLE Event,
+			   PVOID ApcRoutine, PVOID ApcContext,
+			   PIO_STATUS_BLOCK __user IoStatusBlock,
+			   PLARGE_INTEGER __user ByteOffset,
+			   PLARGE_INTEGER __user Length,
+			   ULONG Key, BOOLEAN FailImmediately,
+			   BOOLEAN ExclusiveLock)
+{
+	struct nt_file_object *file;
+	struct ntio_byte_lock *lock;
+	LONGLONG start = 0, len = 0;
+	NTSTATUS status;
+
+	(void)Event;
+	(void)ApcRoutine;
+	(void)ApcContext;
+	(void)FailImmediately;
+
+	if (!IoStatusBlock || !ByteOffset || !Length)
+		return STATUS_ACCESS_VIOLATION;
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb(IoStatusBlock, STATUS_INVALID_HANDLE);
+
+	status = ntio_read_large(ByteOffset, &start);
+	if (NT_SUCCESS(status))
+		status = ntio_read_large(Length, &len);
+	if (NT_SUCCESS(status) &&
+	    (start < 0 || len <= 0 || start > NTIO_MAX_LOCK_OFFSET - len))
+		status = STATUS_INVALID_PARAMETER;
+	if (!NT_SUCCESS(status)) {
+		ntio_file_put(file);
+		return ntio_complete_iosb(IoStatusBlock, status);
+	}
+
+	lock = kzalloc(sizeof(*lock), GFP_KERNEL);
+	if (!lock) {
+		ntio_file_put(file);
+		return ntio_complete_iosb(IoStatusBlock, STATUS_NO_MEMORY);
+	}
+	lock->owner = file;
+	lock->dev = file->share_dev;
+	lock->ino = file->share_ino;
+	lock->start = start;
+	lock->length = len;
+	lock->key = Key;
+	lock->exclusive = ExclusiveLock != 0;
+
+	spin_lock(&ntio_lock_mutex);
+	if (ntio_lock_conflicts(file, lock->dev, lock->ino, start, len,
+				lock->exclusive)) {
+		status = STATUS_LOCK_NOT_GRANTED;
+	} else {
+		list_add_tail(&lock->entry, &ntio_lock_list);
+		lock = NULL;
+		status = STATUS_SUCCESS;
+	}
+	spin_unlock(&ntio_lock_mutex);
+	if (lock)
+		kfree(lock);
+
+	ntio_file_put(file);
+	return ntio_complete_iosb(IoStatusBlock, status);
+}
+
+/*
+ * NtUnlockFile. The offset, length and key must match a lock held by this file
+ * object exactly, or the call returns STATUS_RANGE_NOT_LOCKED.
+ */
+NTSTATUS nt_svc_NtUnlockFile(HANDLE FileHandle,
+			     PIO_STATUS_BLOCK __user IoStatusBlock,
+			     PLARGE_INTEGER __user ByteOffset,
+			     PLARGE_INTEGER __user Length,
+			     ULONG Key)
+{
+	struct nt_file_object *file;
+	struct ntio_byte_lock *l, *tmp;
+	LONGLONG start = 0, len = 0;
+	NTSTATUS status;
+
+	if (!IoStatusBlock || !ByteOffset || !Length)
+		return STATUS_ACCESS_VIOLATION;
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb(IoStatusBlock, STATUS_INVALID_HANDLE);
+
+	status = ntio_read_large(ByteOffset, &start);
+	if (NT_SUCCESS(status))
+		status = ntio_read_large(Length, &len);
+	if (NT_SUCCESS(status) && (start < 0 || len <= 0))
+		status = STATUS_INVALID_PARAMETER;
+	if (NT_SUCCESS(status)) {
+		status = STATUS_RANGE_NOT_LOCKED;
+		spin_lock(&ntio_lock_mutex);
+		list_for_each_entry_safe(l, tmp, &ntio_lock_list, entry) {
+			if (l->owner == file && l->start == start &&
+			    l->length == len && l->key == Key) {
+				list_del(&l->entry);
+				kfree(l);
+				status = STATUS_SUCCESS;
+				break;
+			}
+		}
+		spin_unlock(&ntio_lock_mutex);
+	}
+
+	ntio_file_put(file);
+	return ntio_complete_iosb(IoStatusBlock, status);
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Directory enumeration                                                        */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Enumeration reads the directory once per scan (first call, or a restart) and
+ * returns entries from that snapshot. The snapshot is userspace-only: the
+ * kernel branch of NtQueryDirectoryFile returns STATUS_NOT_SUPPORTED.
+ */
+
+static void ntio_dir_clear(struct nt_file_object *file)
+{
+	size_t i;
+
+	if (file->dir_names) {
+		for (i = 0; i < file->dir_count; i++)
+			kfree(file->dir_names[i]);
+		kfree(file->dir_names);
+	}
+	kfree(file->dir_pattern);
+	file->dir_names = NULL;
+	file->dir_count = 0;
+	file->dir_pos = 0;
+	file->dir_pattern = NULL;
+}
+
+#ifndef __KERNEL__
+static int ntio_ascii_lower(int c)
+{
+	return (c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c;
+}
+
+/* NT-style wildcard match: star and question mark, ASCII case-insensitive. */
+static bool ntio_wild_match(const char *p, const char *s)
+{
+	while (*p) {
+		if (*p == '*') {
+			while (*p == '*')
+				p++;
+			if (!*p)
+				return true;
+			for (; *s; s++) {
+				if (ntio_wild_match(p, s))
+					return true;
+			}
+			return ntio_wild_match(p, s);
+		}
+		if (!*s)
+			return false;
+		if (*p != '?' && ntio_ascii_lower((unsigned char)*p) !=
+				  ntio_ascii_lower((unsigned char)*s))
+			return false;
+		p++;
+		s++;
+	}
+	return *s == '\0';
+}
+
+/* Size of the fixed part of an entry, before the name, for each class. */
+static size_t ntio_dir_fixed_size(ULONG cls)
+{
+	switch (cls) {
+	case FileDirectoryInformation:
+		return offsetof(FILE_DIRECTORY_INFORMATION, FileName);
+	case FileFullDirectoryInformation:
+		return offsetof(FILE_FULL_DIRECTORY_INFORMATION, FileName);
+	case FileBothDirectoryInformation:
+		return offsetof(FILE_BOTH_DIRECTORY_INFORMATION, FileName);
+	default:
+		return offsetof(FILE_NAMES_INFORMATION, FileName);
+	}
+}
+
+/* Append one name to the snapshot if it matches the pattern. */
+static NTSTATUS ntio_dir_add(struct nt_file_object *file, const char *name,
+			     const char *pattern, size_t *cap)
+{
+	char **nn;
+	char *copy;
+
+	if (!ntio_wild_match(pattern, name))
+		return STATUS_SUCCESS;
+	if (file->dir_count == *cap) {
+		size_t ncap = *cap ? *cap * 2 : 16;
+
+		nn = realloc(file->dir_names, ncap * sizeof(char *));
+		if (!nn)
+			return STATUS_NO_MEMORY;
+		file->dir_names = nn;
+		*cap = ncap;
+	}
+	copy = kstrdup(name, GFP_KERNEL);
+	if (!copy)
+		return STATUS_NO_MEMORY;
+	file->dir_names[file->dir_count++] = copy;
+	return STATUS_SUCCESS;
+}
+
+/*
+ * Snapshot the directory entries that match pattern. NT always reports "." and
+ * ".." first, so they are added here whether or not the host listing has them.
+ */
+static NTSTATUS ntio_dir_snapshot(struct nt_file_object *file, const char *pattern)
+{
+	DIR *d;
+	struct dirent *ent;
+	size_t cap = 0;
+	NTSTATUS status;
+
+	ntio_dir_clear(file);
+	file->dir_pattern = kstrdup(pattern, GFP_KERNEL);
+	if (!file->dir_pattern)
+		return STATUS_NO_MEMORY;
+
+	d = opendir(file->linux_path);
+	if (!d) {
+		/* The path may have stopped being a directory since it was opened. */
+		if (errno == ENOTDIR)
+			return STATUS_NOT_A_DIRECTORY;
+		if (errno == ENOENT)
+			return STATUS_NO_SUCH_FILE;
+		return STATUS_ACCESS_DENIED;
+	}
+	status = ntio_dir_add(file, ".", pattern, &cap);
+	if (NT_SUCCESS(status))
+		status = ntio_dir_add(file, "..", pattern, &cap);
+	while (NT_SUCCESS(status) && (ent = readdir(d)) != NULL) {
+		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+			continue;
+		status = ntio_dir_add(file, ent->d_name, pattern, &cap);
+	}
+	closedir(d);
+	if (!NT_SUCCESS(status))
+		ntio_dir_clear(file);
+	return status;
+}
+
+/*
+ * Host names are UTF-8. Decode one code point at s (n bytes left). An invalid
+ * or truncated sequence gives U+FFFD and consumes one byte. *len is the number
+ * of bytes consumed.
+ */
+static unsigned long ntio_utf8_next(const unsigned char *s, size_t n, size_t *len)
+{
+	unsigned char c = s[0];
+	unsigned long cp;
+	size_t need, k;
+
+	*len = 1;
+	if (c < 0x80)
+		return c;
+	if (c >= 0xC2 && c <= 0xDF) {
+		need = 1;
+		cp = c & 0x1F;
+	} else if (c >= 0xE0 && c <= 0xEF) {
+		need = 2;
+		cp = c & 0x0F;
+	} else if (c >= 0xF0 && c <= 0xF4) {
+		need = 3;
+		cp = c & 0x07;
+	} else {
+		return 0xFFFD;
+	}
+	if (need + 1 > n)
+		return 0xFFFD;
+	for (k = 1; k <= need; k++) {
+		if ((s[k] & 0xC0) != 0x80)
+			return 0xFFFD;
+		cp = (cp << 6) | (s[k] & 0x3F);
+	}
+	/* Reject overlong forms, surrogates and values past U+10FFFF. */
+	if ((need == 2 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) ||
+	    (need == 3 && (cp < 0x10000 || cp > 0x10FFFF)))
+		return 0xFFFD;
+	*len = need + 1;
+	return cp;
+}
+
+/*
+ * Convert a host UTF-8 name to UTF-16 code units. out may be NULL, in which
+ * case only the number of units is returned. Code points past U+FFFF become
+ * a surrogate pair.
+ */
+static size_t ntio_utf8_to_utf16(const char *name, size_t namelen, WCHAR *out)
+{
+	const unsigned char *s = (const unsigned char *)name;
+	size_t i = 0, u = 0;
+
+	while (i < namelen) {
+		size_t len;
+		unsigned long cp = ntio_utf8_next(s + i, namelen - i, &len);
+
+		if (cp >= 0x10000) {
+			cp -= 0x10000;
+			if (out) {
+				out[u] = (WCHAR)(0xD800 | (cp >> 10));
+				out[u + 1] = (WCHAR)(0xDC00 | (cp & 0x3FF));
+			}
+			u += 2;
+		} else {
+			if (out)
+				out[u] = (WCHAR)cp;
+			u++;
+		}
+		i += len;
+	}
+	return u;
+}
+
+/* Write one entry at dst. dst is zeroed first, so NextEntryOffset is 0. */
+static void ntio_dir_fill_entry(void *dst, ULONG cls, ULONG index,
+				const char *name, size_t namelen,
+				const struct kstat *st)
+{
+	FILE_BASIC_INFORMATION bi;
+	size_t fixed = ntio_dir_fixed_size(cls);
+	WCHAR *wname;
+	ULONG name_bytes = (ULONG)(ntio_utf8_to_utf16(name, namelen, NULL) * sizeof(WCHAR));
+
+	memset(dst, 0, fixed + name_bytes);
+	ntio_basic_from_stat(&bi, st);
+	wname = (WCHAR *)((unsigned char *)dst + fixed);
+	ntio_utf8_to_utf16(name, namelen, wname);
+
+	if (cls == FileNamesInformation) {
+		PFILE_NAMES_INFORMATION n = (PFILE_NAMES_INFORMATION)dst;
+
+		n->FileIndex = index;
+		n->FileNameLength = name_bytes;
+		return;
+	}
+
+	{
+		PFILE_DIRECTORY_INFORMATION d = (PFILE_DIRECTORY_INFORMATION)dst;
+
+		d->FileIndex = index;
+		d->CreationTime = bi.CreationTime;
+		d->LastAccessTime = bi.LastAccessTime;
+		d->LastWriteTime = bi.LastWriteTime;
+		d->ChangeTime = bi.ChangeTime;
+		d->EndOfFile.QuadPart = (LONGLONG)st->size;
+		d->AllocationSize.QuadPart = (LONGLONG)st->size;
+		d->FileAttributes = bi.FileAttributes;
+		d->FileNameLength = name_bytes;
+	}
+}
+
+/*
+ * Fill buf with as many entries as fit, from the current snapshot position.
+ * Entries are 8-byte aligned. An entry that does not fit ends the call; if it
+ * is the first one the result is STATUS_BUFFER_OVERFLOW.
+ */
+static NTSTATUS ntio_query_dir_common(struct nt_file_object *file,
+				      unsigned char *buf, ULONG len, ULONG cls,
+				      bool return_single,
+				      ULONG_PTR *information)
+{
+	size_t cur_off = 0, prev_off = 0, prev_size = 0;
+	bool have_prev = false;
+	ULONG count = 0;
+	NTSTATUS status = STATUS_SUCCESS;
+
+	*information = 0;
+	while (file->dir_pos < file->dir_count) {
+		const char *name = file->dir_names[file->dir_pos];
+		size_t namelen = strlen(name);
+		size_t size = ntio_dir_fixed_size(cls) +
+			      ntio_utf8_to_utf16(name, namelen, NULL) * sizeof(WCHAR);
+		char full[PATH_MAX];
+		struct kstat st;
+		int n;
+
+		/* "." is the directory itself and ".." is its parent; stat those
+		 * directly, since "dir/." and "dir/.." are not reliable paths on
+		 * every host. */
+		if (strcmp(name, ".") == 0) {
+			n = snprintf(full, sizeof(full), "%s", file->linux_path);
+		} else if (strcmp(name, "..") == 0) {
+			const char *slash = strrchr(file->linux_path, '/');
+
+			n = slash && slash != file->linux_path
+				? snprintf(full, sizeof(full), "%.*s",
+					   (int)(slash - file->linux_path), file->linux_path)
+				: snprintf(full, sizeof(full), "/");
+		} else {
+			n = snprintf(full, sizeof(full), "%s/%s", file->linux_path, name);
+		}
+		if (n < 0 || (size_t)n >= sizeof(full) ||
+		    ntio_getattr_path(full, &st) != 0) {
+			/* Entry vanished since the snapshot: skip it. */
+			file->dir_pos++;
+			continue;
+		}
+
+		cur_off = have_prev ? (prev_off + prev_size + 7) & ~(size_t)7 : 0;
+		if (cur_off + size > len) {
+			if (count == 0)
+				status = STATUS_BUFFER_OVERFLOW;
+			break;
+		}
+
+		ntio_dir_fill_entry(buf + cur_off, cls, (ULONG)(file->dir_pos + 1),
+				    name, namelen, &st);
+		if (have_prev)
+			*(ULONG *)(buf + prev_off) = (ULONG)(cur_off - prev_off);
+		have_prev = true;
+		prev_off = cur_off;
+		prev_size = size;
+		count++;
+		file->dir_pos++;
+		if (return_single)
+			break;
+	}
+
+	if (count > 0) {
+		*information = prev_off + prev_size;
+		return STATUS_SUCCESS;
+	}
+	if (status == STATUS_BUFFER_OVERFLOW)
+		return status;
+	return STATUS_NO_MORE_FILES;
+}
+
+/* Convert a UNICODE_STRING pattern to ASCII; NULL or empty means "*". */
+static NTSTATUS ntio_dir_pattern(PUNICODE_STRING pattern, char *out, size_t outlen)
+{
+	size_t i, n;
+
+	if (!pattern || pattern->Length == 0 || !pattern->Buffer) {
+		snprintf(out, outlen, "*");
+		return STATUS_SUCCESS;
+	}
+	n = pattern->Length / sizeof(WCHAR);
+	if (n + 1 > outlen)
+		return STATUS_NAME_TOO_LONG;
+	for (i = 0; i < n; i++) {
+		WCHAR wc = pattern->Buffer[i];
+
+		out[i] = wc < 0x80 ? (char)wc : '?';
+	}
+	out[n] = '\0';
+	return STATUS_SUCCESS;
+}
+
+static NTSTATUS ntio_dir_service(HANDLE FileHandle,
+				 PIO_STATUS_BLOCK IoStatusBlock,
+				 PVOID FileInformation, ULONG Length,
+				 ULONG cls, bool return_single, bool restart,
+				 PUNICODE_STRING FileName)
+{
+	struct nt_file_object *file;
+	char pattern[512];
+	ULONG_PTR information = 0;
+	NTSTATUS status;
+
+	if (!IoStatusBlock || !FileInformation)
+		return STATUS_ACCESS_VIOLATION;
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return STATUS_INVALID_HANDLE;
+	if (!file->is_directory) {
+		ntio_file_put(file);
+		return STATUS_INVALID_PARAMETER;
+	}
+	if (cls != FileDirectoryInformation && cls != FileFullDirectoryInformation &&
+	    cls != FileBothDirectoryInformation && cls != FileNamesInformation) {
+		ntio_file_put(file);
+		return STATUS_INVALID_INFO_CLASS;
+	}
+
+	/* A new scan takes the pattern from this call. */
+	status = ntio_dir_pattern(FileName, pattern, sizeof(pattern));
+	if (NT_SUCCESS(status) && (restart || !file->dir_names)) {
+		status = ntio_dir_snapshot(file, pattern);
+	}
+	if (NT_SUCCESS(status))
+		status = ntio_query_dir_common(file, FileInformation, Length, cls,
+					       return_single, &information);
+	ntio_file_put(file);
+
+	IoStatusBlock->DUMMYUNIONNAME.Status = status;
+	IoStatusBlock->Information = information;
+	return status;
+}
+#else /* __KERNEL__ */
+static NTSTATUS ntio_dir_service(HANDLE FileHandle,
+				 PIO_STATUS_BLOCK __user IoStatusBlock,
+				 PVOID __user FileInformation, ULONG Length,
+				 ULONG cls, bool return_single, bool restart,
+				 PUNICODE_STRING FileName)
+{
+	(void)FileHandle;
+	(void)FileInformation;
+	(void)Length;
+	(void)cls;
+	(void)return_single;
+	(void)restart;
+	(void)FileName;
+	/* The kernel branch has no directory snapshot yet. */
+	return ntio_complete_iosb(IoStatusBlock, STATUS_NOT_SUPPORTED);
+}
+#endif
+
+NTSTATUS nt_svc_NtQueryDirectoryFile(HANDLE FileHandle, HANDLE Event,
+				     PVOID ApcRoutine, PVOID ApcContext,
+				     PIO_STATUS_BLOCK __user IoStatusBlock,
+				     PVOID __user FileInformation, ULONG Length,
+				     ULONG FileInformationClass,
+				     BOOLEAN ReturnSingleEntry,
+				     PUNICODE_STRING FileName,
+				     BOOLEAN RestartScan)
+{
+	(void)Event;
+	(void)ApcRoutine;
+	(void)ApcContext;
+	return ntio_dir_service(FileHandle, IoStatusBlock, FileInformation, Length,
+				FileInformationClass, ReturnSingleEntry != 0,
+				RestartScan != 0, FileName);
+}
+
+NTSTATUS nt_svc_NtQueryDirectoryFileEx(HANDLE FileHandle, HANDLE Event,
+				       PVOID ApcRoutine, PVOID ApcContext,
+				       PIO_STATUS_BLOCK __user IoStatusBlock,
+				       PVOID __user FileInformation, ULONG Length,
+				       ULONG FileInformationClass,
+				       ULONG QueryFlags,
+				       PUNICODE_STRING FileName)
+{
+	(void)Event;
+	(void)ApcRoutine;
+	(void)ApcContext;
+	if (QueryFlags & ~(SL_RESTART_SCAN | SL_RETURN_SINGLE_ENTRY |
+			   SL_INDEX_SPECIFIED | SL_RETURN_ON_DISK_ENTRIES_ONLY))
+		return STATUS_INVALID_PARAMETER;
+	if (QueryFlags & SL_INDEX_SPECIFIED)
+		return STATUS_NOT_SUPPORTED;
+	return ntio_dir_service(FileHandle, IoStatusBlock, FileInformation, Length,
+				FileInformationClass,
+				(QueryFlags & SL_RETURN_SINGLE_ENTRY) != 0,
+				(QueryFlags & SL_RESTART_SCAN) != 0, FileName);
+}
+
+
+/*
+ * NtQueryVolumeInformationFile. FileFsDeviceInformation reports a disk device
+ * with no characteristics, which is what every file in this build is on. The
+ * other volume classes need filesystem statistics this build does not gather
+ * yet, so they return STATUS_NOT_IMPLEMENTED. Unknown classes return
+ * STATUS_INVALID_INFO_CLASS.
+ */
+static NTSTATUS ntio_complete_iosb_info(PIO_STATUS_BLOCK __user IoStatusBlock,
+					NTSTATUS status, ULONG_PTR information)
+{
+#ifdef __KERNEL__
+	IO_STATUS_BLOCK kiosb;
+
+	kiosb.DUMMYUNIONNAME.Status = status;
+	kiosb.Information = information;
+	if (copy_to_user(IoStatusBlock, &kiosb, sizeof(kiosb)))
+		return STATUS_ACCESS_VIOLATION;
+#else
+	IoStatusBlock->DUMMYUNIONNAME.Status = status;
+	IoStatusBlock->Information = information;
+#endif
+	return status;
+}
+
+NTSTATUS nt_svc_NtQueryVolumeInformationFile(HANDLE FileHandle,
+					     PIO_STATUS_BLOCK __user IoStatusBlock,
+					     PVOID __user FsInformation, ULONG Length,
+					     ULONG FsInformationClass)
+{
+	struct nt_file_object *file;
+	FILE_FS_DEVICE_INFORMATION di;
+	NTSTATUS status;
+
+	if (!IoStatusBlock || !FsInformation)
+		return STATUS_ACCESS_VIOLATION;
+#ifdef __KERNEL__
+	if (!access_ok(IoStatusBlock, sizeof(IO_STATUS_BLOCK)))
+		return STATUS_ACCESS_VIOLATION;
+#endif
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb_info(IoStatusBlock, STATUS_INVALID_HANDLE, 0);
+	ntio_file_put(file);
+
+	if (FsInformationClass == FileFsDeviceInformation) {
+		if (Length < sizeof(di))
+			return ntio_complete_iosb_info(IoStatusBlock,
+						       STATUS_INFO_LENGTH_MISMATCH, 0);
+		di.DeviceType = FILE_DEVICE_DISK;
+		di.Characteristics = 0;
+#ifdef __KERNEL__
+		if (copy_to_user(FsInformation, &di, sizeof(di)))
+			return ntio_complete_iosb_info(IoStatusBlock,
+						       STATUS_ACCESS_VIOLATION, 0);
+#else
+		memcpy(FsInformation, &di, sizeof(di));
+#endif
+		return ntio_complete_iosb_info(IoStatusBlock, STATUS_SUCCESS, sizeof(di));
+	}
+
+	if (FsInformationClass >= FileFsVolumeInformation &&
+	    FsInformationClass <= FileFsDataCopyInformation)
+		status = STATUS_NOT_IMPLEMENTED;
+	else
+		status = STATUS_INVALID_INFO_CLASS;
+	return ntio_complete_iosb_info(IoStatusBlock, status, 0);
+}
+
+/*
+ * NtSetVolumeInformationFile. No volume information can be set in this build.
+ * Valid classes return STATUS_NOT_IMPLEMENTED, and unknown classes return
+ * STATUS_INVALID_INFO_CLASS.
+ */
+NTSTATUS nt_svc_NtSetVolumeInformationFile(HANDLE FileHandle,
+					   PIO_STATUS_BLOCK __user IoStatusBlock,
+					   PVOID __user FsInformation, ULONG Length,
+					   ULONG FsInformationClass)
+{
+	struct nt_file_object *file;
+	NTSTATUS status;
+
+	(void)FsInformation;
+	(void)Length;
+
+	if (!IoStatusBlock)
+		return STATUS_ACCESS_VIOLATION;
+#ifdef __KERNEL__
+	if (!access_ok(IoStatusBlock, sizeof(IO_STATUS_BLOCK)))
+		return STATUS_ACCESS_VIOLATION;
+#endif
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb_info(IoStatusBlock, STATUS_INVALID_HANDLE, 0);
+	ntio_file_put(file);
+
+	if (FsInformationClass >= FileFsVolumeInformation &&
+	    FsInformationClass <= FileFsDataCopyInformation)
+		status = STATUS_NOT_IMPLEMENTED;
+	else
+		status = STATUS_INVALID_INFO_CLASS;
+	return ntio_complete_iosb_info(IoStatusBlock, status, 0);
+}
 
 /* -------------------------------------------------------------------------- */
 /* Module init / fini (userspace shim)                                          */

@@ -9,16 +9,21 @@
  */
 
 #include "security.h"
+#include "object.h"
+#include "handle.h"
 
 #ifndef __KERNEL__
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <stddef.h>
+#include <stdint.h>
 #else
 #include <linux/kstrtox.h>
 #include <linux/string.h>
 #include <linux/slab.h>
+#include <linux/uaccess.h>
 #endif
 
 /* -------------------------------------------------------------------------- */
@@ -44,33 +49,52 @@ static struct {
 } g_acl_caps[ACL_CAP_MAX];
 static int g_acl_cap_used = 0;
 
+/* Guards g_acl_caps and g_acl_cap_used. Every ACL create, free and capacity
+ * check reads or writes the table, so it is only touched under this lock. */
+#ifdef __KERNEL__
+static DEFINE_SPINLOCK(g_acl_cap_lock);
+#else
+static spinlock_t g_acl_cap_lock = PTHREAD_MUTEX_INITIALIZER;   /* userspace kshim */
+#endif
+
 static USHORT acl_capacity_lookup(PACL acl)
 {
-    for (int i = 0; i < g_acl_cap_used; i++) {
-        if (g_acl_caps[i].acl == acl)
-            return g_acl_caps[i].cap;
+    USHORT cap = 0;
+    int found = 0;
+    spin_lock(&g_acl_cap_lock);
+    for (int i = 0; i < g_acl_cap_used && !found; i++) {
+        if (g_acl_caps[i].acl == acl) {
+            cap = g_acl_caps[i].cap;
+            found = 1;
+        }
     }
+    spin_unlock(&g_acl_cap_lock);
+    if (found) return cap;
     /* fallback: assume AclSize is capacity if not registered (for imported ACLs) */
     if (acl) return acl->AclSize;
     return 0;
 }
 static void acl_capacity_register(PACL acl, USHORT cap)
 {
+    spin_lock(&g_acl_cap_lock);
     if (g_acl_cap_used < ACL_CAP_MAX) {
         g_acl_caps[g_acl_cap_used].acl = acl;
         g_acl_caps[g_acl_cap_used].cap = cap;
         g_acl_cap_used++;
     }
+    spin_unlock(&g_acl_cap_lock);
 }
 static void acl_capacity_unregister(PACL acl)
 {
+    spin_lock(&g_acl_cap_lock);
     for (int i = 0; i < g_acl_cap_used; i++) {
         if (g_acl_caps[i].acl == acl) {
             g_acl_caps[i] = g_acl_caps[g_acl_cap_used - 1];
             g_acl_cap_used--;
-            return;
+            break;
         }
     }
+    spin_unlock(&g_acl_cap_lock);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -901,6 +925,18 @@ NTSTATUS sd_from_self_relative(const void *sr_buffer, ULONG sr_length, SECURITY_
 /* Token                                                                       */
 /* -------------------------------------------------------------------------- */
 
+/* Token ids: a LUID from a counter that only increases. The id must not be derived from
+ * the token's address, which would disclose kernel address bits to user mode. */
+static LUID ntsec_next_token_id(void)
+{
+    static unsigned long long next_id;
+    unsigned long long id = __atomic_add_fetch(&next_id, 1, __ATOMIC_SEQ_CST);
+    LUID luid;
+    luid.LowPart = (ULONG)(id & 0xFFFFFFFFULL);
+    luid.HighPart = (LONG)(id >> 32);
+    return luid;
+}
+
 ACCESS_TOKEN *token_create_primary(PSID user,
                                    const SID_AND_ATTRIBUTES *groups,
                                    ULONG group_count,
@@ -917,6 +953,7 @@ ACCESS_TOKEN *token_create_primary(PSID user,
     ACCESS_TOKEN *tok = (ACCESS_TOKEN *)kzalloc(sizeof(ACCESS_TOKEN), GFP_KERNEL);
     if (!tok) return NULL;
     tok->ref_count = 1;
+    tok->token_id = ntsec_next_token_id();
     tok->token_type = TokenPrimary;
     tok->impersonation_level = SecurityAnonymous;
     tok->user = sid_dup(user);
@@ -993,12 +1030,66 @@ ACCESS_TOKEN *token_create_primary(PSID user,
     return tok;
 }
 
+/* Token object handle: the object takes its own reference on tok, so the
+ * caller keeps its reference and the handle keeps the token alive. */
+NTSTATUS ObCreateTokenHandle(struct nt_eprocess *proc,
+                             ACCESS_TOKEN *tok,
+                             ACCESS_MASK access,
+                             ULONG attributes,
+                             PHANDLE out_handle)
+{
+    struct nt_object_header *hdr = NULL;
+    struct nt_token_body *body = NULL;
+    OBJECT_ATTRIBUTES oa;
+    NTSTATUS st;
+
+    if (!proc || !tok || !out_handle) return STATUS_INVALID_PARAMETER;
+    if (attributes & ~(OBJ_INHERIT | OBJ_PROTECT_FROM_CLOSE))
+        return STATUS_INVALID_PARAMETER;
+
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(oa);
+    oa.Attributes = attributes;
+
+    st = ObCreateObject(&nt_token_type, &oa, sizeof(*body), &hdr, (void **)&body);
+    if (!NT_SUCCESS(st)) return st;
+    token_reference(tok);
+    body->token = tok;
+
+    st = ObInsertObject(hdr, &oa, access, proc, out_handle);
+    /* Drop the creation reference. On failure this releases the object and
+     * with it the token reference taken above. */
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+ACCESS_TOKEN *token_create_default_primary(void)
+{
+    PSID user = NULL, users = NULL;
+    SID_AND_ATTRIBUTES grp;
+    ACCESS_TOKEN *tok = NULL;
+
+    if (sid_from_string("S-1-5-21-0-0-0-1000", &user) != STATUS_SUCCESS)
+        return NULL;
+    if (sid_from_string("S-1-5-32-545", &users) != STATUS_SUCCESS) {
+        sid_free(user);
+        return NULL;
+    }
+    grp.Sid = users;
+    grp.Attributes = SE_GROUP_MANDATORY | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_ENABLED;
+    tok = token_create_primary(user, &grp, 1, NULL, 0, NULL, NULL, NULL, NULL, 0);
+    sid_free(users);
+    sid_free(user);
+    return tok;
+}
+
 ACCESS_TOKEN *token_duplicate(const ACCESS_TOKEN *src)
 {
     if (!src) return NULL;
     ACCESS_TOKEN *tok = (ACCESS_TOKEN *)kzalloc(sizeof(ACCESS_TOKEN), GFP_KERNEL);
     if (!tok) return NULL;
     tok->ref_count = 1;
+    tok->token_id = ntsec_next_token_id();
     tok->token_type = src->token_type;
     tok->impersonation_level = src->impersonation_level;
     tok->user = sid_dup(src->user);
@@ -1740,3 +1831,1588 @@ NTSTATUS se_inherit_dacl(const PACL parent_dacl,
     return STATUS_SUCCESS;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Token services: NtOpenProcessToken(Ex) and NtOpenThreadToken(Ex)          */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Access policy. The token object's security descriptor is its default DACL
+ * with the token owner. A token without a default DACL gets an allow ACE for
+ * the owner with TOKEN_ALL_ACCESS. The caller's token is its impersonation
+ * token when the calling thread has one (and OpenAsSelf is FALSE), otherwise
+ * its primary token. Nothing here reads or writes struct cred.
+ */
+static const GENERIC_MAPPING ntsec_token_generic_map = {
+    TOKEN_READ, TOKEN_WRITE, TOKEN_EXECUTE, TOKEN_ALL_ACCESS
+};
+
+#ifdef __KERNEL__
+extern struct nt_eprocess *nt_get_current_eprocess(void);
+extern struct nt_ethread  *nt_current_ethread(void);
+#define NTSEC_CURRENT_PROCESS() nt_get_current_eprocess()
+#define NTSEC_CURRENT_THREAD()  nt_current_ethread()
+#else
+#define NTSEC_CURRENT_PROCESS() kshim_current_process()
+#define NTSEC_CURRENT_THREAD()  kshim_current_thread()
+#endif
+
+static NTSTATUS ntsec_check_token_object_access(ACCESS_TOKEN *obj_tok,
+                                                const ACCESS_TOKEN *caller_tok,
+                                                ACCESS_MASK desired,
+                                                ACCESS_MASK *granted)
+{
+    PSID owner = obj_tok->owner ? obj_tok->owner : obj_tok->user;
+    PACL dacl = obj_tok->default_dacl;
+    PACL owned_dacl = NULL;
+    SECURITY_DESCRIPTOR *sd;
+    ULONG idx = 0;
+    NTSTATUS st;
+
+    if (!dacl) {
+        owned_dacl = acl_create(256);
+        if (!owned_dacl) return STATUS_NO_MEMORY;
+        st = acl_add_allowed_ace(owned_dacl, TOKEN_ALL_ACCESS, 0, owner, &idx);
+        if (!NT_SUCCESS(st)) { acl_free(owned_dacl); return st; }
+        dacl = owned_dacl;
+    }
+    sd = sd_create_absolute(owner, NULL, dacl, NULL, SE_DACL_PRESENT);
+    if (!sd) {
+        if (owned_dacl) acl_free(owned_dacl);
+        return STATUS_NO_MEMORY;
+    }
+    *granted = 0;
+    st = se_access_check(sd, caller_tok, desired, &ntsec_token_generic_map,
+                         NTSEC_OBJECT_GENERIC, granted);
+    sd_free(sd);
+    if (owned_dacl) acl_free(owned_dacl);
+    return st;
+}
+
+static NTSTATUS ntsec_open_token_for(struct nt_eprocess *caller,
+                                     ACCESS_TOKEN *obj_tok,
+                                     BOOLEAN open_as_self,
+                                     ACCESS_MASK desired,
+                                     ULONG attributes,
+                                     PHANDLE out)
+{
+    const ACCESS_TOKEN *caller_tok = caller->primary_token;
+    struct nt_ethread *thr;
+    ACCESS_MASK granted = 0;
+    NTSTATUS st;
+
+    if (!open_as_self) {
+        thr = NTSEC_CURRENT_THREAD();
+        if (thr && thr->impersonation_token)
+            caller_tok = thr->impersonation_token;
+    }
+    if (!caller_tok) return STATUS_NO_TOKEN;
+
+    st = ntsec_check_token_object_access(obj_tok, caller_tok, desired, &granted);
+    if (!NT_SUCCESS(st)) return st;
+    /* The handle carries the granted access (MAXIMUM_ALLOWED resolves here). */
+    return ObCreateTokenHandle(caller, obj_tok, granted, attributes, out);
+}
+
+static NTSTATUS ntsec_open_process_token(HANDLE process, ACCESS_MASK desired,
+                                         ULONG attributes, PHANDLE out)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    struct nt_eprocess *target;
+    NTSTATUS st;
+
+    if (!out || !caller) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(caller, process, &nt_process_type, KernelMode,
+                                   0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    target = ObFindProcessByHeader(hdr);
+    if (!target || !target->primary_token)
+        st = STATUS_INVALID_HANDLE;
+    else
+        st = ntsec_open_token_for(caller, target->primary_token, FALSE,
+                                  desired, attributes, out);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+static NTSTATUS ntsec_open_thread_token(HANDLE thread, ACCESS_MASK desired,
+                                        BOOLEAN open_as_self, ULONG attributes,
+                                        PHANDLE out)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    struct nt_ethread *target;
+    NTSTATUS st;
+
+    if (!out || !caller) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(caller, thread, &nt_thread_type, KernelMode,
+                                   0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    target = ObFindThreadByHeader(hdr);
+    if (!target)
+        st = STATUS_INVALID_HANDLE;
+    else if (!target->impersonation_token)
+        st = STATUS_NO_TOKEN;
+    else
+        st = ntsec_open_token_for(caller, target->impersonation_token, open_as_self,
+                                  desired, attributes, out);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+#ifndef __KERNEL__
+NTSTATUS nt_svc_NtOpenProcessToken(HANDLE ProcessHandle, ACCESS_MASK DesiredAccess,
+                                   PHANDLE TokenHandle)
+{
+    return ntsec_open_process_token(ProcessHandle, DesiredAccess, 0, TokenHandle);
+}
+
+NTSTATUS nt_svc_NtOpenProcessTokenEx(HANDLE ProcessHandle, ACCESS_MASK DesiredAccess,
+                                     ULONG HandleAttributes, PHANDLE TokenHandle)
+{
+    return ntsec_open_process_token(ProcessHandle, DesiredAccess, HandleAttributes,
+                                    TokenHandle);
+}
+
+NTSTATUS nt_svc_NtOpenThreadToken(HANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
+                                  BOOLEAN OpenAsSelf, PHANDLE TokenHandle)
+{
+    return ntsec_open_thread_token(ThreadHandle, DesiredAccess, OpenAsSelf, 0,
+                                   TokenHandle);
+}
+
+NTSTATUS nt_svc_NtOpenThreadTokenEx(HANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
+                                    BOOLEAN OpenAsSelf, ULONG HandleAttributes,
+                                    PHANDLE TokenHandle)
+{
+    return ntsec_open_thread_token(ThreadHandle, DesiredAccess, OpenAsSelf,
+                                   HandleAttributes, TokenHandle);
+}
+#else
+/* Kernel entry points: generic argument form, the handle is copied out. */
+static NTSTATUS ntsec_return_handle(HANDLE h, PHANDLE user_out, NTSTATUS st)
+{
+    if (!NT_SUCCESS(st)) return st;
+    if (!user_out || !access_ok(user_out, sizeof(*user_out)) ||
+        copy_to_user(user_out, &h, sizeof(h))) {
+        ObCloseHandle(NTSEC_CURRENT_PROCESS(), h);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS nt_svc_NtOpenProcessToken(unsigned long a0, unsigned long a1, unsigned long a2,
+                                   unsigned long a3, unsigned long a4, unsigned long a5,
+                                   unsigned long a6, unsigned long a7, unsigned long a8,
+                                   unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = NULL;
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    NTSTATUS st = ntsec_open_process_token((HANDLE)a0, (ACCESS_MASK)a1, 0, &h);
+    return ntsec_return_handle(h, (PHANDLE)a2, st);
+}
+
+NTSTATUS nt_svc_NtOpenProcessTokenEx(unsigned long a0, unsigned long a1, unsigned long a2,
+                                     unsigned long a3, unsigned long a4, unsigned long a5,
+                                     unsigned long a6, unsigned long a7, unsigned long a8,
+                                     unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = NULL;
+    (void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    NTSTATUS st = ntsec_open_process_token((HANDLE)a0, (ACCESS_MASK)a1, (ULONG)a2, &h);
+    return ntsec_return_handle(h, (PHANDLE)a3, st);
+}
+
+NTSTATUS nt_svc_NtOpenThreadToken(unsigned long a0, unsigned long a1, unsigned long a2,
+                                  unsigned long a3, unsigned long a4, unsigned long a5,
+                                  unsigned long a6, unsigned long a7, unsigned long a8,
+                                  unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = NULL;
+    (void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    NTSTATUS st = ntsec_open_thread_token((HANDLE)a0, (ACCESS_MASK)a1,
+                                          (BOOLEAN)(a2 != 0), 0, &h);
+    return ntsec_return_handle(h, (PHANDLE)a3, st);
+}
+
+NTSTATUS nt_svc_NtOpenThreadTokenEx(unsigned long a0, unsigned long a1, unsigned long a2,
+                                    unsigned long a3, unsigned long a4, unsigned long a5,
+                                    unsigned long a6, unsigned long a7, unsigned long a8,
+                                    unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = NULL;
+    (void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    NTSTATUS st = ntsec_open_thread_token((HANDLE)a0, (ACCESS_MASK)a1,
+                                          (BOOLEAN)(a2 != 0), (ULONG)a3, &h);
+    return ntsec_return_handle(h, (PHANDLE)a4, st);
+}
+#endif /* __KERNEL__ */
+
+/* -------------------------------------------------------------------------- */
+/* NtQueryInformationToken                                                    */
+/* -------------------------------------------------------------------------- */
+
+/* Fixed layouts returned to the caller (LP64 natural alignment). */
+struct ntsec_token_groups_hdr { ULONG GroupCount; SID_AND_ATTRIBUTES Groups[1]; };
+struct ntsec_token_privs_hdr  { ULONG PrivilegeCount; LUID_AND_ATTRIBUTES Privileges[1]; };
+struct ntsec_token_default_dacl { PACL DefaultDacl; };
+struct ntsec_token_owner      { PSID Owner; };
+struct ntsec_token_primary_grp { PSID PrimaryGroup; };
+struct ntsec_token_label      { SID_AND_ATTRIBUTES Label; };
+struct ntsec_token_stats {
+    LUID   TokenId;
+    LUID   AuthenticationId;
+    long long ExpirationTime;
+    ULONG  TokenType;
+    ULONG  ImpersonationLevel;
+    ULONG  DynamicCharged;
+    ULONG  DynamicAvailable;
+    ULONG  GroupCount;
+    ULONG  PrivilegeCount;
+    LUID   ModifiedId;
+};
+
+/*
+ * Builder cursor. With buf == NULL the builder only measures (c.off becomes
+ * the required size). Otherwise it writes into buf, and pointers stored in the
+ * output point at base + offset, where base is the address the caller will
+ * see the buffer at (the user address in the kernel, buf itself in userspace).
+ */
+struct ntsec_cur {
+    char  *buf;
+    char  *base;
+    size_t off;
+};
+
+#define NTSEC_NO_SID ((size_t)-1)
+
+static size_t ntsec_reserve(struct ntsec_cur *c, const void *src, size_t n)
+{
+    size_t at = (c->off + 7) & ~(size_t)7;
+    if (c->buf && src && n) memcpy(c->buf + at, src, n);
+    c->off = at + n;
+    return at;
+}
+
+static size_t ntsec_put_sid(struct ntsec_cur *c, PCSID sid)
+{
+    if (!sid) return NTSEC_NO_SID;
+    return ntsec_reserve(c, sid, sid_length(sid));
+}
+
+static PSID ntsec_sid_at(const struct ntsec_cur *c, size_t off)
+{
+    return (off == NTSEC_NO_SID) ? NULL : (PSID)(c->base + off);
+}
+
+static NTSTATUS ntsec_fill_token_info(const ACCESS_TOKEN *tok, ULONG cls, struct ntsec_cur *c)
+{
+    size_t h, o;
+    switch (cls) {
+    case TokenUser:
+        h = ntsec_reserve(c, NULL, sizeof(SID_AND_ATTRIBUTES));
+        o = ntsec_put_sid(c, tok->user);
+        if (c->buf) {
+            SID_AND_ATTRIBUTES *out = (SID_AND_ATTRIBUTES *)(c->buf + h);
+            out->Sid = ntsec_sid_at(c, o);
+            out->Attributes = 0;
+        }
+        return STATUS_SUCCESS;
+
+    case TokenGroups: {
+        ULONG n = tok->group_count;
+        size_t hdr = offsetof(struct ntsec_token_groups_hdr, Groups);
+        size_t hsz = hdr + sizeof(SID_AND_ATTRIBUTES) * n;
+        size_t *offs = NULL;
+        h = ntsec_reserve(c, NULL, hsz);
+        if (n) {
+            offs = (size_t *)kmalloc(sizeof(size_t) * n, GFP_KERNEL);
+            if (!offs) return STATUS_NO_MEMORY;
+        }
+        for (ULONG i = 0; i < n; i++)
+            offs[i] = ntsec_put_sid(c, tok->groups[i].Sid);
+        if (c->buf) {
+            struct ntsec_token_groups_hdr *out = (struct ntsec_token_groups_hdr *)(c->buf + h);
+            SID_AND_ATTRIBUTES *arr = (SID_AND_ATTRIBUTES *)(c->buf + h + hdr);
+            out->GroupCount = n;
+            for (ULONG i = 0; i < n; i++) {
+                arr[i].Sid = ntsec_sid_at(c, offs[i]);
+                arr[i].Attributes = tok->groups[i].Attributes;
+            }
+        }
+        kfree(offs);
+        return STATUS_SUCCESS;
+    }
+
+    case TokenPrivileges: {
+        ULONG n = tok->privilege_count;
+        size_t hdr = offsetof(struct ntsec_token_privs_hdr, Privileges);
+        size_t hsz = hdr + sizeof(LUID_AND_ATTRIBUTES) * n;
+        h = ntsec_reserve(c, NULL, hsz);
+        if (c->buf) {
+            struct ntsec_token_privs_hdr *out = (struct ntsec_token_privs_hdr *)(c->buf + h);
+            out->PrivilegeCount = n;
+            if (n)
+                memcpy(c->buf + h + hdr, tok->privileges, sizeof(LUID_AND_ATTRIBUTES) * n);
+        }
+        return STATUS_SUCCESS;
+    }
+
+    case TokenOwner:
+    case TokenPrimaryGroup: {
+        const PSID src = (cls == TokenOwner) ? tok->owner : tok->primary_group;
+        h = ntsec_reserve(c, NULL, sizeof(PSID));
+        o = ntsec_put_sid(c, src);
+        if (c->buf) {
+            if (cls == TokenOwner)
+                ((struct ntsec_token_owner *)(c->buf + h))->Owner = ntsec_sid_at(c, o);
+            else
+                ((struct ntsec_token_primary_grp *)(c->buf + h))->PrimaryGroup = ntsec_sid_at(c, o);
+        }
+        return STATUS_SUCCESS;
+    }
+
+    case TokenDefaultDacl: {
+        size_t used = tok->default_dacl ? acl_used_size(tok->default_dacl) : 0;
+        h = ntsec_reserve(c, NULL, sizeof(PACL));
+        o = used ? ntsec_reserve(c, tok->default_dacl, used) : NTSEC_NO_SID;
+        if (c->buf) {
+            ((struct ntsec_token_default_dacl *)(c->buf + h))->DefaultDacl =
+                (o == NTSEC_NO_SID) ? NULL : (PACL)(c->base + o);
+        }
+        return STATUS_SUCCESS;
+    }
+
+    case TokenType:
+        h = ntsec_reserve(c, NULL, sizeof(ULONG));
+        if (c->buf) *(ULONG *)(c->buf + h) = (ULONG)tok->token_type;
+        return STATUS_SUCCESS;
+
+    case TokenImpersonationLevel:
+        h = ntsec_reserve(c, NULL, sizeof(ULONG));
+        if (c->buf) *(ULONG *)(c->buf + h) = (ULONG)tok->impersonation_level;
+        return STATUS_SUCCESS;
+
+    case TokenSessionId:
+        h = ntsec_reserve(c, NULL, sizeof(ULONG));
+        if (c->buf) *(ULONG *)(c->buf + h) = tok->session_id;
+        return STATUS_SUCCESS;
+
+    case TokenStatistics:
+        h = ntsec_reserve(c, NULL, sizeof(struct ntsec_token_stats));
+        if (c->buf) {
+            struct ntsec_token_stats *st = (struct ntsec_token_stats *)(c->buf + h);
+            memset(st, 0, sizeof(*st));
+            st->TokenId = tok->token_id;
+            st->TokenType = (ULONG)tok->token_type;
+            st->ImpersonationLevel = (ULONG)tok->impersonation_level;
+            st->GroupCount = tok->group_count;
+            st->PrivilegeCount = tok->privilege_count;
+        }
+        return STATUS_SUCCESS;
+
+    case TokenIntegrityLevel: {
+        const PSID il = tok->integrity_level;
+        h = ntsec_reserve(c, NULL, sizeof(struct ntsec_token_label));
+        o = ntsec_put_sid(c, il);
+        if (c->buf) {
+            struct ntsec_token_label *out = (struct ntsec_token_label *)(c->buf + h);
+            out->Label.Sid = ntsec_sid_at(c, o);
+            out->Label.Attributes = SE_GROUP_INTEGRITY;
+        }
+        return STATUS_SUCCESS;
+    }
+
+    default:
+        return STATUS_INVALID_INFO_CLASS;
+    }
+}
+
+/* Two passes: measure, then fill. Returns BUFFER_TOO_SMALL with the required
+ * length when the caller's buffer is short. */
+static NTSTATUS ntsec_query_token(const ACCESS_TOKEN *tok, ULONG cls,
+                                  char *user_buf, ULONG user_len, ULONG *ret_len,
+                                  char *scratch)
+{
+    struct ntsec_cur c = { NULL, NULL, 0 };
+    NTSTATUS st = ntsec_fill_token_info(tok, cls, &c);
+    if (!NT_SUCCESS(st)) return st;
+    if (ret_len) *ret_len = (ULONG)c.off;
+    if (c.off > user_len) return STATUS_BUFFER_TOO_SMALL;
+    if (c.off == 0) return STATUS_SUCCESS;
+    if (!scratch) return STATUS_INVALID_PARAMETER;
+    memset(scratch, 0, c.off);
+    c.buf = scratch;
+    c.base = user_buf;
+    c.off = 0;
+    return ntsec_fill_token_info(tok, cls, &c);
+}
+
+#ifndef __KERNEL__
+NTSTATUS nt_svc_NtQueryInformationToken(HANDLE TokenHandle, ULONG TokenInformationClass,
+                                        PVOID TokenInformation, ULONG TokenInformationLength,
+                                        PULONG ReturnLength)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st;
+    if (!caller) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(caller, TokenHandle, &nt_token_type, KernelMode,
+                                   TOKEN_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    {
+        struct nt_token_body *body = (struct nt_token_body *)nt_object_body(hdr);
+        st = ntsec_query_token(body->token, TokenInformationClass,
+                               (char *)TokenInformation, TokenInformationLength,
+                               ReturnLength, (char *)TokenInformation);
+    }
+    ObDereferenceObject(hdr);
+    return st;
+}
+#else
+#define NTSEC_QUERY_SCRATCH_MAX (64 * 1024)
+
+NTSTATUS nt_svc_NtQueryInformationToken(unsigned long a0, unsigned long a1, unsigned long a2,
+                                        unsigned long a3, unsigned long a4, unsigned long a5,
+                                        unsigned long a6, unsigned long a7, unsigned long a8,
+                                        unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE TokenHandle = (HANDLE)a0;
+    ULONG cls = (ULONG)a1;
+    char *user_buf = (char *)a2;
+    ULONG user_len = (ULONG)a3;
+    PULONG user_ret = (PULONG)a4;
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    char *scratch = NULL;
+    ULONG ret = 0;
+    NTSTATUS st;
+    (void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+
+    if (!caller) return STATUS_INVALID_PARAMETER;
+    if (user_len > NTSEC_QUERY_SCRATCH_MAX) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(caller, TokenHandle, &nt_token_type, KernelMode,
+                                   TOKEN_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    if (user_len) {
+        scratch = (char *)kmalloc(user_len, GFP_KERNEL);
+        if (!scratch) { ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
+    }
+    {
+        struct nt_token_body *body = (struct nt_token_body *)nt_object_body(hdr);
+        st = ntsec_query_token(body->token, cls, user_buf, user_len, &ret,
+                               scratch);
+    }
+    if (NT_SUCCESS(st) && ret && user_buf && scratch) {
+        if (!access_ok(user_buf, ret) || copy_to_user(user_buf, scratch, ret))
+            st = STATUS_ACCESS_VIOLATION;
+    }
+    kfree(scratch);
+    if (user_ret && access_ok(user_ret, sizeof(*user_ret)))
+        copy_to_user(user_ret, &ret, sizeof(ret));
+    ObDereferenceObject(hdr);
+    return st;
+}
+#endif /* __KERNEL__ */
+
+/* -------------------------------------------------------------------------- */
+/* NtDuplicateToken                                                           */
+/* -------------------------------------------------------------------------- */
+
+/* Handle attributes that NtDuplicateToken carries from ObjectAttributes. */
+static ULONG ntsec_oa_attributes(const OBJECT_ATTRIBUTES *oa)
+{
+    return oa ? (oa->Attributes & (OBJ_INHERIT | OBJ_PROTECT_FROM_CLOSE)) : 0;
+}
+
+/* EffectiveOnly: the copy keeps only enabled groups and enabled privileges. */
+static void ntsec_keep_effective(ACCESS_TOKEN *tok)
+{
+    ULONG keep = 0;
+    for (ULONG i = 0; i < tok->group_count; i++) {
+        if (tok->groups[i].Attributes & SE_GROUP_ENABLED) {
+            tok->groups[keep++] = tok->groups[i];
+        } else {
+            sid_free(tok->groups[i].Sid);
+        }
+    }
+    tok->group_count = keep;
+
+    keep = 0;
+    for (ULONG i = 0; i < tok->privilege_count; i++) {
+        if (tok->privileges[i].Attributes & SE_PRIVILEGE_ENABLED)
+            tok->privileges[keep++] = tok->privileges[i];
+    }
+    tok->privilege_count = keep;
+}
+
+static NTSTATUS ntsec_duplicate_token(HANDLE src, ACCESS_MASK desired, ULONG attributes,
+                                      BOOLEAN effective_only, ULONG type, PHANDLE out)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    ACCESS_TOKEN *dup;
+    NTSTATUS st;
+
+    if (!out || !caller) return STATUS_INVALID_PARAMETER;
+    if (type != TokenPrimary && type != TokenImpersonation) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(caller, src, &nt_token_type, KernelMode,
+                                   TOKEN_DUPLICATE, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+
+    dup = token_duplicate(((struct nt_token_body *)nt_object_body(hdr))->token);
+    if (!dup) {
+        ObDereferenceObject(hdr);
+        return STATUS_NO_MEMORY;
+    }
+    /* Impersonation tokens made here get the default SecurityImpersonation
+     * level (ObjectAttributes SQOS is not parsed). */
+    dup->token_type = (TOKEN_TYPE)type;
+    dup->impersonation_level = (type == TokenImpersonation) ? SecurityImpersonation
+                                                            : SecurityAnonymous;
+    if (effective_only) ntsec_keep_effective(dup);
+
+    /* The new token has its own descriptor, so DesiredAccess is checked against it. */
+    st = ntsec_open_token_for(caller, dup, FALSE, desired, attributes, out);
+    token_dereference(dup);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+#ifndef __KERNEL__
+NTSTATUS nt_svc_NtDuplicateToken(HANDLE ExistingTokenHandle, ACCESS_MASK DesiredAccess,
+                                 POBJECT_ATTRIBUTES ObjectAttributes, BOOLEAN EffectiveOnly,
+                                 TOKEN_TYPE TokenType, PHANDLE NewTokenHandle)
+{
+    return ntsec_duplicate_token(ExistingTokenHandle, DesiredAccess,
+                                 ntsec_oa_attributes(ObjectAttributes), EffectiveOnly,
+                                 (ULONG)TokenType, NewTokenHandle);
+}
+#else
+NTSTATUS nt_svc_NtDuplicateToken(unsigned long a0, unsigned long a1, unsigned long a2,
+                                 unsigned long a3, unsigned long a4, unsigned long a5,
+                                 unsigned long a6, unsigned long a7, unsigned long a8,
+                                 unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    POBJECT_ATTRIBUTES user_oa = (POBJECT_ATTRIBUTES)a2;
+    OBJECT_ATTRIBUTES k_oa;
+    ULONG attr = 0;
+    HANDLE h = NULL;
+    NTSTATUS st;
+    (void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+
+    if (user_oa) {
+        if (copy_from_user(&k_oa, user_oa, sizeof(k_oa))) return STATUS_ACCESS_VIOLATION;
+        attr = ntsec_oa_attributes(&k_oa);
+    }
+    st = ntsec_duplicate_token((HANDLE)a0, (ACCESS_MASK)a1, attr, (BOOLEAN)(a3 != 0),
+                               (ULONG)a4, &h);
+    return ntsec_return_handle(h, (PHANDLE)a5, st);
+}
+#endif /* __KERNEL__ */
+
+/* -------------------------------------------------------------------------- */
+/* NtAdjustPrivilegesToken, NtPrivilegeCheck, NtAccessCheck                   */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Reads caller memory. In the kernel this is copy_from_user; in the userspace
+ * build the pointer is directly readable.
+ */
+static NTSTATUS ntsec_rd_user(void *dst, const void *src, size_t n)
+{
+#ifdef __KERNEL__
+    return copy_from_user(dst, src, n) ? STATUS_ACCESS_VIOLATION : STATUS_SUCCESS;
+#else
+    memcpy(dst, src, n);
+    return STATUS_SUCCESS;
+#endif
+}
+
+/* Adjusts privileges of the token behind h. Returns the PreviousState length in
+ * *ret_len. When prev_buf is given and prev_len is short, nothing changes and
+ * the call returns BUFFER_TOO_SMALL. */
+static NTSTATUS ntsec_adjust_core(HANDLE h, BOOLEAN disable_all,
+                                  const LUID_AND_ATTRIBUTES *req, ULONG req_count,
+                                  TOKEN_PRIVILEGES *prev_buf, ULONG prev_len,
+                                  ULONG *ret_len)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    ACCESS_TOKEN *tok;
+    ULONG found = 0, pn = 0, needed;
+    NTSTATUS st = STATUS_SUCCESS;
+
+    if (!caller) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(caller, h, &nt_token_type, KernelMode,
+                                   TOKEN_ADJUST_PRIVILEGES, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    tok = ((struct nt_token_body *)nt_object_body(hdr))->token;
+
+    if (disable_all) {
+        token_adjust_privileges(tok, TRUE, NULL, 0, 0);
+        if (ret_len) *ret_len = 0;
+        ObDereferenceObject(hdr);
+        return STATUS_SUCCESS;
+    }
+    if (!req || req_count == 0) {
+        ObDereferenceObject(hdr);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    /* PreviousState holds the entries for privileges the token has. */
+    for (ULONG i = 0; i < req_count; i++)
+        if (token_has_privilege(tok, &req[i].Luid, FALSE)) found++;
+    needed = (ULONG)offsetof(TOKEN_PRIVILEGES, Privileges) + found * sizeof(LUID_AND_ATTRIBUTES);
+    if (ret_len) *ret_len = needed;
+    if (prev_buf && prev_len < needed) {
+        ObDereferenceObject(hdr);
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    for (ULONG i = 0; i < req_count; i++) {
+        ULONG attr = 0;
+        BOOLEAN present = FALSE;
+        for (ULONG j = 0; j < tok->privilege_count; j++) {
+            if (tok->privileges[j].Luid.LowPart == req[i].Luid.LowPart &&
+                tok->privileges[j].Luid.HighPart == req[i].Luid.HighPart) {
+                attr = tok->privileges[j].Attributes;
+                present = TRUE;
+                break;
+            }
+        }
+        if (!present) {
+            st = STATUS_NOT_ALL_ASSIGNED;
+            continue;
+        }
+        if (prev_buf) {
+            LUID_AND_ATTRIBUTES *pe = (LUID_AND_ATTRIBUTES *)((char *)prev_buf +
+                                        offsetof(TOKEN_PRIVILEGES, Privileges)) + pn;
+            pe->Luid = req[i].Luid;
+            pe->Attributes = attr;
+            pn++;
+        }
+        token_adjust_privileges(tok, FALSE, &req[i].Luid, 1,
+                                req[i].Attributes & SE_PRIVILEGE_ENABLED);
+    }
+    if (prev_buf) prev_buf->PrivilegeCount = pn;
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+/* Checks the required privileges against the token's enabled privileges. */
+static NTSTATUS ntsec_privilege_check_core(HANDLE h, ULONG count, ULONG control,
+                                           const LUID_AND_ATTRIBUTES *entries,
+                                           BOOLEAN *result)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    const ACCESS_TOKEN *tok;
+    BOOLEAN all = (control & PRIVILEGE_SET_ALL_NECESSARY) != 0;
+    BOOLEAN ok;
+    NTSTATUS st;
+
+    if (!caller || !result) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(caller, h, &nt_token_type, KernelMode, TOKEN_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    tok = ((struct nt_token_body *)nt_object_body(hdr))->token;
+
+    ok = all ? TRUE : FALSE;
+    for (ULONG i = 0; i < count; i++) {
+        BOOLEAN have = token_has_privilege(tok, &entries[i].Luid, TRUE);
+        if (all && !have) { ok = FALSE; break; }
+        if (!all && have) { ok = TRUE; break; }
+    }
+    *result = ok;
+    ObDereferenceObject(hdr);
+    return STATUS_SUCCESS;
+}
+
+/* Walks a self-relative SD and returns the byte length it occupies. */
+#define NTSEC_SD_MAX_LENGTH (64U * 1024U)
+
+/* Grows *total to cover [off, off + size). The end is summed in 64 bits, so an offset near
+ * ULONG_MAX cannot wrap into a small length. A result past NTSEC_SD_MAX_LENGTH is refused
+ * and *total is left unchanged. */
+NTSTATUS ntsec_sr_extend(ULONG *total, ULONG off, ULONG size)
+{
+    unsigned long long end = (unsigned long long)off + size;
+    if (end > NTSEC_SD_MAX_LENGTH) return STATUS_INVALID_SECURITY_DESCR;
+    if (end > *total) *total = (ULONG)end;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS ntsec_sr_length(const void *base, ULONG *out)
+{
+    SECURITY_DESCRIPTOR_RELATIVE hdr;
+    ULONG offs[4];
+    ULONG total = sizeof(hdr);
+    NTSTATUS st = ntsec_rd_user(&hdr, base, sizeof(hdr));
+    if (!NT_SUCCESS(st)) return st;
+    if (hdr.Revision != 1 || !(hdr.Control & SE_SELF_RELATIVE))
+        return STATUS_INVALID_SECURITY_DESCR;
+    offs[0] = hdr.Owner; offs[1] = hdr.Group; offs[2] = hdr.Sacl; offs[3] = hdr.Dacl;
+
+    for (int i = 0; i < 4; i++) {
+        UCHAR raw[8];
+        ULONG size;
+        if (!offs[i]) continue;
+        if (i < 2) {
+            /* SID: Revision, SubAuthorityCount, IdentifierAuthority[6] = 8 bytes. */
+            st = ntsec_rd_user(raw, (const UCHAR *)base + offs[i], sizeof(raw));
+            if (!NT_SUCCESS(st)) return st;
+            size = 8u + 4u * raw[1];
+        } else {
+            /* ACL: AclRevision, Sbz1, AclSize (USHORT), ... = 8 bytes. */
+            ACL a;
+            st = ntsec_rd_user(&a, (const UCHAR *)base + offs[i], sizeof(a));
+            if (!NT_SUCCESS(st)) return st;
+            if (a.AclSize < sizeof(ACL)) return STATUS_INVALID_ACL;
+            size = a.AclSize;
+        }
+        st = ntsec_sr_extend(&total, offs[i], size);
+        if (!NT_SUCCESS(st)) return st;
+    }
+    *out = total;
+    return STATUS_SUCCESS;
+}
+
+/* Access check of a self-relative descriptor (sr, sr_len bytes, readable here)
+ * against the client token. A privilege set is answered with an empty header. */
+static NTSTATUS ntsec_access_check_core(const void *sr, ULONG sr_len, HANDLE client,
+                                        ACCESS_MASK desired, const GENERIC_MAPPING *gm,
+                                        ULONG *psl_len, PRIVILEGE_SET *psl,
+                                        ACCESS_MASK *granted_out, NTSTATUS *status_out)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    SECURITY_DESCRIPTOR *sd = NULL;
+    ACCESS_MASK granted = 0;
+    NTSTATUS st;
+    const ULONG psl_needed = (ULONG)offsetof(PRIVILEGE_SET, Privilege);
+
+    if (!caller || !gm) return STATUS_INVALID_PARAMETER;
+    if (psl_len) {
+        ULONG have = *psl_len;
+        *psl_len = psl_needed;
+        if (have < psl_needed) return STATUS_BUFFER_TOO_SMALL;
+        if (psl) { psl->PrivilegeCount = 0; psl->Control = 0; }
+    }
+
+    st = ObReferenceObjectByHandle(caller, client, &nt_token_type, KernelMode, TOKEN_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    st = sd_from_self_relative(sr, sr_len, &sd);
+    if (NT_SUCCESS(st)) {
+        const ACCESS_TOKEN *tok = ((struct nt_token_body *)nt_object_body(hdr))->token;
+        st = se_access_check(sd, tok, desired, gm, NTSEC_OBJECT_GENERIC, &granted);
+        /* sd_from_self_relative allocates the components as well as the struct. */
+        if (sd->Owner) sid_free(sd->Owner);
+        if (sd->Group) sid_free(sd->Group);
+        if (sd->Dacl) acl_free(sd->Dacl);
+        if (sd->Sacl) acl_free(sd->Sacl);
+        sd_free(sd);
+    }
+    ObDereferenceObject(hdr);
+
+    if (st == STATUS_ACCESS_DENIED) {
+        *status_out = STATUS_ACCESS_DENIED;
+        *granted_out = 0;
+        return STATUS_SUCCESS;
+    }
+    if (!NT_SUCCESS(st)) return st;
+    *status_out = STATUS_SUCCESS;
+    *granted_out = granted;
+    return STATUS_SUCCESS;
+}
+
+/* -------------------------------------------------------------------------- */
+/* NtQuerySecurityObject, NtSetSecurityObject                                 */
+/* -------------------------------------------------------------------------- */
+
+#define NTSEC_SI_SUPPORTED (OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | \
+                            DACL_SECURITY_INFORMATION | SACL_SECURITY_INFORMATION)
+
+/* Generic rights for object descriptors (no generic bits reach the core, so
+ * this only matters if a caller passes one through se_access_check). */
+static const GENERIC_MAPPING ntsec_object_generic_map = {
+    READ_CONTROL,
+    READ_CONTROL | WRITE_DAC,
+    READ_CONTROL,
+    READ_CONTROL | WRITE_DAC | WRITE_OWNER | ACCESS_SYSTEM_SECURITY,
+};
+
+/* Control bits owned by each part, cleared and re-taken when that part changes. */
+#define NTSEC_CTL_OWNER_BITS  SE_OWNER_DEFAULTED
+#define NTSEC_CTL_GROUP_BITS  SE_GROUP_DEFAULTED
+#define NTSEC_CTL_DACL_BITS   (SE_DACL_PRESENT | SE_DACL_DEFAULTED | SE_DACL_PROTECTED | \
+                               SE_DACL_AUTO_INHERIT_REQ | SE_DACL_AUTO_INHERITED)
+#define NTSEC_CTL_SACL_BITS   (SE_SACL_PRESENT | SE_SACL_DEFAULTED | SE_SACL_PROTECTED | \
+                               SE_SACL_AUTO_INHERIT_REQ | SE_SACL_AUTO_INHERITED)
+
+/* The token whose rights decide an object request: the thread's impersonation
+ * token when it has one, else the process primary token. */
+static const ACCESS_TOKEN *ntsec_effective_token(struct nt_eprocess *caller)
+{
+    struct nt_ethread *thr = NTSEC_CURRENT_THREAD();
+    if (thr && thr->impersonation_token)
+        return thr->impersonation_token;
+    return caller ? caller->primary_token : NULL;
+}
+
+const ACCESS_TOKEN *se_effective_token(struct nt_eprocess *caller)
+{
+    return ntsec_effective_token(caller);
+}
+
+BOOLEAN se_caller_has_privilege(struct nt_eprocess *caller, ULONG privilege)
+{
+    LUID luid;
+    const ACCESS_TOKEN *tok = ntsec_effective_token(caller);
+    if (!tok)
+        return FALSE;
+    luid.LowPart = privilege;
+    luid.HighPart = 0;
+    return token_has_privilege(tok, &luid, TRUE);
+}
+
+/* Frees the components of an absolute descriptor, and the struct. */
+static void ntsec_free_abs_sd(SECURITY_DESCRIPTOR *sd)
+{
+    if (!sd) return;
+    if (sd->Owner) sid_free(sd->Owner);
+    if (sd->Group) sid_free(sd->Group);
+    if (sd->Dacl) acl_free(sd->Dacl);
+    if (sd->Sacl) acl_free(sd->Sacl);
+    sd_free(sd);
+}
+
+/* Rights the object's owner holds implicitly: READ_CONTROL and WRITE_DAC
+ * (WRITE_OWNER and ACCESS_SYSTEM_SECURITY are not implicit). */
+static NTSTATUS ntsec_object_access(const SECURITY_DESCRIPTOR *sd,
+                                    const ACCESS_TOKEN *tok, ACCESS_MASK desired)
+{
+    ACCESS_MASK granted = 0;
+    NTSTATUS st;
+    if (!sd || !tok) return STATUS_ACCESS_DENIED;
+    st = se_access_check(sd, tok, desired, &ntsec_object_generic_map,
+                         NTSEC_OBJECT_GENERIC, &granted);
+    if (st == STATUS_ACCESS_DENIED) granted = 0;
+    else if (!NT_SUCCESS(st)) return st;
+    if (sd->Owner && ((tok->user && sid_equal(sd->Owner, tok->user)) ||
+                      (tok->owner && sid_equal(sd->Owner, tok->owner))))
+        granted |= (READ_CONTROL | WRITE_DAC);
+    return (granted & desired) == desired ? STATUS_SUCCESS : STATUS_ACCESS_DENIED;
+}
+
+static NTSTATUS ntsec_sd_info_check(ULONG info)
+{
+    if (info == 0 || (info & ~NTSEC_SI_SUPPORTED))
+        return STATUS_INVALID_PARAMETER;
+    return STATUS_SUCCESS;
+}
+
+/* Handle rights a query needs: READ_CONTROL, plus ACCESS_SYSTEM_SECURITY for a SACL. */
+static ACCESS_MASK ntsec_query_access(ULONG info)
+{
+    ACCESS_MASK m = READ_CONTROL;
+    if (info & SACL_SECURITY_INFORMATION) m |= ACCESS_SYSTEM_SECURITY;
+    return m;
+}
+
+/* Handle rights a set needs for the parts it changes. */
+static ACCESS_MASK ntsec_set_access(ULONG info)
+{
+    ACCESS_MASK m = 0;
+    if (info & (OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION)) m |= WRITE_OWNER;
+    if (info & DACL_SECURITY_INFORMATION) m |= WRITE_DAC;
+    if (info & SACL_SECURITY_INFORMATION) m |= ACCESS_SYSTEM_SECURITY;
+    return m;
+}
+
+/* A new owner or primary group must be a SID the caller's token holds. */
+static BOOLEAN ntsec_sid_assignable(const ACCESS_TOKEN *tok, PSID sid)
+{
+    if (!tok || !sid) return FALSE;
+    if (tok->user && sid_equal(sid, tok->user)) return TRUE;
+    if (tok->owner && sid_equal(sid, tok->owner)) return TRUE;
+    return token_sid_enabled(tok, sid);
+}
+
+/* Copies the requested parts of the object's descriptor into a self-relative
+ * buffer. Returns the required length in *needed; a short out_len fails with
+ * BUFFER_TOO_SMALL and copies nothing. */
+static NTSTATUS ntsec_query_sd_core(HANDLE h, ULONG info, void *out, ULONG out_len,
+                                    ULONG *needed)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    ACCESS_MASK want = ntsec_query_access(info);
+    void *sr = NULL;
+    ULONG sr_len = 0;
+    SECURITY_DESCRIPTOR *cur = NULL;
+    SECURITY_DESCRIPTOR view;
+    ULONG control;
+    void *buf = NULL;
+    ULONG buf_len = 0;
+    NTSTATUS st;
+
+    if (!caller) return STATUS_INVALID_PARAMETER;
+    st = ntsec_sd_info_check(info);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObReferenceObjectByHandle(caller, h, NULL, KernelMode, want, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+
+    st = ObCopyObjectSecurityDescriptor(hdr, &sr, &sr_len);
+    if (NT_SUCCESS(st) && sr) {
+        st = sd_from_self_relative(sr, sr_len, &cur);
+        if (NT_SUCCESS(st))
+            st = ntsec_object_access(cur, ntsec_effective_token(caller), want);
+    }
+    if (NT_SUCCESS(st)) {
+        /* An object with no descriptor gives an empty header: nothing to disclose. */
+        control = cur ? cur->Control : 0;
+        if (!(info & OWNER_SECURITY_INFORMATION)) control &= ~NTSEC_CTL_OWNER_BITS;
+        if (!(info & GROUP_SECURITY_INFORMATION)) control &= ~NTSEC_CTL_GROUP_BITS;
+        if (!(info & DACL_SECURITY_INFORMATION)) control &= ~NTSEC_CTL_DACL_BITS;
+        if (!(info & SACL_SECURITY_INFORMATION)) control &= ~NTSEC_CTL_SACL_BITS;
+        view.Revision = 1;
+        view.Sbz1 = 0;
+        view.Control = (USHORT)control;
+        view.Owner = (cur && (info & OWNER_SECURITY_INFORMATION)) ? cur->Owner : NULL;
+        view.Group = (cur && (info & GROUP_SECURITY_INFORMATION)) ? cur->Group : NULL;
+        view.Dacl = (cur && (info & DACL_SECURITY_INFORMATION)) ? cur->Dacl : NULL;
+        view.Sacl = (cur && (info & SACL_SECURITY_INFORMATION)) ? cur->Sacl : NULL;
+        st = sd_to_self_relative(&view, &buf, &buf_len);
+    }
+    if (NT_SUCCESS(st)) {
+        if (needed) *needed = buf_len;
+        if (!out || out_len < buf_len) {
+            st = STATUS_BUFFER_TOO_SMALL;
+        } else {
+            memcpy(out, buf, buf_len);
+        }
+    }
+
+    kfree(buf);
+    ntsec_free_abs_sd(cur);
+    kfree(sr);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+/* Replaces the parts selected by info with those of the self-relative
+ * descriptor sr (sr_len bytes, already copied into this context). Parts not
+ * selected are kept from the object's current descriptor. */
+static NTSTATUS ntsec_set_sd_core(HANDLE h, ULONG info, const void *sr, ULONG sr_len)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    SECURITY_DESCRIPTOR *nsd = NULL;
+    SECURITY_DESCRIPTOR *cur = NULL;
+    SECURITY_DESCRIPTOR merged;
+    const ACCESS_TOKEN *tok;
+    ACCESS_MASK want;
+    void *cur_sr = NULL;
+    ULONG cur_len = 0;
+    void *buf = NULL;
+    ULONG buf_len = 0;
+    ULONG ctl;
+    NTSTATUS st;
+
+    if (!caller) return STATUS_INVALID_PARAMETER;
+    st = ntsec_sd_info_check(info);
+    if (!NT_SUCCESS(st)) return st;
+    memset(&merged, 0, sizeof(merged));
+
+    st = sd_from_self_relative(sr, sr_len, &nsd);
+    if (!NT_SUCCESS(st)) { st = STATUS_INVALID_SECURITY_DESCR; goto out; }
+    if ((info & OWNER_SECURITY_INFORMATION) && !nsd->Owner) { st = STATUS_INVALID_OWNER; goto out; }
+    if ((info & GROUP_SECURITY_INFORMATION) && !nsd->Group) { st = STATUS_INVALID_PRIMARY_GROUP; goto out; }
+
+    want = ntsec_set_access(info);
+    st = ObReferenceObjectByHandle(caller, h, NULL, KernelMode, want, &hdr, NULL);
+    if (!NT_SUCCESS(st)) goto out;
+
+    /* An object with no descriptor is unprotected, and nothing can change it. */
+    st = ObCopyObjectSecurityDescriptor(hdr, &cur_sr, &cur_len);
+    if (!NT_SUCCESS(st)) goto out;
+    if (!cur_sr) { st = STATUS_ACCESS_DENIED; goto out; }
+    st = sd_from_self_relative(cur_sr, cur_len, &cur);
+    if (!NT_SUCCESS(st)) { st = STATUS_INVALID_SECURITY_DESCR; goto out; }
+
+    tok = ntsec_effective_token(caller);
+    st = ntsec_object_access(cur, tok, want);
+    if (!NT_SUCCESS(st)) goto out;
+    if ((info & OWNER_SECURITY_INFORMATION) && !ntsec_sid_assignable(tok, nsd->Owner)) {
+        st = STATUS_INVALID_OWNER;
+        goto out;
+    }
+    if ((info & GROUP_SECURITY_INFORMATION) && !ntsec_sid_assignable(tok, nsd->Group)) {
+        st = STATUS_INVALID_PRIMARY_GROUP;
+        goto out;
+    }
+
+    /* Control bits: start from the current descriptor, then take each changed
+     * part's bits from the new one. */
+    ctl = cur->Control;
+    if (info & OWNER_SECURITY_INFORMATION) ctl = (ctl & ~NTSEC_CTL_OWNER_BITS) | (nsd->Control & NTSEC_CTL_OWNER_BITS);
+    if (info & GROUP_SECURITY_INFORMATION) ctl = (ctl & ~NTSEC_CTL_GROUP_BITS) | (nsd->Control & NTSEC_CTL_GROUP_BITS);
+    if (info & DACL_SECURITY_INFORMATION)  ctl = (ctl & ~NTSEC_CTL_DACL_BITS)  | (nsd->Control & NTSEC_CTL_DACL_BITS);
+    if (info & SACL_SECURITY_INFORMATION)  ctl = (ctl & ~NTSEC_CTL_SACL_BITS)  | (nsd->Control & NTSEC_CTL_SACL_BITS);
+
+    /* Each part is taken from the new descriptor when selected, else from the
+     * current one. The unused copy is freed here; the taken one moves into
+     * merged, which owns it until the end. */
+    if (info & OWNER_SECURITY_INFORMATION) {
+        merged.Owner = nsd->Owner; nsd->Owner = NULL;
+        if (cur->Owner) { sid_free(cur->Owner); cur->Owner = NULL; }
+    } else {
+        merged.Owner = cur->Owner; cur->Owner = NULL;
+        if (nsd->Owner) { sid_free(nsd->Owner); nsd->Owner = NULL; }
+    }
+    if (info & GROUP_SECURITY_INFORMATION) {
+        merged.Group = nsd->Group; nsd->Group = NULL;
+        if (cur->Group) { sid_free(cur->Group); cur->Group = NULL; }
+    } else {
+        merged.Group = cur->Group; cur->Group = NULL;
+        if (nsd->Group) { sid_free(nsd->Group); nsd->Group = NULL; }
+    }
+    if (info & DACL_SECURITY_INFORMATION) {
+        merged.Dacl = nsd->Dacl; nsd->Dacl = NULL;
+        if (cur->Dacl) { acl_free(cur->Dacl); cur->Dacl = NULL; }
+    } else {
+        merged.Dacl = cur->Dacl; cur->Dacl = NULL;
+        if (nsd->Dacl) { acl_free(nsd->Dacl); nsd->Dacl = NULL; }
+    }
+    if (info & SACL_SECURITY_INFORMATION) {
+        merged.Sacl = nsd->Sacl; nsd->Sacl = NULL;
+        if (cur->Sacl) { acl_free(cur->Sacl); cur->Sacl = NULL; }
+    } else {
+        merged.Sacl = cur->Sacl; cur->Sacl = NULL;
+        if (nsd->Sacl) { acl_free(nsd->Sacl); nsd->Sacl = NULL; }
+    }
+    /* A part that is absent must not carry its present bit. */
+    if (!merged.Dacl) ctl &= ~SE_DACL_PRESENT;
+    if (!merged.Sacl) ctl &= ~SE_SACL_PRESENT;
+    merged.Revision = 1;
+    merged.Sbz1 = 0;
+    merged.Control = (USHORT)(ctl & ~SE_SELF_RELATIVE);
+
+    st = sd_to_self_relative(&merged, &buf, &buf_len);
+    if (NT_SUCCESS(st))
+        st = ObSetObjectSecurityDescriptor(hdr, buf, buf_len);
+
+out:
+    kfree(buf);
+    /* Whatever a successful merge moved out of nsd and cur is now in merged. */
+    if (merged.Owner) sid_free(merged.Owner);
+    if (merged.Group) sid_free(merged.Group);
+    if (merged.Dacl) acl_free(merged.Dacl);
+    if (merged.Sacl) acl_free(merged.Sacl);
+    ntsec_free_abs_sd(nsd);
+    ntsec_free_abs_sd(cur);
+    kfree(cur_sr);
+    if (hdr) ObDereferenceObject(hdr);
+    return st;
+}
+
+/* -------------------------------------------------------------------------- */
+/* NtSetInformationToken: TokenOwner, TokenPrimaryGroup, TokenDefaultDacl     */
+/* -------------------------------------------------------------------------- */
+
+static BOOLEAN ntsec_token_has_group(const ACCESS_TOKEN *tok, PCSID sid)
+{
+    for (ULONG i = 0; i < tok->group_count; i++) {
+        if (tok->groups[i].Sid && sid_equal(tok->groups[i].Sid, sid))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+/* Sets one token class. info points at the TOKEN_OWNER, TOKEN_PRIMARY_GROUP or
+ * TOKEN_DEFAULT_DACL structure (readable here). The token keeps its own copies:
+ * a new SID or ACL is duplicated, and the replaced one is freed. */
+static NTSTATUS ntsec_set_token_core(HANDLE h, ULONG cls, const void *info, ULONG len)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    ACCESS_TOKEN *tok;
+    NTSTATUS st;
+
+    if (!caller || !info) return STATUS_INVALID_PARAMETER;
+    switch (cls) {
+    case TokenOwner:
+        if (len < sizeof(struct ntsec_token_owner)) return STATUS_INFO_LENGTH_MISMATCH;
+        break;
+    case TokenPrimaryGroup:
+        if (len < sizeof(struct ntsec_token_primary_grp)) return STATUS_INFO_LENGTH_MISMATCH;
+        break;
+    case TokenDefaultDacl:
+        if (len < sizeof(struct ntsec_token_default_dacl)) return STATUS_INFO_LENGTH_MISMATCH;
+        break;
+    default:
+        return STATUS_INVALID_INFO_CLASS;
+    }
+
+    st = ObReferenceObjectByHandle(caller, h, &nt_token_type, KernelMode,
+                                   TOKEN_ADJUST_DEFAULT, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    tok = ((struct nt_token_body *)nt_object_body(hdr))->token;
+
+    if (cls == TokenOwner) {
+        PSID s = ((const struct ntsec_token_owner *)info)->Owner;
+        if (!s || !sid_valid(s) || !ntsec_sid_assignable(tok, s)) {
+            st = STATUS_INVALID_OWNER;
+        } else {
+            PSID dup = sid_dup(s);
+            if (!dup) {
+                st = STATUS_NO_MEMORY;
+            } else {
+                PSID old = tok->owner;
+                tok->owner = dup;
+                if (old) sid_free(old);
+            }
+        }
+    } else if (cls == TokenPrimaryGroup) {
+        PSID s = ((const struct ntsec_token_primary_grp *)info)->PrimaryGroup;
+        if (!s || !sid_valid(s) || !ntsec_token_has_group(tok, s)) {
+            st = STATUS_INVALID_PRIMARY_GROUP;
+        } else {
+            PSID dup = sid_dup(s);
+            if (!dup) {
+                st = STATUS_NO_MEMORY;
+            } else {
+                PSID old = tok->primary_group;
+                tok->primary_group = dup;
+                if (old) sid_free(old);
+            }
+        }
+    } else {
+        PACL acl = ((const struct ntsec_token_default_dacl *)info)->DefaultDacl;
+        if (!acl) {
+            PACL old = tok->default_dacl;
+            tok->default_dacl = NULL;
+            if (old) acl_free(old);
+        } else {
+            ULONG used = acl_used_size(acl);
+            if (used < sizeof(ACL) || used > NTSEC_SD_MAX_LENGTH || !acl_is_canonical(acl)) {
+                st = STATUS_INVALID_ACL;
+            } else {
+                PACL dup = (PACL)kmalloc(used, GFP_KERNEL);
+                if (!dup) {
+                    st = STATUS_NO_MEMORY;
+                } else {
+                    PACL old = tok->default_dacl;
+                    memcpy(dup, acl, used);
+                    acl_capacity_register(dup, used);
+                    tok->default_dacl = dup;
+                    if (old) acl_free(old);
+                }
+            }
+        }
+    }
+
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+/* -------------------------------------------------------------------------- */
+/* NtAccessCheckAndAuditAlarm                                                 */
+/* -------------------------------------------------------------------------- */
+
+/* Access check of a self-relative descriptor against a token object. A denial
+ * is a successful call with AccessStatus = ACCESS_DENIED and nothing granted,
+ * as in NtAccessCheck. */
+static NTSTATUS ntsec_access_check_token(const void *sr, ULONG sr_len,
+                                         const ACCESS_TOKEN *tok, ACCESS_MASK desired,
+                                         const GENERIC_MAPPING *gm,
+                                         ACCESS_MASK *granted_out, NTSTATUS *status_out)
+{
+    SECURITY_DESCRIPTOR *sd = NULL;
+    ACCESS_MASK granted = 0;
+    NTSTATUS st;
+    if (!tok) return STATUS_ACCESS_DENIED;
+    st = sd_from_self_relative(sr, sr_len, &sd);
+    if (!NT_SUCCESS(st)) return STATUS_INVALID_SECURITY_DESCR;
+    st = se_access_check(sd, tok, desired, gm, NTSEC_OBJECT_GENERIC, &granted);
+    ntsec_free_abs_sd(sd);
+    if (st == STATUS_ACCESS_DENIED) {
+        *status_out = STATUS_ACCESS_DENIED;
+        *granted_out = 0;
+        return STATUS_SUCCESS;
+    }
+    if (!NT_SUCCESS(st)) return st;
+    *status_out = STATUS_SUCCESS;
+    *granted_out = granted;
+    return STATUS_SUCCESS;
+}
+
+#ifndef __KERNEL__
+NTSTATUS nt_svc_NtAdjustPrivilegesToken(HANDLE TokenHandle, BOOLEAN DisableAllPrivileges,
+                                        PTOKEN_PRIVILEGES NewState, ULONG BufferLength,
+                                        PTOKEN_PRIVILEGES PreviousState, PULONG ReturnLength)
+{
+    ULONG count = (NewState && !DisableAllPrivileges) ? NewState->PrivilegeCount : 0;
+    return ntsec_adjust_core(TokenHandle, DisableAllPrivileges,
+                             (NewState && !DisableAllPrivileges) ? NewState->Privileges : NULL,
+                             count, PreviousState, BufferLength, ReturnLength);
+}
+
+NTSTATUS nt_svc_NtPrivilegeCheck(HANDLE ClientToken, PPRIVILEGE_SET RequiredPrivileges,
+                                 PBOOLEAN Result)
+{
+    if (!RequiredPrivileges) return STATUS_INVALID_PARAMETER;
+    return ntsec_privilege_check_core(ClientToken, RequiredPrivileges->PrivilegeCount,
+                                      RequiredPrivileges->Control,
+                                      RequiredPrivileges->Privilege, Result);
+}
+
+NTSTATUS nt_svc_NtAccessCheck(PVOID SecurityDescriptor, HANDLE ClientToken,
+                              ACCESS_MASK DesiredAccess, PGENERIC_MAPPING GenericMapping,
+                              PPRIVILEGE_SET PrivilegeSet, PULONG PrivilegeSetLength,
+                              PACCESS_MASK GrantedAccess, PNTSTATUS AccessStatus)
+{
+    ULONG len = 0;
+    ACCESS_MASK granted = 0;
+    NTSTATUS astat = STATUS_SUCCESS;
+    NTSTATUS st;
+    if (!SecurityDescriptor || !GenericMapping || !GrantedAccess || !AccessStatus)
+        return STATUS_INVALID_PARAMETER;
+    st = ntsec_sr_length(SecurityDescriptor, &len);
+    if (!NT_SUCCESS(st)) return st;
+    st = ntsec_access_check_core(SecurityDescriptor, len, ClientToken, DesiredAccess,
+                                 GenericMapping, PrivilegeSetLength, PrivilegeSet,
+                                 &granted, &astat);
+    if (NT_SUCCESS(st)) {
+        *GrantedAccess = granted;
+        *AccessStatus = astat;
+    }
+    return st;
+}
+NTSTATUS nt_svc_NtQuerySecurityObject(HANDLE Handle, ULONG SecurityInformation,
+                                      PSECURITY_DESCRIPTOR SecurityDescriptor,
+                                      ULONG Length, PULONG LengthNeeded)
+{
+    return ntsec_query_sd_core(Handle, SecurityInformation, SecurityDescriptor,
+                               Length, LengthNeeded);
+}
+
+NTSTATUS nt_svc_NtSetSecurityObject(HANDLE Handle, ULONG SecurityInformation,
+                                    PSECURITY_DESCRIPTOR SecurityDescriptor)
+{
+    ULONG len = 0;
+    NTSTATUS st;
+    if (!SecurityDescriptor) return STATUS_INVALID_PARAMETER;
+    st = ntsec_sr_length(SecurityDescriptor, &len);
+    if (!NT_SUCCESS(st)) return st;
+    return ntsec_set_sd_core(Handle, SecurityInformation, SecurityDescriptor, len);
+}
+NTSTATUS nt_svc_NtSetInformationToken(HANDLE TokenHandle, ULONG TokenInformationClass,
+                                      PVOID TokenInformation, ULONG TokenInformationLength)
+{
+    return ntsec_set_token_core(TokenHandle, TokenInformationClass,
+                                TokenInformation, TokenInformationLength);
+}
+/* Audit is a no-op: no audit record is generated, GenerateOnClose is always
+ * FALSE, and the subsystem, handle, type and object name strings are accepted
+ * and ignored. ObjectCreation only affects default ownership, which is not
+ * modelled here. The access decision is the caller's effective token against
+ * the descriptor, as in NtAccessCheck. */
+NTSTATUS nt_svc_NtAccessCheckAndAuditAlarm(PUNICODE_STRING SubsystemName, PVOID HandleId,
+                                           PUNICODE_STRING ObjectTypeName, PUNICODE_STRING ObjectName,
+                                           PSECURITY_DESCRIPTOR SecurityDescriptor,
+                                           ACCESS_MASK DesiredAccess, PGENERIC_MAPPING GenericMapping,
+                                           BOOLEAN ObjectCreation, PACCESS_MASK GrantedAccess,
+                                           PNTSTATUS AccessStatus, PBOOLEAN GenerateOnClose)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    ULONG len = 0;
+    ACCESS_MASK granted = 0;
+    NTSTATUS astat = STATUS_SUCCESS;
+    NTSTATUS st;
+    (void)SubsystemName; (void)HandleId; (void)ObjectTypeName; (void)ObjectName; (void)ObjectCreation;
+
+    if (!SecurityDescriptor || !GenericMapping || !GrantedAccess || !AccessStatus || !GenerateOnClose)
+        return STATUS_INVALID_PARAMETER;
+    st = ntsec_sr_length(SecurityDescriptor, &len);
+    if (!NT_SUCCESS(st)) return st;
+    st = ntsec_access_check_token(SecurityDescriptor, len, ntsec_effective_token(caller),
+                                  DesiredAccess, GenericMapping, &granted, &astat);
+    if (!NT_SUCCESS(st)) return st;
+    *GrantedAccess = granted;
+    *AccessStatus = astat;
+    *GenerateOnClose = FALSE;
+    return STATUS_SUCCESS;
+}
+#else
+/* Kernel entry points: the caller's structures are copied in, and results
+ * copied back out. */
+NTSTATUS nt_svc_NtAdjustPrivilegesToken(unsigned long a0, unsigned long a1, unsigned long a2,
+                                        unsigned long a3, unsigned long a4, unsigned long a5,
+                                        unsigned long a6, unsigned long a7, unsigned long a8,
+                                        unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = (HANDLE)a0;
+    BOOLEAN disable_all = (a1 != 0);
+    TOKEN_PRIVILEGES *user_new = (TOKEN_PRIVILEGES *)a2;
+    ULONG blen = (ULONG)a3;
+    TOKEN_PRIVILEGES *user_prev = (TOKEN_PRIVILEGES *)a4;
+    PULONG user_ret = (PULONG)a5;
+    LUID_AND_ATTRIBUTES *req = NULL;
+    TOKEN_PRIVILEGES *prev = NULL;
+    ULONG count = 0, ret = 0;
+    NTSTATUS st = STATUS_SUCCESS;
+    (void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+
+    if (user_new && !disable_all) {
+        if (ntsec_rd_user(&count, &user_new->PrivilegeCount, sizeof(count)) != STATUS_SUCCESS)
+            return STATUS_ACCESS_VIOLATION;
+        if (count == 0 || count > 1024) return STATUS_INVALID_PARAMETER;
+        req = (LUID_AND_ATTRIBUTES *)kmalloc(sizeof(*req) * count, GFP_KERNEL);
+        if (!req) return STATUS_NO_MEMORY;
+        if (ntsec_rd_user(req, user_new->Privileges, sizeof(*req) * count) != STATUS_SUCCESS) {
+            kfree(req);
+            return STATUS_ACCESS_VIOLATION;
+        }
+    }
+    if (user_prev) {
+        if (blen > NTSEC_SD_MAX_LENGTH) { kfree(req); return STATUS_INVALID_PARAMETER; }
+        prev = (TOKEN_PRIVILEGES *)kmalloc(blen ? blen : 1, GFP_KERNEL);
+        if (!prev) { kfree(req); return STATUS_NO_MEMORY; }
+    }
+    st = ntsec_adjust_core(h, disable_all, req, count, prev, blen, &ret);
+    if (NT_SUCCESS(st) && prev && ret) {
+        if (!access_ok(user_prev, ret) || copy_to_user(user_prev, prev, ret))
+            st = STATUS_ACCESS_VIOLATION;
+    }
+    if (user_ret && access_ok(user_ret, sizeof(*user_ret)))
+        copy_to_user(user_ret, &ret, sizeof(ret));
+    kfree(prev);
+    kfree(req);
+    return st;
+}
+
+NTSTATUS nt_svc_NtPrivilegeCheck(unsigned long a0, unsigned long a1, unsigned long a2,
+                                 unsigned long a3, unsigned long a4, unsigned long a5,
+                                 unsigned long a6, unsigned long a7, unsigned long a8,
+                                 unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = (HANDLE)a0;
+    PRIVILEGE_SET *user_rq = (PRIVILEGE_SET *)a1;
+    PBOOLEAN user_res = (PBOOLEAN)a2;
+    PRIVILEGE_SET hdr;
+    LUID_AND_ATTRIBUTES *entries = NULL;
+    BOOLEAN result = FALSE;
+    NTSTATUS st;
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+
+    if (!user_rq || !user_res) return STATUS_INVALID_PARAMETER;
+    if (ntsec_rd_user(&hdr, user_rq, offsetof(PRIVILEGE_SET, Privilege)) != STATUS_SUCCESS)
+        return STATUS_ACCESS_VIOLATION;
+    if (hdr.PrivilegeCount == 0 || hdr.PrivilegeCount > 1024) return STATUS_INVALID_PARAMETER;
+    entries = (LUID_AND_ATTRIBUTES *)kmalloc(sizeof(*entries) * hdr.PrivilegeCount, GFP_KERNEL);
+    if (!entries) return STATUS_NO_MEMORY;
+    if (ntsec_rd_user(entries, user_rq->Privilege, sizeof(*entries) * hdr.PrivilegeCount) != STATUS_SUCCESS) {
+        kfree(entries);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    st = ntsec_privilege_check_core(h, hdr.PrivilegeCount, hdr.Control, entries, &result);
+    kfree(entries);
+    if (NT_SUCCESS(st) && copy_to_user(user_res, &result, sizeof(result)))
+        st = STATUS_ACCESS_VIOLATION;
+    return st;
+}
+
+NTSTATUS nt_svc_NtAccessCheck(unsigned long a0, unsigned long a1, unsigned long a2,
+                              unsigned long a3, unsigned long a4, unsigned long a5,
+                              unsigned long a6, unsigned long a7, unsigned long a8,
+                              unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    const void *user_sd = (const void *)a0;
+    HANDLE client = (HANDLE)a1;
+    ACCESS_MASK desired = (ACCESS_MASK)a2;
+    GENERIC_MAPPING *user_gm = (GENERIC_MAPPING *)a3;
+    PRIVILEGE_SET *user_psl = (PRIVILEGE_SET *)a4;
+    PULONG user_psl_len = (PULONG)a5;
+    PACCESS_MASK user_granted = (PACCESS_MASK)a6;
+    PNTSTATUS user_status = (PNTSTATUS)a7;
+    GENERIC_MAPPING gm;
+    PRIVILEGE_SET psl_tmp;
+    ULONG len = 0, psl_len = 0;
+    void *sd_copy = NULL;
+    ACCESS_MASK granted = 0;
+    NTSTATUS astat = STATUS_SUCCESS;
+    NTSTATUS st;
+    (void)a8;(void)a9;(void)a10;(void)a11;
+
+    if (!user_sd || !user_gm || !user_granted || !user_status) return STATUS_INVALID_PARAMETER;
+    if (ntsec_rd_user(&gm, user_gm, sizeof(gm)) != STATUS_SUCCESS)
+        return STATUS_ACCESS_VIOLATION;
+    if (user_psl_len && ntsec_rd_user(&psl_len, user_psl_len, sizeof(psl_len)) != STATUS_SUCCESS)
+        return STATUS_ACCESS_VIOLATION;
+    st = ntsec_sr_length(user_sd, &len);
+    if (!NT_SUCCESS(st)) return st;
+    sd_copy = kmalloc(len, GFP_KERNEL);
+    if (!sd_copy) return STATUS_NO_MEMORY;
+    if (ntsec_rd_user(sd_copy, user_sd, len) != STATUS_SUCCESS) {
+        kfree(sd_copy);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    st = ntsec_access_check_core(sd_copy, len, client, desired, &gm,
+                                 user_psl_len ? &psl_len : NULL,
+                                 user_psl ? &psl_tmp : NULL, &granted, &astat);
+    kfree(sd_copy);
+    if (user_psl_len && copy_to_user(user_psl_len, &psl_len, sizeof(psl_len)))
+        return STATUS_ACCESS_VIOLATION;
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(user_granted, &granted, sizeof(granted)) ||
+        copy_to_user(user_status, &astat, sizeof(astat)))
+        return STATUS_ACCESS_VIOLATION;
+    if (user_psl && user_psl_len && psl_len &&
+        copy_to_user(user_psl, &psl_tmp, psl_len))
+        return STATUS_ACCESS_VIOLATION;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS nt_svc_NtQuerySecurityObject(unsigned long a0, unsigned long a1, unsigned long a2,
+                                      unsigned long a3, unsigned long a4, unsigned long a5,
+                                      unsigned long a6, unsigned long a7, unsigned long a8,
+                                      unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = (HANDLE)a0;
+    ULONG info = (ULONG)a1;
+    PVOID user_buf = (PVOID)a2;
+    ULONG blen = (ULONG)a3;
+    PULONG user_need = (PULONG)a4;
+    void *kbuf = NULL;
+    ULONG need = 0;
+    NTSTATUS st;
+    (void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+
+    if (blen > NTSEC_SD_MAX_LENGTH) return STATUS_INVALID_PARAMETER;
+    kbuf = kmalloc(blen ? blen : 1, GFP_KERNEL);
+    if (!kbuf) return STATUS_NO_MEMORY;
+    st = ntsec_query_sd_core(h, info, blen ? kbuf : NULL, blen, &need);
+    if (user_need && (st == STATUS_SUCCESS || st == STATUS_BUFFER_TOO_SMALL) &&
+        copy_to_user(user_need, &need, sizeof(need)))
+        st = STATUS_ACCESS_VIOLATION;
+    if (st == STATUS_SUCCESS &&
+        (!user_buf || !access_ok(user_buf, need) || copy_to_user(user_buf, kbuf, need)))
+        st = STATUS_ACCESS_VIOLATION;
+    kfree(kbuf);
+    return st;
+}
+
+NTSTATUS nt_svc_NtSetSecurityObject(unsigned long a0, unsigned long a1, unsigned long a2,
+                                    unsigned long a3, unsigned long a4, unsigned long a5,
+                                    unsigned long a6, unsigned long a7, unsigned long a8,
+                                    unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = (HANDLE)a0;
+    ULONG info = (ULONG)a1;
+    const void *user_sd = (const void *)a2;
+    ULONG len = 0;
+    void *ksd = NULL;
+    NTSTATUS st;
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+
+    if (!user_sd) return STATUS_INVALID_PARAMETER;
+    st = ntsec_sr_length(user_sd, &len);
+    if (!NT_SUCCESS(st)) return st;
+    ksd = kmalloc(len, GFP_KERNEL);
+    if (!ksd) return STATUS_NO_MEMORY;
+    if (ntsec_rd_user(ksd, user_sd, len) != STATUS_SUCCESS) {
+        kfree(ksd);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    st = ntsec_set_sd_core(h, info, ksd, len);
+    kfree(ksd);
+    return st;
+}
+
+NTSTATUS nt_svc_NtSetInformationToken(unsigned long a0, unsigned long a1, unsigned long a2,
+                                      unsigned long a3, unsigned long a4, unsigned long a5,
+                                      unsigned long a6, unsigned long a7, unsigned long a8,
+                                      unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE h = (HANDLE)a0;
+    ULONG cls = (ULONG)a1;
+    const void *user_info = (const void *)a2;
+    ULONG len = (ULONG)a3;
+    /* All three input structures start with one pointer: copy that in. For a
+     * default DACL, the ACL it points to is copied in as well, sized by its
+     * own AclSize. */
+    struct { void *p; } kin;
+    void *kacl = NULL;
+    NTSTATUS st;
+    (void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+
+    if (!user_info) return STATUS_INVALID_PARAMETER;
+    if (len < sizeof(kin)) return STATUS_INFO_LENGTH_MISMATCH;
+    if (ntsec_rd_user(&kin.p, user_info, sizeof(kin.p)) != STATUS_SUCCESS)
+        return STATUS_ACCESS_VIOLATION;
+    if (cls == TokenDefaultDacl && kin.p) {
+        ACL hdr_acl;
+        ULONG used;
+        if (ntsec_rd_user(&hdr_acl, kin.p, sizeof(hdr_acl)) != STATUS_SUCCESS)
+            return STATUS_ACCESS_VIOLATION;
+        used = hdr_acl.AclSize;
+        if (used < sizeof(ACL) || used > NTSEC_SD_MAX_LENGTH) return STATUS_INVALID_ACL;
+        kacl = kmalloc(used, GFP_KERNEL);
+        if (!kacl) return STATUS_NO_MEMORY;
+        if (ntsec_rd_user(kacl, kin.p, used) != STATUS_SUCCESS) {
+            kfree(kacl);
+            return STATUS_ACCESS_VIOLATION;
+        }
+        kin.p = kacl;
+    }
+    st = ntsec_set_token_core(h, cls, &kin, sizeof(kin));
+    kfree(kacl);
+    return st;
+}
+
+NTSTATUS nt_svc_NtAccessCheckAndAuditAlarm(unsigned long a0, unsigned long a1, unsigned long a2,
+                                           unsigned long a3, unsigned long a4, unsigned long a5,
+                                           unsigned long a6, unsigned long a7, unsigned long a8,
+                                           unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    /* a0..a3 are the name strings and a1 the handle id: accepted, not used. */
+    const void *user_sd = (const void *)a4;
+    ACCESS_MASK desired = (ACCESS_MASK)a5;
+    GENERIC_MAPPING *user_gm = (GENERIC_MAPPING *)a6;
+    PACCESS_MASK user_granted = (PACCESS_MASK)a8;
+    PNTSTATUS user_status = (PNTSTATUS)a9;
+    PBOOLEAN user_gen = (PBOOLEAN)a10;
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    GENERIC_MAPPING gm;
+    ULONG len = 0;
+    void *ksd = NULL;
+    ACCESS_MASK granted = 0;
+    NTSTATUS astat = STATUS_SUCCESS;
+    NTSTATUS st;
+    BOOLEAN gen_off = FALSE;
+    (void)a0;(void)a1;(void)a2;(void)a3;(void)a7;(void)a11;
+
+    if (!user_sd || !user_gm || !user_granted || !user_status || !user_gen)
+        return STATUS_INVALID_PARAMETER;
+    if (ntsec_rd_user(&gm, user_gm, sizeof(gm)) != STATUS_SUCCESS)
+        return STATUS_ACCESS_VIOLATION;
+    st = ntsec_sr_length(user_sd, &len);
+    if (!NT_SUCCESS(st)) return st;
+    ksd = kmalloc(len, GFP_KERNEL);
+    if (!ksd) return STATUS_NO_MEMORY;
+    if (ntsec_rd_user(ksd, user_sd, len) != STATUS_SUCCESS) {
+        kfree(ksd);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    st = ntsec_access_check_token(ksd, len, ntsec_effective_token(caller), desired, &gm,
+                                  &granted, &astat);
+    kfree(ksd);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(user_granted, &granted, sizeof(granted)) ||
+        copy_to_user(user_status, &astat, sizeof(astat)) ||
+        copy_to_user(user_gen, &gen_off, sizeof(gen_off)))
+        return STATUS_ACCESS_VIOLATION;
+    return STATUS_SUCCESS;
+}
+#endif /* __KERNEL__ */

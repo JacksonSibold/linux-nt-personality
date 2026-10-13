@@ -340,6 +340,8 @@ EXPORTS
     ZwOpenSymbolicLinkObject=NtOpenSymbolicLinkObject
     NtQuerySymbolicLinkObject
     ZwQuerySymbolicLinkObject=NtQuerySymbolicLinkObject
+    NtRtlNtStatusToDosError
+    ZwRtlNtStatusToDosError=NtRtlNtStatusToDosError
     LdrLoadDll
     LdrUnloadDll
     LdrGetDllHandle
@@ -363,7 +365,6 @@ EXPORTS
     RemoveVectoredContinueHandler
     SetUnhandledExceptionFilter
     UnhandledExceptionFilter
-    NtRaiseException
     _NtRaiseException
     KiUserExceptionDispatcher
     KiUserApcDispatcher

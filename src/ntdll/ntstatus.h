@@ -401,6 +401,8 @@ extern "C" {
 #define STATUS_NO_GUID_TRANSLATION              ((NTSTATUS)0xC000010CL)
 #define STATUS_CANNOT_IMPERSONATE               ((NTSTATUS)0xC000010DL)
 #define STATUS_IMAGE_ALREADY_LOADED             ((NTSTATUS)0xC000010EL)
+/* Informational (severity 01): the image mapped at a base other than its preferred one. */
+#define STATUS_IMAGE_NOT_AT_BASE                ((NTSTATUS)0x40000003L)
 #define STATUS_ABANDONED_HIBERFILE_TEST         ((NTSTATUS)0xC0000110L)
 #define STATUS_NO_LDT                           ((NTSTATUS)0xC0000111L)
 #define STATUS_INVALID_LDT_SIZE                 ((NTSTATUS)0xC0000112L)

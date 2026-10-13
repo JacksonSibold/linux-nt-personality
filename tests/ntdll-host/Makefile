@@ -7,9 +7,12 @@
 # Coverage:
 #   test_ntstatus_to_dos  RtlNtStatusToDosError table invariants and golden values
 #   test_unwind           RUNTIME_FUNCTION lookup for registered modules
+#   test_unwind_pure      UWOP_* decoding, prolog and chained info (unwind_pure.h)
 #   test_except           vectored exception handler return codes
+#   test_except_pure      list order, resume decisions, vectored continue handlers (except_pure.h)
 #   test_runtime          freestanding malloc/calloc from ntdll_runtime.c
 #   test_win32_policy     kernel32 shim argument mapping (win32_policy.h)
+#   test_msvcrt_policy    msvcrt calloc size overflow check (msvcrt_policy.h)
 #   test_pe_bounds        PE section and relocation range checks (pe_bounds.h)
 #   test_ldr_pure         loader IAT slot writes and TLS callback table reads (ldr_pure.h)
 #
@@ -42,11 +45,22 @@ CC       := gcc
 SANITIZE ?= auto
 SRC      := ../../src/ntdll
 LOADER   := ../../src/loader
+# COVERAGE=1: gcov instrumentation at -O0 in out-cov/ (see tools/c_coverage.sh).
+# --coverage at link time also pulls in libgcov.
+COVERAGE ?= 0
+ifeq ($(COVERAGE),1)
+OUT      := out-cov
+COV_FLAGS := --coverage
+OPT_LEVEL := -O0
+else
 OUT      := out
+COV_FLAGS :=
+OPT_LEVEL := -O1
+endif
 
 # Linker-plugin workaround for the MSYS2 gcc (liblto_plugin.dll fails to load).
 # Harmless on other gcc builds.
-LDFLAGS  := -fno-use-linker-plugin
+LDFLAGS  := -fno-use-linker-plugin $(COV_FLAGS)
 
 ifneq ($(SANITIZE),0)
 SAN_OK := $(shell mkdir -p $(OUT) && printf 'int main(void){return 0;}\n' > $(OUT)/san_probe.c && $(CC) -fsanitize=address,undefined $(LDFLAGS) $(OUT)/san_probe.c -o $(OUT)/san_probe$(EXE_SUFFIX) >/dev/null 2>&1 && $(OUT)/san_probe$(EXE_SUFFIX) >/dev/null 2>&1 && echo yes)
@@ -60,9 +74,9 @@ $(info ntdll-host: sanitizers unavailable, building without them)
 endif
 
 CPPFLAGS := -I$(SRC) -I$(LOADER)
-CFLAGS   := -std=c11 -g -O1 -Wall -Wextra -Werror $(SAN_FLAGS)
+CFLAGS   := -std=c11 -g $(OPT_LEVEL) -Wall -Wextra -Werror $(COV_FLAGS) $(SAN_FLAGS)
 
-TESTS    := test_ntstatus_to_dos test_unwind test_except test_runtime test_win32_policy test_pe_bounds test_ldr_pure
+TESTS    := test_ntstatus_to_dos test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure
 TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 
 # test_pe_bounds is build-only on this host: Windows Application Control blocks
@@ -72,7 +86,7 @@ TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 RUN_TESTS := $(filter-out test_pe_bounds,$(TESTS))
 RUN_BINS  := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(RUN_TESTS)))
 
-.PHONY: all test test-pe-bounds build clean
+.PHONY: all test test-pe-bounds build clean print-run-bins
 
 all: build test
 
@@ -94,6 +108,10 @@ $(OUT)/test_ntstatus_to_dos$(EXE_SUFFIX): test_ntstatus_to_dos.c minitest.h $(SR
 $(OUT)/test_win32_policy$(EXE_SUFFIX): test_win32_policy.c minitest.h $(SRC)/win32_policy.h $(SRC)/nt_types.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
 
+# Header-only size arithmetic for msvcrt calloc (src/ntdll/msvcrt_policy.h).
+$(OUT)/test_msvcrt_policy$(EXE_SUFFIX): test_msvcrt_policy.c minitest.h $(SRC)/msvcrt_policy.h $(SRC)/nt_types.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
 # Header-only range checks (src/ntdll/pe_bounds.h).
 $(OUT)/test_pe_bounds$(EXE_SUFFIX): test_pe_bounds.c minitest.h $(SRC)/pe_bounds.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
@@ -110,13 +128,24 @@ $(OUT)/test_ldr_pure$(EXE_SUFFIX): test_ldr_pure.c minitest.h $(SRC)/ldr_pure.h 
 $(OUT)/test_unwind$(EXE_SUFFIX): $(OUT)/unwind.o $(OUT)/except.o $(OUT)/test_unwind.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--allow-multiple-definition $^ -o $@
 
+$(OUT)/test_unwind_pure$(EXE_SUFFIX): $(OUT)/unwind.o $(OUT)/except.o $(OUT)/test_unwind_pure.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--allow-multiple-definition $^ -o $@
+
 $(OUT)/test_except$(EXE_SUFFIX): $(OUT)/except.o $(OUT)/unwind.o $(OUT)/test_except.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--allow-multiple-definition $^ -o $@
+
+$(OUT)/test_except_pure$(EXE_SUFFIX): $(OUT)/except.o $(OUT)/unwind.o $(OUT)/test_except_pure.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--allow-multiple-definition $^ -o $@
+
+# Coverage links (libgcov) pull in a CRT _errno that clashes with ntdll_runtime.o;
+# the first definition (ours, listed first) wins, as for unwind and except above.
+comma := ,
+COV_LINK := $(if $(COV_FLAGS),-Wl$(comma)--allow-multiple-definition)
 
 # ntdll_runtime.c replaces libc string and allocator functions. Keep gcc from
 # turning its loops back into calls to memcpy/memset.
 $(OUT)/test_runtime$(EXE_SUFFIX): $(OUT)/ntdll_runtime.o $(OUT)/test_runtime.o
-	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $(COV_LINK) $^ -o $@
 
 # -Wno-error=attributes: ntdll_runtime.c declares "int errno" and "_errno", which
 # clash with the dllimport attribute on MinGW's _errno (see docs/review/ntdll.md).
@@ -134,6 +163,11 @@ $(OUT)/test_runtime.o: EXTRA_CFLAGS := -fno-builtin
 
 $(OUT):
 	mkdir -p $(OUT)
+
+# Prints the binaries "test" runs, so tools/c_coverage.sh can run them without
+# stopping at the first failure.
+print-run-bins:
+	@echo $(RUN_BINS)
 
 clean:
 	rm -rf $(OUT)

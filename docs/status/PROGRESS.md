@@ -1,16 +1,24 @@
 # Progress log
 
-Chronological summary of the commit history, grouped by theme. Generated from `git log --reverse --date=short` over the commits from the baseline (`5eb8026`) to `bb13e80` (inclusive), as of 2026-10-12. Commit totals are not kept in this file; get them with `git rev-list --count 5eb8026..bb13e80`. Regenerate by repeating that log, not by hand.
+Chronological summary of the commit history, grouped by theme. Generated from `git log --reverse --date=short` over the commits from the baseline (`5eb8026`) to `fd26716` (inclusive), as of 2026-10-12. Commit totals are not kept in this file; get them with `git rev-list --count 5eb8026..HEAD`. Regenerate by repeating that log, not by hand.
 
-Each commit is listed once, under one theme: subject prefix first (`docs(review)` and similar, then `tools`, `build`, `ci`, `vm`), then the paths the commit touches (`src/` or `arch/` as fixes, `tests/` as tests, `docs/` as documentation). Merge commits are listed separately. Within a date, entries follow git's log order, oldest first; `--date=short` does not give times.
+Each commit is listed once, under one theme. The theme comes from the subject prefix first (`docs(review)`, `docs(analysis)`, `docs(decisions)` and `docs(status)` as reviews and analysis, other `docs` as documentation, `tools`, `build`, `ci`, `vm`, `scripts`, `chore` and the `fix_*`/`gen_*` generators as tooling, `test`/`tests` as tests, `fix` as fixes), and otherwise from the paths the commit touches. Merge commits are listed separately. Within a date, entries follow git's log order, oldest first; `--date=short` does not give times.
+
+## Counts by theme
+
+Counts as of 2026-10-12, from the same log. Each commit is counted once under one theme.
+
+| Theme | Commits |
+|---|---:|
+| Tooling | 61 |
+| Tests | 100 |
+| Reviews and analysis | 39 |
+| Fixes | 175 |
+| Documentation | 122 |
+| Other | 12 |
+| Merges | 60 |
 
 ## Timeline
-
-### 2026-10-01
-
-#### Baseline snapshot
-
-- `5eb8026` Publish sanitized personal project source snapshot
 
 ### 2026-10-12
 
@@ -55,6 +63,28 @@ Each commit is listed once, under one theme: subject prefix first (`docs(review)
 - `56c5c76` feat(tools): add provenance_scan.py factual inventory tool
 - `8515b1c` ci: check SPDX tag syntax with provenance_scan --check
 - `a9bc215` scripts: set executable bit on shebang scripts added after the mode fix
+- `060eceb` chore: ignore tests/ntdll-host build output
+- `d1f866c` gen_ntstatus_table: accept a trailing C comment after a table entry
+- `dbd1ed0` tools: add run_all_checks.sh to run every local check
+- `21aa5e6` tools: write run_all_checks logs to a fixed directory under TMPDIR
+- `a7a4132` build(host): take TEMP_DIR from the environment with fallbacks
+- `94005bb` build(ntdll-host): take TEMP_DIR from the environment with fallbacks
+- `94b2a7c` build(ntdll): add MinGW Makefile for ntdll.dll
+- `8012626` build(kernel-host): take TEMP_DIR from the environment with fallbacks
+- `b057f0b` tools: flag leftover merge conflict markers in check_repo
+- `71d1778` tools: add update_doc_counts.py to check and rewrite generated doc counts
+- `de54ae6` ci: run update_doc_counts.py --check
+- `2f4eae7` tools: run update_doc_counts.py --check in run_all_checks
+- `b7e1edc` tools(c_coverage): run only the ntdll test binaries
+- `df5fbd8` scripts: set executable bit on new shebang scripts
+- `f64e3ec` tools: add static_analyze.sh informational analyzer pass
+- `64868e4` ci: add informational static-analysis step
+- `8587cb9` tools: add check_syscall_tables.py for NT syscall table parity
+- `50cf960` scripts: set executable bit on new shebang scripts
+- `00e4093` build(gen_ntdll_def): stop repeating NtRaiseException in the misc list
+- `8086403` ci: run the syscall table parity check
+- `6f592ff` tools: run the syscall table parity check in run_all_checks.sh
+- `17fe71b` scripts: set executable bit on new shebang scripts
 
 #### Tests
 
@@ -76,40 +106,88 @@ Each commit is listed once, under one theme: subject prefix first (`docs(review)
 - `c533695` tests: resolve test_pe_parse.c probe paths under NTPERS_ROOT
 - `b9c66f4` tests(host): symbol names and forwarders must be length-capped
 - `a69558a` tests(host): export table counts, ordinals and name lookup (L-1)
-- `7acbcc1` fix(differential): use NTPERS_ROOT instead of personal path in check_exception
-- `b8ebf56` fix(differential): use NTPERS_ROOT instead of personal path in check_ntstatus
-- `62f08d8` fix(differential): use NTPERS_ROOT instead of personal path in check_path
-- `196a9d3` fix(differential): use NTPERS_ROOT instead of personal path in check_process_thread
-- `9377a75` fix(differential): use NTPERS_ROOT instead of personal path in check_section
-- `8263e28` fix(differential): use NTPERS_ROOT instead of personal path in check_sync
-- `77cea49` fix(differential): replace personal output paths in probe_path_direct
-- `c08bd28` fix(differential): replace personal output paths in probe_process_thread_direct
-- `b2f0fe5` fix(differential): replace personal output paths in probe_sharemode_direct
-- `423af6f` fix(differential): replace personal output paths in probe_sync_direct
 - `1e793c3` tests(unit): cover check_doc_links.py
-- `e4e881d` fix(differential): replace personal output paths in probe_virtualquery_direct
-- `969a0a0` fix(differential): drop personal input paths from probe_peloader
-- `5b96adf` fix(kernel): replace personal output paths in probe_sharemode_direct
 - `4f3ec4f` test(syntax): cover arch/x86/nt and record pass/fail matrix
-- `11d9830` fix(host): derive temp dir for link step instead of hardcoding user path
-- `b96e103` fix(differential): derive WSL staging path in harness instead of hardcoding user path
 - `77b5cce` test(tools): add stdlib line-coverage report and CI step
 - `1a02f37` test(tools): cover pe_info.py branches and CLI exit codes
 - `abbcb5a` test(kernel-host): host build of src/kernel/nt against kshim
 - `01cc02d` test(kernel-host): security_test passes on host (41 ntsec, 609 negative)
 - `bfceb70` test(kernel-host): registry_test passes on host (10/10)
 - `fe97c49` test(kernel-host): i2_test passes on host (7/7)
+- `17f7af1` test(ntdll-host): add Makefile for host tests of pure ntdll code
+- `3cf37dd` test(ntdll-host): add minitest helper (copy of tests/host/minitest.h)
 - `837d294` test(kernel-host): io_test builds and passes on host (11/11 in most runs)
 - `42393ab` test(kernel-host): mm_test builds on host; 12 of 14 pass
 - `4187bf4` tests(syntax): add linux/ core, memory, error and lock shims
 - `a6883e7` tests(syntax): add sched, thread, percpu and debugfs shims
 - `b59758a` tests(syntax): add fs and binfmts shims
+- `01cc2f7` test(ntdll-host): pin RtlNtStatusToDosError table invariants and golden values
+- `25aeae2` test(ntdll-host): link except.o into unwind test and allow kernel32 name clash
+- `6e1d158` test(ntdll-host): add failing test for RUNTIME_FUNCTION lookup in zero-size modules
 - `58574d6` tests(syntax): add asm/ shims
+- `63497fe` test(ntdll-host): add failing test for vectored handler EXCEPTION_CONTINUE_EXECUTION
+- `bafe0d3` test(ntdll-host): build ntdll_runtime.o without the attributes error
+- `570d395` test(ntdll-host): add failing test for calloc and malloc overflow in ntdll_runtime
+- `e88ed9a` test(ntdll-host): compile runtime test with -fno-builtin
+- `8622413` test(ntdll-host): take default temp dir from TMP before LOCALAPPDATA
+- `308c5b6` test(ntdll-host): add failing test for loader NTSTATUS symbols
+- `0e5992e` test(ntdll-host): rebuild NTSTATUS test when included sources change
 - `cd306b6` test(kernel-host): sync_test passes on host (21/21, no leaks)
 - `1665553` tests: set executable bit on tracked test scripts
 - `7356802` test(tools): unit tests for provenance_scan.py
 - `52909dc` tests: assert tracked shebang scripts are executable in the index
 - `5304c09` test(syntax): declare inode->i_mode and i_uid_read in fs.h shim
+- `da2531b` test(io): read back the roundtrip file through a read-write handle
+- `5357464` test(harness): unit tests for lint_integrity structural checks
+- `d490e92` test(nt/proc_thread): tag allocation sites; add failing thread-exit check
+- `1dd40d9` harness: add _paths helper for repo root and WSL path resolution
+- `847f6c1` test(nt/proc_thread): wait for the sleeper's exit path before teardown
+- `45d86d3` harness: freshness.py imports windows_to_wsl_path from _paths
+- `3d10157` harness: selftest.py derives WSL root from _paths instead of placeholder
+- `598545f` harness: dualrun_wrapper.py derives WSL root from _paths
+- `c115bf3` harness: vmtest.py derives WSL root from _paths
+- `7f95ab4` test(nt/io): read/write through a missing right is STATUS_ACCESS_DENIED
+- `7d76841` differential: dualrun.py derives WSL root from _paths
+- `9b21078` test(ntdll): MAIN-2 mark test_pe_bounds build-only on this host
+- `a3278a3` test(kernel-host): run proc_thread_test in check
+- `2b3c7dc` kernel harness: arch.py derives WSL root from _paths instead of placeholder
+- `e77934e` kernel harness: handles.py derives WSL root from _paths instead of placeholder
+- `b6932ff` kernel harness: i2.py derives WSL root from _paths instead of placeholder
+- `80e4ae3` kernel harness: mem.py derives WSL root from _paths instead of placeholder
+- `0e62995` kernel harness: ntstatus.py derives WSL root from _paths instead of placeholder
+- `48b9a27` kernel harness: pmu.py derives WSL root from _paths instead of placeholder
+- `5805faa` kernel harness: provenance.py derives WSL root from _paths instead of placeholder
+- `4c9a239` kernel harness: smc.py derives WSL root from _paths instead of placeholder
+- `feec20f` kernel harness: sync.py derives WSL root from _paths instead of placeholder
+- `83a0023` differential: compare.ps1 takes root from NTPERS_ROOT or the checkout
+- `9d3f424` differential: harness.ps1 derives Windows and WSL roots from NTPERS_ROOT or the checkout
+- `2674793` test(ntdll): add failing host test for LDR-2 IAT slot writes
+- `a21ff94` test(kernel-host): KSHIM_POISON allocation poison and -Wuninitialized/OPT knobs
+- `30e45e6` harness README: run commands from the repo root instead of a placeholder path
+- `94cb2a9` test(nt/io): fail fast when the scratch root drops trailing dots
+- `8df7469` test(ntdll): add failing host test for LDR-4 TLS callback table reads
+- `a2f229e` tests: freshness placeholder check asserts the translated root directly
+- `bb8a320` syntax: check.sh usage example uses a real compiler path
+- `cd3de58` test(ntdll): add build-only export check against ntdll.def
+- `903dd8e` tests/kernel-host: remove leftover merge conflict markers in Makefile CFLAGS
+- `b817b36` tests/kernel-host: make mman_test mixed hole+free case deterministic
+- `0688cf7` tests: unit tests for update_doc_counts.py
+- `079509b` tests(syntax): stub this_cpu_add, pr_info_ratelimited and dput for the shim
+- `1f5e08e` tests: expect undecorated _DllMainCRTStartup export (follows DEF-1)
+- `ee49ebe` tests(nt): add failing thread registry node-count test (O-6)
+- `1937b5f` tests(loader): real PE fixture builder and minimal.exe parser test
+- `ef83425` tests(loader): real DLL fixture with named, ordinal, DATA exports and forwarders
+- `7c8fff4` tests: COVERAGE=1 build mode for the host suites, tools/c_coverage.sh
+- `c5ee8ad` tests(kernel-host): handle table edge cases (handle_edge_test)
+- `3a03885` tests(host): loader accessor branches in test_pe_parse
+- `b616826` tests(kernel-host): registry value operations (registry_ops_test)
+- `a275418` tests(kernel): stop dereferencing failed make_proc/make_thread results
+- `460791f` tests: unit tests for check_syscall_tables.py
+- `1823f69` test(ntdll-host): cover each UWOP_* code, prolog state and chained info
+- `8c7a28d` tests(gen_ntdll_def): expect NtRaiseException outside the fixed export set
+- `35c6a9c` test(ntdll-host): cover vectored list order and resume decisions
+- `4a5e4c3` test(io): add failing case for over-long component in ntio_resolve_ci
+- `667d788` test(io): cover 255- and 300-character components in ntio_resolve_ci
 
 #### Reviews and analysis
 
@@ -134,12 +212,24 @@ Each commit is listed once, under one theme: subject prefix first (`docs(review)
 - `1dc5dd3` docs(decisions): records 0011-0027 for open review findings
 - `da9f0a2` docs(review): link open findings to decision records 0011-0027
 - `71d4653` docs(review): record implementation status and blocked notes for 0003-0027
+- `7d125a8` docs(review): add static review of src/ntdll
+- `3ee0dba` docs(review): add src/ntdll to review index and totals
+- `69c4e03` docs(review): record _exit spinning on privileged hlt in ntdll_runtime
+- `1a786d4` docs(review): update ntdll totals for _exit finding
 - `9d58d1b` docs(decisions): name the commit that implements record 0006
 - `05124e9` docs(decisions): name the commit that implements record 0010
 - `9d993c8` docs(decisions): add index of records with derived status
 - `e8707e4` docs(review): mark loader L-3, L-8 and L-11 fixed by commit
 - `94ec641` docs(review): record H-2 as partly fixed in kernel-nt report
 - `ed1cb1c` docs(review): add fix status per report and mark top findings
+- `861bf45` docs(status): regenerate progress log from git history
+- `664e02b` docs(status): record test matrix for 21aa5e6
+- `1d0c761` docs(review): record triage status for remaining Medium and Low findings
+- `9fd82ce` docs(review): audit NT personality fix commits since 5eb8026
+- `da6e218` docs(status): C line coverage for the host suites
+- `4471785` docs(status): static analysis triage of loader, kernel/nt, ntdll, arch/x86/nt
+- `13bec7c` docs(review): record SUSPECT resolutions with fix hashes
+- `7925264` docs(review): record ntio_resolve_ci component overflow and fix
 
 #### Fixes
 
@@ -189,7 +279,22 @@ Each commit is listed once, under one theme: subject prefix first (`docs(review)
 - `80b6fea` fix(nt/io): require FILE_WRITE_DATA or FILE_APPEND_DATA in NtWriteFile
 - `d25d66a` pe_parse: cap symbol names at 4096 bytes (L-2)
 - `0b7921b` fix(nt/iocp): cap packets queued on one completion port
+- `7acbcc1` fix(differential): use NTPERS_ROOT instead of personal path in check_exception
+- `b8ebf56` fix(differential): use NTPERS_ROOT instead of personal path in check_ntstatus
+- `62f08d8` fix(differential): use NTPERS_ROOT instead of personal path in check_path
+- `196a9d3` fix(differential): use NTPERS_ROOT instead of personal path in check_process_thread
+- `9377a75` fix(differential): use NTPERS_ROOT instead of personal path in check_section
+- `8263e28` fix(differential): use NTPERS_ROOT instead of personal path in check_sync
 - `c021ca9` pe_parse: linear export walk and binary-search name lookup (L-1)
+- `77cea49` fix(differential): replace personal output paths in probe_path_direct
+- `c08bd28` fix(differential): replace personal output paths in probe_process_thread_direct
+- `b2f0fe5` fix(differential): replace personal output paths in probe_sharemode_direct
+- `423af6f` fix(differential): replace personal output paths in probe_sync_direct
+- `e4e881d` fix(differential): replace personal output paths in probe_virtualquery_direct
+- `969a0a0` fix(differential): drop personal input paths from probe_peloader
+- `5b96adf` fix(kernel): replace personal output paths in probe_sharemode_direct
+- `11d9830` fix(host): derive temp dir for link step instead of hardcoding user path
+- `b96e103` fix(differential): derive WSL staging path in harness instead of hardcoding user path
 - `d7adc94` fix(kernel/nt): H-2 quarantine closed handle slots in a FIFO free list
 - `83e3349` fix(kernel/fs): K-12 weak NtTerminateProcess fallback returns NOT_IMPLEMENTED
 - `13a4357` fix(kernel/fs): K-5 do not load ntdll from /tmp or a non-root file
@@ -198,11 +303,111 @@ Each commit is listed once, under one theme: subject prefix first (`docs(review)
 - `419f675` fix(kernel/fs): K-13 check clear_user results in the PE exec path
 - `7f11af9` fix(arch/nt/mm): remove KERN_EMERG debug printk from NtProtectVirtualMemory
 - `f03a4d7` fix(fs/binfmt_pe_test): include loader/pe_prot.h
+- `a09f0a3` fix(ntdll): match RUNTIME_FUNCTION entries in modules registered with size 0
+- `655c9ca` fix(ntdll): honour EXCEPTION_CONTINUE_EXECUTION (-1) from vectored handlers
+- `9c733c3` fix(ntdll): reject overflowing malloc and calloc sizes
+- `d855c17` refactor(ntdll): key two NTSTATUS table rows by value
+- `08920c8` fix(ntdll): correct STATUS_DLL_NOT_FOUND and STATUS_ENTRYPOINT_NOT_FOUND values
 - `5c1d29c` fix(fs/kshim): match kernel_read and loader-used members, document TIF flags
 - `3679688` fix(fs/binfmt_pe): skip no-op nt_enter_personality under KSHIM_H
 - `6efb8b7` fix(nt/kshim): portable stat timestamps (st_atim is glibc-only)
 - `efae2d3` fix(nt/mm): demote kshim_mprotect entry trace from KERN_EMERG to pr_debug
+- `a36a9da` fix(kernel-host): let MAP_FIXED_NOREPLACE reuse munmap holes
+- `60110de` fix(harness): map registry python3 to running interpreter on Windows
 - `ea3c20a` fix(arch/nt/mm): demote kshim_mprotect entry trace from KERN_EMERG to pr_debug
+- `959a4fc` fix(harness): derive WSL freshness path from real root on Windows
+- `195a68b` fix(ntdll): K32-1 VirtualProtect applies the requested protection
+- `213d333` fix(nt/kshim): take the st_atim branch under USERSPACE_KSHIM
+- `3b9107e` fix(ntdll): K32-3 CREATE_NEW and CREATE_ALWAYS map to the right NT dispositions
+- `5430103` fix(ntdll): K32-2 TlsAlloc allocates distinct indexes
+- `a2fa151` fix(ntdll): K32-5 WaitForSingleObject waits through NtWaitForSingleObject
+- `5b1fca3` fix(nt/proc_thread): free the trampoline's sync thread on every exit path
+- `74b4a14` fix(ntdll): MAIN-1 bound section table and section copies
+- `eaac06b` fix(nt/io): report STATUS_ACCESS_DENIED for a missing right on an open handle
+- `e7f8b2b` fix(ntdll): MAIN-2 bound relocation directory and DIR64 targets
+- `5045b9c` fix(ntdll): LDR-5 bound base relocation reads and writes
+- `d6007f6` fix(ntdll): LDR-6 bound section copy by the mapping and file
+- `d2d36fe` fix(ntdll): K32-7 events, mutexes and semaphores are real NT objects
+- `a18c03e` fix(ntdll): write resolved IAT slots at their RVA, not a file offset
+- `bef4d79` fix(ntdll): read TLS callback table through its RVA, bounded
+- `f2d8fd1` fix(kernel-host): absolute scratch root independent of TEMP/TMP
+- `c3647ea` fix(loader): L-13 reject reserved base-relocation types
+- `e9012fa` fix(kernel-fs): K-2 bound ntdll header reads
+- `c75cda6` fix(kernel-fs): K-15 accept short ntdll files in header re-read
+- `d4a33f2` fix(kernel-fs): K-11 cap base-relocation directory size
+- `d022f12` fix(kernel-fs): K-14 bound LdrInitializeThunk export lookup
+- `ce0ec9a` fix(arch-nt): D-2 use this_cpu_add for per-SSN dispatch counter
+- `1fd3821` fix(arch-nt): D-3 rate-limit missing-service log
+- `8ccc960` fix(arch-nt): D-4 remove per-call debug print from syscall hot path
+- `35a1e46` fix(arch-nt): D-6 drop debugfs_lookup reference
+- `cc755fa` fix(nt/handle): H-3 undo duplicate when DUPLICATE_CLOSE_SOURCE is refused
+- `c351f77` fix(nt/handle): H-4 take the new entry from the allocator
+- `f63ca2d` fix(arch-nt): N-1 probe output pointer before changing sync object state
+- `8f7d873` fix(arch-nt): N-3 match NtQueryMutant copy size to reported length
+- `4094946` fix(nt/object): O-3 bound symlink resolution depth
+- `5cced27` fix(arch-nt): M-10 unmap reservation when commit fails
+- `e0e5989` fix(arch-nt): M-12 reject size arithmetic that wraps
+- `649f184` fix(arch-nt): M-13 NtUnmapViewOfSection rejects private allocations
+- `9bbbb2c` fix(nt/object): O-4 reject names whose terminator would wrap USHORT
+- `6666521` fix(nt/registry): R-2 reject names whose terminator would wrap USHORT
+- `09da3f2` fix(nt/registry): R-3 do not read buf[-1] for an empty root path
+- `c240201` fix(nt/object): O-5 clear permanent flags before removing from directory
+- `4a0a0e3` fix(arch-nt): IO-6 probe output pointer before reserving a handle slot
+- `9ab1528` fix(nt/object): O-6 check registry insert when creating process and thread
+- `2adcc11` fix(arch-nt): IO-10 initialise file I/O locks in the kernel build
+- `bdae5f7` fix(arch-nt): IO-18 reject negative EndOfFile in NtSetInformationFile
+- `bdbf6c1` fix(nt/mm): M-5 reject a RegionSize whose round-up wraps
+- `27e20ab` fix(nt/mm): M-7 do not fake file-backed sections
+- `0b869fd` fix(arch-nt): P-14 demote thread creation and suspend/resume tracing to debug
+- `d5728cf` fix(nt/mm): M-6 reject ranges whose end wraps
+- `0f85fea` fix(arch-nt): P-12 remove dead ntdll RtlUserThreadStart probe
+- `e6d152f` fix(arch-nt): P-13 check thread pointer before first dereference
+- `d6e5ab7` fix(arch-nt): P-8 refuse thread creation in another process
+- `a4ddf86` fix(arch-nt): P-7 hold RCU read lock around pid_task lookups
+- `38b1b0a` fix(arch-nt): P-9 copy suspend/resume previous count after releasing the lock
+- `d730c42` fix(arch-nt): B-4 remove stray RtlUserThreadStart global from weak.c
+- `a1b6bd8` fix(nt/sync): SYNC-1 copy wait-on-address operands from user space
+- `dae81ab` fix(nt/security): SEC-2 check the DACL header before reading AclSize
+- `224f6a6` fix(nt/dispatch): D-2 move the per-call syscall trace to pr_debug
+- `b3dcef5` fix(arch-nt): IO-14 probe IOSB before creating the file handle
+- `325b55c` fix(arch-nt): IO-17 rewind file position when a read chunk is not delivered
+- `075e040` fix(arch-nt): IO-7 delete-on-close runs on last reference, not each NtClose
+- `e8dd37b` fix(arch-nt): M-6 initialise the global VAD table at boot in the kernel build
+- `10a9418` fix(arch-nt): M-8 remove kallsyms lookup of internal do_mprotect_pkey
+- `2a499a7` ntdll: CRT-4 msvcrt realloc copies only the old block and keeps ptr on failure
+- `3a8f7d1` fix(arch-nt): P-6 align the stack for the RtlUserThreadStart trampoline
+- `cdcc7ce` ntdll: CRT-2 snprintf writes the NUL only when the buffer has room
+- `39e6015` ntdll: CRT-6 __C_specific_handler returns ExceptionContinueSearch
+- `04c679a` ntdll: LDR-7 match export names case-sensitively
+- `a141aea` ntdll: LDR-9 do not free the wide base name twice
+- `b40d234` ntdll: LDR-10 free the file buffer when image allocation fails
+- `ded5f9f` ntdll: LDR-11 refuse a DLL attach when the init stack is full
+- `2913b8c` ntdll: MAIN-8 release the header page with RegionSize 0
+- `9010421` ntdll: MAIN-4 cap forwarder resolution depth at 16
+- `974db57` arch: replace non-C kernel_stubs.c with the NT banner
+- `3a0db32` ntdll: MAIN-5 load DLLs from the system directory only
+- `4001a61` ntdll: U32-3 wsprintfA implements %c
+- `5afcedb` ntdll: U32-1 wsprintfW reads %s as a wide string
+- `03f0653` ntdll: U32-2 wvsprintfA and wvsprintfW format their output
+- `862d261` ntdll: K32-10 QueryPerformanceCounter reads the kernel counter
+- `fd86cb3` ntdll: K32-16 VirtualAlloc fails on an unsupported protection
+- `a0e9450` ntdll: K32-15 CreateFileW rejects names too long for UNICODE_STRING
+- `8dec432` ntdll: K32-13 DuplicateHandle duplicates the object with NtDuplicateObject
+- `235067a` ntdll: K32-11 SetFilePointer moves the file position
+- `e5f85a7` ntdll: LDR-8 LdrGetProcedureAddress honours ANSI_STRING.Length
+- `90b9bc6` ntdll: CRT-7 atexit handlers run from exit
+- `7fba2cb` fix(arch-nt): drop stray IO-17 rewind that ran on every read chunk
+- `c4bffb1` nt: make ObRegisterThread idempotent and drop redundant calls (O-6)
+- `8e7e190` fix(ntstatus): correct DLL/entrypoint expectations and document value-keyed rows
+- `f942cb9` fix(mm): reject a section view size that wraps when page-rounded
+- `7c66a22` kernel/registry: reject NULL KeyValueInformation in NtQueryValueKey
+- `02f989c` ntdll/runtime: fix _errno recursing into itself
+- `ef172d9` refactor(ntdll): extract unwind code arithmetic into unwind_pure.h
+- `eef2786` fix(ntdll): export NtRtlNtStatusToDosError and drop duplicate NtRaiseException
+- `542d3aa` refactor(ntdll): extract vectored list and dispatch decisions into except_pure.h
+- `6560e0d` fix(ntdll): run vectored continue handlers when a vectored handler resumes (EXC-8)
+- `e86e643` fix(ntdll): undo chained unwind codes secondary-first (UNW-chain)
+- `949cf00` fix(io): reject over-long path components in ntio_resolve_ci
 
 #### Documentation
 
@@ -245,7 +450,20 @@ Each commit is listed once, under one theme: subject prefix first (`docs(review)
 - `4ea548b` docs(provenance): generate file provenance inventory
 - `3ce3768` docs(syntax): update shim matrix after kshim fixes
 - `202920a` docs(known-issues): TIF_NTABI/TIF_NTSUSPEND sources and syntax gaps
+- `b9fe8d5` docs(modules): add ntdll-loader module reference
+- `a83b99d` docs(modules): add ntdll-startup module reference
+- `bf2f7f3` docs(modules): add ntdll-unwind module reference
+- `6ecc993` docs(modules): add ntdll-except module reference
+- `0cd9bcb` docs(modules): add ntdll-syscalls module reference
+- `5b9569b` docs(modules): add ntdll-ntstatus module reference
+- `8f21832` docs(modules): add ntdll-runtime module reference
 - `211801d` docs(syntax): reconcile matrix after fs.h shim; record binfmt_pe_test helpers
+- `4d87ac9` docs(modules): add ntdll-win32 module reference
+- `0f14fd3` docs(modules): add ntdll module index
+- `f3be6cb` docs(modules): correct kernel dispatch cross-reference in ntdll-syscalls
+- `a717b95` docs(kernel-host): record mm, io and proc_thread results
+- `3cddb5e` docs(harness): conformance run overview
+- `52e4fd1` docs(ntdll): record K32 fixes, CRT-1 needs owner, and open bounds findings
 - `ec3c426` docs(known-issues): update handle, io, kernel-flag and top-finding status
 - `c1a26da` docs(modules): handle free list is FIFO quarantine since d7adc94
 - `de9dc38` docs(modules): iocp line refs and queue quota invariant
@@ -254,38 +472,142 @@ Each commit is listed once, under one theme: subject prefix first (`docs(review)
 - `dfbaa59` docs(modules): dispatch exit path and debug log line refs
 - `4869cea` docs(modules): proc_thread kernel stub line refs
 - `2640997` docs(phase2): refresh line counts and references in architecture status
+- `2475833` docs(ntdll): record MAIN-1, MAIN-2, LDR-5, LDR-6 and K32-7 fixes
 - `eb335c1` docs(readme): refresh current state, test counts and syntax result
 - `780882d` docs(syntax): record 2026-10-12 re-run and correct TIF and line refs
 - `573c89b` docs(kernel-host): record the 2026-10-12 build failure and correct ntstatus and nt_io claims
 - `bb13e80` docs(development): correct unit test module and test counts
+- `eed4379` docs(ntdll): record LDR-1 MinGW loader build design (0029)
+- `dff91e1` docs(ntdll): record LDR-2 IAT RVA write design (0030)
+- `b2c2913` docs(ntdll): record LDR-3 DllMain and TLS order design (0031)
+- `bf73e1d` docs(ntdll): record LDR-4 TLS callback table RVA design (0032)
+- `c4cf915` docs(ntdll): mark LDR-1 to LDR-4 design records and statuses
+- `7236c6d` docs(ntdll): mark LDR-2 and LDR-4 fixed; add decision index
+- `f83366e` docs: DEVELOPMENT.md describes the harness root resolution
+- `05e5b5b` docs(harness): OVERVIEW records the placeholder root as resolved
+- `b671346` docs(kernel-host): io_test flake root cause, scratch root, poison and O2 knobs
+- `246e300` docs(nt/object): H-5 state the okay_to_close locking contract
+- `3012faf` docs(ntdll): record MinGW build recipe in 0029 and DEVELOPMENT
+- `8501abf` docs(kernel-host): record the 2026-10-12 clean build and run results
+- `b74ec07` docs(known-issues): add host unit-test harness status
+- `e369fed` docs: describe conflict-marker check in tools/README and DEVELOPMENT
+- `83ecd4a` docs(nt): record H-2 as needs owner in kernel-nt review
+- `c9a4a9a` docs(nt): record M-2 as no change in kernel-nt review
+- `b7dfed7` docs(nt): record O-2 as needs owner in kernel-nt review
+- `841975b` docs(nt): record SYNC-2 as needs owner in kernel-nt review
+- `b665a02` docs(nt): record SEC-1 as needs owner in kernel-nt review
+- `3abd683` docs(readme): take counts from update_doc_counts blocks
+- `9c122fa` docs(contributing): add the doc counts check to the pre-commit list
+- `c020be5` docs(development): generated unit test counts and doc counts check
+- `481cc7f` docs(known-issues): take unit test counts from generated blocks
+- `497501a` docs(progress): drop hard-coded commit counts
+- `7531c89` docs(tools): describe update_doc_counts.py
+- `c24a261` docs: record 0027 as fixed and update known issues
+- `c4d7615` docs: syntax-check results after kernel_stubs.c fix
+- `f6c7dbf` docs(ntdll): record status of each Medium and Low finding in the lows pass
+- `63a89dd` docs(ntdll): record CRT-3 fix and CRT-1 partial fix with hashes
+- `366cdf7` docs(nt): record O-6 as fixed in kernel-nt review
+- `34ef655` docs(nt): design records 0033-0035 for needs-owner items
+- `eb600f7` docs(tools): describe c_coverage.sh
+- `d326a6c` docs(arch): add architecture overview with component and startup diagrams
+- `661bca0` docs(arch): add syscall dispatch path, status mapping and table coverage
+- `0085c15` docs(arch): avoid semicolons in overview stub label
+- `8a4768c` docs(arch): add object model lifecycle, handle table and registry diagrams
+- `34ec928` docs(arch): add virtual memory VAD, section and allocation flow diagrams
+- `38be8c2` docs(arch): add userspace loader flow with stub and status table
+- `0b4cead` docs(arch): tighten loader wording and line wrapping
+- `017387c` docs(arch): add build and test layer diagram and coverage table
+- `845474a` docs(readme): link architecture diagrams from the docs index
+- `2c45b77` docs(dev): point the repository layout table at docs/architecture
+- `86f2240` docs: refresh generated counts
+- `e7da908` docs: refresh generated counts
+- `1c431b5` docs(ntdll): record DEF-2 export fix and SYS-1 ArgTypes finding
+- `c572fff` docs(ntdll): record EXC-8 with its failing test and fix hashes
+- `255028d` docs: refresh generated counts
+- `d0dba01` docs(tools): describe check_syscall_tables.py in the tools README
+- `be2bf02` docs: refresh generated counts in README
+- `1771db1` docs: refresh generated counts in DEVELOPMENT
+- `5f7781f` docs: refresh generated counts in KNOWN-ISSUES
+- `98ce293` docs: refresh generated counts
+- `63f63d1` docs: refresh generated counts
+- `6bb8f78` docs: refresh generated counts after syscall table test
+- `29dca66` docs: mark review finding SYS-1 fixed
+- `fd26716` docs: refresh generated counts
 
-#### Merges, in order
+#### Other
 
-- `ef7d402` haiku/tests
-- `84fa9e1` haiku/docs
-- `35a7591` haiku/review
-- `cc11e9c` haiku/iofix
-- `48a960e` haiku/loaderfix
-- `7eb64e6` haiku/diverge
-- `2125f1b` haiku/ntstatus
-- `5ad0233` haiku/paths
-- `4ec7826` haiku/unitc
-- `e5ab0dc` haiku/verify
-- `985a495` haiku/host
-- `5f43f8b` haiku/ntfix
-- `acecb07` haiku/paths2
-- `797de67` haiku/readme
-- `4b19469` haiku/adr
-- `bff524f` haiku/exports
-- `5779442` haiku/recheck
-- `938a70d` haiku/docsfix
-- `7e75069` haiku/diff
-- `916620d` haiku/adr2
-- `06e1d91` haiku/uni2
-- `7e3b6df` haiku/linuxshim
-- `2aa354d` haiku/vmrev
-- `f0daf4e` haiku/kshim
-- `b58b682` haiku/prov
-- `b023c14` haiku/kshimfix
-- `ec49863` haiku/vmfix
-- `ff01c73` haiku/stale
+- `8a08ecf` kernel-host: build kshim.c against the Linux-layout host stat shim
+- `0fe2af8` ntdll: UNW-4 do not mask RUNTIME_FUNCTION.EndAddress
+- `7e1a710` ntdll: UNW-3 RtlVirtualUnwind returns only the requested handler kind
+- `360c366` ntdll: EXC-2 unwind a leaf frame whose PC has no module
+- `366715b` ntdll: MAIN-7 RtlDeleteFunctionTable unregisters the table
+- `6ae7bb7` ntdll: EXC-6 delete unreferenced RtlUnwindExWrapper
+- `92c14f5` ntdll: RT-2 store block sizes so realloc copies only the old block
+- `27030e1` ntdll: DEF-1 export _DllMainCRTStartup undecorated
+- `1224d00` ntdll: CRT-3 calloc returns NULL when n * s wraps
+- `1f334ce` ntdll: CRT-1 bound sprintf and vsprintf output to MS_SPRINTF_LIMIT
+- `619463c` feat(ntdll): decode x64 epilogs in unwind_pure.h (UNW-2 prerequisite)
+- `122f91d` ntdll: correct ArgTypes for five syscall table entries (SYS-1)
+
+#### Merges
+
+- `ef7d402` Merge branch 'haiku/tests'
+- `84fa9e1` Merge branch 'haiku/docs'
+- `35a7591` Merge branch 'haiku/review'
+- `cc11e9c` Merge branch 'haiku/iofix'
+- `48a960e` Merge branch 'haiku/loaderfix'
+- `7eb64e6` Merge branch 'haiku/diverge'
+- `2125f1b` Merge branch 'haiku/ntstatus'
+- `5ad0233` Merge branch 'haiku/paths'
+- `4ec7826` Merge branch 'haiku/unitc'
+- `e5ab0dc` Merge branch 'haiku/verify'
+- `985a495` Merge branch 'haiku/host'
+- `5f43f8b` Merge branch 'haiku/ntfix'
+- `acecb07` Merge branch 'haiku/paths2'
+- `797de67` Merge branch 'haiku/readme'
+- `4b19469` Merge branch 'haiku/adr'
+- `bff524f` Merge branch 'haiku/exports'
+- `5779442` Merge branch 'haiku/recheck'
+- `938a70d` Merge branch 'haiku/docsfix'
+- `7e75069` Merge branch 'haiku/diff'
+- `916620d` Merge branch 'haiku/adr2'
+- `06e1d91` Merge branch 'haiku/uni2'
+- `7e3b6df` Merge branch 'haiku/linuxshim'
+- `2aa354d` Merge branch 'haiku/vmrev'
+- `f0daf4e` Merge branch 'haiku/kshim'
+- `b58b682` Merge branch 'haiku/prov'
+- `b023c14` Merge branch 'haiku/kshimfix'
+- `ec49863` Merge branch 'haiku/vmfix'
+- `ff01c73` Merge branch 'haiku/stale'
+- `d849e0b` Merge branch 'haiku/mmfail'
+- `47c5c79` Merge branch 'haiku/ntdllrev'
+- `7bee2ed` Merge branch 'haiku/harness'
+- `8fce6a2` Merge branch 'haiku/ntdllfix'
+- `2e73922` Merge branch 'haiku/leak'
+- `d44b82b` Merge branch 'haiku/bounds'
+- `b10089d` Merge branch 'haiku/fsdoc'
+- `dcfdc9b` Merge branch 'haiku/ldrfix'
+- `cad967a` Merge branch 'haiku/status'
+- `5d20eb3` Merge branch 'haiku/placeholders'
+- `9eea89a` Merge branch 'haiku/flake'
+- `c0647f2` Merge branch 'haiku/mingwbuild'
+- `ce0e212` Merge branch 'haiku/khrefresh'
+- `e9a7f8f` Merge branch 'haiku/markers'
+- `36aaa85` Merge branch 'haiku/mman'
+- `7e9c2d8` Merge branch 'haiku/docs3'
+- `d525b33` Merge branch 'haiku/stubs'
+- `d3c9fa0` Merge branch 'haiku/lows-lfa'
+- `5b68bb9` Merge branch 'haiku/lows-ntdll'
+- `04641a6` Merge branch 'haiku/lows-nt'
+- `a6e43c3` Merge branch 'haiku/crt3'
+- `121c751` Merge branch 'haiku/audit'
+- `af04939` Merge branch 'haiku/thread'
+- `e3b92dd` Merge branch 'haiku/gcov'
+- `57f63eb` Merge branch 'haiku/diagrams'
+- `18f598b` Merge branch 'haiku/analyzer'
+- `c2d993e` Merge branch 'haiku/suspects'
+- `1ae88d6` Merge branch 'haiku/unwind'
+- `c5a7b8f` Merge branch 'haiku/sysparity'
+- `319aa08` Merge branch 'haiku/chained'
+- `a00a67c` Merge branch 'haiku/resolveci'
+- `15424fd` Merge branch 'haiku/sysargs'

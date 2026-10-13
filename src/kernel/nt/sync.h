@@ -104,6 +104,11 @@ void     nt_thread_destroy(struct nt_thread *t);
 void     nt_thread_alert(struct nt_thread *t);
 void     nt_thread_queue_apc(struct nt_thread *t);
 void     nt_thread_clear_alert(struct nt_thread *t);
+/* Alert state as an alertable wait sees it. nt_thread_alert_pending only
+ * reads; nt_thread_consume_alert reads and clears (NT: the alert is used up
+ * by the wait or NtTestAlert that reports it). */
+bool     nt_thread_alert_pending(struct nt_thread *t);
+bool     nt_thread_consume_alert(struct nt_thread *t);
 
 /* ------------------------------------------------------------------ */
 /* Dispatcher object model                                              */
@@ -198,6 +203,7 @@ struct nt_semaphore {
 struct nt_timer {
     struct nt_dispatcher_header header;
     pthread_mutex_t             timer_lock;
+    pthread_cond_t              timer_cond; /* wakes the timer thread on cancel; signalled when it exits */
     pthread_t                   timer_thread;
     bool                        active;
     bool                        thread_running;
@@ -207,6 +213,7 @@ struct nt_timer {
     void                      (*apc_routine)(void *);
     void                       *apc_ctx;
     struct nt_thread           *apc_thread;
+    int64_t                     expiry_100ns; /* absolute NT time of the armed expiry, 0 if none */
 };
 #else
 struct nt_timer {
@@ -220,6 +227,7 @@ struct nt_timer {
     void                      (*apc_routine)(void *);
     void                       *apc_ctx;
     struct nt_thread           *apc_thread;
+    int64_t                     expiry_100ns; /* absolute NT time of the armed expiry, 0 if none */
 };
 #endif
 

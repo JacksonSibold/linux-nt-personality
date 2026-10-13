@@ -775,10 +775,10 @@ static bool ntio_casefold_lookup(const char *dir, const char *component,
  * Apply case-insensitive re-resolution to a Linux path: for every component,
  * if the exact name does not exist but a case-insensitive match does, use it.
  */
-static void ntio_resolve_ci(char *path)
+static NTSTATUS ntio_resolve_ci(char *path)
 {
 	char resolved[PATH_MAX];
-	char component[NAME_MAX];
+	char component[NAME_MAX + 1];
 	const char *p;
 	size_t rlen = 0;
 	struct stat st;
@@ -796,8 +796,12 @@ static void ntio_resolve_ci(char *path)
 
 	while (*p) {
 		size_t i = 0;
-		while (*p && *p != '/')
+		while (*p && *p != '/') {
+			/* Reject names over NAME_MAX before the copy. */
+			if (i >= NAME_MAX)
+				return STATUS_OBJECT_NAME_INVALID;
 			component[i++] = *p++;
+		}
 		component[i] = '\0';
 		if (i == 0) {
 			if (*p == '/')
@@ -812,7 +816,7 @@ static void ntio_resolve_ci(char *path)
 		rlen += i;
 
 		if (stat(resolved, &st) != 0) {
-			char fold[NAME_MAX];
+			char fold[NAME_MAX + 1];
 			char parent[PATH_MAX];
 			size_t plen = rlen - i;
 
@@ -836,6 +840,7 @@ static void ntio_resolve_ci(char *path)
 	}
 
 	memcpy(path, resolved, rlen + 1);
+	return STATUS_SUCCESS;
 }
 #else
 /* Kernel: case-insensitive lookup via dcache iteration. */
@@ -866,11 +871,11 @@ static bool ntio_casefold_lookup(const char *dir, const char *component,
 	return found;
 }
 
-static void ntio_resolve_ci(char *path)
+static NTSTATUS ntio_resolve_ci(char *path)
 {
 	char *resolved = kmalloc(PATH_MAX, GFP_KERNEL);
-	if (!resolved) return;
-	char component[NAME_MAX];
+	if (!resolved) return STATUS_NO_MEMORY;
+	char component[NAME_MAX + 1];
 	const char *p;
 	size_t rlen = 0;
 	resolved[0] = '\0';
@@ -883,8 +888,14 @@ static void ntio_resolve_ci(char *path)
 	}
 	while (*p) {
 		size_t i = 0;
-		while (*p && *p != '/')
+		while (*p && *p != '/') {
+			/* Reject names over NAME_MAX before the copy. */
+			if (i >= NAME_MAX) {
+				kfree(resolved);
+				return STATUS_OBJECT_NAME_INVALID;
+			}
 			component[i++] = *p++;
+		}
 		component[i] = '\0';
 		if (i == 0) {
 			if (*p == '/') p++;
@@ -896,9 +907,9 @@ static void ntio_resolve_ci(char *path)
 		rlen += i;
 		struct path check;
 		if (kern_path(resolved, LOOKUP_FOLLOW, &check) != 0) {
-			char fold[NAME_MAX];
+			char fold[NAME_MAX + 1];
 			char *parent = kmalloc(PATH_MAX, GFP_KERNEL);
-			if (!parent) { kfree(resolved); return; }
+			if (!parent) { kfree(resolved); return STATUS_NO_MEMORY; }
 			size_t plen = rlen - i;
 			if (plen == 0) {
 				parent[0] = '/';
@@ -924,6 +935,7 @@ static void ntio_resolve_ci(char *path)
 	}
 	memcpy(path, resolved, rlen + 1);
 	kfree(resolved);
+	return STATUS_SUCCESS;
 }
 #endif
 
@@ -1038,7 +1050,9 @@ NTSTATUS ntio_resolve_path(POBJECT_ATTRIBUTES __user obj_attr, char *linux_path,
 	kfree(k_buf);
 
 	/* Case-insensitive re-resolution for existing paths. */
-	ntio_resolve_ci(linux_path);
+	status = ntio_resolve_ci(linux_path);
+	if (!NT_SUCCESS(status))
+		return status;
 
 	/* Check whether the resolved path is a directory. */
 #ifndef __KERNEL__
@@ -1664,9 +1678,6 @@ static NTSTATUS ntio_do_read(struct nt_file_object *file, PVOID __user Buffer,
 					break;
 				}
 			}
-					/* The read advanced pos but the chunk was not delivered:
-					 * rewind so the position matches the bytes reported (IO-17). */
-					pos -= got;
 			kfree(kbuf);
 			total += got;
 			if (got == 0 || (size_t)got < chunk) break;

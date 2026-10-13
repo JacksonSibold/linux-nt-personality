@@ -20,6 +20,36 @@ one that resolves (to `C:/msys64/tmp` there), and it is writable.
 Outputs go to `build/` (ignored by git). Test programs run with `build/` as
 their working directory, so the scratch files they create stay there.
 
+## Make targets
+
+| Target | What it does |
+|---|---|
+| `make all` (default) | Builds every program in `TESTS`, `STRESS_TESTS`, `BUILD_ONLY` and `SHIM_TESTS` into `build/<name>.exe`. Runs nothing. |
+| `make build/<name>.exe` | Builds one program, e.g. `make build/io_test.exe`. |
+| `make check` | Builds, then runs `TESTS` and `mman_test`. `sync_test` gets `SYNC_TEST_ITERATIONS=$(SYNC_CHECK_ITERATIONS)` (default 2000). Exits nonzero if any program fails. |
+| `make check-quick` | Like `check`, but leaves out `sync_test`, the slowest program. Use it for the edit-test loop. |
+| `make check-full` | Like `check`, with `sync_test` at the CI count `SYNC_FULL_ITERATIONS` (default 20000, the program's own default). Takes about 5 to 6 minutes on this host. |
+| `make stress` | Runs `STRESS_TESTS` once per seed in `STRESS_SEEDS`, with `KSHIM_POISON=1`. Not part of any `check` target. |
+| `make clean` | Removes `$(BUILD)/`. |
+| `make clean-scratch` | Removes `ntio_test_*` directories older than one day from the test temp dir (`TEMP_DIR`). Nothing else in that dir is matched. |
+| `make ... TIMEOUT=n` | Per-program wall-clock limit in seconds for the check targets (default 3000). |
+
+Variables that the targets read:
+
+- `SYNC_TEST_ITERATIONS` (environment, read by `sync_test` itself). Count for
+  the `wait_on_address_extended` loop. Unset means 20000. Set it to a value in
+  1..10000000; anything else makes `sync_test` exit with status 2. The
+  `check` targets set it through the Makefile variables above.
+- `SYNC_CHECK_ITERATIONS`, `SYNC_FULL_ITERATIONS` (Makefile) - the counts
+  used by `check` and `check-quick`, and by `check-full`.
+- `KEEP_SCRATCH=1` (environment, read by the shim). Keeps a test's scratch
+  root instead of removing it at exit. The program prints the kept path.
+- `STRESS_SEEDS`, `STRESS_THREADS`, `STRESS_OPS`, `STRESS_TIMEOUT` (Makefile) -
+  the stress run; see "Stress tests" below.
+- `COVERAGE=1`, `OPT=-O2`, `BUILD=...` (Makefile) - coverage and optimiser builds,
+  kept in their own directories (`build-cov/`, `build-*/`).
+- `TEMP_DIR` (Makefile) - the temp dir, see "Scratch root" under Known deviations.
+
 ## Layout
 
 - `Makefile` - build rules. Each program links its test object with the module
@@ -153,18 +183,21 @@ separate `BUILD=build-o2` directory (`build-*/` is git-ignored).
 
 ## Known failures and limits
 
-- **sync_test** (slow). `wait_on_address_extended` runs 20000 iterations, each
-  with a `pthread_create` and `usleep(2000)`. On Windows that takes minutes.
-  `TIMEOUT` (default 3000 s) bounds each program in `check`.
+- **sync_test** (slow). `wait_on_address_extended` runs `SYNC_TEST_ITERATIONS`
+  iterations (default 20000), each with a `pthread_create` and `usleep(2000)`.
+  At 20000 it took about 5 minutes on the 2026-10-12 clean run. `check` and
+  `check-quick` use 2000 (about 45 s); `check-full` uses 20000. `TIMEOUT`
+  (default 3000 s) bounds each program in the check targets.
 - **Trailing dots in unlink, rename, mkdir, rmdir.** `khost_unlink`,
   `khost_rmdir`, `khost_rename` and `khost_raw_mkdir` call the CRT directly,
   not through the `\\?\` path. A name ending in `.` can therefore be stripped
   to the wrong file. No test exercises that yet.
 - **mman_test intermittent failure: fixed** (test bug, see "mman_test flake" above).
-- **sync_test** (slow). `wait_on_address_extended` runs 20000 iterations, each
-  with a `pthread_create` and `usleep(2000)`. On Windows it took about 5 minutes
-  on the 2026-10-12 clean run. `TIMEOUT` (default 3000 s) bounds each program
-  in `check`.
+- **Stress findings still open (`make stress` is not green).** Each is recorded in `docs/review/kernel-nt.md`, with the seed that reproduces it:
+  - `stress_registry_test` faults under `KSHIM_POISON=1` (every seed): `NtSetValueKey` persists a value after releasing the key lock, and `NtDeleteValueKey` can free that value first (REG-1).
+  - `stress_namespace_test` faults in a libwinpthread lock about one run in three under `KSHIM_POISON=1` (OB-1). Without poison it passed every run tried.
+  - `stress_sync_test` fails about half the runs at seed 2 with 16 workers, both with and without poison. The base commit before this work (`45a70b4`) fails the same way (SYNC-3, not minimised).
+  - Opening an event through a path that crosses a symbolic link always fails with `STATUS_OBJECT_PATH_NOT_FOUND` (OB-2). The namespace test keeps that probe, so its counter `thru_link` stays 0.
 
 ## Modules that cannot be built here
 
@@ -213,3 +246,63 @@ These do not appear in `TESTS` or `BUILD_ONLY`.
 - **Scratch root.** Tests use `/tmp`. It maps to TMP, else TEMP (absolute
   drive path only), else the current directory. It is always absolute, which
   the `\\?\` prefix requires. Directory opens use `FILE_FLAG_BACKUP_SEMANTICS`.
+- **Scratch cleanup.** A test that creates a root under `/tmp` calls
+  `khost_scratch_arm_cleanup()` (`shim/posix_host.c`). The root is removed at
+  exit after a pass or a failure, so a failing run leaves nothing behind.
+  `KEEP_SCRATCH=1` keeps it for debugging. Only `io_test` creates such a root
+  (`ntio_test_<pid>`). Roots left by runs before this change, or by a process
+  killed before exit, are removed by `make clean-scratch` once they are a day old.
+
+## Stress tests (not part of `check`)
+
+Nine concurrency stress programs drive the userspace kshim build of the
+object, handle, sync, token, section, namespace, security-descriptor, registry
+and timer code with several threads at once. They are built by
+`make all` and run only by `make stress`. `check` does not run them.
+
+| Program | Sources linked | Covers |
+|---|---|---|
+| `stress_handle_test` | `object handle kshim` | create, close, duplicate (same and cross process, with move), ref and deref through handles, and a race round where every worker calls `ObCloseHandle` on one value |
+| `stress_object_test` | `object handle kshim` | named create and insert, open, reference by name, delete (`ObMakeTemporaryObject`), unnamed ref and deref, and a regression round for concurrent make-temporary |
+| `stress_sync_test` | `object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel` | `nt_svc_*` events, mutants, and semaphores with 0 to 2 ms waits, recursive mutant ownership, duplicate and close, named events, and a race round where every worker calls `NtClose` on one value |
+| `stress_token_test` | `security object handle kshim` | process-token open with random access masks, duplicate (of a shared token and of a worker's own), disable-all-privileges and TokenUser query, checked against the access each handle was granted; a race round of closes on one duplicate |
+| `stress_section_test` | `mm security object handle io iocp nt_obj_weak sync kshim` | anonymous sections with a private RW view and a tag round trip, file-backed read-only views of four 64 KiB files, named sections created and opened by name, view unmap and handle close in independent orders, delete by name; a race round of closes |
+| `stress_namespace_test` | `security object handle nt_obj sync kshim` | directories (permanent and temporary names), events inside them, symbolic links to directory paths, open of links and of events by path, permanent and temporary changes; a race round where every worker opens one event by path while it is deleted |
+| `stress_sd_test` | `security object handle nt_obj sync kshim` | `NtSetSecurityObject` with one of four DACL variants and `NtQuerySecurityObject` into large and small buffers on shared events; each query must parse and match an installed variant; a race round of set-or-query then close |
+| `stress_registry_test` | `security registry object handle nt_obj sync kshim` | key create, open, delete and flush under `\Registry\User\Software`, DWORD value set, query and delete; every result must be in the call's allowed set; a race round where every worker opens a key that is deleted at the same moment |
+| `stress_timer_test` | `security object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel` | real nt threads: waitable timers set (some periodic) and cancelled, waits with 0 to 2 ms timeouts, keyed-event release and wait with per-worker keys, alertable waits on an event that is never signalled, `NtAlertThread` between workers and on self |
+
+Usage (run from `tests/kernel-host`, or from `build/`):
+
+```sh
+make stress                                   # seeds 1 2 3, 12 threads, per-program op counts
+make stress STRESS_SEEDS=42 STRESS_THREADS=16 # one seed, 16 workers
+./build/stress_handle_test.exe <seed> <threads 8..16> <ops per thread>
+```
+
+Each program takes `seed`, `threads` (clamped to 8..16), and `ops` as
+positional arguments. The defaults are 65536 ops for `stress_handle_test`,
+16384 for `stress_object_test`, and 4096 for `stress_sync_test`. Each worker's
+PRNG stream is derived from the seed and the worker index, so a failure
+reproduces from its seed. Every program exits 0 on success and 1 on any
+violation. Violations print the seed, file, line, and the failing condition.
+
+Every run also checks these invariants at the end:
+
+- no leaked allocations: `kshim_alloc_count` returns to its value before the
+  object manager was initialised; `kshim_leak_report()` lists survivors
+- handle tables are empty, and each pool object has `ref_count == 1` and
+  `handle_count == 0`
+- in each race round exactly one concurrent close succeeds and the others
+  return `STATUS_INVALID_HANDLE`
+
+`make stress` sets `KSHIM_POISON=1`, which fills every allocation with `0xA5`
+on allocation and `0xDD` on free (see `src/kernel/nt/kshim.c`). A read of freed
+memory then produces a visibly wrong value or a fault.
+
+A watchdog thread in each program aborts the process with a report if no worker
+has completed an operation for 60 seconds. That is treated as a deadlock.
+
+Measured on this machine (2026-10-12, UCRT gcc, Windows 11, 16 workers, `KSHIM_POISON=1`, seed 2, default op counts): `stress_token_test` 1 s, `stress_handle_test` 2 s, `stress_section_test` 2 s, `stress_sd_test` 3 s, `stress_namespace_test` 11 s, `stress_object_test` 18 s, `stress_sync_test` 16 s (the timed waits dominate, and it fails about half the runs, see below), `stress_timer_test` 28 s, `stress_registry_test` faults in under 1 s (see below). A full `make stress STRESS_THREADS=16` (three seeds, nine programs) took about 2 min 40 s on the 2026-10-12 run, with the failures listed below. `make stress` writes each program's output to
+`build/<program>.seed<N>.log`. `nt_obj.c` and `proc_thread.c` print debug lines
+(`W1_INSTR`, `NtWaitForSingleObject:`) on every call. Those lines are now compiled out unless `NT_DEBUG_TRACE` is defined (`src/kernel/nt/kshim.h`), so the logs are small by default.

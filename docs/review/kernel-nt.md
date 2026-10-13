@@ -10,10 +10,12 @@ Severity: High / Medium / Low / Info. "Latent" means the defect is real in the c
 
 | Severity | Count |
 |---|---|
-| High | 7 |
+| High | 8 |
 | Medium | 9 |
-| Low | 18 |
+| Low | 19 |
 | Info | 1 |
+
+The C-* findings are the exception to the static method above. They were found by the concurrency stress programs in `tests/kernel-host` (`make stress`, branch `haiku/stress`, 2026-10-12, 16 workers, seeds 1 to 3). C-1 was reproduced and fixed. C-2 was not reproduced. The stress run also found no handle-table, sync, or allocation-leak defects.
 
 The code is careful about `copy_from_user` at most service entry points, and the object, handle, and dispatch layers are structured clearly. The problems cluster in four places: (1) kernel-heap memory returned to user space without being initialised, (2) user-controlled values used as kernel pointers or table indices without range checks, (3) kernel-build registries that keep pointers to freed objects, and (4) waits and I/O that do not check object type or access rights.
 
@@ -46,7 +48,7 @@ The code is careful about `copy_from_user` at most service entry points, and the
 - `src/kernel/nt/registry.c:1621` (kernel branch of `nt_svc_NtQueryValueKey`; the shim at `:1448` is the same) allocates `kout = kmalloc(len)`.
 - `NtQueryValueKey` (`registry.c:1079-1140`) fills only `needed` bytes when `Length >= needed`, then the wrapper runs `copy_to_user(info, kout, len)` at `:1625` for the full `len`. The tail is uninitialised. Fix: `kzalloc`, or copy only `min(needed, len)`.
 
-### M-1 [High] Kernel pointer returned as section handle and used unvalidated
+### M-1 [High] Kernel pointer returned as section handle and used unvalidated (fixed c8f479e, record 0001)
 - `src/kernel/nt/mm.c:1498`: `NtCreateSection` returns `*SectionHandle = (HANDLE)sec;`, a kernel address, to the caller.
 - `src/kernel/nt/mm.c:1507-1515`: `NtMapViewOfSection` casts `SectionHandle` to `struct nt_section *` and reads `sec->attributes`, `sec->size`, `sec->page_protection` and `sec->backing` (`:1524-1552`) without any handle-table lookup or type check. `NtMapViewOfSection` is registered as a service (`nt_service_list.h:34`).
 - Impact: address disclosure through the returned handle (KASLR), and a forged handle makes the kernel dereference an arbitrary address and feed `sec->backing` into `kshim_section_map` (`kshim.c:117-137`).
@@ -180,8 +182,54 @@ The code is careful about `copy_from_user` at most service entry points, and the
 - `src/kernel/nt/dispatch.c:113-115`: `pr_info` runs for six specific SSNs on every call, from any caller. A loop can flood the kernel log.
 - Fix: remove, or switch to `pr_debug` or a ratelimited call.
 
+### C-1 [High] Concurrent ObMakeTemporaryObject drops the directory reference more than once (fixed ecc7f83)
+- `src/kernel/nt/object.c`, `ObpRemoveFromDirectory`: the function read `obj->parent_dir` and dropped the directory's reference without re-checking under the directory lock. Two threads calling `ObMakeTemporaryObject` on the same named object (for example, two handles with delete access) could both see the same non-NULL `parent_dir`. The second call found no entry but still called `ObDereferenceObject`, so the count fell below the number of live references.
+- Found by `make stress` in `tests/kernel-host` (`stress_object_test`, its make-temporary round). Before the fix the count read 9 where 16 was expected, and then `KASSERT(c >= 0)` fired in `ObDereferenceObject`. The random phase hit the same assertion at seeds 1 to 3 with 8 threads.
+- Fix `ecc7f83`: re-check `parent_dir` under the directory's write lock, and drop the reference only when this call unlinked the entry. Regression: `50dbf92` (round in `stress_object_test.c`, which failed before the fix). Free-time poisoning under `KSHIM_POISON=1` that supports the check: `a164b43`.
+- Not the same as O-5: O-5 is a single-caller ordering question, and this is a concurrent double drop.
+
+### C-2 [Low] Named insert publishes the directory entry before setting parent_dir (not reproduced, not fixed)
+- `src/kernel/nt/object.c`, `ObpInsertDirectoryEntry`: the entry is linked and the write lock is released, then `ObReferenceObject(obj)` runs, and only after that `obj->parent_dir` and `obj->name` are set, without the lock. A thread that finds the name in that window (`ObReferenceObjectByName`) and calls `ObMakeTemporaryObject` sees `parent_dir == NULL` and returns. The delete is lost and the name stays in the directory until a later delete.
+- Not reproduced by `stress_object_test`; the window is a few instructions wide. Suggested fix: take the directory's reference and set `parent_dir` and `name` inside the write lock, before `write_unlock`.
+
 ### I-1 [Info] Stale comment about the call that frees the mapping
 - `src/kernel/nt/mm.c:1610-1613`: the comment says `vm_munmap` is called, but that line is commented out. The active call is `kshim_munmap` at `:1614`. Same behaviour, but the comment misleads the next reader.
+
+### T-1 [Medium] Timer handles are rejected by the single-object wait (fixed e2cf675)
+- `src/kernel/nt/nt_obj.c` (`nt_svc_NtWaitForSingleObject`, both branches) and `src/kernel/nt/sync.c` (`nt_svc_NtWaitForMultipleObjects`, kernel build) accept only event, mutant and semaphore types, so a timer returns `STATUS_OBJECT_TYPE_MISMATCH`. The wait engine already signals and consumes timers.
+- Fix: accept `nt_timer_type`. Synchronization timers reset when a wait consumes them, and notification timers stay set. `sync_extra_test` covers the single-object path. The multiple-object path is compiled only in the kernel build and is reviewed, not run here.
+
+### T-2 [Medium] Userspace timer fires after one second when the due time is two seconds or more, and cancel polls (fixed 3cbaa53)
+- `src/kernel/nt/sync.c`, `timer_thread_func` (userspace branch): each sleep is capped at one second, and the chunk is treated as the whole sleep, so a due time of two seconds or more signals early. `nt_cancel_timer` slept `usleep(2000)` and returned before the thread had exited.
+- Fix: the thread waits on `timer_cond` until the absolute NT expiry and re-reads the clock on each wake. Cancel wakes the thread and waits for it to exit. Periodic timers advance by the period without a burst. The kernel timer uses `mod_timer` with the full due time, so it is not affected.
+
+### T-3 [High] NtSetTimer runs a user APC routine on the timer thread or in softirq context (fixed 8e7fd33)
+- `src/kernel/nt/sync.c`: the userspace timer thread called `t->apc_routine` when no APC thread was set, and `timer_callback` called it in softirq context. `nt_svc_NtSetTimer` passed the user pointer through unchecked. No APC queue exists (`nt_thread_queue_apc` sets one flag), so the routine cannot be delivered to its thread.
+- Fix: a non-NULL `ApcRoutine` returns `STATUS_NOT_IMPLEMENTED` before any state changes, in the wrapper and in both `nt_set_timer` functions. The timer callbacks never call a routine.
+
+### K-1 [Medium] NtReleaseKeyedEvent with no waiter succeeds and drops the release (fixed ed89f0e for userspace; kernel open)
+- `src/kernel/nt/sync.c`, `nt_release_keyed_event`: with no waiter for the key it returned `STATUS_SUCCESS`. NT blocks the releaser until a waiter takes the release, or returns `STATUS_TIMEOUT` when the timeout ends (at once for zero).
+- Fix (userspace shim): a queued releaser list. A waiter that arrives first takes the release. Matching and waking happen under `g_keyed_lock`. The kernel keyed-event code (`nt_wait_for_keyed_event` and `nt_release_keyed_event` in the kernel branch, `:1756` and later) is a separate implementation with the same defect. It was not changed, because it cannot be built or run on this host.
+
+### T-4 [Low] NtWaitForMultipleObjects and the nt_internal.h prototypes take unsigned long arguments (not changed)
+- `src/kernel/nt/sync.c` (`nt_svc_NtWaitForMultipleObjects`) and `src/kernel/nt/nt_internal.h:73-74` take twelve `unsigned long` arguments. On an LLP64 host (Win64) a pointer argument is truncated to 32 bits. The kernel build is LP64, so the defect is latent there. The `nt_internal.h` prototype of `nt_svc_NtWaitForSingleObject` does not match its definition in `nt_obj.c` (`HANDLE`, `BOOLEAN`, `PLARGE_INTEGER`). Nothing in the host tests calls either through `nt_internal.h`.
+
+## Timer and keyed-event fixes (branch haiku/timerfix)
+
+The timer and keyed-event services were not on this branch. They were on `haiku/svcsync` and were picked up here first: `b891048`, `10ddb43`, `8ea698f`, `0258238`, `b9661c2`, `f8a0644`, and the build fix `5c5b570`. They are now `c4e9a6f`, `e388c15`, `67b98b2`, `a559148`, `16b16ed`, `8ddfe67`, and `3c73654`. Then, one commit per gap:
+
+- `e2cf675` T-1, timers are waitable (`sync_extra_test`: `wait_single_sync_timer_auto_reset`, `wait_single_notification_timer_stays_set`).
+- `3cbaa53` T-2, due time and period, cancel without polling (`set_timer_long_due_time_honoured`; guards `set_timer_period_repeats`, `cancel_timer_is_prompt`).
+- `8e7fd33` T-3, APC refusal (`set_timer_rejects_user_apc`).
+- `ed89f0e` K-1, keyed release blocks (`keyed_release_without_waiter_times_out`, `keyed_release_blocks_until_waiter`).
+
+The new tests were built against the sources before the fixes (`3c73654`, with `sync.c`, `sync.h` and `nt_obj.c` taken from that commit). Each of the four gaps failed for its stated reason (`0xc0000024` for T-1, a signal after the first 1 s chunk, before the 2 s check, for T-2, `STATUS_SUCCESS` for T-3, `STATUS_SUCCESS` for K-1). With the fixes, all 27 `sync_extra_test` cases pass.
+
+Not done or not verified on this host:
+- The kernel keyed-event release (K-1) and the kernel timer APC removal (T-3) are compiled only in the kernel build, which this host does not run. Only the APC refusal and the callback change were made there.
+- `tools/check_syscall_tables.py`, `tools/update_doc_counts.py --write`, and the Python unit suite were not run. `python` on this machine is the Windows Store alias stub. The counts in the Summary table and `docs/status/SERVICES.md` were not regenerated.
+- `stress_sync_test` was run once, seed 1 with 8 threads and `KSHIM_POISON=1`: 0 violations. Seeds 2 and 3 and the other stress programs were not run.
+- `mm_test.exe` returned 126 (Windows Application Control) on the first run and on one retry. It links `mm` and `kshim` only, so this change does not affect it. The other 11 `make check` programs pass.
 
 ## Fix status (branch haiku/ntfix)
 
@@ -193,7 +241,6 @@ Partly fixed: H-2 in d7adc94 (FIFO quarantine of closed slots, record 0003 optio
 
 Not fixed. Each has a design record in `docs/decisions/` (index: [docs/decisions/INDEX.md](../decisions/INDEX.md)):
 
-- M-1: NtCreateSection returns a kernel address as the handle. Needs a real object-table handle and a type-checked lookup in NtMapViewOfSection. Record 0001 (object-model change).
 - P-1: NtOpenProcess and NtOpenThread have no access or owner check and use the registry result unreferenced. Needs a policy for who may open which process. Record 0002.
 - M-3: section objects are never freed. Needs an object type with a delete callback; depends on M-1. Record 0004.
 - M-4: VAD rollback on failed commit or decommit. Recommended: validate, preallocate, then mutate. Record 0005.
@@ -202,6 +249,12 @@ Not fixed. Each has a design record in `docs/decisions/` (index: [docs/decisions
 - IOCP-1: concurrency count is never released. Needs a decision on when a thread counts as finished. Record 0009.
 
 Low findings are not addressed in this pass (M-5 and M-6 are still present, as are the others).
+
+## Case-insensitive lookup component overflow (branch haiku/resolveci)
+
+- IO-12 (new in this pass, not in the list above): `ntio_resolve_ci` in `src/kernel/nt/io.c` copied each path component into a `char component[NAME_MAX]` with no bound. The NT-layer check (`kshim_ntpath_to_linux`) allows 255 characters, so a 255-character component wrote its NUL one byte past the buffer. Fixed in 949cf00, which rejected components of 255 or more characters with `STATUS_OBJECT_NAME_INVALID`. That over-rejected legal NTFS names, so it is revised in 25bc012: `component` and the case-insensitive `fold` buffer are now `NAME_MAX + 1` (room for the NUL), and only components longer than `NAME_MAX` (256 or more) are rejected before the copy. The function still returns `NTSTATUS`. Tests: 4a5e4c3 (first, mis-targeted), 667d788 (reproduces the overflow), and 2393db8 (a 255-character lookup must resolve and 256 or 300 must be rejected; 2393db8 fails on the 949cf00 code with `0xC0000033` for 255 and passes after 25bc012). Verified on the host (`tests/kernel-host`, io_test 14/14). Stack impact is two bytes per frame, negligible. This is the same defect as IO-12 in `arch-x86-nt.md`.
+- On this host `PATH_MAX` is 260. A 255-character name fits the converter's buffer only under a root of at most three characters, so the 255-character create case is skipped when the path does not fit. The lookup case uses an empty root and does a `stat` only.
+- No other fixed-size buffer in `src/kernel/nt` is filled from a user-controlled length without a bound (`kbuf[4096]` in the console write, `registry.c` `vname[256]` capped at 200, `rel`/`parent`/`newpath` `PATH_MAX` buffers bounded by `snprintf` or `sizeof`).
 
 ## Medium and Low pass (branch haiku/lows-nt)
 
@@ -214,7 +267,7 @@ Each open Medium and Low finding was re-read against the code on this branch. St
 - O-4: fixed. `nt_dup_unicodestring` rejects lengths above 0xFFFC with `STATUS_NAME_TOO_LONG` before the terminator is added. No test: no public route reaches it with such a length; syntax check only.
 - R-2: fixed. `dup_us` in `registry.c` has the same USHORT wrap and gets the same guard. Latent; syntax check only.
 - O-5: fixed. `ObMakeTemporaryObject` clears the permanent flags before removing the object from its directory, so nothing is written after a possible free. Latent (the caller holds a reference); object_test passes, no failing test.
-- O-6: fixed. `ObCreateProcessObject` and `ObCreateThreadObject` check the registry insert and destroy the new object on failure. No test: the failure needs an allocation fault, and kshim has no injection hook; syntax check only. Not fixed here: `nt_current_ethread` (object.c, near the thread-creation path) calls `ObRegisterThread` a second time after `ObCreateThreadObject` has already registered the thread, so the list holds two nodes for one thread. Recorded for the owner.
+- O-6: fixed. `ObCreateProcessObject` and `ObCreateThreadObject` check the registry insert and destroy the new object on failure. No test: the failure needs an allocation fault, and kshim has no injection hook; syntax check only. Second registration fixed in c4bffb1 (test ee49ebe): `ObRegisterThread` is idempotent in both branches, and the redundant calls in `nt_current_ethread` (object.c, kernel branch) and `NtCreateThreadEx` (proc_thread.c, kernel branch) are removed. Test: object_test `thread_registry_one_node` (failed before with 2 nodes and 1 left after destroy; passes now).
 - M-5: fixed. `NtAllocateVirtualMemory` rejects a RegionSize above `SIZE_MAX - granularity` with `STATUS_INVALID_PARAMETER`, so the round-up cannot wrap to a zero-length VAD. Test: mm_test `test_alloc_size_wrap` (failed before with `STATUS_NO_MEMORY` or success).
 - M-7: fixed. `NtCreateSection` returns `STATUS_NOT_IMPLEMENTED` for a non-NULL FileHandle, as the finding allows, instead of a zeroed anonymous section. The `is_file` branch is now unreachable and is left in place for the owner who adds file backing. Test: mm_test `test_file_section_unsupported` (failed before: status success).
 - M-6: fixed. `NtFreeVirtualMemory` and `NtProtectVirtualMemory` reject a range whose end wraps before computing `end`. No failing test: a wrapping range needs a committed VAD near the top of the address space, which the host shim cannot provide without mapping a huge range. mm_test passes; syntax check.
@@ -227,11 +280,60 @@ Each open Medium and Low finding was re-read against the code on this branch. St
 
 - M-2 (Medium): no change. `NtMapViewOfSection` checks `offset > sec->size` before any arithmetic, and checks `actual_size > sec->size - offset` after it. Both guards are present on this branch.
 
-- O-2: needs owner. The exclusive check and the handle-count increment need one lock. The obvious choice, the parent directory lock, would nest under the handle table lock, and the lock order has not been decided.
+- O-2: needs owner. The exclusive check and the handle-count increment need one lock. The obvious choice, the parent directory lock, would nest under the handle table lock, and the lock order has not been decided. Design record 0033 (blocked, option 3 recommended: atomic claim, no new lock order).
 
-- SYNC-2: needs owner. `timeout_to_jiffies` cannot tell a kernel copy from a kernel address supplied by a user caller. The fix is a copy in each service wrapper that passes a timeout, and the provenance of each caller was only partly traced.
+- SYNC-2: needs owner. `timeout_to_jiffies` cannot tell a kernel copy from a kernel address supplied by a user caller. The fix is a copy in each service wrapper that passes a timeout, and the provenance of each caller was only partly traced. Design record 0034 (blocked, recommended: copy in each wrapper).
 
-- SEC-1: needs owner. The fix either stores capacity in the ACL allocation (a layout change) or returns errors from the registration call sites (six sites in `security.c`). The choice is a design decision.
+- SEC-1: needs owner. The fix either stores capacity in the ACL allocation (a layout change) or returns errors from the registration call sites (six sites in `security.c`). The choice is a design decision. Design record 0035 (blocked, recommended: return an error from registration; grep finds five call sites, not six).
+
+## Stress pass: token, section, namespace, SD, registry, timers (branch haiku/stress2)
+
+Six programs were added to `make stress`, each run with 16 workers and seeds 1 to 3 (`KSHIM_POISON=1`). Commits: tests `f23a857`, `29236dd`, `56a4481`, `7ac3e45`, `62b7199`, `097bc60`, wiring `bbc99e3`; fixes `6707c84` (SEC-3) and `2bac4c0` (MM-1).
+
+### SEC-3 [Medium] ACL capacity table updated without a lock (fixed 6707c84)
+
+- Found by `stress_token_test` (`f23a857`). Before the fix, seeds 1 to 3 gave 90 to 464 violations each: `NtOpenProcessToken` and `NtDuplicateToken` returned `STATUS_BUFFER_TOO_SMALL` under load.
+- Minimised: eight threads that open and close the process token, with nothing else running, fail 150 to 320 times in 24000 opens. One thread never fails.
+- Cause: `acl_capacity_register`, `acl_capacity_unregister` and `acl_capacity_lookup` (`security.c`) read and wrote `g_acl_caps` and `g_acl_cap_used` with no lock. A lost registration makes the lookup fall back to `AclSize`, and `acl_has_space` then rejects the ACE.
+- Fix: one spinlock around all three functions (kernel: `DEFINE_SPINLOCK`; userspace: a pthread mutex). After the fix, `stress_token_test` passes seeds 1 to 3 at 16 workers with 0 violations, and the eight-thread repro is clean.
+
+### MM-1 [Medium] NtUnmapViewOfSection releases the VAD lock before the host unmap (userspace fixed 2bac4c0; kernel open)
+
+- Found by `stress_section_test` (`29236dd`). Two threads that loop on map and unmap fault on the first write to a view. Seed 1 at 8 workers and 1024 ops fails, and so does a two-thread repro (3 of 3 runs before the fix, 0 of 3 after). A live-range check in the repro found no overlapping returned ranges before the fault, so the freed range was reused and then unmapped under the other view.
+- Cause: `NtUnmapViewOfSection` removes the VAD under `ntmm_lock`, releases the lock, then calls `kshim_munmap`. In that window another `NtMapViewOfSection` can take the freed range, and the late unmap removes its view.
+- Fix (userspace branch only, `#ifndef __KERNEL__`): `kshim_munmap` runs before `ntmm_unlock`. Section stress seeds 1 to 3 at 16 workers pass after the fix.
+- Open: the kernel branch keeps the old order. `vm_munmap` takes `mmap_lock`, and moving it under the VAD lock changes the lock order. That is a design decision.
+- Not kept: a shim self-test for the granule case. It could not be built, because Windows rejects a `MEM_RESERVE` at an address that is not 64K aligned, so a shared allocation base cannot be made from a fixed mapping.
+
+### REG-1 [Medium] NtSetValueKey persists a value after releasing the key lock (open)
+
+- `stress_registry_test` (`7ac3e45`) faults under `KSHIM_POISON=1` at every seed run in `make stress` (seeds 1 to 3). `addr2line` puts the fault at `registry.c:294`, the read of `v->name.Buffer` in `persist_write_value`, with a bad read address of -1.
+- Cause: both branches of `NtSetValueKey` call `persist_write_value(k, target)` or `(k, nv)` after `write_unlock(&k->lock)`. `NtDeleteValueKey` removes the value under the lock and frees it, so a set that is still persisting reads freed memory. Without poison the freed memory usually still holds the old values, which is why unpoisoned runs pass.
+- Not fixed: moving the persist under the lock is not safe in the kernel. `k->lock` is an `rwlock_t`, and the persist path does file I/O. A fix needs a sleepable per-key lock covering set persistence and value free, or a deferred free. That is a design decision.
+- Related, not a memory error: `NtDeleteValueKey` persists the deletion after unlocking, so a concurrent set of the same name can be unlinked on disk after it was written. Not tested.
+
+### OB-1 [Medium] ObpRemoveFromDirectory reads the parent directory without a reference (open, suspected)
+
+- `stress_namespace_test` under `KSHIM_POISON=1` faulted in `libwinpthread-1.dll`, reading address -1 inside a lock. Three of six poisoned runs faulted with 16 workers (seed 1, 16 workers, 4096 ops). In `make stress`, seeds 1 and 3 faulted and seed 2 passed. Without poison, no fault in the runs tried.
+- Suspected cause, from the code and not reproduced by a minimal test: `ObpRemoveFromDirectory` (`object.c`, around line 312) reads `obj->parent_dir` and then takes `dir->lock`. Nothing holds a reference on the directory across that gap, so a concurrent `ObMakeTemporaryObject` of the directory can free it first.
+- Open: the fix needs a parent-directory lifetime rule, either a reference taken under a lock that `directory_delete` also takes, or a parent pointer guarded by the child's lock. That is a design decision.
+
+### OB-2 [Low] Symbolic links are followed only as the last path component (open)
+
+- `object.c` resolves a symlink only when it is the final component (around line 446). A link in the middle of a path returns `STATUS_OBJECT_PATH_NOT_FOUND`, because the link type has no parse routine. `stress_namespace_test` counts successful opens through a link, and that count is 0 on every run.
+- Not fixed: a parse routine for links changes path semantics. Not a concurrency issue.
+
+### SYNC-3 [Medium] stress_sync_test fails about half its runs at seed 2 (open, pre-existing, not minimised)
+
+- With 16 workers, the failing runs report `owned wait` and `close` returning `STATUS_INVALID_HANDLE` on handles the worker still holds (1 to 6 violations per run). On the current tree 5 of 7 runs failed at seed 2, with and without poison. The base commit `45a70b4` failed 1 of 4 runs with the same messages, so this predates this work. Changes `6707c84` and `2bac4c0` do not touch the sync path.
+- Not minimised. A handle slot being freed twice, or reused during the race round, is a guess and is not confirmed.
+
+### Confirmed, no change
+
+- SEC-1 (ACL table overflow) reproduces as stated: with 300 live ACLs, `acl_add_allowed_ace` on the 300th returns `STATUS_BUFFER_TOO_SMALL`, and the first ACL still grows. Design record 0035 still applies.
+- The host shim maps file-backed section views as zero-filled anonymous memory (`tests/kernel-host/shim/mman_win.c`). `stress_section_test` therefore checks that file views map and read, not their contents.
+- Passing with 16 workers and seeds 1 to 3: `stress_token_test` (after the fix), `stress_section_test` (after the fix), `stress_sd_test` (no torn or unknown descriptors), `stress_timer_test`. `stress_namespace_test` passed seed 2 in `make stress` and 3 of 3 unpoisoned runs at 16 workers (it fails under poison, OB-1).
+- `make check-quick` passes after both fixes. `tools/update_doc_counts.py` and the Python unit suite were not run: this host has no working Python, so the count blocks in `docs/review/INDEX.md` are not regenerated.
 
 ## Not verified / out of scope
 

@@ -37,6 +37,28 @@ extern struct nt_object_type nt_event_type;
 extern struct nt_object_type nt_mutant_type;
 extern struct nt_object_type nt_semaphore_type;
 
+/* Timer resolution (NtSetTimerResolution / NtQueryTimerResolution), 100 ns
+ * units. Range 0.5 ms (finest) to 15.625 ms (coarsest, also the default).
+ * Model: one global request. Windows' per-process request accounting is not
+ * implemented, and the state is not locked. */
+#define NT_TIMER_RES_MIN 5000UL
+#define NT_TIMER_RES_MAX 156250UL
+static ULONG nt_timer_res_current = NT_TIMER_RES_MAX;
+
+/* Applies a request (set) or a release (!set) and returns the resulting
+ * current resolution. A requested value is clamped to the legal range. */
+static ULONG nt_timer_res_request(ULONG desired, BOOLEAN set)
+{
+    if (set) {
+        if (desired < NT_TIMER_RES_MIN) desired = NT_TIMER_RES_MIN;
+        if (desired > NT_TIMER_RES_MAX) desired = NT_TIMER_RES_MAX;
+        nt_timer_res_current = desired;
+    } else {
+        nt_timer_res_current = NT_TIMER_RES_MAX;
+    }
+    return nt_timer_res_current;
+}
+
 /* helper: current eprocess for kernel - weak, object.c provides strong with lazy creation */
 #ifdef __KERNEL__
 __attribute__((weak)) struct nt_eprocess *nt_get_current_eprocess(void)
@@ -105,6 +127,31 @@ NTSTATUS nt_svc_NtQueryPerformanceCounter(unsigned long a0, unsigned long a1, un
     if (PerformanceCounter) PerformanceCounter->QuadPart = ticks;
     if (PerformanceFrequency) PerformanceFrequency->QuadPart = freq;
     return STATUS_SUCCESS;
+}
+NTSTATUS nt_svc_NtSetTimerResolution(ULONG DesiredTime, BOOLEAN SetResolution, PULONG ActualTime)
+{
+    if (!ActualTime) return STATUS_ACCESS_VIOLATION;
+    *ActualTime = nt_timer_res_request(DesiredTime, SetResolution);
+    return STATUS_SUCCESS;
+}
+NTSTATUS nt_svc_NtQueryTimerResolution(PULONG MaximumTime, PULONG MinimumTime, PULONG CurrentTime)
+{
+    if (!MaximumTime || !MinimumTime || !CurrentTime) return STATUS_ACCESS_VIOLATION;
+    *MaximumTime = NT_TIMER_RES_MAX;
+    *MinimumTime = NT_TIMER_RES_MIN;
+    *CurrentTime = nt_timer_res_current;
+    return STATUS_SUCCESS;
+}
+/* NtRaiseHardError: refused. A hard error would put up a message box and may
+ * bring the system down, and this kernel has neither. The argument count is
+ * still validated (at most MAXIMUM_HARDERROR_PARAMETERS). No user memory is
+ * read or written, and no response is produced. */
+#define NT_MAX_HARDERROR_PARAMETERS 4UL
+NTSTATUS nt_svc_NtRaiseHardError(NTSTATUS ErrorStatus, ULONG NumberOfParameters, ULONG UnicodeStringParameterMask, ULONG_PTR *Parameters, ULONG ValidResponseOptions, PULONG Response)
+{
+    (void)ErrorStatus; (void)UnicodeStringParameterMask; (void)Parameters; (void)ValidResponseOptions; (void)Response;
+    if (NumberOfParameters > NT_MAX_HARDERROR_PARAMETERS) return STATUS_INVALID_PARAMETER;
+    return STATUS_NOT_SUPPORTED;
 }
 NTSTATUS nt_svc_NtQueryMutant(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {
@@ -319,6 +366,41 @@ NTSTATUS nt_svc_NtQueryPerformanceCounter(unsigned long a0, unsigned long a1, un
         if (copy_to_user(PerformanceFrequency, &kfreq, sizeof(kfreq))) return STATUS_ACCESS_VIOLATION;
     }
     return STATUS_SUCCESS;
+}
+NTSTATUS nt_svc_NtSetTimerResolution(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    ULONG DesiredTime = (ULONG)a0; BOOLEAN SetResolution = a1 ? TRUE : FALSE; PULONG ActualTime = (PULONG)a2;
+    ULONG actual;
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!ActualTime) return STATUS_ACCESS_VIOLATION;
+    if (!access_ok(ActualTime, sizeof(ULONG))) return STATUS_ACCESS_VIOLATION;
+    actual = nt_timer_res_request(DesiredTime, SetResolution);
+    if (copy_to_user(ActualTime, &actual, sizeof(actual))) return STATUS_ACCESS_VIOLATION;
+    return STATUS_SUCCESS;
+}
+NTSTATUS nt_svc_NtQueryTimerResolution(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    PULONG MaximumTime = (PULONG)a0; PULONG MinimumTime = (PULONG)a1; PULONG CurrentTime = (PULONG)a2;
+    ULONG vals[3];
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!MaximumTime || !MinimumTime || !CurrentTime) return STATUS_ACCESS_VIOLATION;
+    if (!access_ok(MaximumTime, sizeof(ULONG)) || !access_ok(MinimumTime, sizeof(ULONG)) ||
+        !access_ok(CurrentTime, sizeof(ULONG))) return STATUS_ACCESS_VIOLATION;
+    vals[0] = NT_TIMER_RES_MAX;
+    vals[1] = NT_TIMER_RES_MIN;
+    vals[2] = nt_timer_res_current;
+    if (copy_to_user(MaximumTime, &vals[0], sizeof(ULONG)) ||
+        copy_to_user(MinimumTime, &vals[1], sizeof(ULONG)) ||
+        copy_to_user(CurrentTime, &vals[2], sizeof(ULONG))) return STATUS_ACCESS_VIOLATION;
+    return STATUS_SUCCESS;
+}
+NTSTATUS nt_svc_NtRaiseHardError(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    NTSTATUS ErrorStatus = (NTSTATUS)a0; ULONG NumberOfParameters = (ULONG)a1;
+    (void)ErrorStatus;
+    (void)a2;(void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (NumberOfParameters > NT_MAX_HARDERROR_PARAMETERS) return STATUS_INVALID_PARAMETER;
+    return STATUS_NOT_SUPPORTED;
 }
 NTSTATUS nt_svc_NtQueryMutant(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {

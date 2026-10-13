@@ -116,6 +116,10 @@ NTSTATUS nt_svc_NtQueryInformationThread(HANDLE ThreadHandle, ULONG ThreadInform
 NTSTATUS nt_svc_NtSetInformationProcess(HANDLE ProcessHandle, ULONG Class, PVOID Info, ULONG Length);
 NTSTATUS nt_svc_NtSetInformationThread(HANDLE ThreadHandle, ULONG Class, PVOID Info, ULONG Length);
 
+NTSTATUS nt_svc_NtAlertResumeThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount);
+NTSTATUS nt_svc_NtAlertThread(HANDLE ThreadHandle);
+NTSTATUS nt_svc_NtAlertThreadByThreadId(HANDLE ThreadId);
+
 NTSTATUS nt_svc_NtGetContextThread(HANDLE ThreadHandle, PCONTEXT Context);
 NTSTATUS nt_svc_NtSetContextThread(HANDLE ThreadHandle, PCONTEXT Context);
 

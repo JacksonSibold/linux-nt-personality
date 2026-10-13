@@ -1231,6 +1231,8 @@ NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     /* MEM_DECOMMIT */
     base = ntmm_round_down(base, NTMM_PAGE_SIZE);
     if (size == 0) return STATUS_INVALID_PARAMETER;
+    /* Reject a size whose page round-up wraps to 0 (it would pass the end check). */
+    if (base > ~(ULONG_PTR)0 - NTMM_PAGE_SIZE || size > (SIZE_T)(~(ULONG_PTR)0 - NTMM_PAGE_SIZE - base)) return STATUS_INVALID_PARAMETER;
     size = (SIZE_T)ntmm_round_up(size, NTMM_PAGE_SIZE);
     ULONG_PTR end = base + size;
     ntmm_lock(mm);
@@ -1295,7 +1297,7 @@ NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     size = *RegionSize;
     base = ntmm_round_down(base, NTMM_PAGE_SIZE);
     /* Reject a range whose rounded end wraps the address space (M-12). */
-    if (size > (SIZE_T)(~(ULONG_PTR)0) - NTMM_PAGE_SIZE - base)
+    if (base > ~(ULONG_PTR)0 - NTMM_PAGE_SIZE || size > (SIZE_T)(~(ULONG_PTR)0 - NTMM_PAGE_SIZE - base))
         return STATUS_INVALID_PARAMETER;
     size = (SIZE_T)ntmm_round_up(size, NTMM_PAGE_SIZE);
     ULONG_PTR end = base + size;
@@ -1577,7 +1579,11 @@ NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
     }
     if (offset > sec->size) return STATUS_INVALID_VIEW_SIZE;
     if (*ViewSize == 0) actual_size = sec->size - offset;
-    else actual_size = (ULONG_PTR)ntmm_round_up(*ViewSize, NTMM_PAGE_SIZE);
+    else {
+        /* Check the raw size first: rounding a value near SIZE_MAX wraps to 0. */
+        if (*ViewSize > sec->size - offset) return STATUS_INVALID_VIEW_SIZE;
+        actual_size = (ULONG_PTR)ntmm_round_up(*ViewSize, NTMM_PAGE_SIZE);
+    }
     if (actual_size > sec->size - offset) return STATUS_INVALID_VIEW_SIZE;
     if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
     commit = (sec->attributes & SEC_COMMIT) || (AllocationType & MEM_COMMIT);

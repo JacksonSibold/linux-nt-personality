@@ -34,6 +34,35 @@ extern "C" {
 #define OBJ_DONT_RESOLVE_LINK   OBJ_OPENLINK
 #define OBJ_VALID_ATTRIBUTES    (OBJ_INHERIT|OBJ_PERMANENT|OBJ_EXCLUSIVE|OBJ_CASE_INSENSITIVE|OBJ_OPENIF|OBJ_OPENLINK|OBJ_KERNEL_HANDLE|OBJ_FORCE_ACCESS_CHECK|OBJ_PROTECT_FROM_CLOSE)
 
+/* OBJECT_DIRECTORY_INFORMATION (winternl.h): one record per entry, with the
+ * strings stored after the record array (see NtQueryDirectoryObject). */
+typedef struct _OBJECT_DIRECTORY_INFORMATION {
+    UNICODE_STRING Name;
+    UNICODE_STRING TypeName;
+} OBJECT_DIRECTORY_INFORMATION, *POBJECT_DIRECTORY_INFORMATION;
+
+/* Object directory access rights (winnt.h). Values are not in security.h, so
+ * they are defined here for the namespace services in nt_obj.c. */
+#define DIRECTORY_QUERY                 0x0001UL
+#define DIRECTORY_TRAVERSE              0x0002UL
+#define DIRECTORY_CREATE_OBJECT         0x0004UL
+#define DIRECTORY_CREATE_SUBDIRECTORY   0x0008UL
+#define DIRECTORY_ALL_ACCESS            0x000F000FUL
+
+/* Symbolic link object access rights (winnt.h). */
+#define SYMBOLIC_LINK_QUERY             0x0001UL
+#define SYMBOLIC_LINK_ALL_ACCESS        0x000F0001UL
+
+/* STATUS for a create that found an existing object and opened it (ntstatus.h). */
+#ifndef STATUS_OBJECT_NAME_EXISTS
+#define STATUS_OBJECT_NAME_EXISTS ((NTSTATUS)0x40000000L)
+#endif
+
+/* STATUS for a create that found an existing object and opened it. */
+#ifndef STATUS_OBJECT_NAME_EXISTS
+#define STATUS_OBJECT_NAME_EXISTS ((NTSTATUS)0x40000000L)
+#endif
+
 /* STATUS for protected handle close */
 #ifndef STATUS_HANDLE_NOT_CLOSABLE
 #define STATUS_HANDLE_NOT_CLOSABLE ((NTSTATUS)0xC0000235L)
@@ -108,6 +137,14 @@ extern struct nt_object_type nt_symlink_type;
 extern struct nt_object_type nt_process_type;
 extern struct nt_object_type nt_thread_type;
 extern struct nt_object_type nt_test_type; /* generic test object type */
+extern struct nt_object_type nt_token_type; /* access token object (security.c) */
+
+/* Token object body: one reference to an ACCESS_TOKEN, released when the     */
+/* object is deleted (see security.c, token_create_primary).                  */
+struct _ACCESS_TOKEN;
+struct nt_token_body {
+    struct _ACCESS_TOKEN   *token;
+};
 
 /* -------------------------------------------------------------------------- */
 /* Object header                                                              */
@@ -119,13 +156,19 @@ struct nt_object_header {
     atomic64_t              handle_count;
     struct nt_directory    *parent_dir;
     UNICODE_STRING          name;
-    PSECURITY_DESCRIPTOR    security_descriptor;
     ULONG                   flags;
     void                   *body;
     struct list_head        type_link;
     bool                    is_permanent;
     bool                    is_exclusive;
     bool                    exclusive_owned;
+    /* Owned self-relative security descriptor copy, NULL when the object has
+     * none. Set with ObSetObjectSecurityDescriptor; freed on the final
+     * ObDereferenceObject. Shared by every handle, since handles point at
+     * this header. Keep this field last: nothing outside object.c relies on
+     * the offsets, but new fields are appended at the end. */
+    PSECURITY_DESCRIPTOR    security_descriptor;
+    ULONG                   security_descriptor_length;
 };
 
 static inline void *nt_object_body(struct nt_object_header *hdr)
@@ -214,7 +257,61 @@ NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs,
                              struct nt_eprocess *proc,
                              PHANDLE out_handle);
 
+#ifdef __KERNEL__
+/* Copies a user OBJECT_ATTRIBUTES, its name and the name buffer into kernel storage. */
+NTSTATUS ObCopyObjectAttributesFromUser(POBJECT_ATTRIBUTES uptr, OBJECT_ATTRIBUTES *k_oa,
+                                        UNICODE_STRING *k_name, WCHAR *k_buf,
+                                        size_t k_buf_bytes, POBJECT_ATTRIBUTES *out_oa);
+#endif
 NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj);
+
+/* Sets OBJ_PERMANENT on obj. Does not check SeCreatePermanentPrivilege; the
+ * caller does. */
+NTSTATUS ObMakePermanentObject(struct nt_object_header *obj);
+
+/* New, unnamed or named, directory object with an empty entry list. The caller
+ * inserts it with ObInsertOrOpenNamedObject. */
+NTSTATUS ObCreateDirectoryObject(POBJECT_ATTRIBUTES oa, struct nt_object_header **out_hdr);
+
+/* New symbolic link object whose target is a copy of target (absolute path,
+ * even length, non-empty). The caller inserts it with
+ * ObInsertOrOpenNamedObject. */
+NTSTATUS ObCreateSymbolicLinkObject(POBJECT_ATTRIBUTES oa, PCUNICODE_STRING target,
+                                    struct nt_object_header **out_hdr);
+
+/* Inserts obj under oa's name (or leaves it unnamed when oa has no name) and
+ * creates a handle for it in proc. Create-or-open rules (NT):
+ *  - the name exists and has another object type: STATUS_OBJECT_TYPE_MISMATCH;
+ *  - the name exists and OBJ_OPENIF is not set: STATUS_OBJECT_NAME_COLLISION;
+ *  - the name exists and OBJ_OPENIF is set: a handle to the existing object,
+ *    STATUS_OBJECT_NAME_EXISTS. obj is not inserted and the caller still
+ *    releases it.
+ * A missing parent directory gives STATUS_OBJECT_PATH_NOT_FOUND. The name
+ * lookup does not follow a symbolic link at the last component. */
+NTSTATUS ObInsertOrOpenNamedObject(struct nt_object_header *obj,
+                                   POBJECT_ATTRIBUTES oa,
+                                   ACCESS_MASK access,
+                                   struct nt_eprocess *proc,
+                                   PHANDLE out_handle);
+
+/* Attaches a copy of the self-relative descriptor sd (length bytes) to obj,
+ * replacing and freeing any previous one. sd == NULL clears it. The object
+ * takes ownership of the copy; the caller's buffer is not retained. */
+NTSTATUS ObSetObjectSecurityDescriptor(struct nt_object_header *obj,
+                                        const void *sd, ULONG length);
+
+/* Returns a heap copy of obj's descriptor (*out, *out_len), or *out == NULL when
+ * the object has none. The caller frees the copy with kfree. Safe against a
+ * concurrent ObSetObjectSecurityDescriptor. */
+NTSTATUS ObCopyObjectSecurityDescriptor(struct nt_object_header *obj,
+                                        void **out, ULONG *out_len);
+/* Creates a Token object that takes its own reference on tok and inserts it
+ * into proc's handle table. The caller keeps its own reference. */
+NTSTATUS ObCreateTokenHandle(struct nt_eprocess *proc,
+                             struct _ACCESS_TOKEN *tok,
+                             ACCESS_MASK access,
+                             ULONG attributes,
+                             PHANDLE out_handle);
 
 struct nt_object_header *ObGetRootDirectory(void);
 struct nt_object_header *ObGetDosDevicesDirectory(void);
@@ -261,6 +358,15 @@ struct nt_eprocess {
     /* PEB allocation */
     struct _PEB             *peb;
     void                    *peb_teb_reservation;
+    /* Primary access token (one reference held). Created with the process
+     * and released in ObDestroyProcessObject. */
+    struct _ACCESS_TOKEN    *primary_token;
+    /* Process information set state (NtSetInformationProcess). Added at the
+     * end of the struct; defaults are set in ObCreateProcessObject. */
+    UCHAR                    priority_class;        /* PROCESS_PRIORITY_CLASS_*, default NORMAL */
+    BOOLEAN                  priority_foreground;   /* PROCESS_PRIORITY_CLASS.Foreground */
+    ULONG                    default_hard_error_mode; /* SEM_* flags */
+    BOOLEAN                  break_on_termination;  /* ProcessBreakOnTermination */
 };
 
 struct nt_ethread {
@@ -295,6 +401,17 @@ struct nt_ethread {
     PVOID                    start_arg;
     ULONG                    create_flags;
     struct nt_thread        *sync_thread;
+    /* Impersonation token (one reference held), NULL unless the thread is
+     * impersonating. Released in ObDestroyThreadObject. */
+    struct _ACCESS_TOKEN    *impersonation_token;
+    /* Scheduling and alert state (proc_thread.c, iocp.c). All zero by default:
+     * priority 0 is THREAD_PRIORITY_NORMAL relative to the process, affinity 0
+     * means "inherit the process affinity mask". The alert flag is not kept
+     * here: it lives on sync_thread, the flag every alertable wait tests, so
+     * NtAlertThread and NtTestAlert see the same state. Written under the
+     * thread lock. */
+    LONG                     priority;       /* relative, -15..15 */
+    ULONG_PTR                affinity_mask;  /* 0 = inherit process mask */
 };
 
 NTSTATUS ObCreateProcessObject(struct nt_eprocess **out, ULONG pid, const char *name);

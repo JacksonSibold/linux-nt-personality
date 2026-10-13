@@ -34,6 +34,9 @@ NTSTATUS nt_svc_NtResetEvent(HANDLE EventHandle, PLONG PreviousState);
 NTSTATUS nt_svc_NtReleaseMutant(HANDLE MutantHandle, PLONG PreviousCount);
 NTSTATUS nt_svc_NtReleaseSemaphore(HANDLE SemaphoreHandle, LONG ReleaseCount, PLONG PreviousCount);
 NTSTATUS nt_svc_NtRtlNtStatusToDosError(NTSTATUS Status, ULONG *DosError);
+NTSTATUS nt_svc_NtQuerySystemTime(PLARGE_INTEGER SystemTime);
+NTSTATUS nt_svc_NtSetInformationObject(HANDLE Handle, ULONG ObjectInformationClass,
+                                       PVOID ObjectInformation, ULONG Length);
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +46,7 @@ NTSTATUS nt_svc_NtRtlNtStatusToDosError(NTSTATUS Status, ULONG *DosError);
 #include <pthread.h>
 #include <unistd.h>
 #include <stdatomic.h>
+#include <time.h>
 
 static int g_pass=0, g_fail=0;
 #define TEST(name) static void test_##name(void)
@@ -340,12 +344,59 @@ TEST(ntstatus_dos_spot) {
 }
 
 /* --------------------------------------------------------------- */
+/* NtQuerySystemTime: 100 ns units since 1601-01-01 UTC            */
+/* --------------------------------------------------------------- */
+TEST(query_system_time) {
+    LARGE_INTEGER t;
+    ASSERT_STATUS(nt_svc_NtQuerySystemTime(NULL), STATUS_ACCESS_VIOLATION);
+    time_t s0 = time(NULL);
+    ASSERT_STATUS(nt_svc_NtQuerySystemTime(&t), STATUS_SUCCESS);
+    time_t s1 = time(NULL);
+    /* 1601-01-01 to 1970-01-01 is 11644473600 s; Unix seconds must lie in [s0, s1]. */
+    LONGLONG unix100 = t.QuadPart - 116444736000000000LL;
+    ASSERT(t.QuadPart > 116444736000000000LL);
+    ASSERT(unix100 >= (LONGLONG)s0 * 10000000LL);
+    ASSERT(unix100 < ((LONGLONG)s1 + 1) * 10000000LL);
+    PASS();
+}
+
+/* --------------------------------------------------------------- */
+/* NtSetInformationObject(ObjectHandleFlagInformation): Inherit and ProtectFromClose */
+/* --------------------------------------------------------------- */
+TEST(set_handle_flag_information) {
+    reset_ob();
+    struct nt_eprocess *proc=make_proc(4000,"hflags");
+    struct nt_ethread *thr=make_thread(proc,20);
+    UNICODE_STRING us; make_us(&us, "\\BaseNamedObjects\\HFlagEv", wbuf1, sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us,0);
+    HANDLE h;
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&h, 0x1FFFFF, &oa, NotificationEvent, 0), STATUS_SUCCESS);
+    struct { BOOLEAN Inherit; BOOLEAN ProtectFromClose; } fi = {0, 0};
+    ASSERT_STATUS(nt_svc_NtSetInformationObject(h, 4, &fi, 1), STATUS_INFO_LENGTH_MISMATCH);
+    ASSERT_STATUS(nt_svc_NtSetInformationObject(h, 99, &fi, 2), STATUS_INVALID_INFO_CLASS);
+    ASSERT_STATUS(nt_svc_NtSetInformationObject(h, 4, NULL, 2), STATUS_ACCESS_VIOLATION);
+    fi.ProtectFromClose = 1;
+    ASSERT_STATUS(nt_svc_NtSetInformationObject(h, 4, &fi, 2), STATUS_SUCCESS);
+    ASSERT_STATUS(nt_svc_NtClose(h), STATUS_HANDLE_NOT_CLOSABLE);
+    fi.ProtectFromClose = 0; fi.Inherit = 1;
+    ASSERT_STATUS(nt_svc_NtSetInformationObject(h, 4, &fi, 2), STATUS_SUCCESS);
+    ASSERT_STATUS(nt_svc_NtSetInformationObject((HANDLE)0x1234, 4, &fi, 2), STATUS_INVALID_HANDLE);
+    ASSERT_STATUS(nt_svc_NtClose(h), STATUS_SUCCESS);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    struct nt_thread *c=nt_current_thread(); if(c){nt_set_current_thread(NULL); nt_thread_destroy(c);}
+    PASS();
+}
+
+/* --------------------------------------------------------------- */
 /* Handle table lifetime: created on first use, destroyed on exit   */
 /* --------------------------------------------------------------- */
 TEST(handle_table_lifetime) {
     reset_ob();
     struct nt_eprocess *proc=make_proc(3000,"life");
+    ASSERT(proc != NULL);
     struct nt_ethread *thr=make_thread(proc,5);
+    ASSERT(thr != NULL);
     ASSERT(proc->handle_table != NULL);
     /* Create and close to ensure table still alive */
     UNICODE_STRING us; make_us(&us, "\\BaseNamedObjects\\LifeEv", wbuf1,sizeof(wbuf1));
@@ -370,6 +421,8 @@ int main(void) {
     RUN(duplicate_access);
     RUN(query_invalid);
     RUN(ntstatus_dos_spot);
+    RUN(query_system_time);
+    RUN(set_handle_flag_information);
     RUN(handle_table_lifetime);
     printf("I2 tests: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) return 1;

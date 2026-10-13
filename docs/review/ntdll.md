@@ -12,12 +12,12 @@ Status: findings marked `Fixed in <sha>` were fixed in this branch, with a faili
 | Severity | Count |
 |---|---|
 | High | 20 |
-| Medium | 23 |
-| Low | 21 |
-| Info | 7 |
-| **Total** | **71** |
+| Medium | 24 |
+| Low | 22 |
+| Info | 8 |
+| **Total** | **74** |
 
-Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium). Win32 shim pass (branch `haiku/ntdllfix`): K32-1, K32-2, K32-3 and K32-5 (High) fixed. CRT-1 needs owner. Bounds pass (branch `haiku/bounds`): MAIN-1 (74b4a14), MAIN-2 (e7f8b2b), LDR-5 (5045b9c) and LDR-6 (d6007f6) fixed with `src/ntdll/pe_bounds.h`; K32-7 (d2d36fe) fixed. Loader pass (branch `haiku/ldrfix`): LDR-2 (a18c03e) and LDR-4 (bef4d79) are fixed, with the address logic in `src/ntdll/ldr_pure.h` and host tests in `test_ldr_pure`. LDR-1 and LDR-3 (High) have design records 0029 and 0031 and are not implemented; each records why (needs VM). Records 0030 and 0032 are marked implemented. `docs/decisions/INDEX.md` lists 0029 to 0032. The MAIN-2 test binary `test_pe_bounds` is build-only on this host (see MAIN-1), so its test cases have not been run here.
+Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium). Win32 shim pass (branch `haiku/ntdllfix`): K32-1, K32-2, K32-3 and K32-5 (High) fixed. CRT-1 (High) partly fixed (1f334ce), and CRT-3 (High) fixed (1224d00); the CRT-1 export removal needs owner. Bounds pass (branch `haiku/bounds`): MAIN-1 (74b4a14), MAIN-2 (e7f8b2b), LDR-5 (5045b9c) and LDR-6 (d6007f6) fixed with `src/ntdll/pe_bounds.h`; K32-7 (d2d36fe) fixed. Loader pass (branch `haiku/ldrfix`): LDR-2 (a18c03e) and LDR-4 (bef4d79) are fixed, with the address logic in `src/ntdll/ldr_pure.h` and host tests in `test_ldr_pure`. LDR-1 and LDR-3 (High) have design records 0029 and 0031 and are not implemented; each records why (needs VM). Records 0030 and 0032 are marked implemented. `docs/decisions/INDEX.md` lists 0029 to 0032. The MAIN-2 test binary `test_pe_bounds` is build-only on this host (see MAIN-1), so its test cases have not been run here.
 
 The most important point is LDR-1. The real ntdll (MinGW) build compiles only stubs for `LdrLoadDll`, `LdrGetDllHandle` and `LdrGetProcedureAddress`, so every Win32 `LoadLibrary`, `GetModuleHandle` and `GetProcAddress` call fails. The loader code that would do the work is excluded by a preprocessor branch and is never built for the MinGW target. The findings in the loader are therefore mainly about code that runs in the Linux test build, or that would run once LDR-1 is fixed.
 
@@ -35,11 +35,14 @@ Each fix is its own commit named by its ID. Host-testable logic has a test that 
 | EXC-4 | Needs owner | Per-thread dispatch state needs a TEB decision and a lock primitive. |
 | EXC-5 | Needs owner | Needs a deferred free or a lock, the same design as EXC-4. |
 | EXC-6 | Fixed | 6ae7bb7 (dead function removed) |
+| EXC-8 | Fixed | 6560e0d (test in 35c6a9c) |
 | RT-2 | Fixed | 92c14f5 |
 | RT-3 | Needs owner | Implementing the printf family or failing at link time is a product choice. |
 | RT-4 | Needs owner | Dropping `errno` changes the CRT ABI; the test Makefile already relaxes `-Wattributes`. |
 | RT-6 | Needs owner | `NtTerminateProcess` would be an undefined symbol in `test_runtime`; needs a stub or weak-symbol decision. |
 | CRT-2 | Partly fixed | cdcc7ce guards the NUL. The return value still counts bytes written, not the length required. |
+| CRT-1 | Partly fixed | 1f334ce bounds `sprintf` and `vsprintf` to `MS_SPRINTF_LIMIT` (1024). A caller with a smaller buffer still overflows; removing the exports is the owner decision. |
+| CRT-3 | Fixed | 1224d00 (`calloc` returns NULL when `n * s` wraps) |
 | CRT-4 | Fixed | 2a499a7 |
 | CRT-5 | Needs owner | Implementing float formatting or refusing the conversion is a product choice. |
 | CRT-6 | Fixed | 39e6015 |
@@ -70,7 +73,7 @@ Each fix is its own commit named by its ID. Host-testable logic has a test that 
 | MAIN-8 | Partly fixed | 2913b8c uses RegionSize 0. The error-path frees are not done: 13 early returns need one cleanup label. |
 | DEF-1 | Fixed | 27030e1. The generated `out/ntdll.def` was not regenerated, because Python is not installed here. |
 
-Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt.c`) is still open. The overflow check was left out of the CRT-4 commit because it is a High finding.
+Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt.c`) is fixed in 1224d00. CRT-1 is partly fixed in 1f334ce.
 
 ## Findings
 
@@ -188,6 +191,7 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 - `unwind.c:738-770`: the handler returned by `RtlVirtualUnwind` is discarded at `unwind.c:754` (`(void)handler;`). No termination or unwind handler is called. `TargetIp` is never jumped to: the function writes the walked context back to the caller, which then continues as if it had returned normally.
 - The header (`unwind.h`) and `ntdll.def:354` export `RtlUnwindEx` as implemented.
 - Fix: implement the second pass. Call each UNW_FLAG_UHANDLER handler in order, then restore the context with `TargetIp` in `Rip`.
+- Epilog detection (x64 "prolog and epilog" rules) is in `unwind_pure.h` as `uwp_decode_epilog` and `uwp_epilog_release`, with host tests for each legal form and for rejected bytes (`test_unwind_pure.c`). It is not wired into `RtlVirtualUnwind`: a PC inside an epilog still takes the prolog/body path. Wiring needs the `jmp` terminator case (the target is read from memory and the unwind restarts there) and the second pass above, so it is left for the UNW-2 work. Until then a PC in an epilog is unwound as body code, which is wrong for an epilog whose `ret` has already popped the frame.
 
 ### UNW-3 [Medium] RtlVirtualUnwind ignores HandlerType
 - `unwind.c:615`: `(void)HandlerType;`. The function returns a handler for either UNW_FLAG_EHANDLER or UNW_FLAG_UHANDLER. An exception filter (EHANDLER) is therefore returned during unwind and runs as a termination handler.
@@ -231,6 +235,11 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 ### EXC-7 [Info] Exit status from exception code
 - `except.c:568` (`_NtRaiseException`) exits with `128 + (ExceptionCode & 0xFF)`, not the NTSTATUS. Not a defect in isolation, but it loses information.
 
+### EXC-8 [Medium] Vectored continue handlers skipped when a vectored handler resumes (reproduced; Fixed in 6560e0d)
+- `except.c` (`RtlDispatchException`, vectored stage): on `EXCEPTION_CONTINUE_EXECUTION` the function returned without calling the vectored continue handlers. Only the frame-handler path called them. A continue handler therefore never saw an exception that a vectored handler resolved.
+- Test: `tests/ntdll-host/test_except_pure.c`, `vch_runs_when_veh_resumes` (failed at 35c6a9c, before the fix).
+- Fix applied: both resume paths call `run_continue_handlers`. The test was committed before the fix, so the failing run is in history.
+
 ### Runtime and allocator (`ntdll_runtime.c`)
 
 ### RT-1 [High] calloc and malloc accept sizes that wrap (reproduced; Fixed in 9c733c3)
@@ -260,7 +269,7 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 
 ### C runtime (`msvcrt.c`)
 
-### CRT-1 [High] sprintf and vsprintf write without a size (needs owner)
+### CRT-1 [High] sprintf and vsprintf write without a size (Partly fixed in 1f334ce: bounded to MS_SPRINTF_LIMIT; host test `test_msvcrt_policy`; removing the exports needs owner)
 - Not changed in this pass. The write is unbounded by contract, like C sprintf. The 8192 cap is a truncation, not an overflow guard: short output writes only its own length. The defect is the export, so the fix is an API decision: remove `sprintf`/`vsprintf` from `msvcrt.def` and `msvcrt.c`, or require `snprintf`. `msvcrt.c` is MinGW-only and cannot be host-tested.
 - `msvcrt.c:273-279`: `sprintf` and `vsprintf` format into the caller's buffer with a size of 8192 (`my_vsprintf(s, 8192, ...)`), whatever the buffer really is. Any caller with a smaller buffer overflows it.
 - Fix: remove these, or require callers to use `snprintf`.
@@ -269,7 +278,7 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 - `msvcrt.c:206`: `out[pos]='\0';` runs after the loop, so `snprintf(NULL, 0, fmt)` (the standard size query) writes to address 0. The function also returns the number written, not the length it would need.
 - Fix: write the NUL only when `outsz > 0`, and return the required length.
 
-### CRT-3 [High] calloc multiplies without an overflow check
+### CRT-3 [High] calloc multiplies without an overflow check (Fixed in 1224d00; host test `test_msvcrt_policy` passes on the final build. Application Control blocked the first fresh exe, so that run was not seen)
 - `msvcrt.c:85-86`: `SIZE_T tot=n*s;`. The same defect as RT-1, in the msvcrt copy. Not fixed in this pass, because `msvcrt.c` is a separate DLL.
 - Fix: as RT-1.
 
@@ -398,6 +407,14 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 - Fix: export `_DllMainCRTStartup` (without `@12`), or drop the entry.
 
 
+### DEF-2 [Low] ntdll.def out of step with syscall_table.def (Fixed in eef2786 and 00e4093)
+- `ntdll.def` had no `NtRtlNtStatusToDosError` or `ZwRtlNtStatusToDosError` export, although `syscall_table.def` has that row (SSN 0x1db) and `generated_stubs.S` has its stub. `NtRaiseException` was listed twice: once for the table row and once from the misc list in `build/gen_ntdll_def.py`, which made the generator output repeat it too. Found by `tools/check_syscall_tables.py`, which now runs the parity check on every representation.
+- Fix: the two missing lines are added, the duplicate is removed, and the generator's misc list no longer repeats `NtRaiseException`. The generator output now matches the checked-in file. The name `NtRtlNtStatusToDosError` itself is not a documented NT service name, so its export is only what the table asks for. Whether that row should be renamed is a question for the table's owner.
+
+### SYS-1 [Info] ArgTypes column disagrees with Arity in five rows (Fixed in 122f91d)
+- `syscall_table.def` lists a different number of argument types from `Arity` for `NtCreateThread` (8 arity, 9 types), `NtQueryDirectoryFile` (11, 10), `NtQueryDirectoryFileEx` (10, 9), `NtSetTimer` (8, 7) and `NtAccessCheckAndAuditAlarm` (11, 10). The kernel service lists agree with `Arity` on all 171 entries, so the stub and dispatch argument counts are consistent. No generator reads the type column.
+- Fixed in 122f91d (generator input, unit test `tests/unit/test_syscall_table_argtypes.py`) and 6bb8f78 (doc counts). `NtCreateThread` follows its kernel handler; the other four follow the public prototypes, as no kernel handler exists for them. `NtSetTimer` has 7 arguments, so its Arity went from 8 to 7 (table and both kernel service lists). `build/generated_stubs.S` regenerates byte-identical, because `gen_stubs.py` ignores these columns, so there is no separate output commit. `tools/check_syscall_tables.py` no longer reports these rows.
+
 ### Status codes (`ntstatus.h`, `ntstatus_to_dos.c`)
 
 ### NTS-1 [High] STATUS_DLL_NOT_FOUND had the wrong value (reproduced; Fixed in 08920c8 and d855c17)
@@ -430,7 +447,7 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 
 1. Make the loader real for MinGW: LDR-1, then LDR-2 to LDR-6, with the IAT and relocation bounds. Those are the prerequisites for any Win32 process to start.
 2. Stop out-of-bounds writes in the startup mapper: MAIN-1 and MAIN-2, and the image checks in LDR-5 and LDR-6.
-3. Fix the allocator and C runtime overflows: CRT-1 to CRT-4 (RT-1 is fixed; RT-2 applies to both copies).
+3. Fix the allocator and C runtime overflows: CRT-1 (partly fixed, export removal open) and CRT-2 to CRT-4 (RT-1 and CRT-3 are fixed; RT-2 applies to both copies).
 4. Fix the exception path: UNW-2, UNW-3, EXC-2, EXC-3 (EXC-1 and UNW-1 are fixed).
 5. Fix the Win32 surface that reports false results: K32-1 to K32-6, then K32-7 to K32-14.
 6. Work through the remaining Medium and Low items, and refresh the differential report (NTS-2).

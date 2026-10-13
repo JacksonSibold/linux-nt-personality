@@ -45,6 +45,22 @@ typedef enum pe_status {
  * be addressed.  Larger values fail with PE_ERR_CORRUPT. */
 #define PE_MAX_EXPORT_ENTRIES 65536
 
+/* One import walk (pe_imports_walk) reports at most this many thunks in total,
+ * summed over all descriptors.  Several descriptors may share one ILT, so a
+ * per-descriptor bound alone allows descriptors times ILT-length callbacks
+ * (docs/review/loader.md, L-16).  The count excludes the zero terminator of
+ * each ILT.  2^18 is far above any real import table (the largest seen are
+ * on the order of ten thousand entries), and at the measured callback rate it
+ * bounds a walk to a few milliseconds.  Exceeding it fails with PE_ERR_CORRUPT
+ * before the callback for the excess thunk runs. */
+#define PE_MAX_IMPORT_THUNKS 262144
+
+/* One import walk reports at most this many descriptors (DLLs), not counting
+ * the null terminator.  Real images import a few hundred DLLs at most; the
+ * directory size cap of 0x10000 alone would allow 3275.  Exceeding it fails
+ * with PE_ERR_CORRUPT before the DLL callback runs. */
+#define PE_MAX_IMPORT_DESCRIPTORS 1024
+
 /* -------------------------------------------------------------------------- */
 /* Context                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -225,7 +241,10 @@ typedef pe_status_t (*pe_import_dll_cb)(void *user,
 typedef pe_status_t (*pe_import_symbol_cb)(void *user,
                                            const pe_import_symbol_t *sym);
 
-/* Walk every import descriptor and every thunk.  Either callback may be NULL. */
+/* Walk every import descriptor and every thunk.  Either callback may be NULL.
+ * Totals over the whole walk are bounded by PE_MAX_IMPORT_DESCRIPTORS and
+ * PE_MAX_IMPORT_THUNKS; exceeding either fails with PE_ERR_CORRUPT.  Callbacks
+ * already made stay made, and no callback runs for the item over the limit. */
 pe_status_t pe_imports_walk(const pe_context_t *ctx,
                             pe_import_dll_cb dll_cb,
                             pe_import_symbol_cb sym_cb,

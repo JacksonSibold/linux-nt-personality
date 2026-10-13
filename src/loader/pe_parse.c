@@ -832,6 +832,11 @@ pe_status_t pe_imports_walk(const pe_context_t *ctx,
     u32 max_desc = imp_dir.size / sizeof(IMAGE_IMPORT_DESCRIPTOR);
     if (max_desc == 0) return PE_ERR_CORRUPT;
 
+    /* Totals for the whole walk (L-16).  Descriptors may share an ILT, so the
+     * per-descriptor loop alone does not bound the callbacks. */
+    u32 n_desc = 0;
+    u32 n_thunks = 0;
+
     for (u32 d = 0; d < max_desc; ++d) {
         u32 desc_off = imp_off + d * sizeof(IMAGE_IMPORT_DESCRIPTOR);
         IMAGE_IMPORT_DESCRIPTOR desc;
@@ -845,6 +850,9 @@ pe_status_t pe_imports_walk(const pe_context_t *ctx,
             desc.Name == 0 &&
             desc.FirstThunk == 0)
             break;
+
+        if (++n_desc > PE_MAX_IMPORT_DESCRIPTORS)
+            return PE_ERR_CORRUPT;
 
         u32 name_off;
         s = pe_rva_to_offset(ctx, desc.Name, &name_off);
@@ -885,6 +893,9 @@ pe_status_t pe_imports_walk(const pe_context_t *ctx,
             if (s != PE_OK) return s;
 
             if (thunk.u1.Ordinal == 0) break;
+
+            if (++n_thunks > PE_MAX_IMPORT_THUNKS)
+                return PE_ERR_CORRUPT;
 
             pe_import_symbol_t sym = {0};
             if (thunk.u1.Ordinal & IMAGE_ORDINAL_FLAG64) {
@@ -1030,6 +1041,8 @@ static pe_status_t pe_export_build(const pe_context_t *ctx,
     ent->name = name;
     ent->name_len = name_len;
     if (ent->rva == 0) return PE_OK;
+    /* A function RVA must lie inside the image (L-15). */
+    if (ent->rva >= ctx->size_of_image) return PE_ERR_CORRUPT;
 
     /* An RVA inside the export directory is a forwarder string. */
     if (ent->rva >= t->dir.rva && ent->rva < t->dir_end) {
@@ -1203,6 +1216,10 @@ pe_status_t pe_relocs_walk(const pe_context_t *ctx,
         IMAGE_BASE_RELOCATION block;
         s = pe_read_base_relocation(ctx, reloc_off + cursor, &block);
         if (s != PE_OK) return s;
+        /* The page must lie inside the image, or the loader would write
+         * outside it (L-15). */
+        if (block.VirtualAddress >= ctx->size_of_image)
+            return PE_ERR_CORRUPT;
 
         if (block.SizeOfBlock == 0) break;
         if (block.SizeOfBlock < sizeof(IMAGE_BASE_RELOCATION))
@@ -1268,6 +1285,12 @@ pe_status_t pe_exception_walk(const pe_context_t *ctx,
         u32 off = exc_off + i * sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY);
         s = pe_read_runtime_function(ctx, off, &rf);
         if (s != PE_OK) return s;
+        /* Begin and unwind must lie inside the image; End is exclusive and may
+         * equal SizeOfImage (L-15). */
+        if (rf.BeginAddress >= ctx->size_of_image ||
+            rf.EndAddress > ctx->size_of_image ||
+            rf.DUMMYUNIONNAME.UnwindInfoAddress >= ctx->size_of_image)
+            return PE_ERR_CORRUPT;
 
         pe_runtime_function_t out = {
             .begin = rf.BeginAddress,

@@ -19,6 +19,7 @@
 #include "handle.h"
 #include "sync.h"
 #include "io.h"
+#include "security.h"
 #include "kshim.h"
 #include "../../ntdll/nt_types.h"
 #include "../../ntdll/ntstatus.h"
@@ -127,6 +128,128 @@ static void nt_ensure_obj_types(void)
     ObRegisterObjectType(&nt_semaphore_type);
     ObRegisterObjectType(&nt_file_type);
     nt_obj_types_registered = true;
+}
+
+/* Lays out directory records for NtQueryDirectoryObject into stage (stage_len
+ * bytes). Starts at entry *index. The records (one per entry, then a zeroed
+ * terminator) come first and their strings follow, all in one contiguous block.
+ * String pointers are user_base plus the offset in the block, so the block can
+ * be copied to user memory. Entries are copied while they fit with the
+ * terminator; single limits the result to one entry. On success *index moves past
+ * the entries returned, *count is their number and *used the bytes written
+ * (terminator included). STATUS_NO_MORE_ENTRIES when no entry is left, and
+ * STATUS_BUFFER_TOO_SMALL with *need set when not even one entry fits. Called
+ * with the directory lock taken here, so it must not sleep. */
+static NTSTATUS nt_dir_fill(struct nt_directory *dir, ULONG *index, BOOLEAN single,
+                            char *stage, ULONG stage_len, char *user_base,
+                            ULONG *count, ULONG *used, ULONG *need)
+{
+    const SIZE_T rec = sizeof(OBJECT_DIRECTORY_INFORMATION);
+    struct nt_dir_entry *de;
+    ULONG pos = 0, take = 0, written = 0;
+    SIZE_T strs = 0, first_need = 0;
+    BOOLEAN any = FALSE;
+    OBJECT_DIRECTORY_INFORMATION *recs = (OBJECT_DIRECTORY_INFORMATION *)stage;
+    char *sp;
+
+    *count = 0;
+    *used = 0;
+    *need = 0;
+    read_lock(&dir->lock);
+    list_for_each_entry(de, &dir->entries, link) {
+        const char *tn = de->obj->type ? de->obj->type->name : "Unknown";
+        SIZE_T tlen = strlen(tn);
+        SIZE_T sz = (SIZE_T)de->name.Length + sizeof(WCHAR) + tlen * sizeof(WCHAR) + sizeof(WCHAR);
+        if (pos++ < *index)
+            continue;
+        if (!any) {
+            first_need = rec * 2 + sz;
+            any = TRUE;
+        }
+        if (single && take == 1)
+            break;
+        if (rec * (take + 2) + strs + sz > stage_len)
+            break;
+        take++;
+        strs += sz;
+    }
+    if (!any) {
+        read_unlock(&dir->lock);
+        return STATUS_NO_MORE_ENTRIES;
+    }
+    if (take == 0) {
+        read_unlock(&dir->lock);
+        *need = (ULONG)first_need;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    sp = stage + rec * (take + 1);
+    pos = 0;
+    list_for_each_entry(de, &dir->entries, link) {
+        const char *tn = de->obj->type ? de->obj->type->name : "Unknown";
+        SIZE_T tlen = strlen(tn);
+        WCHAR *dst;
+        SIZE_T i;
+        if (pos++ < *index)
+            continue;
+        if (written == take)
+            break;
+        dst = (WCHAR *)sp;
+        memcpy(dst, de->name.Buffer, de->name.Length);
+        dst[de->name.Length / sizeof(WCHAR)] = 0;
+        recs[written].Name.Buffer = (PWSTR)(user_base + (sp - stage));
+        recs[written].Name.Length = de->name.Length;
+        recs[written].Name.MaximumLength = (USHORT)(de->name.Length + sizeof(WCHAR));
+        sp += de->name.Length + sizeof(WCHAR);
+
+        dst = (WCHAR *)sp;
+        for (i = 0; i < tlen; i++)
+            dst[i] = (WCHAR)(unsigned char)tn[i];
+        dst[tlen] = 0;
+        recs[written].TypeName.Buffer = (PWSTR)(user_base + (sp - stage));
+        recs[written].TypeName.Length = (USHORT)(tlen * sizeof(WCHAR));
+        recs[written].TypeName.MaximumLength = (USHORT)(tlen * sizeof(WCHAR) + sizeof(WCHAR));
+        sp += tlen * sizeof(WCHAR) + sizeof(WCHAR);
+        written++;
+    }
+    memset(&recs[take], 0, rec);
+    read_unlock(&dir->lock);
+
+    *index += take;
+    *count = take;
+    *used = (ULONG)(rec * (take + 1) + strs);
+    return STATUS_SUCCESS;
+}
+
+/* Maps the generic rights of a symbolic link object request. */
+static ACCESS_MASK nt_map_symlink_access(ACCESS_MASK a)
+{
+    ACCESS_MASK m = a & ~(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL);
+    if (a & GENERIC_READ)
+        m |= READ_CONTROL | SYMBOLIC_LINK_QUERY;
+    if (a & GENERIC_WRITE)
+        m |= READ_CONTROL;
+    if (a & GENERIC_EXECUTE)
+        m |= READ_CONTROL | SYMBOLIC_LINK_QUERY;
+    if (a & GENERIC_ALL)
+        m |= SYMBOLIC_LINK_ALL_ACCESS;
+    return m;
+}
+
+/* Maps the generic rights of a directory object request (NT GENERIC_MAPPING for
+ * object directories). Other bits pass through unchanged. */
+static ACCESS_MASK nt_map_directory_access(ACCESS_MASK a)
+{
+    ACCESS_MASK m = a & ~(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL);
+    if (a & GENERIC_READ)
+        m |= READ_CONTROL | DIRECTORY_QUERY | DIRECTORY_TRAVERSE;
+    if (a & GENERIC_WRITE)
+        m |= READ_CONTROL | DIRECTORY_CREATE_OBJECT | DIRECTORY_CREATE_SUBDIRECTORY;
+    if (a & GENERIC_EXECUTE)
+        m |= READ_CONTROL | DIRECTORY_TRAVERSE;
+    if (a & GENERIC_ALL)
+        m |= DIRECTORY_ALL_ACCESS;
+    return m;
 }
 
 /* ------------------------------------------------------------------ */
@@ -444,8 +567,9 @@ NTSTATUS nt_svc_NtDuplicateObject(HANDLE SourceProcessHandle, HANDLE SourceHandl
                                   HANDLE TargetProcessHandle, PHANDLE TargetHandle,
                                   ACCESS_MASK DesiredAccess, ULONG HandleAttributes, ULONG Options)
 {
-    if (!TargetHandle) return STATUS_INVALID_PARAMETER;
-    *TargetHandle = NULL;
+    /* TargetHandle is optional (NT). Without it the duplicate is closed again, so
+     * only the effects of Options (DUPLICATE_CLOSE_SOURCE) remain. */
+    if (TargetHandle) *TargetHandle = NULL;
 
     struct nt_eprocess *cur = kshim_current_process();
     if (!cur) return STATUS_INVALID_PARAMETER;
@@ -489,35 +613,20 @@ NTSTATUS nt_svc_NtDuplicateObject(HANDLE SourceProcessHandle, HANDLE SourceHandl
 
     /* Delegate to handle.c's NtDuplicateObject which implements access narrowing, SAME_ACCESS, CLOSE_SOURCE */
     HANDLE nh = NULL;
+    /* Without a TargetHandle the duplicate is closed below. A protect-from-close
+     * duplicate cannot be closed, so the attribute is not applied to it. */
+    if (!TargetHandle)
+        HandleAttributes &= ~OBJ_PROTECT_FROM_CLOSE;
     NTSTATUS st = NtDuplicateObject(src_proc, SourceHandle, dst_proc, &nh, DesiredAccess, HandleAttributes, Options);
-    if (NT_SUCCESS(st)) *TargetHandle = nh;
+    if (NT_SUCCESS(st)) {
+        if (TargetHandle) *TargetHandle = nh;
+        else ObCloseHandle(dst_proc, nh);
+    }
     return st;
 }
 
 #else /* __KERNEL__ */
 /* Kernel versions with uaccess checks */
-
-static NTSTATUS k_copy_oa(POBJECT_ATTRIBUTES uptr, OBJECT_ATTRIBUTES *k_oa, UNICODE_STRING *k_name, WCHAR *k_buf, size_t k_buf_bytes, POBJECT_ATTRIBUTES *out_oa)
-{
-    if (!uptr) { memset(k_oa,0,sizeof(*k_oa)); k_oa->Length=sizeof(OBJECT_ATTRIBUTES); *out_oa=NULL; return STATUS_SUCCESS; }
-    if (!access_ok(uptr,sizeof(OBJECT_ATTRIBUTES))) return STATUS_ACCESS_VIOLATION;
-    if (copy_from_user(k_oa, uptr, sizeof(OBJECT_ATTRIBUTES))) return STATUS_ACCESS_VIOLATION;
-    if (k_oa->Length != sizeof(OBJECT_ATTRIBUTES)) return STATUS_INVALID_PARAMETER;
-    if (k_oa->ObjectName) {
-        if (!access_ok(k_oa->ObjectName, sizeof(UNICODE_STRING))) return STATUS_ACCESS_VIOLATION;
-        UNICODE_STRING tmp;
-        if (copy_from_user(&tmp, k_oa->ObjectName, sizeof(tmp))) return STATUS_ACCESS_VIOLATION;
-        if (tmp.Length) {
-            if (!access_ok(tmp.Buffer, tmp.Length)) return STATUS_ACCESS_VIOLATION;
-            if ((size_t)tmp.Length > k_buf_bytes) return STATUS_NAME_TOO_LONG;
-            if (copy_from_user(k_buf, tmp.Buffer, tmp.Length)) return STATUS_ACCESS_VIOLATION;
-            k_name->Buffer = k_buf; k_name->Length = tmp.Length; k_name->MaximumLength = tmp.Length;
-            k_oa->ObjectName = k_name;
-        } else k_oa->ObjectName=NULL;
-    }
-    *out_oa = k_oa;
-    return STATUS_SUCCESS;
-}
 
 NTSTATUS nt_svc_NtCreateEvent(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4,
                               unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
@@ -528,7 +637,7 @@ NTSTATUS nt_svc_NtCreateEvent(unsigned long a0, unsigned long a1, unsigned long 
     if (!EventHandle || !access_ok(EventHandle,sizeof(*EventHandle))) return STATUS_ACCESS_VIOLATION;
     proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;
-    st=k_copy_oa(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
+    st=ObCopyObjectAttributesFromUser(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
     st=nt_create_event_internal(proc,DesiredAccess,oa,EventType,InitialState,&h);
     if(NT_SUCCESS(st)||st==STATUS_OBJECT_NAME_COLLISION){ if(copy_to_user(EventHandle,&h,sizeof(h))) return STATUS_ACCESS_VIOLATION; }
     return st;
@@ -540,7 +649,7 @@ NTSTATUS nt_svc_NtOpenEvent(unsigned long a0, unsigned long a1, unsigned long a2
     if(!EventHandle||!access_ok(EventHandle,sizeof(*EventHandle))) return STATUS_ACCESS_VIOLATION;
     if(!ObjectAttributes) return STATUS_INVALID_PARAMETER;
     OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256]; POBJECT_ATTRIBUTES oa=NULL; NTSTATUS st;
-    st=k_copy_oa(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
+    st=ObCopyObjectAttributesFromUser(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
     if(!oa||!oa->ObjectName) return STATUS_INVALID_PARAMETER;
     struct nt_eprocess *proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;
@@ -556,9 +665,9 @@ NTSTATUS nt_svc_NtCreateMutant(unsigned long a0, unsigned long a1, unsigned long
     if(!MutantHandle||!access_ok(MutantHandle,sizeof(*MutantHandle))) return STATUS_ACCESS_VIOLATION;
     proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;
-    st=k_copy_oa(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
+    st=ObCopyObjectAttributesFromUser(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
     st=nt_create_mutant_internal(proc,DesiredAccess,oa,InitialOwner,&h);
-    pr_err("NtCreateMutant: st=0x%x h=%p oa=%p name=%ls\n", st, h, oa, oa&&oa->ObjectName?oa->ObjectName->Buffer:NULL);
+    NT_TRACE_ERR("NtCreateMutant: st=0x%x h=%p oa=%p name=%ls\n", st, h, oa, oa&&oa->ObjectName?oa->ObjectName->Buffer:NULL);
     if(NT_SUCCESS(st)||st==STATUS_OBJECT_NAME_COLLISION){ if(copy_to_user(MutantHandle,&h,sizeof(h))) return STATUS_ACCESS_VIOLATION; }
     return st;
 }
@@ -569,7 +678,7 @@ NTSTATUS nt_svc_NtOpenMutant(unsigned long a0, unsigned long a1, unsigned long a
     if(!MutantHandle||!access_ok(MutantHandle,sizeof(*MutantHandle))) return STATUS_ACCESS_VIOLATION;
     if(!ObjectAttributes) return STATUS_INVALID_PARAMETER;
     OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256]; POBJECT_ATTRIBUTES oa=NULL; NTSTATUS st;
-    st=k_copy_oa(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
+    st=ObCopyObjectAttributesFromUser(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
     if(!oa||!oa->ObjectName) return STATUS_INVALID_PARAMETER;
     struct nt_eprocess *proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;
@@ -585,7 +694,7 @@ NTSTATUS nt_svc_NtCreateSemaphore(unsigned long a0, unsigned long a1, unsigned l
     if(!SemaphoreHandle||!access_ok(SemaphoreHandle,sizeof(*SemaphoreHandle))) return STATUS_ACCESS_VIOLATION;
     proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;
-    st=k_copy_oa(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
+    st=ObCopyObjectAttributesFromUser(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
     st=nt_create_semaphore_internal(proc,DesiredAccess,oa,InitialCount,MaximumCount,&h);
     if(NT_SUCCESS(st)||st==STATUS_OBJECT_NAME_COLLISION){ if(copy_to_user(SemaphoreHandle,&h,sizeof(h))) return STATUS_ACCESS_VIOLATION; }
     return st;
@@ -597,7 +706,7 @@ NTSTATUS nt_svc_NtOpenSemaphore(unsigned long a0, unsigned long a1, unsigned lon
     if(!SemaphoreHandle||!access_ok(SemaphoreHandle,sizeof(*SemaphoreHandle))) return STATUS_ACCESS_VIOLATION;
     if(!ObjectAttributes) return STATUS_INVALID_PARAMETER;
     OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256]; POBJECT_ATTRIBUTES oa=NULL; NTSTATUS st;
-    st=k_copy_oa(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
+    st=ObCopyObjectAttributesFromUser(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
     if(!oa||!oa->ObjectName) return STATUS_INVALID_PARAMETER;
     struct nt_eprocess *proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;
@@ -616,6 +725,11 @@ NTSTATUS nt_svc_NtOpenSemaphore(unsigned long a0, unsigned long a1, unsigned lon
 #define ObjectTypeInformation 2
 #define ObjectTypesInformation 3
 #define ObjectHandleFlagInformation 4
+
+typedef struct _OBJECT_HANDLE_FLAG_INFORMATION {
+    BOOLEAN Inherit;
+    BOOLEAN ProtectFromClose;
+} OBJECT_HANDLE_FLAG_INFORMATION, *POBJECT_HANDLE_FLAG_INFORMATION;
 
 typedef struct _OBJECT_BASIC_INFORMATION {
     ULONG Attributes;
@@ -731,6 +845,18 @@ NTSTATUS nt_svc_NtQueryObject(HANDLE Handle, ULONG ObjectInformationClass,
         ti->ValidAccessMask = 0x1FFFFF;
         break;
     }
+    case ObjectHandleFlagInformation: {
+        bool inherit = false, protect = false;
+        needed = sizeof(OBJECT_HANDLE_FLAG_INFORMATION);
+        if (ReturnLength) *ReturnLength = needed;
+        if (Length < needed) { ret = STATUS_INFO_LENGTH_MISMATCH; break; }
+        ret = ObGetHandleFlags(proc, Handle, &inherit, &protect);
+        if (!NT_SUCCESS(ret)) break;
+        OBJECT_HANDLE_FLAG_INFORMATION *fi = (OBJECT_HANDLE_FLAG_INFORMATION*)ObjectInformation;
+        fi->Inherit = inherit;
+        fi->ProtectFromClose = protect;
+        break;
+    }
     default:
         ret = STATUS_INVALID_INFO_CLASS;
         break;
@@ -743,8 +869,18 @@ NTSTATUS nt_svc_NtQueryObject(HANDLE Handle, ULONG ObjectInformationClass,
 NTSTATUS nt_svc_NtSetInformationObject(HANDLE Handle, ULONG ObjectInformationClass,
                                        PVOID ObjectInformation, ULONG Length)
 {
-    (void)Handle; (void)ObjectInformationClass; (void)ObjectInformation; (void)Length;
-    return STATUS_NOT_IMPLEMENTED;
+    OBJECT_HANDLE_FLAG_INFORMATION fi;
+    struct nt_eprocess *proc;
+    if (ObjectInformationClass != ObjectHandleFlagInformation)
+        return STATUS_INVALID_INFO_CLASS;
+    if (Length != sizeof(fi))
+        return STATUS_INFO_LENGTH_MISMATCH;
+    if (!ObjectInformation)
+        return STATUS_ACCESS_VIOLATION;
+    proc = kshim_current_process();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    memcpy(&fi, ObjectInformation, sizeof(fi));
+    return ObSetHandleFlags(proc, Handle, fi.Inherit, fi.ProtectFromClose);
 }
 
 NTSTATUS nt_svc_NtMakeTemporaryObject(HANDLE Handle)
@@ -755,6 +891,169 @@ NTSTATUS nt_svc_NtMakeTemporaryObject(HANDLE Handle)
     NTSTATUS st=ObReferenceObjectByHandle(proc, Handle, NULL, UserMode, 0, &hdr, NULL);
     if (!NT_SUCCESS(st)) return st;
     st = ObMakeTemporaryObject(hdr);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+/* NtCreateDirectoryObject: create-or-open rules are in
+ * ObInsertOrOpenNamedObject (object.c). */
+NTSTATUS nt_svc_NtCreateDirectoryObject(PHANDLE DirectoryHandle, ACCESS_MASK DesiredAccess,
+                                        POBJECT_ATTRIBUTES ObjectAttributes)
+{
+    struct nt_eprocess *proc = kshim_current_process();
+    struct nt_object_header *hdr = NULL;
+    HANDLE h = NULL;
+    NTSTATUS st;
+    if (!DirectoryHandle || !proc)
+        return STATUS_INVALID_PARAMETER;
+    if (ObjectAttributes && ObjectAttributes->Length != sizeof(*ObjectAttributes))
+        return STATUS_INVALID_PARAMETER;
+    st = ObCreateDirectoryObject(ObjectAttributes, &hdr);
+    if (!NT_SUCCESS(st))
+        return st;
+    st = ObInsertOrOpenNamedObject(hdr, ObjectAttributes, nt_map_directory_access(DesiredAccess), proc, &h);
+    ObDereferenceObject(hdr);
+    if (NT_SUCCESS(st))
+        *DirectoryHandle = h;
+    return st;
+}
+
+/* NtCreateSymbolicLinkObject: the target is copied. Create-or-open rules are in
+ * ObInsertOrOpenNamedObject (object.c). */
+NTSTATUS nt_svc_NtCreateSymbolicLinkObject(PHANDLE LinkHandle, ACCESS_MASK DesiredAccess,
+                                           POBJECT_ATTRIBUTES ObjectAttributes,
+                                           PUNICODE_STRING LinkTarget)
+{
+    struct nt_eprocess *proc = kshim_current_process();
+    struct nt_object_header *hdr = NULL;
+    HANDLE h = NULL;
+    NTSTATUS st;
+    if (!LinkHandle || !LinkTarget || !proc)
+        return STATUS_INVALID_PARAMETER;
+    if (ObjectAttributes && ObjectAttributes->Length != sizeof(*ObjectAttributes))
+        return STATUS_INVALID_PARAMETER;
+    st = ObCreateSymbolicLinkObject(ObjectAttributes, LinkTarget, &hdr);
+    if (!NT_SUCCESS(st))
+        return st;
+    st = ObInsertOrOpenNamedObject(hdr, ObjectAttributes, nt_map_symlink_access(DesiredAccess), proc, &h);
+    ObDereferenceObject(hdr);
+    if (NT_SUCCESS(st))
+        *LinkHandle = h;
+    return st;
+}
+
+/* NtQuerySymbolicLinkObject: needs SYMBOLIC_LINK_QUERY. The target is copied into
+ * LinkTarget (Length is set). When MaximumLength cannot hold it, the call
+ * returns STATUS_BUFFER_TOO_SMALL and ReturnedLength gives the size needed. */
+NTSTATUS nt_svc_NtQuerySymbolicLinkObject(HANDLE LinkHandle, PUNICODE_STRING LinkTarget,
+                                          PULONG ReturnedLength)
+{
+    struct nt_eprocess *proc = kshim_current_process();
+    struct nt_object_header *hdr = NULL;
+    struct nt_symlink *link;
+    ULONG need;
+    NTSTATUS st;
+    if (!proc || !LinkTarget)
+        return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(proc, LinkHandle, &nt_symlink_type, UserMode,
+                                   SYMBOLIC_LINK_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st))
+        return st;
+    link = (struct nt_symlink *)nt_object_body(hdr);
+    need = link->target.Length;
+    if (ReturnedLength)
+        *ReturnedLength = need;
+    if (LinkTarget->MaximumLength < need) {
+        st = STATUS_BUFFER_TOO_SMALL;
+    } else if (need && !LinkTarget->Buffer) {
+        st = STATUS_INVALID_PARAMETER;
+    } else {
+        if (need)
+            memcpy(LinkTarget->Buffer, link->target.Buffer, need);
+        LinkTarget->Length = (USHORT)need;
+        st = STATUS_SUCCESS;
+    }
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+/* NtOpenSymbolicLinkObject: opens the link itself (the last component is not
+ * followed). */
+NTSTATUS nt_svc_NtOpenSymbolicLinkObject(PHANDLE LinkHandle, ACCESS_MASK DesiredAccess,
+                                         POBJECT_ATTRIBUTES ObjectAttributes)
+{
+    struct nt_eprocess *proc = kshim_current_process();
+    HANDLE h = NULL;
+    NTSTATUS st;
+    if (!LinkHandle || !ObjectAttributes || !proc)
+        return STATUS_INVALID_PARAMETER;
+    if (ObjectAttributes->Length != sizeof(*ObjectAttributes))
+        return STATUS_INVALID_PARAMETER;
+    st = ObOpenObjectByName(ObjectAttributes, &nt_symlink_type, UserMode,
+                            nt_map_symlink_access(DesiredAccess), proc, &h);
+    if (NT_SUCCESS(st))
+        *LinkHandle = h;
+    return st;
+}
+
+/* NtOpenDirectoryObject: opens the directory the name refers to. A symbolic
+ * link in the path is followed; a link at the last component is a type mismatch. */
+NTSTATUS nt_svc_NtOpenDirectoryObject(PHANDLE DirectoryHandle, ACCESS_MASK DesiredAccess,
+                                      POBJECT_ATTRIBUTES ObjectAttributes)
+{
+    struct nt_eprocess *proc = kshim_current_process();
+    HANDLE h = NULL;
+    NTSTATUS st;
+    if (!DirectoryHandle || !ObjectAttributes || !proc)
+        return STATUS_INVALID_PARAMETER;
+    if (ObjectAttributes->Length != sizeof(*ObjectAttributes))
+        return STATUS_INVALID_PARAMETER;
+    st = ObOpenObjectByName(ObjectAttributes, &nt_directory_type, UserMode,
+                            nt_map_directory_access(DesiredAccess), proc, &h);
+    if (NT_SUCCESS(st))
+        *DirectoryHandle = h;
+    return st;
+}
+
+/* NtQueryDirectoryObject: needs DIRECTORY_QUERY. Context is the index of the
+ * next entry; RestartScan starts again at entry 0. */
+NTSTATUS nt_svc_NtQueryDirectoryObject(HANDLE DirectoryHandle, PVOID Buffer, ULONG Length,
+                                       BOOLEAN ReturnSingleEntry, BOOLEAN RestartScan,
+                                       PULONG Context, PULONG ReturnLength)
+{
+    struct nt_eprocess *proc = kshim_current_process();
+    struct nt_object_header *hdr = NULL;
+    ULONG index, count = 0, used = 0, need = 0;
+    NTSTATUS st;
+    if (!proc || !Buffer || !Context)
+        return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(proc, DirectoryHandle, &nt_directory_type, UserMode,
+                                   DIRECTORY_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st))
+        return st;
+    index = RestartScan ? 0 : *Context;
+    st = nt_dir_fill((struct nt_directory *)nt_object_body(hdr), &index, ReturnSingleEntry,
+                     (char *)Buffer, Length, (char *)Buffer, &count, &used, &need);
+    ObDereferenceObject(hdr);
+    if (ReturnLength)
+        *ReturnLength = NT_SUCCESS(st) ? used : need;
+    if (st == STATUS_SUCCESS || st == STATUS_NO_MORE_ENTRIES)
+        *Context = index;
+    return st;
+}
+
+/* Needs SeCreatePermanentPrivilege on the effective token, checked before the
+ * handle is looked up (as NT does). */
+NTSTATUS nt_svc_NtMakePermanentObject(HANDLE Handle)
+{
+    struct nt_eprocess *proc = kshim_current_process();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    if (!se_caller_has_privilege(proc, SE_CREATE_PERMANENT_PRIVILEGE))
+        return STATUS_PRIVILEGE_NOT_HELD;
+    struct nt_object_header *hdr=NULL;
+    NTSTATUS st=ObReferenceObjectByHandle(proc, Handle, NULL, UserMode, 0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObMakePermanentObject(hdr);
     ObDereferenceObject(hdr);
     return st;
 }
@@ -773,6 +1072,30 @@ NTSTATUS nt_svc_NtClose(HANDLE Handle)
 
 #else
 /* Kernel implementations with uaccess checks */
+
+NTSTATUS nt_svc_NtSetInformationObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                       unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                       unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE Handle = (HANDLE)a0;
+    ULONG ObjectInformationClass = (ULONG)a1;
+    PVOID ObjectInformation = (PVOID)a2;
+    ULONG Length = (ULONG)a3;
+    OBJECT_HANDLE_FLAG_INFORMATION fi;
+    struct nt_eprocess *proc;
+    (void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (ObjectInformationClass != ObjectHandleFlagInformation)
+        return STATUS_INVALID_INFO_CLASS;
+    if (Length != sizeof(fi))
+        return STATUS_INFO_LENGTH_MISMATCH;
+    if (!ObjectInformation || !access_ok(ObjectInformation, sizeof(fi)))
+        return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(&fi, ObjectInformation, sizeof(fi)))
+        return STATUS_ACCESS_VIOLATION;
+    proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    return ObSetHandleFlags(proc, Handle, fi.Inherit, fi.ProtectFromClose);
+}
 
 NTSTATUS nt_svc_NtQueryObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4,
                                unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
@@ -873,6 +1196,26 @@ NTSTATUS nt_svc_NtQueryObject(unsigned long a0, unsigned long a1, unsigned long 
             ti->ValidAccessMask = 0x1FFFFF;
             if (copy_to_user(ObjectInformation, kbuf, needed)) { kfree(kbuf); ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
             kfree(kbuf);
+            ObDereferenceObject(hdr);
+            return STATUS_SUCCESS;
+        }
+        case ObjectHandleFlagInformation: {
+            bool inherit = false, protect = false;
+            OBJECT_HANDLE_FLAG_INFORMATION kfi;
+            NTSTATUS fst;
+            needed = sizeof(kfi);
+            k_needed = needed;
+            if (ReturnLength) {
+                if (!access_ok(ReturnLength, sizeof(ULONG))) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
+                if (copy_to_user(ReturnLength, &k_needed, sizeof(k_needed))) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
+            }
+            if (Length < needed) { ObDereferenceObject(hdr); return STATUS_INFO_LENGTH_MISMATCH; }
+            if (!access_ok(ObjectInformation, needed)) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
+            fst = ObGetHandleFlags(proc, Handle, &inherit, &protect);
+            if (!NT_SUCCESS(fst)) { ObDereferenceObject(hdr); return fst; }
+            kfi.Inherit = inherit;
+            kfi.ProtectFromClose = protect;
+            if (copy_to_user(ObjectInformation, &kfi, sizeof(kfi))) { ObDereferenceObject(hdr); return STATUS_ACCESS_VIOLATION; }
             ObDereferenceObject(hdr);
             return STATUS_SUCCESS;
         }
@@ -1083,6 +1426,304 @@ NTSTATUS nt_svc_NtDuplicateObject(unsigned long a0, unsigned long a1, unsigned l
     return st;
 }
 
+NTSTATUS nt_svc_NtMakeTemporaryObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                      unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                      unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE Handle = (HANDLE)a0;
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    struct nt_eprocess *proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = ObReferenceObjectByHandle(proc, Handle, NULL, UserMode, 0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObMakeTemporaryObject(hdr);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+NTSTATUS nt_svc_NtMakePermanentObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                      unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                      unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE Handle = (HANDLE)a0;
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    struct nt_eprocess *proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    if (!se_caller_has_privilege(proc, SE_CREATE_PERMANENT_PRIVILEGE))
+        return STATUS_PRIVILEGE_NOT_HELD;
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = ObReferenceObjectByHandle(proc, Handle, NULL, UserMode, 0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObMakePermanentObject(hdr);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+NTSTATUS nt_svc_NtCreateDirectoryObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                        unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                        unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    PHANDLE DirectoryHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    HANDLE h = NULL; OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL; struct nt_object_header *hdr = NULL; NTSTATUS st; struct nt_eprocess *proc;
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!DirectoryHandle || !access_ok(DirectoryHandle, sizeof(*DirectoryHandle)))
+        return STATUS_ACCESS_VIOLATION;
+    proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    st = nt_ensure_handle_table(proc);
+    if (!NT_SUCCESS(st)) return st;
+    st = k_copy_oa(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObCreateDirectoryObject(oa, &hdr);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObInsertOrOpenNamedObject(hdr, oa, nt_map_directory_access(DesiredAccess), proc, &h);
+    ObDereferenceObject(hdr);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(DirectoryHandle, &h, sizeof(h))) {
+        ObCloseHandle(proc, h);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return st;
+}
+
+NTSTATUS nt_svc_NtOpenDirectoryObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                      unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                      unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    PHANDLE DirectoryHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    HANDLE h = NULL; OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL; NTSTATUS st; struct nt_eprocess *proc;
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!DirectoryHandle || !access_ok(DirectoryHandle, sizeof(*DirectoryHandle)))
+        return STATUS_ACCESS_VIOLATION;
+    proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    st = nt_ensure_handle_table(proc);
+    if (!NT_SUCCESS(st)) return st;
+    st = k_copy_oa(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    if (!oa) return STATUS_INVALID_PARAMETER;
+    st = ObOpenObjectByName(oa, &nt_directory_type, UserMode, nt_map_directory_access(DesiredAccess), proc, &h);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(DirectoryHandle, &h, sizeof(h))) {
+        ObCloseHandle(proc, h);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return st;
+}
+
+/* Largest directory listing the kernel stages in one call. */
+#define NT_DIR_QUERY_MAX 65536UL
+
+NTSTATUS nt_svc_NtQueryDirectoryObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                       unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                       unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE DirectoryHandle = (HANDLE)a0;
+    PVOID Buffer = (PVOID)a1;
+    ULONG Length = (ULONG)a2;
+    BOOLEAN ReturnSingleEntry = (BOOLEAN)a3;
+    BOOLEAN RestartScan = (BOOLEAN)a4;
+    PULONG Context = (PULONG)a5;
+    PULONG ReturnLength = (PULONG)a6;
+    struct nt_eprocess *proc;
+    struct nt_object_header *hdr = NULL;
+    ULONG index = 0, count = 0, used = 0, need = 0, rl = 0;
+    char *stage;
+    NTSTATUS st;
+    (void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!Buffer || !Context)
+        return STATUS_INVALID_PARAMETER;
+    if (Length > NT_DIR_QUERY_MAX)
+        return STATUS_INVALID_PARAMETER;
+    if (!access_ok(Buffer, Length) || !access_ok(Context, sizeof(*Context)) ||
+        (ReturnLength && !access_ok(ReturnLength, sizeof(ULONG))))
+        return STATUS_ACCESS_VIOLATION;
+    proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(proc, DirectoryHandle, &nt_directory_type, UserMode,
+                                   DIRECTORY_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st))
+        return st;
+    if (RestartScan)
+        index = 0;
+    else if (copy_from_user(&index, Context, sizeof(index))) {
+        ObDereferenceObject(hdr);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    stage = (char *)kmalloc(Length ? Length : 1, GFP_KERNEL);
+    if (!stage) {
+        ObDereferenceObject(hdr);
+        return STATUS_NO_MEMORY;
+    }
+    st = nt_dir_fill((struct nt_directory *)nt_object_body(hdr), &index, ReturnSingleEntry,
+                     stage, Length, (char *)Buffer, &count, &used, &need);
+    ObDereferenceObject(hdr);
+    if (st == STATUS_SUCCESS && copy_to_user(Buffer, stage, used))
+        st = STATUS_ACCESS_VIOLATION;
+    kfree(stage);
+    if (ReturnLength) {
+        rl = NT_SUCCESS(st) ? used : need;
+        if (copy_to_user(ReturnLength, &rl, sizeof(rl)))
+            return STATUS_ACCESS_VIOLATION;
+    }
+    if (st == STATUS_SUCCESS || st == STATUS_NO_MORE_ENTRIES) {
+        if (copy_to_user(Context, &index, sizeof(index)))
+            return STATUS_ACCESS_VIOLATION;
+    }
+    return st;
+}
+
+NTSTATUS nt_svc_NtCreateSymbolicLinkObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                           unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                           unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    PHANDLE LinkHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    PUNICODE_STRING LinkTarget = (PUNICODE_STRING)a3;
+    HANDLE h = NULL; OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256];
+    UNICODE_STRING k_target; WCHAR *k_tbuf = NULL; UNICODE_STRING tgt_copy;
+    POBJECT_ATTRIBUTES oa = NULL; struct nt_object_header *hdr = NULL; NTSTATUS st; struct nt_eprocess *proc;
+    (void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!LinkHandle || !access_ok(LinkHandle, sizeof(*LinkHandle)))
+        return STATUS_ACCESS_VIOLATION;
+    if (!LinkTarget || !access_ok(LinkTarget, sizeof(*LinkTarget)))
+        return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(&k_target, LinkTarget, sizeof(k_target)))
+        return STATUS_ACCESS_VIOLATION;
+    if (k_target.Length == 0 || !k_target.Buffer)
+        return STATUS_INVALID_PARAMETER;
+    proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    st = nt_ensure_handle_table(proc);
+    if (!NT_SUCCESS(st)) return st;
+    st = k_copy_oa(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    if (!access_ok(k_target.Buffer, k_target.Length))
+        return STATUS_ACCESS_VIOLATION;
+    k_tbuf = (WCHAR *)kmalloc(k_target.Length, GFP_KERNEL);
+    if (!k_tbuf) return STATUS_NO_MEMORY;
+    if (copy_from_user(k_tbuf, k_target.Buffer, k_target.Length)) {
+        kfree(k_tbuf);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    tgt_copy.Buffer = k_tbuf;
+    tgt_copy.Length = k_target.Length;
+    tgt_copy.MaximumLength = k_target.Length;
+    st = ObCreateSymbolicLinkObject(oa, &tgt_copy, &hdr);
+    if (NT_SUCCESS(st)) {
+        st = ObInsertOrOpenNamedObject(hdr, oa, nt_map_symlink_access(DesiredAccess), proc, &h);
+        ObDereferenceObject(hdr);
+    }
+    kfree(k_tbuf);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(LinkHandle, &h, sizeof(h))) {
+        ObCloseHandle(proc, h);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return st;
+}
+
+NTSTATUS nt_svc_NtOpenSymbolicLinkObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                         unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                         unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    PHANDLE LinkHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    HANDLE h = NULL; OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL; NTSTATUS st; struct nt_eprocess *proc;
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!LinkHandle || !access_ok(LinkHandle, sizeof(*LinkHandle)))
+        return STATUS_ACCESS_VIOLATION;
+    proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    st = nt_ensure_handle_table(proc);
+    if (!NT_SUCCESS(st)) return st;
+    st = k_copy_oa(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    if (!oa) return STATUS_INVALID_PARAMETER;
+    st = ObOpenObjectByName(oa, &nt_symlink_type, UserMode, nt_map_symlink_access(DesiredAccess), proc, &h);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(LinkHandle, &h, sizeof(h))) {
+        ObCloseHandle(proc, h);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return st;
+}
+
+NTSTATUS nt_svc_NtQuerySymbolicLinkObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                          unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                          unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE LinkHandle = (HANDLE)a0;
+    PUNICODE_STRING LinkTarget = (PUNICODE_STRING)a1;
+    PULONG ReturnedLength = (PULONG)a2;
+    struct nt_eprocess *proc;
+    struct nt_object_header *hdr = NULL;
+    struct nt_symlink *link;
+    UNICODE_STRING u;
+    ULONG need, rl;
+    NTSTATUS st;
+    WCHAR *kbuf = NULL;
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!LinkTarget || !access_ok(LinkTarget, sizeof(*LinkTarget)))
+        return STATUS_ACCESS_VIOLATION;
+    if (ReturnedLength && !access_ok(ReturnedLength, sizeof(ULONG)))
+        return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(&u, LinkTarget, sizeof(u)))
+        return STATUS_ACCESS_VIOLATION;
+    proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(proc, LinkHandle, &nt_symlink_type, UserMode,
+                                   SYMBOLIC_LINK_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st))
+        return st;
+    link = (struct nt_symlink *)nt_object_body(hdr);
+    need = link->target.Length;
+    if (ReturnedLength) {
+        rl = need;
+        if (copy_to_user(ReturnedLength, &rl, sizeof(rl))) {
+            ObDereferenceObject(hdr);
+            return STATUS_ACCESS_VIOLATION;
+        }
+    }
+    if (u.MaximumLength < need) {
+        ObDereferenceObject(hdr);
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    if (need) {
+        if (!u.Buffer || !access_ok(u.Buffer, need)) {
+            ObDereferenceObject(hdr);
+            return STATUS_ACCESS_VIOLATION;
+        }
+        kbuf = (WCHAR *)kmalloc(need, GFP_KERNEL);
+        if (!kbuf) {
+            ObDereferenceObject(hdr);
+            return STATUS_NO_MEMORY;
+        }
+        memcpy(kbuf, link->target.Buffer, need);
+        if (copy_to_user(u.Buffer, kbuf, need)) {
+            kfree(kbuf);
+            ObDereferenceObject(hdr);
+            return STATUS_ACCESS_VIOLATION;
+        }
+        kfree(kbuf);
+    }
+    ObDereferenceObject(hdr);
+    u.Length = (USHORT)need;
+    if (copy_to_user(&LinkTarget->Length, &u.Length, sizeof(u.Length)))
+        return STATUS_ACCESS_VIOLATION;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS nt_svc_NtClose(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {
     HANDLE Handle = (HANDLE)a0;
@@ -1205,19 +1846,20 @@ static NTSTATUS wait_on_eprocess(struct nt_eprocess *proc, BOOLEAN Alertable, PL
     return done? STATUS_WAIT_0 : STATUS_TIMEOUT;
 }
 
+extern struct nt_object_type nt_timer_type; /* sync.c */
 NTSTATUS nt_svc_NtWaitForSingleObject(HANDLE Handle, BOOLEAN Alertable, PLARGE_INTEGER Timeout)
 {
     struct nt_eprocess *proc = kshim_current_process();
-    pr_err("NtWaitForSingleObject: Handle=%p proc=%p\n", Handle, proc);
+    NT_TRACE_ERR("NtWaitForSingleObject: Handle=%p proc=%p\n", Handle, proc);
     if (!proc) return STATUS_INVALID_PARAMETER;
     struct nt_object_header *hdr=NULL;
     NTSTATUS st=ObReferenceObjectByHandle(proc, Handle, NULL, UserMode, 0, &hdr, NULL);
-    pr_err("NtWaitForSingleObject: ObReference st=0x%x hdr=%p\n", st, hdr);
+    NT_TRACE_ERR("NtWaitForSingleObject: ObReference st=0x%x hdr=%p\n", st, hdr);
     if (!NT_SUCCESS(st)) return st;
     /* Handle thread/process as waitable even though not dispatcher */
     if (hdr->type == &nt_thread_type) {
         struct nt_ethread *thr = ObFindThreadByHeader(hdr);
-        pr_err("NtWaitForSingleObject thread: thr=%p tid=%lu h=%p hdr=%p\n", thr, thr?thr->tid:0, Handle, hdr);
+        NT_TRACE_ERR("NtWaitForSingleObject thread: thr=%p tid=%lu h=%p hdr=%p\n", thr, thr?thr->tid:0, Handle, hdr);
         ObDereferenceObject(hdr);
         if (!thr) return STATUS_INVALID_HANDLE;
         return wait_on_ethread(thr, Alertable, Timeout);
@@ -1230,7 +1872,7 @@ NTSTATUS nt_svc_NtWaitForSingleObject(HANDLE Handle, BOOLEAN Alertable, PLARGE_I
     }
     struct nt_dispatcher_header *dh = (struct nt_dispatcher_header*)nt_object_body(hdr);
     /* Validate dispatcher type */
-    if (hdr->type != &nt_event_type && hdr->type != &nt_mutant_type && hdr->type != &nt_semaphore_type) {
+    if (hdr->type != &nt_event_type && hdr->type != &nt_mutant_type && hdr->type != &nt_semaphore_type && hdr->type != &nt_timer_type) {
         ObDereferenceObject(hdr);
         return STATUS_OBJECT_TYPE_MISMATCH;
     }
@@ -1267,7 +1909,7 @@ NTSTATUS nt_svc_NtResetEvent(HANDLE EventHandle, PLONG PreviousState)
 
 NTSTATUS nt_svc_NtReleaseMutant(HANDLE MutantHandle, PLONG PreviousCount)
 {
-    pr_info("W1_INSTR: NtReleaseMutant handle=%p prevPtr=%p\n", MutantHandle, PreviousCount);
+    NT_TRACE("W1_INSTR: NtReleaseMutant handle=%p prevPtr=%p\n", MutantHandle, PreviousCount);
     struct nt_eprocess *proc = kshim_current_process();
     if (!proc) return STATUS_INVALID_PARAMETER;
     struct nt_object_header *hdr=NULL;
@@ -1299,11 +1941,11 @@ NTSTATUS nt_svc_NtReleaseSemaphore(HANDLE SemaphoreHandle, LONG ReleaseCount, PL
 
 static NTSTATUS wait_on_ethread(struct nt_ethread *thr, BOOLEAN Alertable, PLARGE_INTEGER Timeout)
 {
-    pr_err("wait_on_ethread: thr=%p tid=%lu terminated=%d Alertable=%d Timeout=%p\n", thr, thr ? thr->tid : 0, thr ? thr->terminated : -1, Alertable, Timeout);
+    NT_TRACE_ERR("wait_on_ethread: thr=%p tid=%lu terminated=%d Alertable=%d Timeout=%p\n", thr, thr ? thr->tid : 0, thr ? thr->terminated : -1, Alertable, Timeout);
     if (!thr) return STATUS_INVALID_HANDLE;
     /* Fast check under lock */
     spin_lock(&thr->lock);
-    if (thr->terminated) { spin_unlock(&thr->lock); pr_err("wait_on_ethread: fast return WAIT_0\n"); return STATUS_WAIT_0; }
+    if (thr->terminated) { spin_unlock(&thr->lock); NT_TRACE_ERR("wait_on_ethread: fast return WAIT_0\n"); return STATUS_WAIT_0; }
     spin_unlock(&thr->lock);
     /* Timeout == NULL => infinite wait */
     if (!Timeout) {
@@ -1398,19 +2040,20 @@ static NTSTATUS wait_on_eprocess(struct nt_eprocess *proc, BOOLEAN Alertable, PL
     }
 }
 
+extern struct nt_object_type nt_timer_type; /* sync.c */
 NTSTATUS nt_svc_NtWaitForSingleObject(HANDLE Handle, BOOLEAN Alertable, PLARGE_INTEGER Timeout)
 {
     struct nt_eprocess *proc = kshim_current_process();
-    pr_err("NtWaitForSingleObject: Handle=%p proc=%p\n", Handle, proc);
+    NT_TRACE_ERR("NtWaitForSingleObject: Handle=%p proc=%p\n", Handle, proc);
     if (!proc) return STATUS_INVALID_PARAMETER;
     struct nt_object_header *hdr=NULL;
     NTSTATUS st=ObReferenceObjectByHandle(proc, Handle, NULL, UserMode, 0, &hdr, NULL);
-    pr_err("NtWaitForSingleObject: ObReference st=0x%x hdr=%p\n", st, hdr);
+    NT_TRACE_ERR("NtWaitForSingleObject: ObReference st=0x%x hdr=%p\n", st, hdr);
     if (!NT_SUCCESS(st)) return st;
-    pr_err("NtWaitForSingleObject: hdr type %p nt_thread %p nt_process %p\n", hdr->type, &nt_thread_type, &nt_process_type);
+    NT_TRACE_ERR("NtWaitForSingleObject: hdr type %p nt_thread %p nt_process %p\n", hdr->type, &nt_thread_type, &nt_process_type);
     if (hdr->type == &nt_thread_type) {
         struct nt_ethread *thr = ObFindThreadByHeader(hdr);
-        pr_err("NtWaitForSingleObject thread: thr=%p tid=%lu h=%p hdr=%p\n", thr, thr?thr->tid:0, Handle, hdr);
+        NT_TRACE_ERR("NtWaitForSingleObject thread: thr=%p tid=%lu h=%p hdr=%p\n", thr, thr?thr->tid:0, Handle, hdr);
         ObDereferenceObject(hdr);
         if (!thr) return STATUS_INVALID_HANDLE;
         return wait_on_ethread(thr, Alertable, Timeout);
@@ -1422,7 +2065,7 @@ NTSTATUS nt_svc_NtWaitForSingleObject(HANDLE Handle, BOOLEAN Alertable, PLARGE_I
         return wait_on_eprocess(ep, Alertable, Timeout);
     }
     struct nt_dispatcher_header *dh = (struct nt_dispatcher_header*)nt_object_body(hdr);
-    if (hdr->type != &nt_event_type && hdr->type != &nt_mutant_type && hdr->type != &nt_semaphore_type) {
+    if (hdr->type != &nt_event_type && hdr->type != &nt_mutant_type && hdr->type != &nt_semaphore_type && hdr->type != &nt_timer_type) {
         ObDereferenceObject(hdr);
         return STATUS_OBJECT_TYPE_MISMATCH;
     }
@@ -1435,8 +2078,7 @@ extern struct nt_ethread *nt_current_ethread(void);
 extern struct nt_eprocess *nt_current_eprocess(void);
 NTSTATUS nt_svc_NtDelayExecution(BOOLEAN Alertable, PLARGE_INTEGER DelayInterval)
 {
-    (void)Alertable;
-    pr_info("W1_INSTR: NtDelayExecution DelayInterval=%p\n", DelayInterval);
+    NT_TRACE("W1_INSTR: NtDelayExecution DelayInterval=%p\n", DelayInterval);
     if (!DelayInterval) {
         struct nt_ethread *thr = nt_current_ethread();
         if (thr && thr->terminated) return STATUS_THREAD_IS_TERMINATING;
@@ -1444,10 +2086,10 @@ NTSTATUS nt_svc_NtDelayExecution(BOOLEAN Alertable, PLARGE_INTEGER DelayInterval
     }
     LARGE_INTEGER interval;
     if (copy_from_user(&interval, DelayInterval, sizeof(interval))) {
-        pr_info("W1_INSTR: NtDelayExecution copy_from_user failed\n");
+        NT_TRACE("W1_INSTR: NtDelayExecution copy_from_user failed\n");
         return STATUS_ACCESS_VIOLATION;
     }
-    pr_info("W1_INSTR: NtDelayExecution interval=%lld\n", interval.QuadPart);
+    NT_TRACE("W1_INSTR: NtDelayExecution interval=%lld\n", interval.QuadPart);
     if (interval.QuadPart == 0) return STATUS_SUCCESS;
     long ms;
     if (interval.QuadPart < 0) {
@@ -1460,13 +2102,35 @@ NTSTATUS nt_svc_NtDelayExecution(BOOLEAN Alertable, PLARGE_INTEGER DelayInterval
         if (due100 <= now100) return STATUS_SUCCESS;
         ms = (long)((due100 - now100) / 10000);
     }
-    if (ms <= 0) return STATUS_SUCCESS;
     struct nt_ethread *thr = nt_current_ethread();
+    struct nt_thread *sync = thr ? thr->sync_thread : NULL;
+    /* An alertable delay reports and consumes a pending alert, as an
+     * alertable wait does (sync.c), before it sleeps. */
+    if (Alertable && sync && nt_thread_consume_alert(sync))
+        return STATUS_ALERTED;
+    if (ms <= 0) return STATUS_SUCCESS;
     if (thr && thr->terminated) {
         do_exit(0);
         return STATUS_THREAD_IS_TERMINATING;
     }
-    msleep_interruptible(ms);
+    if (!Alertable) {
+        msleep_interruptible(ms);
+    } else {
+        /* Sleep in short slices so an alert posted during the delay ends it
+         * early with STATUS_ALERTED. Latency is one slice. */
+        long left = ms;
+        while (left > 0) {
+            long slice = left < 10 ? left : 10;
+            msleep_interruptible(slice);
+            left -= slice;
+            if (sync && nt_thread_consume_alert(sync))
+                return STATUS_ALERTED;
+            if (thr && thr->terminated) {
+                do_exit(0);
+                return STATUS_THREAD_IS_TERMINATING;
+            }
+        }
+    }
     if (thr && thr->terminated) {
         do_exit(0);
         return STATUS_THREAD_IS_TERMINATING;

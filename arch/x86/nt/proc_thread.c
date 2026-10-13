@@ -77,6 +77,7 @@
 #include "handle.h"
 #include "sync.h"
 #include "kshim.h"
+#include "proc_create_args.h"
 #include "../../ntdll/nt_types.h"
 #include "../../ntdll/ntstatus.h"
 
@@ -1351,7 +1352,28 @@ NTSTATUS nt_svc_NtCreateThread(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
  */
 NTSTATUS nt_svc_NtCreateProcessEx(PHANDLE a, ACCESS_MASK b, POBJECT_ATTRIBUTES c, HANDLE d, ULONG e, HANDLE f, HANDLE g, HANDLE h, PVOID i){ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i; return STATUS_NOT_IMPLEMENTED; }
 NTSTATUS nt_svc_NtCreateProcess(PHANDLE a, ACCESS_MASK b, POBJECT_ATTRIBUTES c, HANDLE d, BOOLEAN e, HANDLE f, HANDLE g, HANDLE h){ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h; return STATUS_NOT_IMPLEMENTED; }
-NTSTATUS nt_svc_NtCreateUserProcess(PHANDLE a, PHANDLE b, ACCESS_MASK c, ACCESS_MASK d, POBJECT_ATTRIBUTES e, POBJECT_ATTRIBUTES f, ULONG g, ULONG h, PRTL_USER_PROCESS_PARAMETERS i, PVOID j, PVOID k){ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;(void)j;(void)k; return STATUS_NOT_IMPLEMENTED; }
+/* Copy-in probe for the create arguments: copy_from_user checks the address range. */
+static int pca_copy_from_user(void *to, const void *from, size_t n)
+{
+    return copy_from_user(to, from, n) ? -1 : 0;
+}
+
+/* Argument validation only (process-creation.md, M5). CreateInfo and
+ * AttributeList are copied and checked. The call is then refused, because no
+ * process is created yet. ProcessParameters is not read: the block binfmt_pe
+ * will read is the process_params.h format, not this structure, and nothing
+ * consumes it yet. */
+NTSTATUS nt_svc_NtCreateUserProcess(PHANDLE a, PHANDLE b, ACCESS_MASK c, ACCESS_MASK d, POBJECT_ATTRIBUTES e, POBJECT_ATTRIBUTES f, ULONG g, ULONG h, PRTL_USER_PROCESS_PARAMETERS i, PVOID j, PVOID k)
+{
+    struct pca_create_info ci;
+    struct pca_attr_list al;
+    NTSTATUS st;
+    (void)c; (void)d; (void)e; (void)f; (void)g; (void)h; (void)i;
+    if (!a || !b) return STATUS_INVALID_PARAMETER;
+    st = PcaCopyInUserProcessArgs(pca_copy_from_user, j, k, &ci, &al);
+    if (!NT_SUCCESS(st)) return st;
+    return STATUS_NOT_IMPLEMENTED;
+}
 
 /* --------------------------------------------------------------- */
 /* Suspend / Resume - exact previous-count semantics (golden)       */
