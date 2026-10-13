@@ -104,6 +104,28 @@ function inserts a committed VAD and coalesces it. So the VAD list shows
 what the loader mapped, as well as what the NT calls mapped. See
 [overview](overview.md) for the startup order.
 
+## Other services
+
+- `NtQueryVirtualMemory` also answers `MemoryRegionInformation` (class 3): the
+  VAD's allocation base and protect, a `MEM_REGION_*` type bit, region size and
+  commit size. Working-set and mapped-file-name classes return
+  `STATUS_NOT_SUPPORTED`, since the manager keeps no residency or file names.
+- `NtReadVirtualMemory` and `NtWriteVirtualMemory` copy within the caller's own
+  address space, a page at a time, and stop at the first byte that is not
+  committed or has the wrong protection (`STATUS_PARTIAL_COPY`, with the count
+  moved so far). Writes to `PAGE_READONLY` fail. A `ProcessHandle` other than
+  `NtCurrentProcess` gives `STATUS_NOT_SUPPORTED`.
+- `NtFlushVirtualMemory` checks that the page-rounded range is committed and
+  reports it flushed. Nothing is written back: there is no file backing yet.
+- `NtAllocateVirtualMemoryEx` is `NtAllocateVirtualMemory` when no extended
+  parameters are given. Any extended parameter returns `STATUS_NOT_SUPPORTED`.
+- Not implemented: `NtLockVirtualMemory` and `NtUnlockVirtualMemory` (need a
+  page-lock primitive in kshim), and the section services `NtQuerySection`,
+  `NtExtendSection`, `NtOpenSection` and the `NtCreateSection`,
+  `NtMapViewOfSection` and `NtUnmapViewOfSection` wrappers. The section
+  handle is a raw `nt_section` pointer, so exposing these to user mode needs
+  a handle-table entry first (review kernel-nt.md, M-1).
+
 ## Gaps
 
 - **One address space.** `NtAllocateVirtualMemory`, `NtMapViewOfSection` and
