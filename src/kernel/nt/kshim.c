@@ -83,6 +83,10 @@ void kshim_free_tagged(const void *p) {
     if (*pp) {
         struct kshim_tag *t = *pp;
         *pp = t->next;
+        /* KSHIM_POISON=1: fill freed memory with 0xDD so a use after free reads
+         * a stable bad value (and faults on a pointer read) instead of stale data. */
+        if (kshim_poison_enabled())
+            memset((void *)p, 0xDD, t->size);
         free(t);
     }
     pthread_mutex_unlock(&kshim_tag_lock);
