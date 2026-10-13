@@ -60,9 +60,14 @@ TESTS := object_test security_test registry_test i2_test io_test mm_test sync_te
 # Tests kept in this directory (not in src/kernel/nt). Their sources are $(t).c here.
 LOCAL_TESTS := handle_edge_test registry_ops_test
 
+# Concurrency stress programs (see README.md "Stress tests"). Run by "stress",
+# never by "check". Sources are in this directory, like LOCAL_TESTS.
+STRESS_TESTS := stress_handle_test stress_object_test stress_sync_test
+LOCAL_TESTS += $(STRESS_TESTS)
+
 # Built but not run by "check" (none at present).
 BUILD_ONLY :=
-ALL_PROGS := $(TESTS) $(BUILD_ONLY)
+ALL_PROGS := $(TESTS) $(BUILD_ONLY) $(STRESS_TESTS)
 
 object_test_OBJS      := object handle kshim
 sync_test_OBJS        := sync kshim
@@ -74,6 +79,9 @@ proc_thread_test_OBJS := proc_thread object handle nt_obj sync nt_services kshim
 i2_test_OBJS          := object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
 handle_edge_test_OBJS := object handle kshim
 registry_ops_test_OBJS := registry object handle nt_obj sync kshim
+stress_handle_test_OBJS := object handle kshim
+stress_object_test_OBJS := object handle kshim
+stress_sync_test_OBJS := object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
 
 # Shim self-tests (shim/mman_test.c). Run by "check"; not kernel module tests.
 SHIM_TESTS := mman_test
@@ -146,6 +154,23 @@ check: all
 	  (cd $(BUILD) && timeout $(TIMEOUT) ./$$t.exe > $$t.log 2>&1); rc=$$?; \
 	  echo "$$t rc=$$rc"; [ $$rc -eq 0 ] || fail=1; \
 	done; exit $$fail
+
+# Concurrency stress (not part of check). Each STRESS_TESTS program runs once
+# per seed in STRESS_SEEDS with STRESS_THREADS workers (8..16) and STRESS_OPS
+# operations per worker. KSHIM_POISON=1 poisons allocations. A failure prints
+# the seed, so rerun with: make stress STRESS_SEEDS=<seed>.
+STRESS_SEEDS   ?= 1 2 3
+STRESS_THREADS ?= 12
+STRESS_OPS     ?=
+STRESS_TIMEOUT ?= 900
+
+stress: all
+	@fail=0; for s in $(STRESS_SEEDS); do for t in $(STRESS_TESTS); do \
+	  (cd $(BUILD) && KSHIM_POISON=1 timeout $(STRESS_TIMEOUT) ./$$t.exe $$s $(STRESS_THREADS) $(STRESS_OPS) > $$t.seed$$s.log 2>&1); rc=$$?; \
+	  echo "$$t seed=$$s rc=$$rc"; [ $$rc -eq 0 ] || fail=1; \
+	done; done; exit $$fail
+
+.PHONY: stress
 
 clean:
 	rm -rf $(BUILD)

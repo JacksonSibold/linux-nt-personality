@@ -213,3 +213,54 @@ These do not appear in `TESTS` or `BUILD_ONLY`.
 - **Scratch root.** Tests use `/tmp`. It maps to TMP, else TEMP (absolute
   drive path only), else the current directory. It is always absolute, which
   the `\\?\` prefix requires. Directory opens use `FILE_FLAG_BACKUP_SEMANTICS`.
+
+## Stress tests (not part of `check`)
+
+Three concurrency stress programs drive the userspace kshim build of the
+object, handle, and sync code with several threads at once. They are built by
+`make all` and run only by `make stress`. `check` does not run them.
+
+| Program | Sources linked | Covers |
+|---|---|---|
+| `stress_handle_test` | `object handle kshim` | create, close, duplicate (same and cross process, with move), ref and deref through handles, and a race round where every worker calls `ObCloseHandle` on one value |
+| `stress_object_test` | `object handle kshim` | named create and insert, open, reference by name, delete (`ObMakeTemporaryObject`), unnamed ref and deref, and a regression round for concurrent make-temporary |
+| `stress_sync_test` | `object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel` | `nt_svc_*` events, mutants, and semaphores with 0 to 2 ms waits, recursive mutant ownership, duplicate and close, named events, and a race round where every worker calls `NtClose` on one value |
+
+Usage (run from `tests/kernel-host`, or from `build/`):
+
+```sh
+make stress                                   # seeds 1 2 3, 12 threads, per-program op counts
+make stress STRESS_SEEDS=42 STRESS_THREADS=16 # one seed, 16 workers
+./build/stress_handle_test.exe <seed> <threads 8..16> <ops per thread>
+```
+
+Each program takes `seed`, `threads` (clamped to 8..16), and `ops` as
+positional arguments. The defaults are 65536 ops for `stress_handle_test`,
+16384 for `stress_object_test`, and 4096 for `stress_sync_test`. Each worker's
+PRNG stream is derived from the seed and the worker index, so a failure
+reproduces from its seed. Every program exits 0 on success and 1 on any
+violation. Violations print the seed, file, line, and the failing condition.
+
+Every run also checks these invariants at the end:
+
+- no leaked allocations: `kshim_alloc_count` returns to its value before the
+  object manager was initialised; `kshim_leak_report()` lists survivors
+- handle tables are empty, and each pool object has `ref_count == 1` and
+  `handle_count == 0`
+- in each race round exactly one concurrent close succeeds and the others
+  return `STATUS_INVALID_HANDLE`
+
+`make stress` sets `KSHIM_POISON=1`, which fills every allocation with `0xA5`
+on allocation and `0xDD` on free (see `src/kernel/nt/kshim.c`). A read of freed
+memory then produces a visibly wrong value or a fault.
+
+A watchdog thread in each program aborts the process with a report if no worker
+has completed an operation for 60 seconds. That is treated as a deadlock.
+
+Expected duration on this machine (2026-10-12, UCRT gcc, Windows 11, 16 workers):
+about 2 s per seed for `stress_handle_test`, about 2 s for `stress_object_test`,
+and about 36 s for `stress_sync_test` per seed (the timed waits dominate). A full
+`make stress STRESS_THREADS=16` with the three default seeds takes about 2 minutes
+(127 s measured). `make stress` writes each program's output to
+`build/<program>.seed<N>.log`. `nt_obj.c` and `proc_thread.c` print debug lines
+(`W1_INSTR`, `NtWaitForSingleObject:`) on every call, so those logs are large.
