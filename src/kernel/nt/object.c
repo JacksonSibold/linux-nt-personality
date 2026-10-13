@@ -220,6 +220,10 @@ static struct list_head ob_type_list;
 static struct nt_directory    ob_root_dir;
 static struct nt_object_header ob_root_hdr;
 
+/* Serializes replacement of an object security descriptor against readers that
+ * copy it (NtQuerySecurityObject). Initialized in ObInitObjectManager. */
+static spinlock_t ob_sd_lock;
+
 static struct nt_object_header *ob_dosdevices_hdr = NULL;
 static struct nt_object_header *ob_device_hdr = NULL;
 static struct nt_object_header *ob_basenamedobjects_hdr = NULL;
@@ -511,15 +515,17 @@ NTSTATUS ObCreateObject(struct nt_object_type *type,
     hdr->name.Length = 0;
     hdr->name.MaximumLength = 0;
     hdr->parent_dir = NULL;
-    hdr->security_descriptor = NULL;
     hdr->flags = 0;
     hdr->is_permanent = false;
     hdr->is_exclusive = false;
     hdr->exclusive_owned = false;
-    if (attrs) {
+    /* attrs->SecurityDescriptor is not consumed here: the object never
+     * borrows a caller buffer (its length is unknown). Attach an SD with
+     * ObSetObjectSecurityDescriptor. */
+    hdr->security_descriptor = NULL;
+    hdr->security_descriptor_length = 0;
+    if (attrs)
         hdr->flags = attrs->Attributes & OBJ_VALID_ATTRIBUTES;
-        hdr->security_descriptor = attrs->SecurityDescriptor;
-    }
     *out_hdr = hdr;
     if (out_body)
         *out_body = hdr->body;
@@ -621,10 +627,41 @@ void ObDereferenceObject(struct nt_object_header *obj)
         ObpRemoveFromDirectory(obj);
     if (obj->type && obj->type->ops.delete_obj)
         obj->type->ops.delete_obj(obj);
+    /* The security descriptor is an owned copy: release it with the header. */
+    if (obj->security_descriptor) {
+        kfree(obj->security_descriptor);
+        obj->security_descriptor = NULL;
+        obj->security_descriptor_length = 0;
+    }
     /* If this is the static root header, don't free it */
     if (obj == &ob_root_hdr)
         return;
     kfree(obj);
+}
+
+NTSTATUS ObSetObjectSecurityDescriptor(struct nt_object_header *obj,
+                                        const void *sd, ULONG length)
+{
+    void *copy = NULL;
+    void *old;
+    if (!obj)
+        return STATUS_INVALID_PARAMETER;
+    if (sd && length == 0)
+        return STATUS_INVALID_PARAMETER;
+    if (sd) {
+        copy = kmalloc(length, GFP_KERNEL);
+        if (!copy)
+            return STATUS_NO_MEMORY;
+        memcpy(copy, sd, length);
+    }
+    spin_lock(&ob_sd_lock);
+    old = obj->security_descriptor;
+    obj->security_descriptor = copy;
+    obj->security_descriptor_length = copy ? length : 0;
+    spin_unlock(&ob_sd_lock);
+    if (old)
+        kfree(old);
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS ObpIncrementHandleCount(struct nt_object_header *obj)
@@ -1332,6 +1369,7 @@ NTSTATUS ObInitObjectManager(void)
 {
     NTSTATUS st;
     if (ob_initialized) return STATUS_SUCCESS;
+    spin_lock_init(&ob_sd_lock);
     INIT_LIST_HEAD(&ob_type_list);
     list_add(&nt_directory_type.list, &ob_type_list);
     list_add(&nt_symlink_type.list, &ob_type_list);
