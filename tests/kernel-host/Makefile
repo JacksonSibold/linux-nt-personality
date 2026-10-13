@@ -65,7 +65,7 @@ BUILD_ONLY :=
 ALL_PROGS := $(TESTS) $(BUILD_ONLY)
 
 object_test_OBJS      := object handle kshim
-sync_test_OBJS        := sync kshim object handle
+sync_test_OBJS        := sync kshim object handle nt_obj
 sync_extra_test_OBJS  := object handle nt_obj sync kshim
 security_test_OBJS    := security kshim
 mm_test_OBJS          := mm kshim
