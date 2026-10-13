@@ -3122,6 +3122,81 @@ NTSTATUS nt_svc_NtCancelIoFileEx(HANDLE FileHandle,
 }
 
 
+/*
+ * NtDeleteFile deletes a non-directory by name. A directory is refused with
+ * STATUS_FILE_IS_A_DIRECTORY. The delete is checked like an open with DELETE
+ * access and full sharing, so any open handle without FILE_SHARE_DELETE on the
+ * same file returns STATUS_SHARING_VIOLATION.
+ */
+NTSTATUS nt_svc_NtDeleteFile(POBJECT_ATTRIBUTES ObjectAttributes)
+{
+	char path[PATH_MAX];
+	struct kstat st;
+	bool is_dir = false;
+	NTSTATUS status;
+	bool shared_ok;
+
+	if (!ObjectAttributes)
+		return STATUS_ACCESS_VIOLATION;
+
+	status = ntio_resolve_path(ObjectAttributes, path, sizeof(path), &is_dir);
+	if (!NT_SUCCESS(status))
+		return status;
+	if (ntio_getattr_path(path, &st) != 0)
+		return STATUS_OBJECT_NAME_NOT_FOUND;
+	if (S_ISDIR(st.mode))
+		return STATUS_FILE_IS_A_DIRECTORY;
+
+	spin_lock(&ntio_share_mutex);
+	shared_ok = ntio_check_share_access(st.dev, st.ino, DELETE,
+					    FILE_SHARE_VALID_FLAGS, NULL);
+	spin_unlock(&ntio_share_mutex);
+	if (!shared_ok)
+		return STATUS_SHARING_VIOLATION;
+
+	if (kshim_vfs_unlink(path) != 0)
+		return STATUS_ACCESS_DENIED;
+	return STATUS_SUCCESS;
+}
+
+/*
+ * NtQueryFullAttributesFile. Times and attributes come from the same stat as
+ * NtQueryAttributesFile. AllocationSize is reported as the file size, which is
+ * what FileStandardInformation reports for this implementation.
+ */
+NTSTATUS nt_svc_NtQueryFullAttributesFile(POBJECT_ATTRIBUTES ObjectAttributes,
+					  PFILE_NETWORK_OPEN_INFORMATION FileInformation)
+{
+	char path[PATH_MAX];
+	FILE_NETWORK_OPEN_INFORMATION ni;
+	FILE_BASIC_INFORMATION bi;
+	struct kstat st;
+	bool is_dir = false;
+	NTSTATUS status;
+
+	if (!ObjectAttributes || !FileInformation)
+		return STATUS_ACCESS_VIOLATION;
+
+	status = ntio_resolve_path(ObjectAttributes, path, sizeof(path), &is_dir);
+	if (!NT_SUCCESS(status))
+		return status;
+	if (ntio_getattr_path(path, &st) != 0)
+		return STATUS_OBJECT_NAME_NOT_FOUND;
+
+	ntio_basic_from_stat(&bi, &st);
+	ni.CreationTime = bi.CreationTime;
+	ni.LastAccessTime = bi.LastAccessTime;
+	ni.LastWriteTime = bi.LastWriteTime;
+	ni.ChangeTime = bi.ChangeTime;
+	ni.AllocationSize.QuadPart = (LONGLONG)st.size;
+	ni.EndOfFile.QuadPart = (LONGLONG)st.size;
+	ni.FileAttributes = bi.FileAttributes;
+	if (copy_to_user(FileInformation, &ni, sizeof(ni)))
+		return STATUS_ACCESS_VIOLATION;
+	return STATUS_SUCCESS;
+}
+
+
 /* -------------------------------------------------------------------------- */
 /* Module init / fini (userspace shim)                                          */
 /* -------------------------------------------------------------------------- */

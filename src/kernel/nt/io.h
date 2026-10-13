@@ -431,6 +431,11 @@ NTSTATUS nt_svc_NtCancelIoFileEx(HANDLE FileHandle,
 				 PIO_STATUS_BLOCK IoRequestToCancel,
 				 PIO_STATUS_BLOCK IoStatusBlock);
 
+NTSTATUS nt_svc_NtDeleteFile(POBJECT_ATTRIBUTES ObjectAttributes);
+
+NTSTATUS nt_svc_NtQueryFullAttributesFile(POBJECT_ATTRIBUTES ObjectAttributes,
+					  PFILE_NETWORK_OPEN_INFORMATION FileInformation);
+
 NTSTATUS nt_svc_NtQueryEaFile(HANDLE FileHandle,
 			      PIO_STATUS_BLOCK IoStatusBlock,
 			      PVOID Buffer, ULONG Length,

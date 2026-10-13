@@ -1412,6 +1412,53 @@ TEST(cancel_io_no_pending)
 	PASS();
 }
 
+/* NtDeleteFile and NtQueryFullAttributesFile. A handle without
+ * FILE_SHARE_DELETE blocks the delete until it is closed. */
+TEST(delete_and_full_attributes)
+{
+	HANDLE h = NULL;
+	FILE_NETWORK_OPEN_INFORMATION net;
+	OBJECT_ATTRIBUTES oa;
+
+	reset_state();
+	ASSERT(write_file_at("pdel.txt", "abc"));
+	oa = make_obj_attr("pdel.txt");
+	ASSERT_STATUS(nt_svc_NtQueryFullAttributesFile(&oa, &net), STATUS_SUCCESS);
+	ASSERT(net.EndOfFile.QuadPart == 3);
+	ASSERT(net.AllocationSize.QuadPart == 3);
+	ASSERT((net.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0);
+	ASSERT(net.LastWriteTime.QuadPart != 0);
+
+	oa = make_obj_attr("pdel_missing.txt");
+	ASSERT_STATUS(nt_svc_NtQueryFullAttributesFile(&oa, &net),
+		      STATUS_OBJECT_NAME_NOT_FOUND);
+	ASSERT_STATUS(nt_svc_NtDeleteFile(&oa), STATUS_OBJECT_NAME_NOT_FOUND);
+
+	create_dir_at("pdel_dir");
+	oa = make_obj_attr("pdel_dir");
+	ASSERT_STATUS(nt_svc_NtDeleteFile(&oa), STATUS_FILE_IS_A_DIRECTORY);
+	ASSERT(file_exists_at("pdel_dir"));
+
+	/* An open handle that does not allow sharing DELETE blocks the delete. */
+	ASSERT_STATUS(open_test_file("pdel.txt", FILE_GENERIC_READ,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+	oa = make_obj_attr("pdel.txt");
+	ASSERT_STATUS(nt_svc_NtDeleteFile(&oa), STATUS_SHARING_VIOLATION);
+	ASSERT(file_exists_at("pdel.txt"));
+	nt_svc_NtClose(h);
+	h = NULL;
+
+	ASSERT_STATUS(nt_svc_NtDeleteFile(&oa), STATUS_SUCCESS);
+	ASSERT(!file_exists_at("pdel.txt"));
+	ASSERT_STATUS(nt_svc_NtDeleteFile(&oa), STATUS_OBJECT_NAME_NOT_FOUND);
+	ASSERT_STATUS(nt_svc_NtDeleteFile(NULL), STATUS_ACCESS_VIOLATION);
+	ASSERT_STATUS(nt_svc_NtQueryFullAttributesFile(&oa, NULL),
+		      STATUS_ACCESS_VIOLATION);
+	PASS();
+}
+
 /* NtOpenIoCompletion: names are not registered by NtCreateIoCompletion in
  * this build, so every name lookup misses. The NULL object-attributes case
  * is rejected before any lookup. */
@@ -1519,6 +1566,7 @@ int main(void)
 	RUN(ea_unsupported);
 	RUN(flush_buffers_ex);
 	RUN(cancel_io_no_pending);
+	RUN(delete_and_full_attributes);
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);
 
