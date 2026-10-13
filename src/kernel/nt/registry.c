@@ -699,8 +699,11 @@ NTSTATUS NtCreateKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess,
                      POBJECT_ATTRIBUTES ObjectAttributes, ULONG TitleIndex,
                      PUNICODE_STRING Class, ULONG CreateOptions, PULONG Disposition)
 {
-    (void)TitleIndex; (void)CreateOptions;
+    (void)TitleIndex;
     if (!KeyHandle) return STATUS_INVALID_PARAMETER;
+    /* Symbolic-link keys (REG_OPTION_CREATE_LINK) are not supported: refuse
+       before any side effect instead of creating an ordinary key. */
+    if (CreateOptions & REG_OPTION_CREATE_LINK) return STATUS_NOT_IMPLEMENTED;
     ntreg_init();
     DesiredAccess = strip_wow64(DesiredAccess);
     /* HKLM write deny */

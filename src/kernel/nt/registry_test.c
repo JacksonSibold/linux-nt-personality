@@ -533,6 +533,24 @@ static void test_value_align64(void){
     PASS();
 }
 
+/* Test 15: REG_OPTION_CREATE_LINK is refused (STATUS_NOT_IMPLEMENTED) and
+   creates nothing; it must not silently create an ordinary key. */
+static void test_create_link_refused(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1000,"reglink");
+    struct nt_ethread *thr=make_thread(proc,1);
+    UNICODE_STRING us; make_us(&us,"\\Registry\\User\\Software\\ntpers_link_probe",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE hk=NULL; ULONG disp=0;
+    ASSERT_STATUS(NtCreateKey(&hk, KEY_ALL_ACCESS, &oa, 0, NULL, REG_OPTION_CREATE_LINK, &disp), STATUS_NOT_IMPLEMENTED);
+    ASSERT(hk == NULL);
+    HANDLE ho=NULL;
+    ASSERT_STATUS(NtOpenKey(&ho, KEY_READ, &oa), STATUS_OBJECT_NAME_NOT_FOUND);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
 int main(void){
     printf("registry shim tests starting\n");
     ntreg_init();
@@ -551,6 +569,7 @@ int main(void){
         {test_delete_nested,"delete_nested"},
         {test_enumerate_node,"enumerate_node"},
         {test_value_align64,"value_align64"},
+        {test_create_link_refused,"create_link_refused"},
     };
     for(size_t i=0;i<sizeof(tests)/sizeof(tests[0]);i++){
         printf(" RUN %s\n",tests[i].name);
