@@ -55,7 +55,7 @@ LDFLAGS := -fno-use-linker-plugin $(COV_FLAGS)
 SHIM_OBJS := $(BUILD)/mman_win.o $(BUILD)/posix_host.o $(BUILD)/posix_raw.o
 
 # Test programs and the module objects each one links against.
-TESTS := object_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test
+TESTS := security_extra_test object_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test
 
 # Tests kept in this directory (not in src/kernel/nt). Their sources are $(t).c here.
 LOCAL_TESTS := handle_edge_test registry_ops_test
@@ -69,20 +69,21 @@ LOCAL_TESTS += $(STRESS_TESTS)
 BUILD_ONLY :=
 ALL_PROGS := $(TESTS) $(BUILD_ONLY) $(STRESS_TESTS)
 
-object_test_OBJS      := object handle kshim
-sync_test_OBJS        := sync kshim object handle nt_obj
-sync_extra_test_OBJS  := object handle nt_obj sync kshim
-security_test_OBJS    := security kshim
+object_test_OBJS      := security object handle kshim
+sync_test_OBJS        := security sync kshim object handle nt_obj
+sync_extra_test_OBJS  := security object handle nt_obj sync kshim
+security_extra_test_OBJS      := security object handle kshim
+security_test_OBJS    := security object handle kshim
 mm_test_OBJS          := mm kshim
-registry_test_OBJS    := registry object handle nt_obj sync kshim
-io_test_OBJS          := io object handle iocp nt_obj_weak sync kshim
-proc_thread_test_OBJS := proc_thread object handle nt_obj sync nt_services kshim
-i2_test_OBJS          := object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
-handle_edge_test_OBJS := object handle kshim
-registry_ops_test_OBJS := registry object handle nt_obj sync kshim
-stress_handle_test_OBJS := object handle kshim
-stress_object_test_OBJS := object handle kshim
-stress_sync_test_OBJS := object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
+registry_test_OBJS    := security registry object handle nt_obj sync kshim
+io_test_OBJS          := security io object handle iocp nt_obj_weak sync kshim
+proc_thread_test_OBJS := security proc_thread object handle nt_obj sync nt_services kshim
+i2_test_OBJS          := security object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
+handle_edge_test_OBJS := security object handle kshim
+registry_ops_test_OBJS := security registry object handle nt_obj sync kshim
+stress_handle_test_OBJS := security object handle kshim
+stress_object_test_OBJS := security object handle kshim
+stress_sync_test_OBJS := security object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
 
 # Shim self-tests (shim/mman_test.c). Run by "check"; not kernel module tests.
 SHIM_TESTS := mman_test

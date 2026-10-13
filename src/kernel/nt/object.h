@@ -108,6 +108,14 @@ extern struct nt_object_type nt_symlink_type;
 extern struct nt_object_type nt_process_type;
 extern struct nt_object_type nt_thread_type;
 extern struct nt_object_type nt_test_type; /* generic test object type */
+extern struct nt_object_type nt_token_type; /* access token object (security.c) */
+
+/* Token object body: one reference to an ACCESS_TOKEN, released when the     */
+/* object is deleted (see security.c, token_create_primary).                  */
+struct _ACCESS_TOKEN;
+struct nt_token_body {
+    struct _ACCESS_TOKEN   *token;
+};
 
 /* -------------------------------------------------------------------------- */
 /* Object header                                                              */
@@ -215,6 +223,13 @@ NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs,
                              PHANDLE out_handle);
 
 NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj);
+/* Creates a Token object that takes its own reference on tok and inserts it
+ * into proc's handle table. The caller keeps its own reference. */
+NTSTATUS ObCreateTokenHandle(struct nt_eprocess *proc,
+                             struct _ACCESS_TOKEN *tok,
+                             ACCESS_MASK access,
+                             ULONG attributes,
+                             PHANDLE out_handle);
 
 struct nt_object_header *ObGetRootDirectory(void);
 struct nt_object_header *ObGetDosDevicesDirectory(void);

@@ -9,6 +9,7 @@
  */
 
 #include "security.h"
+#include "object.h"
 
 #ifndef __KERNEL__
 #include <stdio.h>
@@ -991,6 +992,39 @@ ACCESS_TOKEN *token_create_primary(PSID user,
     tok->parent = NULL;
     tok->session_id = session_id;
     return tok;
+}
+
+/* Token object handle: the object takes its own reference on tok, so the
+ * caller keeps its reference and the handle keeps the token alive. */
+NTSTATUS ObCreateTokenHandle(struct nt_eprocess *proc,
+                             ACCESS_TOKEN *tok,
+                             ACCESS_MASK access,
+                             ULONG attributes,
+                             PHANDLE out_handle)
+{
+    struct nt_object_header *hdr = NULL;
+    struct nt_token_body *body = NULL;
+    OBJECT_ATTRIBUTES oa;
+    NTSTATUS st;
+
+    if (!proc || !tok || !out_handle) return STATUS_INVALID_PARAMETER;
+    if (attributes & ~(OBJ_INHERIT | OBJ_PROTECT_FROM_CLOSE))
+        return STATUS_INVALID_PARAMETER;
+
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(oa);
+    oa.Attributes = attributes;
+
+    st = ObCreateObject(&nt_token_type, &oa, sizeof(*body), &hdr, (void **)&body);
+    if (!NT_SUCCESS(st)) return st;
+    token_reference(tok);
+    body->token = tok;
+
+    st = ObInsertObject(hdr, &oa, access, proc, out_handle);
+    /* Drop the creation reference. On failure this releases the object and
+     * with it the token reference taken above. */
+    ObDereferenceObject(hdr);
+    return st;
 }
 
 ACCESS_TOKEN *token_duplicate(const ACCESS_TOKEN *src)

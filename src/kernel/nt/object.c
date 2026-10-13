@@ -9,6 +9,7 @@
 
 #include "object.h"
 #include "handle.h"
+#include "security.h"
 #ifndef __KERNEL__
 #include <wchar.h>
 #else
@@ -186,6 +187,21 @@ struct nt_object_type nt_process_type = {
 struct nt_object_type nt_thread_type = {
     .name = "Thread",
     .ops = { .delete_obj = NULL, },
+    .pool_tag = 0,
+};
+
+static void token_delete(struct nt_object_header *hdr)
+{
+    struct nt_token_body *b = (struct nt_token_body *)nt_object_body(hdr);
+    if (b->token) {
+        token_dereference(b->token);
+        b->token = NULL;
+    }
+}
+
+struct nt_object_type nt_token_type = {
+    .name = "Token",
+    .ops = { .delete_obj = token_delete, },
     .pool_tag = 0,
 };
 
@@ -1310,6 +1326,7 @@ NTSTATUS ObInitObjectManager(void)
     list_add(&nt_symlink_type.list, &ob_type_list);
     list_add(&nt_process_type.list, &ob_type_list);
     list_add(&nt_thread_type.list, &ob_type_list);
+    list_add(&nt_token_type.list, &ob_type_list);
     list_add(&nt_test_type.list, &ob_type_list);
 #ifndef __KERNEL__
     nt_process_type.ops.delete_obj = process_delete;
