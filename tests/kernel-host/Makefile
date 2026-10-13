@@ -56,10 +56,10 @@ LDFLAGS := -fno-use-linker-plugin $(COV_FLAGS)
 SHIM_OBJS := $(BUILD)/mman_win.o $(BUILD)/posix_host.o $(BUILD)/posix_raw.o
 
 # Test programs and the module objects each one links against.
-TESTS := security_extra_test object_test object_extra_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test system_test process_params_test handle_inherit_test proc_create_args_test image_plan_test image_reloc_test
+TESTS := port_test security_extra_test object_test object_extra_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test system_test process_params_test handle_inherit_test proc_create_args_test image_plan_test image_reloc_test
 
 # Tests kept in this directory (not in src/kernel/nt). Their sources are $(t).c here.
-LOCAL_TESTS := handle_edge_test registry_ops_test process_params_test handle_inherit_test proc_create_args_test image_plan_test image_reloc_test
+LOCAL_TESTS := port_test handle_edge_test registry_ops_test process_params_test handle_inherit_test proc_create_args_test image_plan_test image_reloc_test
 
 # Concurrency stress programs (see README.md "Stress tests"). Run by "stress",
 # never by "check". Sources are in this directory, like LOCAL_TESTS.
@@ -74,6 +74,7 @@ object_test_OBJS      := security object handle kshim
 object_extra_test_OBJS := security object handle nt_obj sync kshim
 sync_test_OBJS        := security sync kshim object handle nt_obj
 sync_extra_test_OBJS  := security object handle nt_obj sync kshim
+port_test_OBJS        := security object handle nt_obj sync kshim port
 security_extra_test_OBJS      := security object handle kshim
 security_test_OBJS    := security object handle kshim
 mm_test_OBJS          := mm security object handle kshim io iocp nt_obj_weak sync pe_parse
