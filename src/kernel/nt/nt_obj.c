@@ -497,28 +497,6 @@ NTSTATUS nt_svc_NtDuplicateObject(HANDLE SourceProcessHandle, HANDLE SourceHandl
 #else /* __KERNEL__ */
 /* Kernel versions with uaccess checks */
 
-static NTSTATUS k_copy_oa(POBJECT_ATTRIBUTES uptr, OBJECT_ATTRIBUTES *k_oa, UNICODE_STRING *k_name, WCHAR *k_buf, size_t k_buf_bytes, POBJECT_ATTRIBUTES *out_oa)
-{
-    if (!uptr) { memset(k_oa,0,sizeof(*k_oa)); k_oa->Length=sizeof(OBJECT_ATTRIBUTES); *out_oa=NULL; return STATUS_SUCCESS; }
-    if (!access_ok(uptr,sizeof(OBJECT_ATTRIBUTES))) return STATUS_ACCESS_VIOLATION;
-    if (copy_from_user(k_oa, uptr, sizeof(OBJECT_ATTRIBUTES))) return STATUS_ACCESS_VIOLATION;
-    if (k_oa->Length != sizeof(OBJECT_ATTRIBUTES)) return STATUS_INVALID_PARAMETER;
-    if (k_oa->ObjectName) {
-        if (!access_ok(k_oa->ObjectName, sizeof(UNICODE_STRING))) return STATUS_ACCESS_VIOLATION;
-        UNICODE_STRING tmp;
-        if (copy_from_user(&tmp, k_oa->ObjectName, sizeof(tmp))) return STATUS_ACCESS_VIOLATION;
-        if (tmp.Length) {
-            if (!access_ok(tmp.Buffer, tmp.Length)) return STATUS_ACCESS_VIOLATION;
-            if ((size_t)tmp.Length > k_buf_bytes) return STATUS_NAME_TOO_LONG;
-            if (copy_from_user(k_buf, tmp.Buffer, tmp.Length)) return STATUS_ACCESS_VIOLATION;
-            k_name->Buffer = k_buf; k_name->Length = tmp.Length; k_name->MaximumLength = tmp.Length;
-            k_oa->ObjectName = k_name;
-        } else k_oa->ObjectName=NULL;
-    }
-    *out_oa = k_oa;
-    return STATUS_SUCCESS;
-}
-
 NTSTATUS nt_svc_NtCreateEvent(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4,
                               unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {
@@ -528,7 +506,7 @@ NTSTATUS nt_svc_NtCreateEvent(unsigned long a0, unsigned long a1, unsigned long 
     if (!EventHandle || !access_ok(EventHandle,sizeof(*EventHandle))) return STATUS_ACCESS_VIOLATION;
     proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;
-    st=k_copy_oa(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
+    st=ObCopyObjectAttributesFromUser(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
     st=nt_create_event_internal(proc,DesiredAccess,oa,EventType,InitialState,&h);
     if(NT_SUCCESS(st)||st==STATUS_OBJECT_NAME_COLLISION){ if(copy_to_user(EventHandle,&h,sizeof(h))) return STATUS_ACCESS_VIOLATION; }
     return st;
@@ -540,7 +518,7 @@ NTSTATUS nt_svc_NtOpenEvent(unsigned long a0, unsigned long a1, unsigned long a2
     if(!EventHandle||!access_ok(EventHandle,sizeof(*EventHandle))) return STATUS_ACCESS_VIOLATION;
     if(!ObjectAttributes) return STATUS_INVALID_PARAMETER;
     OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256]; POBJECT_ATTRIBUTES oa=NULL; NTSTATUS st;
-    st=k_copy_oa(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
+    st=ObCopyObjectAttributesFromUser(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
     if(!oa||!oa->ObjectName) return STATUS_INVALID_PARAMETER;
     struct nt_eprocess *proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;
@@ -556,7 +534,7 @@ NTSTATUS nt_svc_NtCreateMutant(unsigned long a0, unsigned long a1, unsigned long
     if(!MutantHandle||!access_ok(MutantHandle,sizeof(*MutantHandle))) return STATUS_ACCESS_VIOLATION;
     proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;
-    st=k_copy_oa(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
+    st=ObCopyObjectAttributesFromUser(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
     st=nt_create_mutant_internal(proc,DesiredAccess,oa,InitialOwner,&h);
     NT_TRACE_ERR("NtCreateMutant: st=0x%x h=%p oa=%p name=%ls\n", st, h, oa, oa&&oa->ObjectName?oa->ObjectName->Buffer:NULL);
     if(NT_SUCCESS(st)||st==STATUS_OBJECT_NAME_COLLISION){ if(copy_to_user(MutantHandle,&h,sizeof(h))) return STATUS_ACCESS_VIOLATION; }
@@ -569,7 +547,7 @@ NTSTATUS nt_svc_NtOpenMutant(unsigned long a0, unsigned long a1, unsigned long a
     if(!MutantHandle||!access_ok(MutantHandle,sizeof(*MutantHandle))) return STATUS_ACCESS_VIOLATION;
     if(!ObjectAttributes) return STATUS_INVALID_PARAMETER;
     OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256]; POBJECT_ATTRIBUTES oa=NULL; NTSTATUS st;
-    st=k_copy_oa(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
+    st=ObCopyObjectAttributesFromUser(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
     if(!oa||!oa->ObjectName) return STATUS_INVALID_PARAMETER;
     struct nt_eprocess *proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;
@@ -585,7 +563,7 @@ NTSTATUS nt_svc_NtCreateSemaphore(unsigned long a0, unsigned long a1, unsigned l
     if(!SemaphoreHandle||!access_ok(SemaphoreHandle,sizeof(*SemaphoreHandle))) return STATUS_ACCESS_VIOLATION;
     proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;
-    st=k_copy_oa(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
+    st=ObCopyObjectAttributesFromUser(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
     st=nt_create_semaphore_internal(proc,DesiredAccess,oa,InitialCount,MaximumCount,&h);
     if(NT_SUCCESS(st)||st==STATUS_OBJECT_NAME_COLLISION){ if(copy_to_user(SemaphoreHandle,&h,sizeof(h))) return STATUS_ACCESS_VIOLATION; }
     return st;
@@ -597,7 +575,7 @@ NTSTATUS nt_svc_NtOpenSemaphore(unsigned long a0, unsigned long a1, unsigned lon
     if(!SemaphoreHandle||!access_ok(SemaphoreHandle,sizeof(*SemaphoreHandle))) return STATUS_ACCESS_VIOLATION;
     if(!ObjectAttributes) return STATUS_INVALID_PARAMETER;
     OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256]; POBJECT_ATTRIBUTES oa=NULL; NTSTATUS st;
-    st=k_copy_oa(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
+    st=ObCopyObjectAttributesFromUser(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
     if(!oa||!oa->ObjectName) return STATUS_INVALID_PARAMETER;
     struct nt_eprocess *proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;

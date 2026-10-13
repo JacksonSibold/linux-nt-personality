@@ -1734,7 +1734,6 @@ NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
     struct nt_section *sec = NULL;
     SIZE_T size = 0;
     NTSTATUS st;
-    (void)ObjectAttributes;
     if (!SectionHandle) return STATUS_INVALID_PARAMETER;
     if (!ntmm_protection_valid(SectionPageProtection)) return STATUS_INVALID_PAGE_PROTECTION;
     /* File-backed sections are not implemented: the handle is never looked up,
@@ -1745,7 +1744,7 @@ NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
     if (AllocationAttributes & SEC_IMAGE) return STATUS_INVALID_PARAMETER;
 
     ObRegisterObjectType(&nt_section_type);
-    st = ObCreateObject(&nt_section_type, NULL, sizeof(*sec), &hdr, (void **)&sec);
+    st = ObCreateObject(&nt_section_type, ObjectAttributes, sizeof(*sec), &hdr, (void **)&sec);
     if (!NT_SUCCESS(st)) return st;
     /* Set the backing before any failure path: the delete callback releases it,
      * and a zeroed fd of 0 would close stdin. */
@@ -1758,9 +1757,10 @@ NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
         return STATUS_NO_MEMORY;
     }
     sec->size = size;
-    /* The handle takes its own reference. Dropping the creation reference
-     * leaves the handle as the only owner. On failure the object is freed. */
-    st = ObInsertObject(hdr, NULL, DesiredAccess, kshim_current_process(), SectionHandle);
+    /* A named section enters the object namespace here, so NtOpenSection can
+     * find it. The handle takes its own reference. Dropping the creation
+     * reference leaves the handle as the only owner. On failure the object is freed. */
+    st = ObInsertObject(hdr, ObjectAttributes, DesiredAccess, kshim_current_process(), SectionHandle);
     ObDereferenceObject(hdr);
     return st;
 }
@@ -1930,3 +1930,106 @@ NTSTATUS ntmm_add_region(ULONG_PTR base, SIZE_T size, ULONG protect, ULONG type,
     return STATUS_SUCCESS;
 }
 
+/* NtOpenSection core: looks the name up in the object namespace. Sections are
+ * entered there by NtCreateSection when the caller gives a name. */
+static NTSTATUS nt_open_section(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                                POBJECT_ATTRIBUTES ObjectAttributes) {
+    struct nt_eprocess *proc;
+    HANDLE h = NULL;
+    NTSTATUS st;
+    if (!SectionHandle || !ObjectAttributes || !ObjectAttributes->ObjectName)
+        return STATUS_INVALID_PARAMETER;
+    proc = kshim_current_process();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    st = ObOpenObjectByName(ObjectAttributes, &nt_section_type, UserMode, DesiredAccess, proc, &h);
+    if (NT_SUCCESS(st)) *SectionHandle = h;
+    return st;
+}
+
+/* Service entry points for NtCreateSection and NtOpenSection. */
+#ifndef __KERNEL__
+
+NTSTATUS nt_svc_NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                                POBJECT_ATTRIBUTES ObjectAttributes,
+                                PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
+                                ULONG AllocationAttributes, HANDLE FileHandle) {
+    return NtCreateSection(SectionHandle, DesiredAccess, ObjectAttributes, MaximumSize,
+                           SectionPageProtection, AllocationAttributes, FileHandle);
+}
+
+NTSTATUS nt_svc_NtOpenSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                              POBJECT_ATTRIBUTES ObjectAttributes) {
+    return nt_open_section(SectionHandle, DesiredAccess, ObjectAttributes);
+}
+
+#else /* __KERNEL__ */
+
+/* Arguments arrive as raw register or stack values from do_nt_syscall. The
+ * output handle is written with copy_to_user, the name is copied in first, and
+ * the maximum size is read with copy_from_user. */
+NTSTATUS nt_svc_NtCreateSection(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    PHANDLE SectionHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    PLARGE_INTEGER MaximumSize = (PLARGE_INTEGER)a3;
+    ULONG SectionPageProtection = (ULONG)a4;
+    ULONG AllocationAttributes = (ULONG)a5;
+    HANDLE FileHandle = (HANDLE)a6;
+    OBJECT_ATTRIBUTES k_oa;
+    UNICODE_STRING k_name;
+    WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL;
+    LARGE_INTEGER kmax;
+    PLARGE_INTEGER pmax = NULL;
+    HANDLE h = NULL;
+    NTSTATUS st;
+    (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (!SectionHandle) return STATUS_INVALID_PARAMETER;
+    if (!access_ok(SectionHandle, sizeof(*SectionHandle))) return STATUS_ACCESS_VIOLATION;
+    st = ObCopyObjectAttributesFromUser(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    if (MaximumSize) {
+        if (!access_ok(MaximumSize, sizeof(*MaximumSize))) return STATUS_ACCESS_VIOLATION;
+        if (copy_from_user(&kmax, MaximumSize, sizeof(kmax))) return STATUS_ACCESS_VIOLATION;
+        pmax = &kmax;
+    }
+    st = NtCreateSection(&h, DesiredAccess, oa, pmax, SectionPageProtection, AllocationAttributes, FileHandle);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(SectionHandle, &h, sizeof(h))) {
+        ObCloseHandle(kshim_current_process(), h);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS nt_svc_NtOpenSection(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                              unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                              unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    PHANDLE SectionHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    OBJECT_ATTRIBUTES k_oa;
+    UNICODE_STRING k_name;
+    WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL;
+    HANDLE h = NULL;
+    NTSTATUS st;
+    (void)a3; (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (!SectionHandle) return STATUS_INVALID_PARAMETER;
+    if (!access_ok(SectionHandle, sizeof(*SectionHandle))) return STATUS_ACCESS_VIOLATION;
+    st = ObCopyObjectAttributesFromUser(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    st = nt_open_section(&h, DesiredAccess, oa);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(SectionHandle, &h, sizeof(h))) {
+        ObCloseHandle(kshim_current_process(), h);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return STATUS_SUCCESS;
+}
+
+#endif /* __KERNEL__ */

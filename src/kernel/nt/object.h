@@ -222,6 +222,12 @@ NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs,
                              struct nt_eprocess *proc,
                              PHANDLE out_handle);
 
+#ifdef __KERNEL__
+/* Copies a user OBJECT_ATTRIBUTES, its name and the name buffer into kernel storage. */
+NTSTATUS ObCopyObjectAttributesFromUser(POBJECT_ATTRIBUTES uptr, OBJECT_ATTRIBUTES *k_oa,
+                                        UNICODE_STRING *k_name, WCHAR *k_buf,
+                                        size_t k_buf_bytes, POBJECT_ATTRIBUTES *out_oa);
+#endif
 NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj);
 /* Creates a Token object that takes its own reference on tok and inserts it
  * into proc's handle table. The caller keeps its own reference. */

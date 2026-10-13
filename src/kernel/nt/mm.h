@@ -282,6 +282,20 @@ NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                             PSIZE_T ViewSize, ULONG InheritDisposition,
                             ULONG AllocationType, ULONG Win32Protect);
 NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress);
+
+/* Service entry points for the section services (nt_service_list.h). The
+ * kernel build defines them in mm.c with the generic a0..a11 form that
+ * dispatch.c calls and copies user memory with uaccess helpers. The userspace
+ * (kshim) build defines them with typed arguments that call the functions
+ * above directly. */
+#ifndef __KERNEL__
+NTSTATUS nt_svc_NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                                POBJECT_ATTRIBUTES ObjectAttributes,
+                                PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
+                                ULONG AllocationAttributes, HANDLE FileHandle);
+NTSTATUS nt_svc_NtOpenSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                              POBJECT_ATTRIBUTES ObjectAttributes);
+#endif
 NTSTATUS NtReadVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
                              PVOID Buffer, SIZE_T BufferSize,
                              PSIZE_T NumberOfBytesRead);

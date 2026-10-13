@@ -1399,6 +1399,85 @@ static int test_allocate_ex(void) {
     return 1;
 }
 
+/* ---- nt_svc_ section entry points: create / open family ---- */
+
+static void mm_make_us(UNICODE_STRING *us, WCHAR *buf, size_t bufcount, const char *s) {
+    size_t n = strlen(s), i;
+    if (n >= bufcount) n = bufcount - 1;
+    for (i = 0; i < n; i++) buf[i] = (WCHAR)(unsigned char)s[i];
+    buf[n] = 0;
+    us->Buffer = buf;
+    us->Length = (USHORT)(n * sizeof(WCHAR));
+    us->MaximumLength = (USHORT)((n + 1) * sizeof(WCHAR));
+}
+
+static OBJECT_ATTRIBUTES mm_make_oa(UNICODE_STRING *us) {
+    OBJECT_ATTRIBUTES oa;
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(oa);
+    oa.ObjectName = us;
+    return oa;
+}
+
+/* An unnamed section through the entry point maps like NtCreateSection's. */
+static int test_nt_svc_create_section_unnamed(void) {
+    HANDLE h = NULL;
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    NTSTATUS st = nt_svc_NtCreateSection(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "svc create 0x%lx", (unsigned long)st);
+    ASSERT(h != NULL, "svc create handle");
+    PVOID base = NULL; SIZE_T vs = 0;
+    st = mm_map_view(h, &base, &vs, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS && base != NULL && vs == 0x2000, "svc create map 0x%lx", (unsigned long)st);
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "svc create unmap");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "svc create close");
+    ASSERT(nt_svc_NtCreateSection(NULL, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL) == STATUS_INVALID_PARAMETER,
+           "svc create null handle pointer");
+    ASSERT(nt_svc_NtCreateSection(&h, SECTION_ALL_ACCESS, NULL, NULL, PAGE_READWRITE, SEC_COMMIT, NULL) == STATUS_INVALID_PARAMETER,
+           "svc create null size");
+    return 1;
+}
+
+/* A named section is found by NtOpenSection, and both handles share its backing. */
+static int test_nt_svc_named_section_open(void) {
+    UNICODE_STRING us; WCHAR nbuf[64];
+    mm_make_us(&us, nbuf, 64, "\\BaseNamedObjects\\MmTestSecOpen");
+    OBJECT_ATTRIBUTES oa = mm_make_oa(&us);
+    LARGE_INTEGER sz; sz.QuadPart = 0x1000;
+    HANDLE h1 = NULL, h2 = NULL;
+    NTSTATUS st = nt_svc_NtCreateSection(&h1, SECTION_ALL_ACCESS, &oa, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "named create 0x%lx", (unsigned long)st);
+    st = nt_svc_NtOpenSection(&h2, SECTION_ALL_ACCESS, &oa);
+    ASSERT(st == STATUS_SUCCESS && h2 != NULL, "named open 0x%lx", (unsigned long)st);
+    /* Both handles resolve to the same section object. (The host shim gives
+     * each view its own copy of the backing, so view contents are not compared.) */
+    struct nt_object_header *o1 = NULL, *o2 = NULL;
+    ASSERT(ObReferenceObjectByHandle(g_mm_proc, h1, &nt_section_type, KernelMode, 0, &o1, NULL) == STATUS_SUCCESS, "named ref one");
+    ASSERT(ObReferenceObjectByHandle(g_mm_proc, h2, &nt_section_type, KernelMode, 0, &o2, NULL) == STATUS_SUCCESS, "named ref two");
+    ASSERT(o1 == o2, "named handles name one section");
+    ObDereferenceObject(o1);
+    ObDereferenceObject(o2);
+    PVOID b1 = NULL; SIZE_T v1 = 0;
+    ASSERT(mm_map_view(h2, &b1, &v1, PAGE_READWRITE) == STATUS_SUCCESS, "named map");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, b1) == STATUS_SUCCESS, "named unmap");
+    ASSERT(ObCloseHandle(g_mm_proc, h1) == STATUS_SUCCESS, "named close one");
+    ASSERT(ObCloseHandle(g_mm_proc, h2) == STATUS_SUCCESS, "named close two");
+    return 1;
+}
+
+/* Missing names and missing pointers are refused without writing a handle. */
+static int test_nt_svc_open_section_errors(void) {
+    UNICODE_STRING us; WCHAR nbuf[64];
+    HANDLE h = NULL;
+    mm_make_us(&us, nbuf, 64, "\\BaseNamedObjects\\MmTestNoSuchSection");
+    OBJECT_ATTRIBUTES oa = mm_make_oa(&us);
+    ASSERT(nt_svc_NtOpenSection(&h, SECTION_ALL_ACCESS, &oa) == STATUS_OBJECT_NAME_NOT_FOUND, "open missing name");
+    ASSERT(h == NULL, "no handle for missing name");
+    ASSERT(nt_svc_NtOpenSection(NULL, SECTION_ALL_ACCESS, &oa) == STATUS_INVALID_PARAMETER, "open null handle pointer");
+    ASSERT(nt_svc_NtOpenSection(&h, SECTION_ALL_ACCESS, NULL) == STATUS_INVALID_PARAMETER, "open null attributes");
+    return 1;
+}
+
 int main(void) {
     printf("=== ntmm tests ===\n");
     if (!mm_setup_objects()) {
@@ -1434,6 +1513,9 @@ int main(void) {
     RUN_TEST(test_rw_virtual_memory);
     RUN_TEST(test_flush_virtual_memory);
     RUN_TEST(test_allocate_ex);
+    RUN_TEST(test_nt_svc_create_section_unnamed);
+    RUN_TEST(test_nt_svc_named_section_open);
+    RUN_TEST(test_nt_svc_open_section_errors);
     ntmm_reset();
     ObDestroyProcessObject(g_mm_proc);
     ObCleanupObjectManager();
