@@ -91,7 +91,7 @@ SHIM_TESTS := mman_test
 
 PROGS := $(addprefix $(BUILD)/,$(addsuffix .exe,$(ALL_PROGS) $(SHIM_TESTS)))
 
-.PHONY: all check clean
+.PHONY: all check check-full clean
 all: $(PROGS)
 
 $(BUILD):
@@ -152,11 +152,26 @@ $(foreach t,$(ALL_PROGS),$(eval $(call PROG_RULE,$(t))))
 # (its wait_on_address loop sleeps 2 ms per iteration).
 TIMEOUT ?= 3000
 
-check: all
-	@fail=0; for t in $(TESTS) $(SHIM_TESTS); do \
-	  (cd $(BUILD) && timeout $(TIMEOUT) ./$$t.exe > $$t.log 2>&1); rc=$$?; \
+# Iterations of sync_test's wait_on_address_extended loop (SYNC_TEST_ITERATIONS).
+# "check" uses the reduced count; "check-full" uses the CI
+# count (20000, the program's default). Every program gets the variable, and
+# only sync_test reads it.
+SYNC_CHECK_ITERATIONS ?= 2000
+SYNC_FULL_ITERATIONS  ?= 20000
+
+
+# RUN_TESTS, LIST, ITERATIONS: run each program in LIST from $(BUILD), print
+# its rc, and exit nonzero if any failed. Logs go to $(BUILD)/<name>.log.
+RUN_TESTS = fail=0; for t in $(1); do \
+	  (cd $(BUILD) && SYNC_TEST_ITERATIONS=$(2) timeout $(TIMEOUT) ./$$t.exe > $$t.log 2>&1); rc=$$?; \
 	  echo "$$t rc=$$rc"; [ $$rc -eq 0 ] || fail=1; \
 	done; exit $$fail
+
+check: all
+	@$(call RUN_TESTS,$(TESTS) $(SHIM_TESTS),$(SYNC_CHECK_ITERATIONS))
+
+check-full: all
+	@$(call RUN_TESTS,$(TESTS) $(SHIM_TESTS),$(SYNC_FULL_ITERATIONS))
 
 # Concurrency stress (not part of check). Each STRESS_TESTS program runs once
 # per seed in STRESS_SEEDS with STRESS_THREADS workers (8..16) and STRESS_OPS
