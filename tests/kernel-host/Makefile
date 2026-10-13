@@ -56,10 +56,10 @@ LDFLAGS := -fno-use-linker-plugin $(COV_FLAGS)
 SHIM_OBJS := $(BUILD)/mman_win.o $(BUILD)/posix_host.o $(BUILD)/posix_raw.o
 
 # Test programs and the module objects each one links against.
-TESTS := security_extra_test object_test object_extra_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test system_test process_params_test handle_inherit_test proc_create_args_test image_plan_test
+TESTS := security_extra_test object_test object_extra_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test system_test process_params_test handle_inherit_test proc_create_args_test image_plan_test image_reloc_test
 
 # Tests kept in this directory (not in src/kernel/nt). Their sources are $(t).c here.
-LOCAL_TESTS := handle_edge_test registry_ops_test process_params_test handle_inherit_test proc_create_args_test image_plan_test
+LOCAL_TESTS := handle_edge_test registry_ops_test process_params_test handle_inherit_test proc_create_args_test image_plan_test image_reloc_test
 
 # Concurrency stress programs (see README.md "Stress tests"). Run by "stress",
 # never by "check". Sources are in this directory, like LOCAL_TESTS.
@@ -87,6 +87,7 @@ process_params_test_OBJS :=
 handle_inherit_test_OBJS := security object handle kshim
 proc_create_args_test_OBJS :=
 image_plan_test_OBJS := pe_parse
+image_reloc_test_OBJS := pe_parse
 registry_ops_test_OBJS := security registry object handle nt_obj sync kshim
 stress_handle_test_OBJS := security object handle kshim
 stress_object_test_OBJS := security object handle kshim
