@@ -1244,6 +1244,7 @@ static NTSTATUS wait_on_eprocess(struct nt_eprocess *proc, BOOLEAN Alertable, PL
     return done? STATUS_WAIT_0 : STATUS_TIMEOUT;
 }
 
+extern struct nt_object_type nt_timer_type; /* sync.c */
 NTSTATUS nt_svc_NtWaitForSingleObject(HANDLE Handle, BOOLEAN Alertable, PLARGE_INTEGER Timeout)
 {
     struct nt_eprocess *proc = kshim_current_process();
@@ -1269,7 +1270,7 @@ NTSTATUS nt_svc_NtWaitForSingleObject(HANDLE Handle, BOOLEAN Alertable, PLARGE_I
     }
     struct nt_dispatcher_header *dh = (struct nt_dispatcher_header*)nt_object_body(hdr);
     /* Validate dispatcher type */
-    if (hdr->type != &nt_event_type && hdr->type != &nt_mutant_type && hdr->type != &nt_semaphore_type) {
+    if (hdr->type != &nt_event_type && hdr->type != &nt_mutant_type && hdr->type != &nt_semaphore_type && hdr->type != &nt_timer_type) {
         ObDereferenceObject(hdr);
         return STATUS_OBJECT_TYPE_MISMATCH;
     }
@@ -1437,6 +1438,7 @@ static NTSTATUS wait_on_eprocess(struct nt_eprocess *proc, BOOLEAN Alertable, PL
     }
 }
 
+extern struct nt_object_type nt_timer_type; /* sync.c */
 NTSTATUS nt_svc_NtWaitForSingleObject(HANDLE Handle, BOOLEAN Alertable, PLARGE_INTEGER Timeout)
 {
     struct nt_eprocess *proc = kshim_current_process();
@@ -1461,7 +1463,7 @@ NTSTATUS nt_svc_NtWaitForSingleObject(HANDLE Handle, BOOLEAN Alertable, PLARGE_I
         return wait_on_eprocess(ep, Alertable, Timeout);
     }
     struct nt_dispatcher_header *dh = (struct nt_dispatcher_header*)nt_object_body(hdr);
-    if (hdr->type != &nt_event_type && hdr->type != &nt_mutant_type && hdr->type != &nt_semaphore_type) {
+    if (hdr->type != &nt_event_type && hdr->type != &nt_mutant_type && hdr->type != &nt_semaphore_type && hdr->type != &nt_timer_type) {
         ObDereferenceObject(hdr);
         return STATUS_OBJECT_TYPE_MISMATCH;
     }

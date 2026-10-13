@@ -35,6 +35,7 @@ NTSTATUS nt_svc_NtSignalAndWaitForSingleObject(ULONG_PTR a0, ULONG_PTR a1, ULONG
 NTSTATUS nt_svc_NtYieldExecution(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
                                   ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
                                   ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
+NTSTATUS nt_svc_NtWaitForSingleObject(HANDLE Handle, BOOLEAN Alertable, PLARGE_INTEGER Timeout);
 NTSTATUS nt_svc_NtCreateKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
                                    ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
                                    ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
@@ -451,6 +452,44 @@ TEST(keyed_release_wakes_waiter) {
     PASS();
 }
 
+
+
+
+/* ------------------------------------------------------------------ */
+/* Timers as waitable objects (NtWaitForSingleObject / ...Multiple...)  */
+/* ------------------------------------------------------------------ */
+TEST(wait_single_sync_timer_auto_reset) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, SynchronizationTimer), STATUS_SUCCESS);
+    LARGE_INTEGER poll = rel100(0);
+    ASSERT_STATUS(nt_svc_NtWaitForSingleObject(h, 0, &poll), STATUS_TIMEOUT);
+    LARGE_INTEGER due = rel100(20);
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, 0, NULL), STATUS_SUCCESS);
+    LARGE_INTEGER wait = rel100(3000);
+    ASSERT_STATUS(nt_svc_NtWaitForSingleObject(h, 0, &wait), STATUS_WAIT_0);
+    /* A synchronization timer resets when a wait consumes it. */
+    ASSERT_STATUS(nt_svc_NtWaitForSingleObject(h, 0, &poll), STATUS_TIMEOUT);
+    PASS();
+}
+
+TEST(wait_single_notification_timer_stays_set) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, NotificationTimer), STATUS_SUCCESS);
+    LARGE_INTEGER due = rel100(20);
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, 0, NULL), STATUS_SUCCESS);
+    LARGE_INTEGER wait = rel100(3000);
+    ASSERT_STATUS(nt_svc_NtWaitForSingleObject(h, 0, &wait), STATUS_WAIT_0);
+    LARGE_INTEGER poll = rel100(0);
+    ASSERT_STATUS(nt_svc_NtWaitForSingleObject(h, 0, &poll), STATUS_WAIT_0);
+    PASS();
+}
+
+
+
+
+
 /* ------------------------------------------------------------------ */
 /* NtYieldExecution                                                     */
 /* ------------------------------------------------------------------ */
@@ -475,6 +514,8 @@ int main(void) {
     RUN(cancel_timer_reports_signalled);
     RUN(query_timer_state_and_remaining);
     RUN(query_timer_bad_arguments);
+    RUN(wait_single_sync_timer_auto_reset);
+    RUN(wait_single_notification_timer_stays_set);
     RUN(signal_and_wait_event_pair);
     RUN(signal_and_wait_mutant_release);
     RUN(signal_and_wait_bad_objects);
