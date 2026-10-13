@@ -10,17 +10,17 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 97 |
+| IMPLEMENTED | 98 |
 | STUB-NOT-IMPLEMENTED | 2 |
 | WEAK-FALLBACK | 0 |
-| MISSING | 72 |
+| MISSING | 71 |
 
 ## By area
 
 | Area | Total | IMPLEMENTED | STUB-NOT-IMPLEMENTED | WEAK-FALLBACK | MISSING |
 |---|---:|---:|---:|---:|---:|
 | system | 10 | 8 | 0 | 0 | 2 |
-| process-thread | 43 | 24 | 2 | 0 | 17 |
+| process-thread | 43 | 25 | 2 | 0 | 16 |
 | memory | 19 | 4 | 0 | 0 | 15 |
 | io | 30 | 9 | 0 | 0 | 21 |
 | sync | 32 | 31 | 0 | 0 | 1 |
@@ -61,9 +61,9 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | 0x0183 | `NtResumeProcess` | 1 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
 | 0x00f7 | `NtGetContextThread` | 2 | STUB-NOT-IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
 | 0x0193 | `NtSetContextThread` | 2 | STUB-NOT-IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
-| 0x006f | `NtAlertThread` | 1 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
-| 0x0070 | `NtAlertThreadByThreadId` | 1 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
-| 0x006e | `NtAlertResumeThread` | 2 | MISSING |  |
+| 0x006f | `NtAlertThread` | 1 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
+| 0x0070 | `NtAlertThreadByThreadId` | 1 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
+| 0x006e | `NtAlertResumeThread` | 2 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
 | 0x01c8 | `NtTestAlert` | 0 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
 | 0x0045 | `NtQueueApcThread` | 5 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
 | 0x016b | `NtQueueApcThreadEx` | 6 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
