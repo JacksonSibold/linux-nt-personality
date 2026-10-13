@@ -998,6 +998,78 @@ static int test_probe_direct_windows_rule(void) {
     return 1;
 }
 
+/* MemoryRegionInformation (class 3): per-VAD region, commit size and type bits.
+ * Classes that need a working-set or file-name model return STATUS_NOT_SUPPORTED. */
+static int test_query_region_info(void) {
+    PVOID base = NULL;
+    SIZE_T size = 0x20000;
+    NTSTATUS st = NtAllocateVirtualMemory((HANDLE)-1, &base, 0, &size, MEM_RESERVE, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "reserve 0x%lx", (unsigned long)st);
+    PVOID commit = base;
+    SIZE_T csize = 0x10000;
+    st = NtAllocateVirtualMemory((HANDLE)-1, &commit, 0, &csize, MEM_COMMIT, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "commit 0x%lx", (unsigned long)st);
+
+    MEMORY_REGION_INFORMATION info;
+    SIZE_T ret = 0;
+    st = NtQueryVirtualMemory((HANDLE)-1, base, MemoryRegionInformation, &info, sizeof(info), &ret);
+    ASSERT(st == STATUS_SUCCESS, "region query 0x%lx", (unsigned long)st);
+    ASSERT(ret == sizeof(info), "region return length %zu", (size_t)ret);
+    ASSERT(info.AllocationBase == base, "region alloc base");
+    ASSERT(info.AllocationProtect == PAGE_READWRITE, "region alloc protect 0x%lx", (unsigned long)info.AllocationProtect);
+    ASSERT(info.RegionType & MEM_REGION_PRIVATE, "region type private 0x%lx", (unsigned long)info.RegionType);
+    ASSERT(info.RegionSize == 0x10000, "committed region size 0x%zx", (size_t)info.RegionSize);
+    ASSERT(info.CommitSize == 0x10000, "committed commit size 0x%zx", (size_t)info.CommitSize);
+
+    /* The reserved tail has no committed bytes. */
+    st = NtQueryVirtualMemory((HANDLE)-1, (PVOID)((ULONG_PTR)base + 0x10000), MemoryRegionInformation, &info, sizeof(info), &ret);
+    ASSERT(st == STATUS_SUCCESS, "reserved region query 0x%lx", (unsigned long)st);
+    ASSERT(info.CommitSize == 0, "reserved commit size 0x%zx", (size_t)info.CommitSize);
+    ASSERT(info.RegionSize == 0x10000, "reserved region size 0x%zx", (size_t)info.RegionSize);
+
+    /* Free address: no region. */
+    st = NtQueryVirtualMemory((HANDLE)-1, (PVOID)((ULONG_PTR)base + 0x20000), MemoryRegionInformation, &info, sizeof(info), &ret);
+    ASSERT(st == STATUS_INVALID_ADDRESS, "free region status 0x%lx", (unsigned long)st);
+
+    /* Short buffer is a length mismatch. */
+    st = NtQueryVirtualMemory((HANDLE)-1, base, MemoryRegionInformation, &info, sizeof(info) - 1, &ret);
+    ASSERT(st == STATUS_INFO_LENGTH_MISMATCH, "short buffer status 0x%lx", (unsigned long)st);
+
+    /* Mapped section view reports the page-file region type. */
+    LARGE_INTEGER sz; sz.QuadPart = 0x10000;
+    HANDLE sec = NULL;
+    st = NtCreateSection(&sec, 0, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "section create 0x%lx", (unsigned long)st);
+    PVOID vbase = NULL; SIZE_T vsize = 0; LARGE_INTEGER off; off.QuadPart = 0;
+    st = NtMapViewOfSection(sec, (HANDLE)-1, &vbase, 0, 0, &off, &vsize, 0, 0, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "map view 0x%lx", (unsigned long)st);
+    st = NtQueryVirtualMemory((HANDLE)-1, vbase, MemoryRegionInformation, &info, sizeof(info), &ret);
+    ASSERT(st == STATUS_SUCCESS, "view region query 0x%lx", (unsigned long)st);
+    ASSERT(info.RegionType & MEM_REGION_MAPPED_PAGEFILE, "view region type 0x%lx", (unsigned long)info.RegionType);
+    ASSERT(!(info.RegionType & MEM_REGION_PRIVATE), "view not private");
+    NtUnmapViewOfSection((HANDLE)-1, vbase);
+    /* No section destroy routine yet (review M-3): the test releases it. */
+    {
+        struct nt_section *s = (struct nt_section *)sec;
+        int fd = s->backing.fd; void *mem = s->backing.mem; size_t bsz = s->backing.size;
+        kfree(s);
+        if (mem) kshim_munmap(mem, bsz);
+        if (fd >= 0) close(fd);
+    }
+
+    /* Classes that need a working-set or file-name model are not supported;
+     * unknown classes are invalid. */
+    ULONG unsupported[] = { MemoryWorkingSetInformation, MemoryMappedFilenameInformation, MemoryWorkingSetExInformation };
+    for (size_t i = 0; i < sizeof(unsupported) / sizeof(unsupported[0]); i++) {
+        st = NtQueryVirtualMemory((HANDLE)-1, base, unsupported[i], &info, sizeof(info), &ret);
+        ASSERT(st == STATUS_NOT_SUPPORTED, "class %lu status 0x%lx", (unsigned long)unsupported[i], (unsigned long)st);
+    }
+    st = NtQueryVirtualMemory((HANDLE)-1, base, 0x7f, &info, sizeof(info), &ret);
+    ASSERT(st == STATUS_INVALID_INFO_CLASS, "unknown class status 0x%lx", (unsigned long)st);
+    ntmm_reset(); /* release VADs: this is the last test, so nothing else will */
+    return 1;
+}
+
 int main(void) {
     printf("=== ntmm tests ===\n");
     RUN_TEST(test_reserve_commit_subrange);
@@ -1018,6 +1090,7 @@ int main(void) {
     RUN_TEST(test_vad_split_coalesce_invariants);
     RUN_TEST(test_vad_long_random_invariant);
     RUN_TEST(test_probe_direct_windows_rule);
+    RUN_TEST(test_query_region_info);
     printf("\n=== RESULT %d/%d passed, %d failed ===\n", tests_pass, tests_run, tests_fail);
     extern _Atomic long kshim_alloc_count;
     long leaks = atomic_load(&kshim_alloc_count);

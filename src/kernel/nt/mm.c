@@ -1331,6 +1331,37 @@ NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
 /* NtQueryVirtualMemory                                                       */
 /* -------------------------------------------------------------------------- */
 
+/* MemoryRegionInformation: the VAD that holds addr. Like MemoryBasicInformation
+ * this reports one VAD, not a coalesced region. Free addresses are
+ * STATUS_INVALID_ADDRESS (NT has no region for them). */
+static NTSTATUS ntmm_query_region(PVOID BaseAddress, PVOID MemoryInformation,
+                                  SIZE_T MemoryInformationLength, PSIZE_T ReturnLength) {
+    struct nt_mm *mm = &g_nt_mm;
+    PMEMORY_REGION_INFORMATION info = (PMEMORY_REGION_INFORMATION)MemoryInformation;
+    ULONG_PTR addr = (ULONG_PTR)BaseAddress;
+    if (!info || MemoryInformationLength < sizeof(*info)) return STATUS_INFO_LENGTH_MISMATCH;
+    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
+    ntmm_lock(mm);
+    struct nt_vad *vad = nt_vad_find(mm, addr);
+    if (!vad) {
+        ntmm_unlock(mm);
+        return STATUS_INVALID_ADDRESS;
+    }
+    info->AllocationBase = (PVOID)vad->alloc_base;
+    info->AllocationProtect = vad->alloc_protect;
+    if (vad->type == MEM_IMAGE)
+        info->RegionType = MEM_REGION_MAPPED_IMAGE;
+    else if (vad->type == MEM_MAPPED)
+        info->RegionType = MEM_REGION_MAPPED_PAGEFILE; /* section backing is anonymous */
+    else
+        info->RegionType = MEM_REGION_PRIVATE;
+    info->RegionSize = vad->end - vad->start;
+    info->CommitSize = (vad->state == MEM_COMMIT) ? vad->end - vad->start : 0;
+    ntmm_unlock(mm);
+    if (ReturnLength) *ReturnLength = sizeof(*info);
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
                               ULONG MemoryInformationClass,
                               PVOID MemoryInformation,
@@ -1340,6 +1371,14 @@ NTSTATUS NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
     PMEMORY_BASIC_INFORMATION mbi = (PMEMORY_BASIC_INFORMATION)MemoryInformation;
     ULONG_PTR addr = (ULONG_PTR)BaseAddress;
     (void)ProcessHandle;
+    if (MemoryInformationClass == MemoryRegionInformation)
+        return ntmm_query_region(BaseAddress, MemoryInformation, MemoryInformationLength, ReturnLength);
+    /* Working-set and mapped-file-name classes need a model this manager does
+     * not keep (no per-page residency, no file names). Known but unsupported. */
+    if (MemoryInformationClass == MemoryWorkingSetInformation ||
+        MemoryInformationClass == MemoryMappedFilenameInformation ||
+        MemoryInformationClass == MemoryWorkingSetExInformation)
+        return STATUS_NOT_SUPPORTED;
     if (MemoryInformationClass != MemoryBasicInformation) return STATUS_INVALID_INFO_CLASS;
     if (!mbi || MemoryInformationLength < sizeof(*mbi)) return STATUS_INFO_LENGTH_MISMATCH;
     if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
