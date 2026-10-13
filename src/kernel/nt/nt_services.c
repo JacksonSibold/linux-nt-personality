@@ -155,6 +155,17 @@ NTSTATUS nt_svc_NtQueryTimerResolution(PULONG MaximumTime, PULONG MinimumTime, P
     *CurrentTime = nt_timer_res_current;
     return STATUS_SUCCESS;
 }
+/* NtRaiseHardError: refused. A hard error would put up a message box and may
+ * bring the system down, and this kernel has neither. The argument count is
+ * still validated (at most MAXIMUM_HARDERROR_PARAMETERS). No user memory is
+ * read or written, and no response is produced. */
+#define NT_MAX_HARDERROR_PARAMETERS 4UL
+NTSTATUS nt_svc_NtRaiseHardError(NTSTATUS ErrorStatus, ULONG NumberOfParameters, ULONG UnicodeStringParameterMask, ULONG_PTR *Parameters, ULONG ValidResponseOptions, PULONG Response)
+{
+    (void)ErrorStatus; (void)UnicodeStringParameterMask; (void)Parameters; (void)ValidResponseOptions; (void)Response;
+    if (NumberOfParameters > NT_MAX_HARDERROR_PARAMETERS) return STATUS_INVALID_PARAMETER;
+    return STATUS_NOT_SUPPORTED;
+}
 NTSTATUS nt_svc_NtQueryMutant(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {
     HANDLE MutantHandle=(HANDLE)a0; ULONG MutantInformationClass=(ULONG)a1; PVOID MutantInformation=(PVOID)a2; ULONG MutantInformationLength=(ULONG)a3; PULONG ReturnLength=(PULONG)a4;
@@ -389,6 +400,14 @@ NTSTATUS nt_svc_NtQueryTimerResolution(unsigned long a0, unsigned long a1, unsig
         copy_to_user(MinimumTime, &vals[1], sizeof(ULONG)) ||
         copy_to_user(CurrentTime, &vals[2], sizeof(ULONG))) return STATUS_ACCESS_VIOLATION;
     return STATUS_SUCCESS;
+}
+NTSTATUS nt_svc_NtRaiseHardError(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    NTSTATUS ErrorStatus = (NTSTATUS)a0; ULONG NumberOfParameters = (ULONG)a1;
+    (void)ErrorStatus;
+    (void)a2;(void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (NumberOfParameters > NT_MAX_HARDERROR_PARAMETERS) return STATUS_INVALID_PARAMETER;
+    return STATUS_NOT_SUPPORTED;
 }
 NTSTATUS nt_svc_NtQueryMutant(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {

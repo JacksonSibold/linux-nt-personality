@@ -12,6 +12,7 @@
 
 NTSTATUS nt_svc_NtSetTimerResolution(ULONG DesiredTime, BOOLEAN SetResolution, PULONG ActualTime);
 NTSTATUS nt_svc_NtQueryTimerResolution(PULONG MaximumTime, PULONG MinimumTime, PULONG CurrentTime);
+NTSTATUS nt_svc_NtRaiseHardError(NTSTATUS ErrorStatus, ULONG NumberOfParameters, ULONG UnicodeStringParameterMask, ULONG_PTR *Parameters, ULONG ValidResponseOptions, PULONG Response);
 
 #include <stdio.h>
 
@@ -63,11 +64,23 @@ TEST(timer_resolution_clamps) {
     PASS();
 }
 
+TEST(raise_hard_error_refused) {
+    ULONG_PTR params[4] = {0, 0, 0, 0};
+    ULONG resp = 0;
+    /* More than MAXIMUM_HARDERROR_PARAMETERS (4) is an invalid parameter. */
+    ASSERT_STATUS(nt_svc_NtRaiseHardError(0xC0000022L, 5, 0, params, 0, &resp), STATUS_INVALID_PARAMETER);
+    /* A valid request is refused: no error box and no response is written. */
+    ASSERT_STATUS(nt_svc_NtRaiseHardError(0xC0000022L, 4, 0, params, 0, &resp), STATUS_NOT_SUPPORTED);
+    ASSERT(resp == 0);
+    PASS();
+}
+
 int main(void) {
     printf("System tests starting\n");
     RUN(timer_resolution_query);
     RUN(timer_resolution_set_and_release);
     RUN(timer_resolution_clamps);
+    RUN(raise_hard_error_refused);
     printf("System tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
