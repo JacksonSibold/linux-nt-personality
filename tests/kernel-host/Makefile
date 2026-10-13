@@ -62,7 +62,7 @@ LOCAL_TESTS := handle_edge_test registry_ops_test
 
 # Concurrency stress programs (see README.md "Stress tests"). Run by "stress",
 # never by "check". Sources are in this directory, like LOCAL_TESTS.
-STRESS_TESTS := stress_handle_test stress_object_test stress_sync_test stress_token_test stress_section_test
+STRESS_TESTS := stress_handle_test stress_object_test stress_sync_test stress_token_test stress_section_test stress_namespace_test stress_sd_test stress_registry_test stress_timer_test
 LOCAL_TESTS += $(STRESS_TESTS)
 
 # Built but not run by "check" (none at present).
@@ -88,6 +88,10 @@ stress_object_test_OBJS := security object handle kshim
 stress_sync_test_OBJS := security object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
 stress_token_test_OBJS := security object handle kshim
 stress_section_test_OBJS := mm security object handle io iocp nt_obj_weak sync kshim
+stress_namespace_test_OBJS := security object handle nt_obj sync kshim
+stress_sd_test_OBJS := security object handle nt_obj sync kshim
+stress_registry_test_OBJS := security registry object handle nt_obj sync kshim
+stress_timer_test_OBJS := security object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
 
 
 # Shim self-tests (shim/mman_test.c). Run by "check"; not kernel module tests.
