@@ -333,3 +333,133 @@ Newest first. Files: basenames of every file the commit touches. Location: `file
 | `c75cda6` | binfmt_pe.c | OK | `src/kernel/fs/binfmt_pe.c:705` | allocation rounded to pages; read exactly the bytes needed |
 | `e9012fa` | binfmt_pe.c | OK | `src/kernel/fs/binfmt_pe.c:668` | ntdll header reads bounded to 24 bytes; optional header checked to [112, 240] |
 | `c3647ea` | pe_parse.c, test_pe_parse.c | OK | `src/loader/pe_parse.c:1226` | types 6 and 11 to 15 rejected; test covers 6, 11 and 15 |
+
+# Third pass: new code after fd26716
+
+Date: 2026-10-12. Branch `haiku/audit3`, worktree `ntpers-audit3`. This pass audits the new service implementations and the fix commits that landed after `fd26716`, the HEAD of the second pass. Scope: every non-merge commit after `fd26716` that touches `src/kernel/nt`, `src/kernel/fs`, `arch/x86/nt`, `src/ntdll` or `tests`. That is 64 commits, listed below newest first. Docs-only commits, and commits outside those paths, are not in the table.
+
+## Method and limits
+
+- Each diff was read in context (`git show -U3` to `-U8`). Called symbols and struct layouts were checked by grep at HEAD. The checks were (a) user pointers probed and copied, (b) handle and object references balanced, (c) lock order and unlock on error paths, (d) size arithmetic, (e) uninitialised memory returned, (f) NT status codes, (g) tests that cannot fail, (h) `__KERNEL__` branches.
+- Removed assertions were checked with `git log -p` over the in-scope paths. The only removed `ASSERT` lines are moves (the IoCompletion tests in `18d429d`). No assertion was removed or weakened.
+- Host limits: `access_ok` is `1` in the host shim (`src/kernel/nt/kshim.h:74`), so a bad user pointer cannot be made on the host. Copy faults and allocation failures have no injection hook. Fixes for those paths are not host-tested, and the commit messages say so.
+- The Linux kernel build was not run (no kernel headers on this host). Kernel-only code was checked by `tests/syntax/check.sh` only.
+
+## Results
+
+| Verdict | Count |
+|---|---|
+| OK | 48 |
+| SUSPECT | 7 |
+| BROKEN | 9 (all fixed, see below) |
+| Audited | 64 |
+
+Two BROKEN rows (`993c3ee`, `ca5a2e0`) share one fix commit (`e1486e9`). The table counts each audited hash once.
+
+## Fixes applied
+
+One commit per item, in branch order. Each references the audited hash.
+
+- **bfd5d93** `fix(nt/mm): refuse a page range that wraps in NtFlushVirtualMemory`, for `8c0b86c`. The wrap guard underflowed for a base in the top page, so an unmapped range returned success. The new test `test_top_of_space_range_refused` (`src/kernel/nt/mm_test.c`) fails before the change (flush returned `0x0`) and passes after it.
+- **e1486e9** `fix(nt/mm): close the wrap guard for a base in the top page`, for `993c3ee` and `ca5a2e0`. The protect and decommit guards underflow the same way for a base in the top page. The change is in `src/kernel/nt/mm.c` and `arch/x86/nt/mm.c`. The host test does not distinguish it: protect returned `STATUS_INVALID_PARAMETER` for that range before the change too.
+- **b5e7ecf** `fix(nt/io): zero FILE_BASIC_INFORMATION before NtQueryAttributesFile`, for `cc1bbde`. Four stack bytes went to the caller. Not host-tested.
+- **0caabcd** `fix(nt/io): zero FILE_NETWORK_OPEN_INFORMATION before NtQueryFullAttributesFile`, for `64476d7`. Same defect. Not host-tested.
+- **1c8145e** `fix(nt/sync): close the new timer handle when the handle copy-out faults`, for `b891048`. Not host-tested.
+- **6b45e31** `fix(nt/sync): close the keyed-event handle when the handle copy-out faults`, for `b9661c2`. Not host-tested.
+- **0fad804** `fix(nt/sync): probe the timer output before NtSetTimer or NtCancelTimer changes the timer`, for `10ddb43`. Not host-tested (the host `access_ok` is always 1).
+- **bb51ab6** `fix(nt/registry): keep the old value when NtSetValueKey cannot allocate`, for `0520a92`. The old code could leave a value with `data` NULL and `data_len` set, and the new snapshot then copied from NULL. Not host-tested (no allocation injection).
+
+## Checks on the fixed tree
+
+- `make -C tests/kernel-host check`: all programs exit 0, including `mm_test` at 30/30 (was 29/30 before the new test).
+- Python unit suite (`python -m unittest discover tests/unit`): 509 run, OK (skipped 1). Same as the second pass.
+- `bash tests/syntax/check.sh`: passed 35, failed 5, warnings 480. The five failures are the same files as before (`src/kernel/nt/dispatch.c`, `src/kernel/nt/kshim.c`, `src/kernel/fs/binfmt_pe.c`, `src/kernel/fs/binfmt_pe_test.c`, `arch/x86/nt/dispatch.c`). The pass count rose by three because new files were added since the second pass. The warning count rose from 452 with them; the new warnings were not classified individually.
+
+## SUSPECT: for review
+
+These need a decision. None was changed in this pass, except where a BROKEN fix above covers the same line.
+
+1. **`2393db8`** (`src/kernel/nt/io_test.c:946`): the 255-character create is skipped when `PATH_MAX` is 260, which is the case on this Windows host. Lookup still covers 255. Decide whether the create case should use a shorter scratch root instead of being skipped.
+2. **`0258238`** (`src/kernel/nt/sync.c:2708`): `NtSignalAndWaitForSingleObject` references both handles with access `0` and a `NULL` type. No `SYNCHRONIZE` or `EVENT_MODIFY_STATE` (or the mutant and semaphore equivalents) is checked. Decide the rights, then add the check.
+3. **`b9661c2`** (`src/kernel/nt/sync.c:2857`, `keyed_event_op`): WAIT and RELEASE pass access `0`, so `KEYEDEVENT_WAIT` and `KEYEDEVENT_WAKE` are not checked. The copy-out part of this commit is fixed in `6b45e31`.
+4. **`1e8f0dd`** (`src/kernel/nt/security.c:2174`): `TokenStatistics` returns the low 32 bits of a kernel pointer as `TokenId.LowPart`. That is a partial KASLR leak. The replacement needs a per-token identifier, which is a design choice, so it was not changed. The fill pass of `ntsec_query_token` (`security.c:2201`) also has no bound against the measured size. Latent today, because token counts do not change.
+5. **`c1934e9`** (`src/kernel/nt/sync.c:867` and `1709`): `timer_expiry_100ns` computes `now - due`, which overflows for `due == INT64_MIN`.
+6. **`4260f62`** (`src/kernel/nt/security.c:2530`): `ntsec_sr_length` adds the `ULONG` offset and size before the 64-bit comparison, so the total can wrap. `sd_from_self_relative` then rejects the descriptor, so the outcome is fail-closed.
+7. **`a90862b`** (`src/kernel/nt/mm.c:1534`): `ntmm_transfer` uses a 4 KiB kernel stack buffer. Kernel builds warn above 2 KiB frames. The same class of 4 KiB stack path buffer appears in `NtQueryAttributesFile`, `NtDeleteFile` and `NtQueryFullAttributesFile` (`src/kernel/nt/io.c:2723`, `3222`, `3258`). Decide one bound for kernel stack use.
+8. **`9bb018d`**: `test_allocate_ex` accepts either `0x10000` or `0x1000` (`src/kernel/nt/mm_test.c:1378`), a relaxed expectation. The dispatch wrapper (`src/kernel/nt/dispatch.c:182`) writes base and size back on any status except `STATUS_NOT_SUPPORTED`, as the other wrappers do.
+
+Also observed, not in this pass's scope or not a fix target here:
+
+- `0520a92` (`src/kernel/nt/registry.c:1045`): `snap_walk_key` recurses once per key level with no depth bound. A deep key tree can exhaust the kernel stack during `NtFlushKey`.
+- Pre-existing (`5eb8026`): in `NtSetValueKey`, the create path frees only the new record when its data allocation fails (`registry.c`, near the `kfree(nv)` line), which leaks the name buffer. The replace path calls `kmalloc(GFP_KERNEL)` while `k->lock` is held for write, which can sleep in atomic context in a kernel build.
+
+## Per-commit audit
+
+Newest first. Files: basenames of the in-scope files each commit touches. Location: `file:line` in the post-image at HEAD, or at the commit where the line was first changed.
+
+| Commit | Files | Verdict | Location | Reason |
+|---|---|---|---|---|
+| `2393db8` | io_test.c | SUSPECT | src/kernel/nt/io_test.c:946 | The 255-character create is skipped when PATH_MAX is 260 (this Windows host), so that length is only checked by lookup. Lookup and reopen still assert, but a skipped case can hide a failure here. |
+| `25bc012` | io.c, nt_io.c | OK | src/kernel/nt/io.c:898 | Component buffers sized NAME_MAX+1; a component at or over NAME_MAX is rejected before the copy. |
+| `05927a9` | test_criteria_trace.py | OK | tests/unit/test_criteria_trace.py:1 | Unit tests only; the Python unit suite passes (509 run, 1 skipped) on the fixed tree. |
+| `8e70c92` | test_service_inventory.py | OK | tests/unit/test_service_inventory.py:1 | Tooling and tests only; covered by the unit suite run. |
+| `42ee3d6` | i2_test.c, nt_services.c | OK | src/kernel/nt/nt_services.c:136 | NULL checked; kernel path uses access_ok and copy_to_user; unit conversion uses the 1601 epoch constant. |
+| `fd00d2a` | handle.c, handle.h, i2_test.c, nt_obj.c | OK | src/kernel/nt/nt_obj.c:748 | Length and class checked; ObjectInformation probed with access_ok and read with copy_from_user; flags set under the table lock (handle.c:410). |
+| `993c3ee` | mm.c, mm_test.c | BROKEN | src/kernel/nt/mm.c:1232 | Guard size > ~0 - PAGE - base underflows for a base in the top page, so a wrapping range passed. Fixed in e1486e9 (guard now also tests the base). |
+| `cc1bbde` | io.c, io.h, io_test.c | BROKEN | src/kernel/nt/io.c:2742 | FILE_BASIC_INFORMATION copied out with 4 uninitialised tail bytes (kernel stack to user). Fixed in b5e7ecf. |
+| `6db83e7` | i2_test.c, object_test.c | OK | src/kernel/nt/object_test.c:400 | Bare returns that counted as neither pass nor fail are now ASSERT. |
+| `f9698f5` | Makefile, fuzz_pe.c, fuzz_plat.c, fuzz_plat.h | OK | tests/fuzz/fuzz_pe.c:1098 | Deterministic fuzzer; exits 1 when a crash class is found, so a finding is not hidden. |
+| `b891048` | Makefile, sync.c, sync_extra_test.c | BROKEN | src/kernel/nt/sync.c:2484 | On a handle copy-out fault the new or opened timer handle stays in the process table. Fixed in 1c8145e (ObCloseHandle on that path, lines 2484 and 2511). |
+| `3047209` | test_pe_parse.c | OK | tests/host/test_pe_parse.c:1 | Test-only additions; no assertion removed. |
+| `10ddb43` | sync.c, sync_extra_test.c | BROKEN | src/kernel/nt/sync.c:2557 | PreviousState (NtSetTimer) and CurrentState (NtCancelTimer) were probed after the timer changed, so a bad pointer returned ACCESS_VIOLATION with the timer armed or cancelled. Fixed in 0fad804. |
+| `a164b43` | kshim.c | OK | tests/kernel-host/shim/*:1 | KSHIM_POISON fills freed blocks with 0xDD; debug-only. |
+| `50dbf92` | Makefile, README.md, stress_common.h, stress_handle_test.c, stress_object_test.c, stress_sync_test.c | OK | tests/kernel-host/stress_handle_test.c:167 | Stress programs; violations counted by STRESS_CHECK and returned as a nonzero exit. Run by make stress, not check. |
+| `663b877` | fuzz_pe.c, fuzz_plat.c | OK | tests/fuzz/Makefile:1 | Build define only. |
+| `ca5a2e0` | mm.c | BROKEN | arch/x86/nt/mm.c:1300 | Same underflowing guard in the arch decommit path. Fixed in e1486e9. |
+| `8ea698f` | sync.c, sync.h, sync_extra_test.c | OK | src/kernel/nt/sync.c:2643 | Class 0 only; length and output probed; the timer is referenced and released on every path. |
+| `3daa005` | binfmt_pe.c | OK | src/kernel/fs/binfmt_pe.c:55 | ntdll reloc branch returns -ENOEXEC above PE_MAX_RELOC_BYTES, matching the exe path. |
+| `0258238` | sync.c, sync_extra_test.c | SUSPECT | src/kernel/nt/sync.c:2708 | Both handles are referenced with access 0 and a NULL type, so no SYNCHRONIZE or EVENT_MODIFY_STATE check is made. Type checks run after the reference, and both references are released on every path. |
+| `b9661c2` | sync.c, sync_extra_test.c | BROKEN | src/kernel/nt/sync.c:2799 | On a handle copy-out fault the keyed-event handle stays open. Fixed in 6b45e31. SUSPECT part: keyed_event_op passes access 0 (sync.c:2857), so the WAIT and RELEASE rights are not checked. |
+| `f8a0644` | sync.c, sync_extra_test.c | OK | src/kernel/nt/sync.c:2884 | Always STATUS_SUCCESS; no user memory touched. |
+| `ecc7f83` | README.md, object.c | OK | src/kernel/nt/object.c:315 | parent_dir re-checked under the directory lock, so only one caller drops the directory reference. |
+| `7f7e5d1` | test_pe_parse.c | OK | src/loader/pe_parse.c:897 | Import walk bounded by totals (PE_MAX_IMPORT_DESCRIPTORS, PE_MAX_IMPORT_THUNKS); fails closed with PE_ERR_CORRUPT; tests in tests/host. |
+| `5c5b570` | Makefile | OK | tests/kernel-host/Makefile:1 | Build change only: sync_test links nt_obj. |
+| `a9fc20b` | kshim.h | OK | src/kernel/nt/kshim.h:1 | NT_TRACE and NT_TRACE_ERR compile out; trace arguments checked for side effects. |
+| `b2b3e3b` | nt_obj.c | OK | src/kernel/nt/nt_obj.c:1 | Trace calls gated behind NT_DEBUG_TRACE; no logic change. |
+| `8140aec` | proc_thread.c | OK | src/kernel/nt/proc_thread.c:1290 | Trace calls gated behind NT_DEBUG_TRACE; no logic change. |
+| `0520a92` | registry.c, registry.h, registry_test.c | BROKEN | src/kernel/nt/registry.c:987 | snap_put memcpy from NULL: NtSetValueKey freed the old data before allocating, so a failed allocation left data NULL with data_len set. Fixed in bb51ab6 (allocate first). SUSPECT part: snap_walk_key recursion (registry.c:1045) has no depth bound. |
+| `3f63828` | registry.c, registry_test.c | OK | src/kernel/nt/registry.c:760 | Nested delete finds the parent with registry_find_key; path buffer size checked. |
+| `f2ce759` | registry.c, registry_test.c | OK | src/kernel/nt/registry.c:1390 | KeyNodeInformation: needed size computed and length checked before any write. |
+| `3e98e64` | README.md | OK | tests/kernel-host/Makefile:1 | Comment and build flag only. |
+| `295b44f` | Makefile, object.c, object.h, security.c, security_extra_test.c | OK | src/kernel/nt/security.c:1003 | ObCreateTokenHandle takes its own reference on the token and drops the creation reference on every path. |
+| `2676f9e` | registry.c, registry_test.c | OK | src/kernel/nt/registry.c:1231 | value_info_layout and value_info_write: needed size checked by callers, padding zeroed, data copied only within the computed length. |
+| `2a73077` | object.c, object.h, security.c, security.h, security_extra_test.c | OK | src/kernel/nt/object.c:1175 | Default primary token created with the process; the early-failure ObDestroyProcessObject is safe (kzalloc, unregister is a no-op for an unregistered process). |
+| `c56cc62` | security.c, security.h, security_extra_test.c | OK | src/kernel/nt/security.c:1858 | Token opened with the access the object DACL gives; caller token taken from the impersonation token when OpenAsSelf is FALSE; handle creation failure checked. |
+| `1e8f0dd` | security.c, security.h, security_extra_test.c | SUSPECT | src/kernel/nt/security.c:2174 | TokenStatistics sets TokenId.LowPart to the low 32 bits of a kernel address (a partial KASLR leak). Owner decision: use a per-token id. Also the fill pass (ntsec_query_token, 2201) has no bound against the measured size. |
+| `ec4c86d` | security.c, security_extra_test.c | OK | src/kernel/nt/security.c:2317 | token_duplicate deep-copies the SIDs, so ntsec_keep_effective frees each SID once; type checked; OA attributes masked. |
+| `5014421` | nt_obj.c, sync.c, sync_extra_test.c | OK | src/kernel/nt/sync.c:2275 | Timer body begins with the dispatcher header (sync.h:199), so the type check is sound. |
+| `c1934e9` | sync.c, sync.h, sync_extra_test.c | SUSPECT | src/kernel/nt/sync.c:867 | timer_expiry_100ns computes now - due, which overflows for due = INT64_MIN (also sync.c:1709). Otherwise the timer thread and the cancel wait are consistent. |
+| `8f099f2` | sync.c, sync_extra_test.c | OK | src/kernel/nt/sync.c:2552 | User APC refused before the timer is cancelled or armed (HEAD). |
+| `b3adda7` | sync.c, sync_extra_test.c | OK | src/kernel/nt/sync.c:1036 | Keyed release: lock order g_keyed_lock then ctx.lock; matched and timeout decided under the lock; stack record removed before return. |
+| `1f292a1` | sync_extra_test.c | OK | tests/kernel-host/sync_extra_test.c:1 | Comment only. |
+| `4260f62` | security.c, security.h, security_extra_test.c | SUSPECT | src/kernel/nt/security.c:2530 | ntsec_sr_length adds ULONG offset and size before the 64-bit check, so the total can wrap. sd_from_self_relative rejects the result, so the outcome is fail-closed. Kernel outputs are copied only on success and are initialised. |
+| `00b5a3f` | mm.c, mm.h, mm_test.c | OK | src/kernel/nt/mm.c:1362 | MemoryRegionInformation reads one VAD under the lock; dispatch.c:262-268 zeroes the kernel buffer and copies out only on success. |
+| `a90862b` | dispatch.c, mm.c, mm.h, mm_test.c | SUSPECT | src/kernel/nt/mm.c:1534 | ntmm_transfer uses a 4 KiB kernel stack buffer (kernel builds warn above 2 KiB frames). Otherwise the copies are probed and bounded, and the wrap clamp is correct. |
+| `18d429d` | io_test.c, iocp.c, iocp.h | OK | src/kernel/nt/io_test.c:1858 | IoCompletion open and query; the moved tests were not weakened. |
+| `eb0ede7` | io.c, io.h, io_test.c | OK | src/kernel/nt/io.c:2271 | Query classes check the length before the write; padding zeroed where a struct is copied out. |
+| `6e8f5bf` | registry.c, registry_test.c | OK | src/kernel/nt/registry.c:698 | CREATE_LINK refused before any side effect. |
+| `bc82d49` | io.c, io.h, io_test.c, posix_host.c | OK | src/kernel/nt/io.c:2616 | Allocation growth refused; disposition and rename Ex flags checked; the rename collision check compares dev and ino. |
+| `e0b4227` | io.c, io.h, io_test.c | OK | src/kernel/nt/io.c:2989 | Unknown codes refused; IOSB probed and written with copy_to_user (kernel) or directly (shim). |
+| `6b71651` | io.c, io.h, io_test.c | OK | src/kernel/nt/io.c:3068 | No EAs: queries report STATUS_NO_EAS_ON_FILE; IOSB probed. |
+| `7e90685` | io.c, io.h, io_test.c | OK | src/kernel/nt/io.c:3148 | Flags validated; parameters refused; the no-sync path completes without a flush. |
+| `760d12e` | io.c, io.h, io_test.c | OK | src/kernel/nt/io.c:3179 | Cancel reports STATUS_NOT_FOUND when nothing is pending; IOSB probed before use. |
+| `64476d7` | io.c, io.h, io_test.c | BROKEN | src/kernel/nt/io.c:3278 | FILE_NETWORK_OPEN_INFORMATION copied out with 4 uninitialised tail bytes. Fixed in 0caabcd (zeroed first). |
+| `7bc43a3` | io.c, io.h, io_test.c | OK | src/kernel/nt/io.c:3316 | Byte-range locks: start and length overflow guarded (NTIO_MAX_LOCK_OFFSET); user pointers read with access_ok and copy_from_user; kzalloc freed on conflict; locks dropped on release. |
+| `8c0b86c` | dispatch.c, mm.c, mm.h, mm_test.c | BROKEN | src/kernel/nt/mm.c:1611 | Wrap guard underflowed for a base in the top page, so an unmapped range returned success. Fixed in bfd5d93, with a test that failed before the change. |
+| `7e43c43` | io.c, io.h, io_test.c, khost_prelude.h, posix_host.c | OK | src/kernel/nt/io.c:3693 | Directory snapshot per scan; every entry is zeroed before it is filled and checked against the length; kernel branch returns NOT_SUPPORTED. |
+| `c354ebf` | io.c, io.h, io_test.c | OK | src/kernel/nt/io.c:3816 | FileFsDeviceInformation length checked; output copied only on success; other classes NOT_IMPLEMENTED. |
+| `4d4b483` | io.c, io.h, io_test.c | OK | src/kernel/nt/io.c:3865 | Valid classes NOT_IMPLEMENTED, unknown INVALID_INFO_CLASS; IOSB probed. |
+| `9bb018d` | dispatch.c, mm.c, mm.h, mm_test.c | SUSPECT | src/kernel/nt/dispatch.c:182 | The wrapper writes base and size back on any status except NOT_SUPPORTED, as the existing wrappers do (same values on failure). test_allocate_ex accepts 0x10000 or 0x1000 (src/kernel/nt/mm_test.c:1378), a relaxed expectation. |
+| `ef03f4b` | Makefile, nt_services.c, system_test.c | OK | src/kernel/nt/nt_services.c:144 | Resolution clamped; user outputs probed with access_ok and written with copy_to_user; the state update is unlocked (noted in the code). |
+| `c8f479e` | Makefile, mm.c, mm.h, mm_test.c | OK | src/kernel/nt/mm.c:1769 | Section references balanced: the VAD takes one per copy (mm.c:1809) and nt_vad_free drops it; the lookup reference is released after mapping; creation failure paths are safe. |
+| `c20dead` | nt_services.c, system_test.c | OK | src/kernel/nt/nt_services.c:163 | NtRaiseHardError refused; no user memory read or written; the count is checked. |
