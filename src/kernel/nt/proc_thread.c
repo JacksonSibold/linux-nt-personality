@@ -77,6 +77,7 @@
 #include "handle.h"
 #include "sync.h"
 #include "kshim.h"
+#include "security.h"
 #include "../../ntdll/nt_types.h"
 #include "../../ntdll/ntstatus.h"
 
@@ -95,6 +96,8 @@
 #endif
 #else
 #include <linux/sched.h>
+#include <linux/cpumask.h>
+#include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/mm.h>
@@ -109,10 +112,30 @@
 /* Info class numbers (from Windows SDK)                               */
 /* ------------------------------------------------------------------ */
 #define ProcessBasicInformation 0
+#define ProcessBasePriority 5
+#define ProcessDefaultHardErrorMode 12
 #define ProcessDebugPort 7
+#define ProcessPriorityClass 18
+#define ProcessWx86Information 19
+#define ProcessAffinityMask 21
+#define ProcessForegroundInformation 25
 #define ProcessWow64Information 26
 #define ProcessImageFileName 27
+#define ProcessBreakOnTermination 29
 #define ProcessDebugObjectHandle 30
+#define ProcessHandleTracing 32
+
+/* PROCESS_PRIORITY_CLASS_* (winnt.h). */
+#define PROCESS_PRIORITY_CLASS_IDLE         1
+#define PROCESS_PRIORITY_CLASS_NORMAL       2
+#define PROCESS_PRIORITY_CLASS_HIGH         3
+#define PROCESS_PRIORITY_CLASS_REALTIME     4
+#define PROCESS_PRIORITY_CLASS_BELOW_NORMAL 5
+#define PROCESS_PRIORITY_CLASS_ABOVE_NORMAL 6
+
+#ifndef PROCESS_SET_INFORMATION
+#define PROCESS_SET_INFORMATION 0x0200
+#endif
 
 #define ThreadBasicInformation 0
 #define ThreadTimes 1
@@ -768,12 +791,12 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
         return STATUS_NOT_IMPLEMENTED;
     case 11:
         return STATUS_INVALID_INFO_CLASS;
-    case 12: {
+    case ProcessDefaultHardErrorMode: {
         const ULONG need = 4;
         if (ProcessInformationLength != need) return STATUS_INFO_LENGTH_MISMATCH;
         if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER;
         if (ReturnLength) *ReturnLength = need;
-        *(ULONG*)ProcessInformation = 0;
+        *(ULONG*)ProcessInformation = target->default_hard_error_mode;
         return STATUS_SUCCESS;
     }
     case 13:
@@ -785,11 +808,18 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
     case 16:
     case 17:
         return STATUS_INVALID_INFO_CLASS;
-    case 18:
-        return STATUS_INFO_LENGTH_MISMATCH;
+    case ProcessPriorityClass: {
+        const ULONG need = 2;
+        if (ProcessInformationLength != need) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!ProcessInformation) return STATUS_INVALID_PARAMETER;
+        if (ReturnLength) *ReturnLength = need;
+        ((UCHAR *)ProcessInformation)[0] = target->priority_foreground;
+        ((UCHAR *)ProcessInformation)[1] = target->priority_class;
+        return STATUS_SUCCESS;
+    }
     case 19: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
     case 20: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
-    case 21: { const ULONG need=8; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG_PTR*)ProcessInformation=0; return STATUS_SUCCESS; }
+    case ProcessAffinityMask: { const ULONG need=8; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG_PTR*)ProcessInformation=target->affinity_mask; return STATUS_SUCCESS; }
     case 22: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
     case 24: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
     case 25:
@@ -818,7 +848,7 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
         return STATUS_SUCCESS;
     }
     case 28: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
-    case 29: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
+    case ProcessBreakOnTermination: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=target->break_on_termination ? 1 : 0; return STATUS_SUCCESS; }
     case ProcessDebugObjectHandle: { const ULONG need=8; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(HANDLE*)ProcessInformation=0; return STATUS_SUCCESS; }
     case 31: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
     case 32:
@@ -947,12 +977,6 @@ NTSTATUS nt_svc_NtSetSystemInformation(ULONG SystemInformationClass, PVOID Syste
 {
     (void)SystemInformation; (void)SystemInformationLength;
     if (SystemInformationClass == 0) return STATUS_SUCCESS; /* allow basic */
-    return STATUS_INVALID_INFO_CLASS;
-}
-NTSTATUS nt_svc_NtSetInformationProcess(HANDLE ProcessHandle, ULONG Class, PVOID Info, ULONG Length)
-{
-    (void)ProcessHandle; (void)Info; (void)Length;
-    /* Windows returns INVALID_INFO_CLASS for unknown Set class, not NOT_IMPLEMENTED */
     return STATUS_INVALID_INFO_CLASS;
 }
 NTSTATUS nt_svc_NtGetContextThread(HANDLE ThreadHandle, PCONTEXT Context)
@@ -1767,14 +1791,16 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
         return STATUS_NOT_IMPLEMENTED;
     case 11:
         return STATUS_INVALID_INFO_CLASS;
-    case 12: {
+    case ProcessDefaultHardErrorMode: {
         const ULONG need = 4;
+        ULONG v;
         if (ProcessInformationLength != need) return STATUS_INFO_LENGTH_MISMATCH;
         if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength))
             return STATUS_ACCESS_VIOLATION;
         if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength)))
             copy_to_user(ReturnLength, &need, sizeof(need));
-        { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; }
+        v = target->default_hard_error_mode;
+        if (copy_to_user(ProcessInformation, &v, sizeof(v))) return STATUS_ACCESS_VIOLATION;
         return STATUS_SUCCESS;
     }
     case 13:
@@ -1786,11 +1812,21 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
     case 16:
     case 17:
         return STATUS_INVALID_INFO_CLASS;
-    case 18:
-        return STATUS_INFO_LENGTH_MISMATCH;
+    case ProcessPriorityClass: {
+        const ULONG need = 2;
+        UCHAR pc[2];
+        if (ProcessInformationLength != need) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION;
+        if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength)))
+            copy_to_user(ReturnLength, &need, sizeof(need));
+        pc[0] = target->priority_foreground;
+        pc[1] = target->priority_class;
+        if (copy_to_user(ProcessInformation, pc, sizeof(pc))) return STATUS_ACCESS_VIOLATION;
+        return STATUS_SUCCESS;
+    }
     case 19: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
     case 20: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
-    case 21: { const ULONG need=8; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG_PTR z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
+    case ProcessAffinityMask: { const ULONG need=8; ULONG_PTR v; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); v = target->affinity_mask; if (copy_to_user(ProcessInformation, &v, sizeof(v))) return STATUS_ACCESS_VIOLATION; return STATUS_SUCCESS; }
     case 22: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
     case 24: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
     case 25:
@@ -1827,7 +1863,7 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
         return STATUS_SUCCESS;
     }
     case 28: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
-    case 29: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
+    case ProcessBreakOnTermination: { const ULONG need=4; ULONG v; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); v = target->break_on_termination ? 1 : 0; if (copy_to_user(ProcessInformation, &v, sizeof(v))) return STATUS_ACCESS_VIOLATION; return STATUS_SUCCESS; }
     case 30: { const ULONG need=8; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { HANDLE z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
     case 31: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
     case 32:
@@ -1970,7 +2006,6 @@ NTSTATUS nt_svc_NtSetSystemInformation(ULONG SystemInformationClass, PVOID Syste
     if (SystemInformationClass == 0) return STATUS_SUCCESS;
     return STATUS_INVALID_INFO_CLASS;
 }
-NTSTATUS nt_svc_NtSetInformationProcess(HANDLE a, ULONG b, PVOID c, ULONG d){ (void)a;(void)c;(void)d; return STATUS_INVALID_INFO_CLASS; }
 NTSTATUS nt_svc_NtGetContextThread(HANDLE a, PCONTEXT b){ (void)a;(void)b; return STATUS_NOT_IMPLEMENTED; }
 NTSTATUS nt_svc_NtSetContextThread(HANDLE a, PCONTEXT b){ (void)a;(void)b; return STATUS_NOT_IMPLEMENTED; }
 
@@ -2022,6 +2057,167 @@ static NTSTATUS pt_thread_post_alert(struct nt_ethread *thr)
     }
     thr->alerted = true;
     spin_unlock(&thr->lock);
+    return STATUS_SUCCESS;
+}
+
+/* ------------------------------------------------------------------ */
+/* NtSetInformationProcess (shared by the shim and kernel branches)    */
+/* ------------------------------------------------------------------ */
+
+/* Processors a process may be bound to. The kernel uses the online CPU count;
+ * the shim reports eight processors. */
+static ULONG_PTR pt_system_affinity_mask(void)
+{
+#ifdef __KERNEL__
+    unsigned int n = nr_cpu_ids;
+    if (n >= BITS_PER_LONG) return ~(ULONG_PTR)0;
+    return ((ULONG_PTR)1 << n) - 1;
+#else
+    return 0xFF;
+#endif
+}
+
+/* Base priority that a PROCESS_PRIORITY_CLASS_* selects. Unknown classes are
+ * rejected by the caller before this is reached. */
+static LONG pt_priority_class_base(UCHAR cls)
+{
+    switch (cls) {
+    case PROCESS_PRIORITY_CLASS_IDLE:         return 4;
+    case PROCESS_PRIORITY_CLASS_BELOW_NORMAL: return 6;
+    case PROCESS_PRIORITY_CLASS_NORMAL:       return 8;
+    case PROCESS_PRIORITY_CLASS_ABOVE_NORMAL: return 10;
+    case PROCESS_PRIORITY_CLASS_HIGH:         return 13;
+    case PROCESS_PRIORITY_CLASS_REALTIME:     return 24;
+    default:                                  return 8;
+    }
+}
+
+/* Resolve the target of a process Set. NtCurrentProcess is a pseudo handle
+ * with full access. Any other handle must grant `access`; the object manager
+ * returns STATUS_ACCESS_DENIED when it does not. */
+static NTSTATUS pt_process_from_handle(HANDLE h, ULONG access, struct nt_eprocess **out)
+{
+    struct nt_eprocess *caller = PT_CUR_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    struct nt_eprocess *target;
+    NTSTATUS st;
+    *out = NULL;
+    if (!caller) return STATUS_INVALID_PARAMETER;
+    if (h == NtCurrentProcess()) {
+        *out = caller;
+        return STATUS_SUCCESS;
+    }
+    st = ObReferenceObjectByHandle(caller, h, &nt_process_type, UserMode, access, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    target = ObFindProcessByHeader(hdr);
+    ObDereferenceObject(hdr);
+    if (!target) return STATUS_INVALID_HANDLE;
+    *out = target;
+    return STATUS_SUCCESS;
+}
+
+/* NtSetInformationProcess. Implemented classes, with the documented rules:
+ *
+ *  ProcessBasePriority (5)        LONG. Clamped to 0..31 and stored as the
+ *                                 process base priority. Set-only.
+ *  ProcessPriorityClass (18)      PROCESS_PRIORITY_CLASS, 2 bytes: Foreground
+ *                                 then PriorityClass. Classes 1..6 are valid
+ *                                 (IDLE, NORMAL, HIGH, REALTIME, BELOW_NORMAL,
+ *                                 ABOVE_NORMAL); others are STATUS_INVALID_PARAMETER.
+ *                                 The class sets the base priority to the value
+ *                                 it selects. REALTIME needs
+ *                                 SeIncreaseBasePriorityPrivilege.
+ *  ProcessDefaultHardErrorMode (12) ULONG SEM_* flags, stored as given.
+ *  ProcessAffinityMask (21)       ULONG_PTR. Must be nonzero and a subset of the
+ *                                 system mask, else STATUS_INVALID_PARAMETER.
+ *  ProcessBreakOnTermination (29) ULONG treated as a flag. Needs
+ *                                 SeDebugPrivilege, else STATUS_PRIVILEGE_NOT_HELD.
+ *  ProcessHandleTracing (32)      Refused with STATUS_NOT_SUPPORTED. Handle
+ *                                 tracing is not built.
+ *
+ * Every class needs PROCESS_SET_INFORMATION on the process handle. Length and
+ * buffer are checked before the handle is opened. Classes not listed above,
+ * including ProcessForegroundInformation (25) and ProcessWx86Information (19),
+ * are STATUS_INVALID_INFO_CLASS: their buffer contract is not confirmed. */
+NTSTATUS nt_svc_NtSetInformationProcess(HANDLE ProcessHandle, ULONG Class, PVOID Info, ULONG Length)
+{
+    struct nt_eprocess *caller = PT_CUR_PROCESS();
+    struct nt_eprocess *target = NULL;
+    LONG base = 0;
+    ULONG value = 0;
+    ULONG_PTR mask = 0;
+    UCHAR cls = 0;
+    BOOLEAN fg = FALSE;
+    NTSTATUS st;
+
+    switch (Class) {
+    case ProcessBasePriority:
+        if (Length != sizeof(LONG)) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!Info) return STATUS_INVALID_PARAMETER;
+        base = *(LONG *)Info;
+        if (base < 0) base = 0;
+        if (base > 31) base = 31;
+        break;
+    case ProcessPriorityClass:
+        if (Length != 2) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!Info) return STATUS_INVALID_PARAMETER;
+        fg = ((UCHAR *)Info)[0] != 0;
+        cls = ((UCHAR *)Info)[1];
+        if (cls < PROCESS_PRIORITY_CLASS_IDLE || cls > PROCESS_PRIORITY_CLASS_ABOVE_NORMAL)
+            return STATUS_INVALID_PARAMETER;
+        break;
+    case ProcessDefaultHardErrorMode:
+    case ProcessBreakOnTermination:
+        if (Length != sizeof(ULONG)) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!Info) return STATUS_INVALID_PARAMETER;
+        value = *(ULONG *)Info;
+        break;
+    case ProcessAffinityMask:
+        if (Length != sizeof(ULONG_PTR)) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!Info) return STATUS_INVALID_PARAMETER;
+        mask = *(ULONG_PTR *)Info;
+        if (mask == 0 || (mask & ~pt_system_affinity_mask())) return STATUS_INVALID_PARAMETER;
+        break;
+    case ProcessHandleTracing:
+        return STATUS_NOT_SUPPORTED;
+    default:
+        return STATUS_INVALID_INFO_CLASS;
+    }
+
+    st = pt_process_from_handle(ProcessHandle, PROCESS_SET_INFORMATION, &target);
+    if (!NT_SUCCESS(st)) return st;
+
+    if (Class == ProcessPriorityClass && cls == PROCESS_PRIORITY_CLASS_REALTIME &&
+        !se_caller_has_privilege(caller, SE_INC_BASE_PRIORITY_PRIVILEGE))
+        return STATUS_PRIVILEGE_NOT_HELD;
+    if (Class == ProcessBreakOnTermination && !se_caller_has_privilege(caller, SE_DEBUG_PRIVILEGE))
+        return STATUS_PRIVILEGE_NOT_HELD;
+
+    spin_lock(&target->lock);
+    if (target->terminated) {
+        spin_unlock(&target->lock);
+        return STATUS_PROCESS_IS_TERMINATING;
+    }
+    switch (Class) {
+    case ProcessBasePriority:
+        target->base_priority = base;
+        break;
+    case ProcessPriorityClass:
+        target->priority_class = cls;
+        target->priority_foreground = fg;
+        target->base_priority = pt_priority_class_base(cls);
+        break;
+    case ProcessDefaultHardErrorMode:
+        target->default_hard_error_mode = value;
+        break;
+    case ProcessAffinityMask:
+        target->affinity_mask = mask;
+        break;
+    case ProcessBreakOnTermination:
+        target->break_on_termination = (value != 0);
+        break;
+    }
+    spin_unlock(&target->lock);
     return STATUS_SUCCESS;
 }
 
