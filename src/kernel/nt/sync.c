@@ -2650,3 +2650,52 @@ NTSTATUS nt_svc_NtQueryTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR
     ObDereferenceObject(hdr);
     return st;
 }
+
+extern struct nt_object_type nt_event_type, nt_mutant_type, nt_semaphore_type;
+
+/* Signal one object, then wait on another. Both handles are resolved first so that a
+ * bad handle fails before anything is signalled. */
+NTSTATUS nt_svc_NtSignalAndWaitForSingleObject(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                               ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                               ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    HANDLE SignalHandle = (HANDLE)a0;
+    HANDLE WaitHandle = (HANDLE)a1;
+    BOOLEAN Alertable = (BOOLEAN)a2;
+    PLARGE_INTEGER Timeout = (PLARGE_INTEGER)a3;
+    (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    LARGE_INTEGER k_timeout;
+    PLARGE_INTEGER p_timeout = NULL;
+    if (Timeout) {
+        if (!access_ok(Timeout, sizeof(LARGE_INTEGER))) return STATUS_ACCESS_VIOLATION;
+        if (copy_from_user(&k_timeout, Timeout, sizeof(k_timeout))) return STATUS_ACCESS_VIOLATION;
+        p_timeout = &k_timeout;
+    }
+    struct nt_object_header *sig_hdr = NULL, *wait_hdr = NULL;
+    NTSTATUS st = ObReferenceObjectByHandle(proc, SignalHandle, NULL, UserMode, 0, &sig_hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObReferenceObjectByHandle(proc, WaitHandle, NULL, UserMode, 0, &wait_hdr, NULL);
+    if (!NT_SUCCESS(st)) { ObDereferenceObject(sig_hdr); return st; }
+    if (sig_hdr->type != &nt_event_type && sig_hdr->type != &nt_mutant_type &&
+        sig_hdr->type != &nt_semaphore_type) {
+        st = STATUS_OBJECT_TYPE_MISMATCH;
+    } else if (wait_hdr->type != &nt_event_type && wait_hdr->type != &nt_mutant_type &&
+               wait_hdr->type != &nt_semaphore_type && wait_hdr->type != &nt_timer_type) {
+        st = STATUS_OBJECT_TYPE_MISMATCH;
+    }
+    if (NT_SUCCESS(st)) {
+        LONG prev = 0;
+        void *sbody = nt_object_body(sig_hdr);
+        if (sig_hdr->type == &nt_event_type) st = nt_set_event((struct nt_event *)sbody, &prev);
+        else if (sig_hdr->type == &nt_mutant_type) st = nt_release_mutant((struct nt_mutant *)sbody, &prev);
+        else st = nt_release_semaphore((struct nt_semaphore *)sbody, 1, &prev);
+    }
+    if (NT_SUCCESS(st)) {
+        st = nt_wait_for_single_object((struct nt_dispatcher_header *)nt_object_body(wait_hdr), Alertable, p_timeout);
+    }
+    ObDereferenceObject(wait_hdr);
+    ObDereferenceObject(sig_hdr);
+    return st;
+}

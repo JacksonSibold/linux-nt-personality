@@ -12,6 +12,8 @@
 NTSTATUS nt_svc_NtCreateEvent(PHANDLE EventHandle, ACCESS_MASK DesiredAccess,
                               POBJECT_ATTRIBUTES ObjectAttributes,
                               ULONG EventType, BOOLEAN InitialState);
+NTSTATUS nt_svc_NtCreateMutant(PHANDLE MutantHandle, ACCESS_MASK DesiredAccess,
+                               POBJECT_ATTRIBUTES ObjectAttributes, BOOLEAN InitialOwner);
 NTSTATUS nt_svc_NtCreateTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
                               ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
                               ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
@@ -27,6 +29,9 @@ NTSTATUS nt_svc_NtCancelTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PT
 NTSTATUS nt_svc_NtQueryTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
                              ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
                              ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
+NTSTATUS nt_svc_NtSignalAndWaitForSingleObject(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                               ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                               ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -305,6 +310,54 @@ TEST(query_timer_bad_arguments) {
     PASS();
 }
 
+/* ------------------------------------------------------------------ */
+/* NtSignalAndWaitForSingleObject                                       */
+/* ------------------------------------------------------------------ */
+static NTSTATUS t_signal_and_wait(HANDLE sig, HANDLE wait, BOOLEAN alertable, LARGE_INTEGER *to) {
+    return nt_svc_NtSignalAndWaitForSingleObject((ULONG_PTR)sig, (ULONG_PTR)wait, alertable, (ULONG_PTR)to,
+                                                 0, 0, 0, 0, 0, 0, 0, 0);
+}
+
+TEST(signal_and_wait_event_pair) {
+    reset_ob();
+    HANDLE a = NULL, b = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&a, 0x1F0003, NULL, SynchronizationEvent, 0), STATUS_SUCCESS);
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&b, 0x1F0003, NULL, SynchronizationEvent, 1), STATUS_SUCCESS);
+    /* Signal a, then wait on b, which is already signalled. */
+    LARGE_INTEGER to = rel100(1000);
+    ASSERT_STATUS(t_signal_and_wait(a, b, 0, &to), STATUS_WAIT_0);
+    /* b was consumed by the wait (synchronization event); a is now signalled. */
+    ASSERT_STATUS(t_wait_handle(a, &to), STATUS_WAIT_0);
+    ASSERT_STATUS(t_wait_handle(b, &(LARGE_INTEGER){ .QuadPart = 0 }), STATUS_TIMEOUT);
+    PASS();
+}
+
+TEST(signal_and_wait_mutant_release) {
+    reset_ob();
+    HANDLE m = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateMutant(&m, 0x1F0001, NULL, 0), STATUS_SUCCESS);
+    HANDLE ev = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&ev, 0x1F0003, NULL, NotificationEvent, 1), STATUS_SUCCESS);
+    /* Not owned by this thread: the release fails and nothing is waited on. */
+    LARGE_INTEGER to = rel100(100);
+    ASSERT_STATUS(t_signal_and_wait(m, ev, 0, &to), STATUS_MUTANT_NOT_OWNED);
+    PASS();
+}
+
+TEST(signal_and_wait_bad_objects) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, NotificationTimer), STATUS_SUCCESS);
+    HANDLE ev = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&ev, 0x1F0003, NULL, NotificationEvent, 1), STATUS_SUCCESS);
+    LARGE_INTEGER to = rel100(100);
+    /* A timer cannot be signalled. */
+    ASSERT_STATUS(t_signal_and_wait(h, ev, 0, &to), STATUS_OBJECT_TYPE_MISMATCH);
+    /* A bad handle is rejected before anything is signalled. */
+    ASSERT_STATUS(t_signal_and_wait(ev, NULL, 0, &to), STATUS_INVALID_HANDLE);
+    PASS();
+}
+
 int main(void) {
     printf("sync extra tests starting\n");
     ObInitObjectManager();
@@ -320,6 +373,9 @@ int main(void) {
     RUN(cancel_timer_reports_signalled);
     RUN(query_timer_state_and_remaining);
     RUN(query_timer_bad_arguments);
+    RUN(signal_and_wait_event_pair);
+    RUN(signal_and_wait_mutant_release);
+    RUN(signal_and_wait_bad_objects);
     printf("sync extra tests: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) return 1;
     ObCleanupObjectManager();
