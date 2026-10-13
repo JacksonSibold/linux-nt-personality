@@ -76,7 +76,7 @@ record. It does not set a flag on the VAD.
 ```mermaid
 flowchart TD
     CS["NtCreateSection"] --> SI{"SEC_IMAGE?"}
-    SI -->|yes| NI["STATUS_NOT_IMPLEMENTED<br/>image sections are not built"]
+    SI -->|yes| NI["userspace: plan the PE file, image_plan.h<br/>kernel: STATUS_NOT_IMPLEMENTED"]
     SI -->|no| FH{"FileHandle set?"}
     FH -->|yes| FS["file object: access check, size checks<br/>host dup fd, or kernel struct file reference"]
     FH -->|no| SZ["ObCreateObject Section<br/>kshim_section_create anonymous backing"]
@@ -114,8 +114,10 @@ flowchart TD
   `SEC_IMAGE`, 4 KiB for anonymous ones), then records a view VAD under the lock
   before it calls `kshim_section_map` or `kshim_section_map_file`. The mapping
   itself is done outside the lock. A shared writable view needs a writable
-  section (`STATUS_SECTION_PROTECTION`). `NtCreateSection` refuses `SEC_IMAGE`
-  (`mm.c:1894`), so the image branch is not reachable in this tree.
+  section (`STATUS_SECTION_PROTECTION`). Image sections (`SEC_IMAGE`) are
+  built in the userspace build only: the file is planned by `image_plan.h`
+  and mapped whole, with one `MEM_IMAGE` VAD per segment (see
+  [mm.md](../modules/mm.md)). The kernel build refuses `SEC_IMAGE`.
 - `NtUnmapViewOfSection` takes the base, which must be the VAD's `alloc_base`,
   removes the view VAD and unmaps the range.
 
