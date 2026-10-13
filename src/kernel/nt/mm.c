@@ -2633,6 +2633,7 @@ NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
         n = next;
     }
 #endif
+    nt_lock_forget(mm, unmap_start, unmap_end);
 #ifdef __KERNEL__
     /* Kernel: vm_munmap takes mmap_lock, so it stays outside the VAD lock. */
     ntmm_unlock(mm);
