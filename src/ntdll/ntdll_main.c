@@ -472,20 +472,22 @@ static void* ldr_find_export_by_ordinal(void *dll_base, WORD ordinal) {
     }
     return base + func_rva;
 }
+/*
+ * The base of this ntdll.dll. binfmt_pe maps ntdll at an ASLR address, so the
+ * old probe of the preferred base 0x180000000 found nothing (and the loaded table
+ * then held a bogus base, S4 of the console milestone). ntdll finds itself from
+ * its own code: walk down from LdrInitializeThunk one page at a time until an MZ
+ * header with a PE signature. The image starts with its header page, so the walk
+ * stops inside the mapping.
+ */
+void NTAPI LdrInitializeThunk(void);
 static void* get_ntdll_base(void) {
-    unsigned char *p = (unsigned char*)(ULONG_PTR)0x180000000ULL;
-    // Use NtQueryVirtualMemory to safely probe without faulting
-    struct { PVOID BaseAddress; PVOID AllocationBase; ULONG AllocationProtect; SIZE_T RegionSize; ULONG State; ULONG Protect; ULONG Type; } mbi;
-    SIZE_T ret=0;
-    NTSTATUS st = NtQueryVirtualMemory((HANDLE)(intptr_t)-1, p, 0, &mbi, sizeof(mbi), &ret);
-    if (!NT_SUCCESS(st) || mbi.State != 0x1000 /*MEM_COMMIT*/) {
-        return NULL;
-    }
-    // Now safe to read header
-    if (ldr_load_u16(p) == 0x5A4D) {
-        u32 nt_off = ldr_load_u32(p + 0x3C);
-        if (nt_off < 0x1000 && ldr_load_u32(p + nt_off) == 0x4550) {
-            return p;
+    unsigned char *p = (unsigned char*)((ULONG_PTR)(void *)LdrInitializeThunk & ~0xFFFULL);
+    for (int i = 0; i < 0x400 && p; i++, p -= 0x1000) {
+        if (ldr_load_u16(p) == 0x5A4D) {
+            u32 nt_off = ldr_load_u32(p + 0x3C);
+            if (nt_off < 0x1000 && ldr_load_u32(p + nt_off) == 0x4550)
+                return p;
         }
     }
     return NULL;
@@ -598,6 +600,91 @@ static void ldr_publish_process_context(PPEB peb)
     }
     peb->Ldr = winldr_peb_ldr(ctx);
     LDR_PEB_CONTEXT_SLOT(peb) = ctx;
+}
+
+/*
+ * Binds the IAT of a loaded module (not the exe) and of every dependency it maps
+ * for the first time, recursively. msvcrt.dll imports kernel32.dll, which imports
+ * ntdll.dll (S4 of the console milestone): the top-level loop only binds the exe
+ * and one level below it, so a DLL two levels down was never patched.
+ */
+static void *g_bound_mods[MAX_LOADED];
+static int g_nbound = 0;
+
+static void ldr_bind_imports(unsigned char *mod, int depth)
+{
+    if (!mod || depth > 8) return;
+    /* Each module is bound once. A dependency that an earlier pass already
+     * mapped (and did not bind) still needs its own imports bound. */
+    for (int i = 0; i < g_nbound; i++)
+        if (g_bound_mods[i] == (void *)mod) return;
+    if (g_nbound < MAX_LOADED) g_bound_mods[g_nbound++] = (void *)mod;
+    u32 nt_off = ldr_load_u32(mod + 0x3C);
+    u32 oh_off = nt_off + 4 + 20;
+    u32 imp_rva = ldr_load_u32(mod + oh_off + 112 + 1*8);
+    u32 imp_size = ldr_load_u32(mod + oh_off + 112 + 1*8 + 4);
+    if (!imp_rva || !imp_size) return;
+    for (u32 off = 0; off + 20 <= imp_size; off += 20) {
+        unsigned char *d = mod + imp_rva + off;
+        u32 orig_first = ldr_load_u32(d + 0);
+        u32 time_stamp = ldr_load_u32(d + 4);
+        u32 forwarder = ldr_load_u32(d + 8);
+        u32 name_rva = ldr_load_u32(d + 12);
+        u32 first_thunk = ldr_load_u32(d + 16);
+        if (!orig_first && !time_stamp && !forwarder && !name_rva && !first_thunk) break;
+        if (!name_rva || !first_thunk) continue;
+        const char *dep_name = (const char *)(mod + name_rva);
+        void *dep = find_loaded(dep_name);
+        if (!dep && is_already_loaded_ntdll(dep_name)) dep = get_ntdll_base();
+        int fresh = 0;
+        if (!dep) {
+            char full[512];
+            size_t n = 0;
+            const char *pre = "/windows/system32/"; /* MAIN-5: system directory only */
+            while (*pre && n < 300) full[n++] = *pre++;
+            for (const char *p = dep_name; *p && n < 500; p++) full[n++] = *p;
+            full[n] = 0;
+            size_t sz = 0;
+            if (ldr_nt_map_dll(full, &dep, &sz) != STATUS_SUCCESS) continue;
+            add_loaded(dep_name, dep, sz);
+            fresh = 1;
+            dbg_print("Ldr: bind dependency ");
+            dbg_print(dep_name);
+            dbg_print("\n");
+        }
+        ldr_bind_imports((unsigned char *)dep, depth + 1);
+        if (fresh) {
+            call_tls_callbacks(dep);
+            call_dll_main(dep);
+        }
+        u32 cnt = 0;
+        for (u32 idx = 0; idx < 512; idx++) {
+            u64 v = 0;
+            for (int b = 0; b < 8; b++) v |= (u64)mod[(orig_first ? orig_first : first_thunk) + idx*8 + b] << (b*8);
+            if (v == 0) break;
+            cnt++;
+        }
+        if (!cnt) continue;
+        PVOID pp = (PVOID)(((ULONG_PTR)(mod + first_thunk)) & ~0xFFFULL);
+        SIZE_T ssz = ((ULONG_PTR)(mod + first_thunk) + cnt*8 + 0xFFFULL) & ~0xFFFULL;
+        ssz -= (ULONG_PTR)pp;
+        ULONG old;
+        NtProtectVirtualMemory((HANDLE)-1, &pp, &ssz, 0x04, &old);
+        for (u32 idx = 0; idx < cnt; idx++) {
+            u64 tv = 0;
+            u32 src = (orig_first ? orig_first : first_thunk) + idx*8;
+            for (int b = 0; b < 8; b++) tv |= (u64)mod[src + b] << (b*8);
+            void *proc = NULL;
+            if (tv & 0x8000000000000000ULL) {
+                proc = ldr_find_export_by_ordinal(dep, (WORD)(tv & 0xFFFF));
+            } else {
+                u32 ibn_rva = (u32)tv;
+                if (ibn_rva < ldr_load_u32(mod + oh_off + 56))
+                    proc = ldr_find_export(dep, (const char *)(mod + ibn_rva + 2));
+            }
+            if (proc) *(u64 *)(mod + first_thunk + idx*8) = (u64)(ULONG_PTR)proc;
+        }
+    }
 }
 
 void NTAPI LdrInitializeThunk(void) {
@@ -744,6 +831,8 @@ void NTAPI LdrInitializeThunk(void) {
                     call_dll_main(dll_base);
                 }
             }
+            // The DLL's own imports (and any dependency it maps): S4.
+            ldr_bind_imports((unsigned char *)dll_base, 1);
             // Now resolve EXE's IAT for this descriptor
             u32 thunk_rva = first_thunk;
             u32 orig_rva = orig_first ? orig_first : first_thunk;

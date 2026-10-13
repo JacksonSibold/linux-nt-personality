@@ -7,6 +7,7 @@
 
 #include <linux/kernel.h>
 #include <linux/fs.h>
+#include <linux/file.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
 #include <linux/binfmts.h>
@@ -26,6 +27,7 @@ static struct linux_binfmt pe_format;
 #ifdef CONFIG_NT_PERSONALITY
 #include "../../arch/x86/nt/nt_internal.h"
 extern int ntmm_add_region(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long);
+extern int ntio_install_std_file(struct file *filp, u64 *out_handle);
 #else
 #ifndef KSHIM_H /* the userspace model (kshim.h) provides its own */
 static inline void nt_enter_personality(struct task_struct *tsk) { (void)tsk; }
@@ -574,9 +576,34 @@ static int pe_build_process_parameters(struct pe_load_state *st)
     // Real layout is 0x470 size but we allocate 4k
     // Store MaximumLength, Length at offset 0
     (void)p;
-    // Use copy_to_user to zero? Already zero
     st->params = (void *)p;
-    // Set CommandLine buffer empty inside same page after struct
+#ifdef CONFIG_NT_PERSONALITY
+    /*
+     * RTL_USER_PROCESS_PARAMETERS (x64): MaximumLength +0x00, Length +0x04,
+     * StandardOutput +0x28. Only StandardOutput is wired (S1): the exec-ing
+     * task's fd 1 becomes a File handle in the NT handle table, which is
+     * global and has NTIO_MAX_HANDLES slots, so one slot per exec is taken.
+     * StandardInput (+0x20) and StandardError (+0x30) stay 0 until a
+     * per-process table exists (process-creation.md step 5). fd 1 closed in
+     * the parent leaves the field 0.
+     */
+    {
+        u32 maxlen = PAGE_SIZE, len = 0x470;
+        u64 h = 0;
+        struct file *out;
+        if (copy_to_user((void __user *)(p+0x00), &maxlen, 4) ||
+            copy_to_user((void __user *)(p+0x04), &len, 4))
+            return -EFAULT;
+        out = fget(1);
+        if (out) {
+            if (ntio_install_std_file(out, &h))
+                return -ENOMEM;
+            if (copy_to_user((void __user *)(p+0x28), &h, 8))
+                return -EFAULT;
+            pr_err("binfmt_pe: StandardOutput handle=0x%llx\n", (unsigned long long)h);
+        }
+    }
+#endif
     return 0;
 }
 

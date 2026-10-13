@@ -1124,6 +1124,50 @@ static struct nt_file_object *ntio_alloc_file_object(void)
 }
 
 /*
+ * Kernel-side install of a standard handle (process-creation.md, section 1,
+ * step 9). binfmt_pe calls this for the exec-ing task's fd 1 so that
+ * RTL_USER_PROCESS_PARAMETERS.StandardOutput names a File handle in the table.
+ * Takes ownership of one reference to filp (from fget): on every path the
+ * reference is dropped by ntio_file_put -> ntio_file_release -> filp_close.
+ * Returns 0 and the handle in *out_handle, or -ENOMEM when the table is full.
+ */
+int ntio_install_std_file(struct file *filp, u64 *out_handle)
+{
+	struct nt_file_object *file;
+	int i;
+
+	if (!filp || !out_handle) {
+		if (filp)
+			fput(filp);
+		return -EINVAL;
+	}
+	file = ntio_alloc_file_object();
+	if (!file) {
+		fput(filp);
+		return -ENOMEM;
+	}
+	file->filp = filp;
+	file->granted_access = 0x001F01FF; /* FILE_ALL_ACCESS */
+	file->synchronous = true;
+
+	spin_lock(&ntio_handle_lock);
+	for (i = 64; i < NTIO_MAX_HANDLES; i++) {
+		if (!ntio_handles[i].used) {
+			ntio_handles[i].used = true;
+			ntio_handles[i].object = file;
+			ntio_handles[i].granted_access = file->granted_access;
+			atomic_inc(&ntio_handle_inuse);
+			spin_unlock(&ntio_handle_lock);
+			*out_handle = (u64)(i << 2);
+			return 0;
+		}
+	}
+	spin_unlock(&ntio_handle_lock);
+	ntio_file_put(file);
+	return -ENOMEM;
+}
+
+/*
  * Apply CreateDisposition semantics on top of a POSIX open.
  * Returns the resulting POSIX flags and the IoStatus.Information value.
  */

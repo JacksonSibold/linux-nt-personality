@@ -22,6 +22,35 @@ $(BINDIR):
 $(BINDIR):
 	mkdir -p $@
 
+# S2 (console milestone): exes that import from ntdll.dll. Not part of `all`:
+# they need src/ntdll/out/ntdll.def (make -C src/ntdll first).
+NTDLL_DEF := ../../src/ntdll/out/ntdll.def
+S2_EXES := $(BINDIR)/console_s2.exe
+
+$(BINDIR)/libntdll_imp.a: $(NTDLL_DEF) | $(BINDIR)
+	x86_64-w64-mingw32-dlltool -d $< -l $@ -D ntdll.dll
+
+$(BINDIR)/console_s2.exe: s2/console_s2.c $(BINDIR)/libntdll_imp.a
+	$(CC) -nostdlib -Wl,-e,_start -Wl,--no-seh -Wl,--no-insert-timestamp -Os -s -ffreestanding -fno-builtin -fno-stack-protector -o $@ $< -L$(BINDIR) -lntdll_imp
+
+s2: $(S2_EXES)
+
+$(BINDIR)/libkernel32_imp.a: ../../src/ntdll/kernel32.def | $(BINDIR)
+	x86_64-w64-mingw32-dlltool -d $< -l $@ -D kernel32.dll
+
+$(BINDIR)/console_s3.exe: s3/console_s3.c $(BINDIR)/libkernel32_imp.a
+	$(CC) -nostdlib -Wl,-e,_start -Wl,--no-seh -Wl,--no-insert-timestamp -Os -s -ffreestanding -fno-builtin -fno-stack-protector -o $@ $< -L$(BINDIR) -lkernel32_imp
+
+s3: $(BINDIR)/console_s3.exe
+
+$(BINDIR)/libmsvcrt_imp.a: ../../src/ntdll/msvcrt.def | $(BINDIR)
+	x86_64-w64-mingw32-dlltool -d $< -l $@ -D msvcrt.dll
+
+$(BINDIR)/console_s4.exe: s4/console_s4.c $(BINDIR)/libmsvcrt_imp.a
+	$(CC) -nostdlib -Wl,-e,_start -Wl,--no-seh -Wl,--no-insert-timestamp -Os -s -ffreestanding -fno-builtin -fno-stack-protector -o $@ $< -L$(BINDIR) -lmsvcrt_imp
+
+s4: $(BINDIR)/console_s4.exe
+
 clean:
 	rm -rf $(BINDIR)/*.exe
 

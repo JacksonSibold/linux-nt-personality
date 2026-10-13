@@ -106,6 +106,32 @@ check: $(OUT)/ntdll.dll $(OUT)/ntdll.def
 	$(ROOT)/tests/ntdll-host/check_exports.sh $(OUT)/ntdll.dll $(OUT)/ntdll.def
 	$(ROOT)/tests/ntdll-host/check_ldr_stub.sh $(OUT)/ntdll.dll
 
+# kernel32.dll (S3 of the console milestone): kernel32.c with the runtime helpers
+# (memcpy, strlen, ...) that ntdll.dll does not export, importing ntdll.dll.
+K32_OBJS := $(OUT)/kernel32.o $(OUT)/k32_runtime.o
+
+$(OUT)/k32_runtime.o: ntdll_runtime.c | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(OUT)/libntdll_imp.a: $(OUT)/ntdll.def
+	x86_64-w64-mingw32-dlltool -d $< -l $@ -D ntdll.dll
+
+$(OUT)/kernel32.dll: $(K32_OBJS) kernel32.def $(OUT)/libntdll_imp.a
+	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(K32_OBJS) kernel32.def -L$(OUT) -lntdll_imp -lgcc
+
+.PHONY: kernel32
+kernel32: $(OUT)/kernel32.dll
+
+# msvcrt.dll (S4): msvcrt.c imports kernel32 and ntdll; the runtime helpers come from k32_runtime.o.
+$(OUT)/libkernel32_imp.a: kernel32.def
+	x86_64-w64-mingw32-dlltool -d $< -l $@ -D kernel32.dll
+
+$(OUT)/msvcrt.dll: $(OUT)/msvcrt.o msvcrt.def $(OUT)/libkernel32_imp.a $(OUT)/libntdll_imp.a
+	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/msvcrt.o msvcrt.def -L$(OUT) -lkernel32_imp -lntdll_imp -lgcc
+
+.PHONY: msvcrt
+msvcrt: $(OUT)/msvcrt.dll
+
 $(OUT):
 	mkdir -p $(OUT)
 

@@ -205,6 +205,8 @@ void _alloca(void) {}
 
 /* Provide __mingw_vsnprintf etc */
 int __mingw_vsnprintf(char *s, size_t n, const char *fmt, va_list ap){ (void)s;(void)n;(void)fmt;(void)ap; if(n) s[0]=0; return 0; }
+/* MinGW's inline fprintf in <stdio.h> (used by pe_parse.c diagnostics) calls this. */
+int __mingw_vfprintf(FILE *f, const char *fmt, va_list ap){ (void)f;(void)fmt;(void)ap; return 0; }
 
 /* Provide _exit for except.c */
 void _exit(int c){ (void)c; while(1) { __asm__ volatile("hlt"); } }
