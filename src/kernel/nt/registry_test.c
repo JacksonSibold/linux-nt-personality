@@ -441,6 +441,44 @@ static void test_delete_nested(void){
     PASS();
 }
 
+/* Test 12: NtEnumerateKey KeyNodeInformation: name, class and their offsets. */
+static void test_enumerate_node(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1000,"regnode");
+    struct nt_ethread *thr=make_thread(proc,1);
+    UNICODE_STRING pus; make_us(&pus,"\\Registry\\User\\Software\\ntpers_node_probe",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES poa=make_oa(&pus);
+    HANDLE hp=NULL; ULONG disp=0;
+    ASSERT_STATUS(NtCreateKey(&hp, KEY_ALL_ACCESS, &poa, 0, NULL, 0, &disp), STATUS_SUCCESS);
+    UNICODE_STRING cus; make_us(&cus,"\\Registry\\User\\Software\\ntpers_node_probe\\child",wbuf2,sizeof(wbuf2));
+    OBJECT_ATTRIBUTES coa=make_oa(&cus);
+    WCHAR cbuf[64]; UNICODE_STRING cls; make_us(&cls,"ClassOne",cbuf,sizeof(cbuf));
+    HANDLE hc=NULL;
+    ASSERT_STATUS(NtCreateKey(&hc, KEY_ALL_ACCESS, &coa, 0, &cls, 0, &disp), STATUS_SUCCESS);
+
+    unsigned char buf[256]; ULONG rlen=0;
+    ASSERT_STATUS(NtEnumerateKey(hp, 0, KeyNodeInformation, buf, sizeof(buf), &rlen), STATUS_SUCCESS);
+    KEY_NODE_INFORMATION *ni=(KEY_NODE_INFORMATION*)buf;
+    ASSERT(ni->NameLength == 5*sizeof(WCHAR));
+    ASSERT(wmatch((const unsigned char*)ni->Name, ni->NameLength, "child"));
+    ASSERT(ni->ClassLength == 8*sizeof(WCHAR));
+    ASSERT(ni->ClassOffset == offsetof(KEY_NODE_INFORMATION, Name) + ni->NameLength);
+    ASSERT(wmatch(buf + ni->ClassOffset, ni->ClassLength, "ClassOne"));
+    ASSERT(rlen == ni->ClassOffset + ni->ClassLength);
+
+    /* a buffer that cannot hold the name reports the required size */
+    ULONG small = (ULONG)offsetof(KEY_NODE_INFORMATION, Name) + 2;
+    ASSERT_STATUS(NtEnumerateKey(hp, 0, KeyNodeInformation, buf, small, &rlen), STATUS_BUFFER_TOO_SMALL);
+    ASSERT(rlen == (ULONG)offsetof(KEY_NODE_INFORMATION, Name) + 5*sizeof(WCHAR) + 8*sizeof(WCHAR));
+
+    ASSERT_STATUS(NtDeleteKey(hc), STATUS_SUCCESS);
+    ASSERT_STATUS(NtDeleteKey(hp), STATUS_SUCCESS);
+    ObCloseHandle(proc,hc); ObCloseHandle(proc,hp);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
 int main(void){
     printf("registry shim tests starting\n");
     ntreg_init();
@@ -457,6 +495,7 @@ int main(void){
         {test_delete_and_enum,"delete_and_enum"},
         {test_flush_snapshot,"flush_snapshot"},
         {test_delete_nested,"delete_nested"},
+        {test_enumerate_node,"enumerate_node"},
     };
     for(size_t i=0;i<sizeof(tests)/sizeof(tests[0]);i++){
         printf(" RUN %s\n",tests[i].name);

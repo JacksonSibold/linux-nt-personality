@@ -1326,6 +1326,20 @@ NTSTATUS NtEnumerateKey(HANDLE KeyHandle, ULONG Index, ULONG KeyInformationClass
         p->TitleIndex=0;
         p->NameLength=nameLen;
         if (nameLen) memcpy(p->Name, e->name.Buffer, nameLen);
+    } else if (KeyInformationClass==KeyNodeInformation) {
+        struct nt_key *ck=(struct nt_key*)nt_object_body(e->hdr);
+        ULONG classLen = ck->class_name.Length;
+        needed = (ULONG)offsetof(KEY_NODE_INFORMATION, Name) + nameLen + classLen;
+        if (ResultLength) *ResultLength = needed;
+        if (Length < needed) { read_unlock(&k->lock); ObDereferenceObject(hdr); return STATUS_BUFFER_TOO_SMALL; }
+        PKEY_NODE_INFORMATION p=(PKEY_NODE_INFORMATION)KeyInformation;
+        p->LastWriteTime.QuadPart = ck->last_write_time.QuadPart;
+        p->TitleIndex=0;
+        p->ClassOffset = (ULONG)offsetof(KEY_NODE_INFORMATION, Name) + nameLen;
+        p->ClassLength = classLen;
+        p->NameLength = nameLen;
+        if (nameLen) memcpy(p->Name, e->name.Buffer, nameLen);
+        if (classLen) memcpy((char*)p + p->ClassOffset, ck->class_name.Buffer, classLen);
     } else {
         read_unlock(&k->lock); ObDereferenceObject(hdr); return STATUS_INVALID_INFO_CLASS;
     }
