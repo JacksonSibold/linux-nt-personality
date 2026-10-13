@@ -34,6 +34,13 @@ extern "C" {
 #define OBJ_DONT_RESOLVE_LINK   OBJ_OPENLINK
 #define OBJ_VALID_ATTRIBUTES    (OBJ_INHERIT|OBJ_PERMANENT|OBJ_EXCLUSIVE|OBJ_CASE_INSENSITIVE|OBJ_OPENIF|OBJ_OPENLINK|OBJ_KERNEL_HANDLE|OBJ_FORCE_ACCESS_CHECK|OBJ_PROTECT_FROM_CLOSE)
 
+/* OBJECT_DIRECTORY_INFORMATION (winternl.h): one record per entry, with the
+ * strings stored after the record array (see NtQueryDirectoryObject). */
+typedef struct _OBJECT_DIRECTORY_INFORMATION {
+    UNICODE_STRING Name;
+    UNICODE_STRING TypeName;
+} OBJECT_DIRECTORY_INFORMATION, *POBJECT_DIRECTORY_INFORMATION;
+
 /* Object directory access rights (winnt.h). Values are not in security.h, so
  * they are defined here for the namespace services in nt_obj.c. */
 #define DIRECTORY_QUERY                 0x0001UL

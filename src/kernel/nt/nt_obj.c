@@ -130,6 +130,97 @@ static void nt_ensure_obj_types(void)
     nt_obj_types_registered = true;
 }
 
+/* Lays out directory records for NtQueryDirectoryObject into stage (stage_len
+ * bytes). Starts at entry *index. The records (one per entry, then a zeroed
+ * terminator) come first and their strings follow, all in one contiguous block.
+ * String pointers are user_base plus the offset in the block, so the block can
+ * be copied to user memory. Entries are copied while they fit with the
+ * terminator; single limits the result to one entry. On success *index moves past
+ * the entries returned, *count is their number and *used the bytes written
+ * (terminator included). STATUS_NO_MORE_ENTRIES when no entry is left, and
+ * STATUS_BUFFER_TOO_SMALL with *need set when not even one entry fits. Called
+ * with the directory lock taken here, so it must not sleep. */
+static NTSTATUS nt_dir_fill(struct nt_directory *dir, ULONG *index, BOOLEAN single,
+                            char *stage, ULONG stage_len, char *user_base,
+                            ULONG *count, ULONG *used, ULONG *need)
+{
+    const SIZE_T rec = sizeof(OBJECT_DIRECTORY_INFORMATION);
+    struct nt_dir_entry *de;
+    ULONG pos = 0, take = 0, written = 0;
+    SIZE_T strs = 0, first_need = 0;
+    BOOLEAN any = FALSE;
+    OBJECT_DIRECTORY_INFORMATION *recs = (OBJECT_DIRECTORY_INFORMATION *)stage;
+    char *sp;
+
+    *count = 0;
+    *used = 0;
+    *need = 0;
+    read_lock(&dir->lock);
+    list_for_each_entry(de, &dir->entries, link) {
+        const char *tn = de->obj->type ? de->obj->type->name : "Unknown";
+        SIZE_T tlen = strlen(tn);
+        SIZE_T sz = (SIZE_T)de->name.Length + sizeof(WCHAR) + tlen * sizeof(WCHAR) + sizeof(WCHAR);
+        if (pos++ < *index)
+            continue;
+        if (!any) {
+            first_need = rec * 2 + sz;
+            any = TRUE;
+        }
+        if (single && take == 1)
+            break;
+        if (rec * (take + 2) + strs + sz > stage_len)
+            break;
+        take++;
+        strs += sz;
+    }
+    if (!any) {
+        read_unlock(&dir->lock);
+        return STATUS_NO_MORE_ENTRIES;
+    }
+    if (take == 0) {
+        read_unlock(&dir->lock);
+        *need = (ULONG)first_need;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    sp = stage + rec * (take + 1);
+    pos = 0;
+    list_for_each_entry(de, &dir->entries, link) {
+        const char *tn = de->obj->type ? de->obj->type->name : "Unknown";
+        SIZE_T tlen = strlen(tn);
+        WCHAR *dst;
+        SIZE_T i;
+        if (pos++ < *index)
+            continue;
+        if (written == take)
+            break;
+        dst = (WCHAR *)sp;
+        memcpy(dst, de->name.Buffer, de->name.Length);
+        dst[de->name.Length / sizeof(WCHAR)] = 0;
+        recs[written].Name.Buffer = (PWSTR)(user_base + (sp - stage));
+        recs[written].Name.Length = de->name.Length;
+        recs[written].Name.MaximumLength = (USHORT)(de->name.Length + sizeof(WCHAR));
+        sp += de->name.Length + sizeof(WCHAR);
+
+        dst = (WCHAR *)sp;
+        for (i = 0; i < tlen; i++)
+            dst[i] = (WCHAR)(unsigned char)tn[i];
+        dst[tlen] = 0;
+        recs[written].TypeName.Buffer = (PWSTR)(user_base + (sp - stage));
+        recs[written].TypeName.Length = (USHORT)(tlen * sizeof(WCHAR));
+        recs[written].TypeName.MaximumLength = (USHORT)(tlen * sizeof(WCHAR) + sizeof(WCHAR));
+        sp += tlen * sizeof(WCHAR) + sizeof(WCHAR);
+        written++;
+    }
+    memset(&recs[take], 0, rec);
+    read_unlock(&dir->lock);
+
+    *index += take;
+    *count = take;
+    *used = (ULONG)(rec * (take + 1) + strs);
+    return STATUS_SUCCESS;
+}
+
 /* Maps the generic rights of a directory object request (NT GENERIC_MAPPING for
  * object directories). Other bits pass through unchanged. */
 static ACCESS_MASK nt_map_directory_access(ACCESS_MASK a)
@@ -833,6 +924,33 @@ NTSTATUS nt_svc_NtOpenDirectoryObject(PHANDLE DirectoryHandle, ACCESS_MASK Desir
     return st;
 }
 
+/* NtQueryDirectoryObject: needs DIRECTORY_QUERY. Context is the index of the
+ * next entry; RestartScan starts again at entry 0. */
+NTSTATUS nt_svc_NtQueryDirectoryObject(HANDLE DirectoryHandle, PVOID Buffer, ULONG Length,
+                                       BOOLEAN ReturnSingleEntry, BOOLEAN RestartScan,
+                                       PULONG Context, PULONG ReturnLength)
+{
+    struct nt_eprocess *proc = kshim_current_process();
+    struct nt_object_header *hdr = NULL;
+    ULONG index, count = 0, used = 0, need = 0;
+    NTSTATUS st;
+    if (!proc || !Buffer || !Context)
+        return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(proc, DirectoryHandle, &nt_directory_type, UserMode,
+                                   DIRECTORY_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st))
+        return st;
+    index = RestartScan ? 0 : *Context;
+    st = nt_dir_fill((struct nt_directory *)nt_object_body(hdr), &index, ReturnSingleEntry,
+                     (char *)Buffer, Length, (char *)Buffer, &count, &used, &need);
+    ObDereferenceObject(hdr);
+    if (ReturnLength)
+        *ReturnLength = NT_SUCCESS(st) ? used : need;
+    if (st == STATUS_SUCCESS || st == STATUS_NO_MORE_ENTRIES)
+        *Context = index;
+    return st;
+}
+
 /* Needs SeCreatePermanentPrivilege on the effective token, checked before the
  * handle is looked up (as NT does). */
 NTSTATUS nt_svc_NtMakePermanentObject(HANDLE Handle)
@@ -1285,6 +1403,68 @@ NTSTATUS nt_svc_NtOpenDirectoryObject(unsigned long a0, unsigned long a1, unsign
     if (copy_to_user(DirectoryHandle, &h, sizeof(h))) {
         ObCloseHandle(proc, h);
         return STATUS_ACCESS_VIOLATION;
+    }
+    return st;
+}
+
+/* Largest directory listing the kernel stages in one call. */
+#define NT_DIR_QUERY_MAX 65536UL
+
+NTSTATUS nt_svc_NtQueryDirectoryObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                       unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                       unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE DirectoryHandle = (HANDLE)a0;
+    PVOID Buffer = (PVOID)a1;
+    ULONG Length = (ULONG)a2;
+    BOOLEAN ReturnSingleEntry = (BOOLEAN)a3;
+    BOOLEAN RestartScan = (BOOLEAN)a4;
+    PULONG Context = (PULONG)a5;
+    PULONG ReturnLength = (PULONG)a6;
+    struct nt_eprocess *proc;
+    struct nt_object_header *hdr = NULL;
+    ULONG index = 0, count = 0, used = 0, need = 0, rl = 0;
+    char *stage;
+    NTSTATUS st;
+    (void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!Buffer || !Context)
+        return STATUS_INVALID_PARAMETER;
+    if (Length > NT_DIR_QUERY_MAX)
+        return STATUS_INVALID_PARAMETER;
+    if (!access_ok(Buffer, Length) || !access_ok(Context, sizeof(*Context)) ||
+        (ReturnLength && !access_ok(ReturnLength, sizeof(ULONG))))
+        return STATUS_ACCESS_VIOLATION;
+    proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(proc, DirectoryHandle, &nt_directory_type, UserMode,
+                                   DIRECTORY_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st))
+        return st;
+    if (RestartScan)
+        index = 0;
+    else if (copy_from_user(&index, Context, sizeof(index))) {
+        ObDereferenceObject(hdr);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    stage = (char *)kmalloc(Length ? Length : 1, GFP_KERNEL);
+    if (!stage) {
+        ObDereferenceObject(hdr);
+        return STATUS_NO_MEMORY;
+    }
+    st = nt_dir_fill((struct nt_directory *)nt_object_body(hdr), &index, ReturnSingleEntry,
+                     stage, Length, (char *)Buffer, &count, &used, &need);
+    ObDereferenceObject(hdr);
+    if (st == STATUS_SUCCESS && copy_to_user(Buffer, stage, used))
+        st = STATUS_ACCESS_VIOLATION;
+    kfree(stage);
+    if (ReturnLength) {
+        rl = NT_SUCCESS(st) ? used : need;
+        if (copy_to_user(ReturnLength, &rl, sizeof(rl)))
+            return STATUS_ACCESS_VIOLATION;
+    }
+    if (st == STATUS_SUCCESS || st == STATUS_NO_MORE_ENTRIES) {
+        if (copy_to_user(Context, &index, sizeof(index)))
+            return STATUS_ACCESS_VIOLATION;
     }
     return st;
 }

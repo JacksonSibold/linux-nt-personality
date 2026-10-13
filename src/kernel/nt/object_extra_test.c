@@ -44,6 +44,7 @@ static int g_fail = 0;
 
 NTSTATUS nt_svc_NtMakePermanentObject(HANDLE Handle);
 NTSTATUS nt_svc_NtMakeTemporaryObject(HANDLE Handle);
+NTSTATUS nt_svc_NtQueryDirectoryObject(HANDLE DirectoryHandle, PVOID Buffer, ULONG Length, BOOLEAN ReturnSingleEntry, BOOLEAN RestartScan, PULONG Context, PULONG ReturnLength);
 NTSTATUS nt_svc_NtOpenDirectoryObject(PHANDLE DirectoryHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes);
 NTSTATUS nt_svc_NtCreateDirectoryObject(PHANDLE DirectoryHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes);
 
@@ -451,6 +452,193 @@ TEST(open_directory_root_and_args)
 }
 
 /* -------------------------------------------------------------------------- */
+/* 4. NtQueryDirectoryObject                                                   */
+/* -------------------------------------------------------------------------- */
+
+static BOOLEAN us_is(const UNICODE_STRING *u, const char *s)
+{
+    size_t n = strlen(s);
+    if (u->Buffer == NULL || u->Length != n * sizeof(WCHAR))
+        return FALSE;
+    for (size_t i = 0; i < n; i++) {
+        if (u->Buffer[i] != (WCHAR)(unsigned char)s[i])
+            return FALSE;
+    }
+    return TRUE;
+}
+
+/* Creates \BaseNamedObjects\QD with entries e1, e2, e3 (test objects). The
+ * entries are inserted without handles, so only the directory holds them. */
+static void make_query_dir(struct nt_eprocess *proc, HANDLE *out_dir)
+{
+    UNICODE_STRING us;
+    OBJECT_ATTRIBUTES oa;
+    static const char *names[3] = { "e1", "e2", "e3" };
+    NTSTATUS st;
+    make_us(&us, "\\BaseNamedObjects\\QD", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    oa = make_oa(&us, 0);
+    st = nt_svc_NtCreateDirectoryObject(out_dir, DIRECTORY_QUERY | DIRECTORY_CREATE_OBJECT, &oa);
+    if (st != STATUS_SUCCESS) { g_fail++; fprintf(stderr, "FAIL make_query_dir create 0x%08lx\n", (unsigned long)st); return; }
+    for (int i = 0; i < 3; i++) {
+        char path[64];
+        struct nt_object_header *hdr = NULL;
+        void *body = NULL;
+        snprintf(path, sizeof(path), "\\BaseNamedObjects\\QD\\%s", names[i]);
+        make_us(&us, path, wbuf, sizeof(wbuf) / sizeof(WCHAR));
+        oa = make_oa(&us, 0);
+        st = ObCreateObject(&nt_test_type, &oa, sizeof(struct nt_test_body), &hdr, &body);
+        if (st != STATUS_SUCCESS) { g_fail++; return; }
+        st = ObInsertObject(hdr, &oa, 0, NULL, NULL);
+        ObDereferenceObject(hdr);
+        if (st != STATUS_SUCCESS) { g_fail++; fprintf(stderr, "FAIL make_query_dir insert 0x%08lx\n", (unsigned long)st); return; }
+    }
+}
+
+TEST(query_directory_all_entries)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(331, "qdir1");
+    ASSERT(proc != NULL);
+    HANDLE hd = NULL;
+    make_query_dir(proc, &hd);
+    ASSERT(hd != NULL);
+
+    unsigned char buf[4096];
+    ULONG ctx = 0, ret = 0;
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(hd, buf, sizeof(buf), FALSE, TRUE, &ctx, &ret), STATUS_SUCCESS);
+    OBJECT_DIRECTORY_INFORMATION *recs = (OBJECT_DIRECTORY_INFORMATION *)buf;
+    ASSERT(us_is(&recs[0].Name, "e1") && us_is(&recs[0].TypeName, "TestObject"));
+    ASSERT(us_is(&recs[1].Name, "e2") && us_is(&recs[1].TypeName, "TestObject"));
+    ASSERT(us_is(&recs[2].Name, "e3") && us_is(&recs[2].TypeName, "TestObject"));
+    ASSERT(recs[3].Name.Buffer == NULL && recs[3].TypeName.Buffer == NULL);
+    ASSERT(ret >= 4 * sizeof(OBJECT_DIRECTORY_INFORMATION) && ret <= sizeof(buf));
+    ASSERT(ctx == 3);
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(hd, buf, sizeof(buf), FALSE, FALSE, &ctx, &ret), STATUS_NO_MORE_ENTRIES);
+    ASSERT(ctx == 3);
+
+    ObCloseHandle(proc, hd);
+    teardown(proc);
+    PASS();
+}
+
+TEST(query_directory_empty)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(332, "qdir2");
+    ASSERT(proc != NULL);
+    HANDLE hd = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(&hd, DIRECTORY_QUERY, NULL), STATUS_SUCCESS);
+    unsigned char buf[256];
+    ULONG ctx = 0, ret = 99;
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(hd, buf, sizeof(buf), FALSE, TRUE, &ctx, &ret), STATUS_NO_MORE_ENTRIES);
+    ASSERT(ctx == 0);
+    ObCloseHandle(proc, hd);
+    teardown(proc);
+    PASS();
+}
+
+TEST(query_directory_single_entry_and_restart)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(333, "qdir3");
+    ASSERT(proc != NULL);
+    HANDLE hd = NULL;
+    make_query_dir(proc, &hd);
+    ASSERT(hd != NULL);
+
+    unsigned char buf[1024];
+    OBJECT_DIRECTORY_INFORMATION *recs = (OBJECT_DIRECTORY_INFORMATION *)buf;
+    ULONG ctx = 0, ret = 0;
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(hd, buf, sizeof(buf), TRUE, TRUE, &ctx, &ret), STATUS_SUCCESS);
+    ASSERT(us_is(&recs[0].Name, "e1") && recs[1].Name.Buffer == NULL);
+    ASSERT(ctx == 1);
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(hd, buf, sizeof(buf), TRUE, FALSE, &ctx, &ret), STATUS_SUCCESS);
+    ASSERT(us_is(&recs[0].Name, "e2") && recs[1].Name.Buffer == NULL);
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(hd, buf, sizeof(buf), TRUE, FALSE, &ctx, &ret), STATUS_SUCCESS);
+    ASSERT(us_is(&recs[0].Name, "e3"));
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(hd, buf, sizeof(buf), TRUE, FALSE, &ctx, &ret), STATUS_NO_MORE_ENTRIES);
+
+    /* RestartScan ignores the context and starts at the first entry again. */
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(hd, buf, sizeof(buf), TRUE, TRUE, &ctx, &ret), STATUS_SUCCESS);
+    ASSERT(us_is(&recs[0].Name, "e1"));
+    ASSERT(ctx == 1);
+
+    ObCloseHandle(proc, hd);
+    teardown(proc);
+    PASS();
+}
+
+TEST(query_directory_buffer_too_small_and_partial)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(334, "qdir4");
+    ASSERT(proc != NULL);
+    HANDLE hd = NULL;
+    make_query_dir(proc, &hd);
+    ASSERT(hd != NULL);
+
+    unsigned char small[sizeof(OBJECT_DIRECTORY_INFORMATION) * 2];
+    ULONG ctx = 0, ret = 0;
+    /* Room for the terminator only: even one entry does not fit. */
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(hd, small, sizeof(small), FALSE, TRUE, &ctx, &ret), STATUS_BUFFER_TOO_SMALL);
+    ASSERT(ctx == 0);
+    ASSERT(ret > sizeof(small));
+    ULONG need_one = ret;
+
+    /* Exactly enough for e1 and the terminator: only e1 is returned. */
+    unsigned char buf[1024];
+    OBJECT_DIRECTORY_INFORMATION *recs = (OBJECT_DIRECTORY_INFORMATION *)buf;
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(hd, buf, need_one, FALSE, TRUE, &ctx, &ret), STATUS_SUCCESS);
+    ASSERT(us_is(&recs[0].Name, "e1") && recs[1].Name.Buffer == NULL);
+    ASSERT(ctx == 1);
+    ASSERT(ret == need_one);
+
+    /* The rest in one call. */
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(hd, buf, sizeof(buf), FALSE, FALSE, &ctx, &ret), STATUS_SUCCESS);
+    ASSERT(us_is(&recs[0].Name, "e2") && us_is(&recs[1].Name, "e3") && recs[2].Name.Buffer == NULL);
+    ASSERT(ctx == 3);
+
+    ObCloseHandle(proc, hd);
+    teardown(proc);
+    PASS();
+}
+
+TEST(query_directory_access_type_args)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(335, "qdir5");
+    ASSERT(proc != NULL);
+    HANDLE hd = NULL;
+    make_query_dir(proc, &hd);
+    ASSERT(hd != NULL);
+
+    /* A handle without DIRECTORY_QUERY cannot query. */
+    UNICODE_STRING us;
+    make_us(&us, "\\BaseNamedObjects\\QD", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    HANDLE ht = NULL;
+    ASSERT_STATUS(nt_svc_NtOpenDirectoryObject(&ht, DIRECTORY_TRAVERSE, &oa), STATUS_SUCCESS);
+    unsigned char buf[256];
+    ULONG ctx = 0, ret = 0;
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(ht, buf, sizeof(buf), FALSE, TRUE, &ctx, &ret), STATUS_ACCESS_DENIED);
+    ObCloseHandle(proc, ht);
+
+    /* An event handle is not a directory. */
+    HANDLE hobj = NULL;
+    ASSERT_STATUS(insert_named(proc, "\\BaseNamedObjects\\QNotDir", &hobj), STATUS_SUCCESS);
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(hobj, buf, sizeof(buf), FALSE, TRUE, &ctx, &ret), STATUS_OBJECT_TYPE_MISMATCH);
+    ObCloseHandle(proc, hobj);
+
+    /* Bad arguments. */
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(hd, NULL, sizeof(buf), FALSE, TRUE, &ctx, &ret), STATUS_INVALID_PARAMETER);
+    ASSERT_STATUS(nt_svc_NtQueryDirectoryObject(hd, buf, sizeof(buf), FALSE, TRUE, NULL, &ret), STATUS_INVALID_PARAMETER);
+
+    ObCloseHandle(proc, hd);
+    teardown(proc);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* main                                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -461,6 +649,11 @@ int main(void)
     RUN(make_permanent_with_privilege);
     RUN(make_permanent_bad_handle);
     RUN(make_permanent_no_token);
+    RUN(query_directory_all_entries);
+    RUN(query_directory_empty);
+    RUN(query_directory_single_entry_and_restart);
+    RUN(query_directory_buffer_too_small_and_partial);
+    RUN(query_directory_access_type_args);
     RUN(open_directory);
     RUN(open_directory_missing_and_wrong_type);
     RUN(open_directory_root_and_args);
