@@ -2968,6 +2968,84 @@ NTSTATUS nt_svc_NtFsControlFile(HANDLE FileHandle, HANDLE Event,
 	return ntio_control_common(FileHandle, IoStatusBlock);
 }
 
+/*
+ * Extended attributes. No EAs are stored for any file in this build, so a
+ * query reports STATUS_NO_EAS_ON_FILE, and setting a non-empty EA list is
+ * refused with STATUS_EAS_NOT_SUPPORTED. Setting an empty list has nothing to
+ * remove and succeeds.
+ */
+static NTSTATUS ntio_complete_iosb(PIO_STATUS_BLOCK __user IoStatusBlock,
+				   NTSTATUS status)
+{
+#ifdef __KERNEL__
+	IO_STATUS_BLOCK kiosb;
+
+	kiosb.DUMMYUNIONNAME.Status = status;
+	kiosb.Information = 0;
+	if (copy_to_user(IoStatusBlock, &kiosb, sizeof(kiosb)))
+		return STATUS_ACCESS_VIOLATION;
+#else
+	IoStatusBlock->DUMMYUNIONNAME.Status = status;
+	IoStatusBlock->Information = 0;
+#endif
+	return status;
+}
+
+NTSTATUS nt_svc_NtQueryEaFile(HANDLE FileHandle,
+			      PIO_STATUS_BLOCK __user IoStatusBlock,
+			      PVOID __user Buffer, ULONG Length,
+			      BOOLEAN ReturnSingleEntry,
+			      PVOID EaList, ULONG EaListLength,
+			      PULONG EaIndex, BOOLEAN RestartScan)
+{
+	struct nt_file_object *file;
+	NTSTATUS status;
+
+	(void)Buffer;
+	(void)Length;
+	(void)ReturnSingleEntry;
+	(void)EaList;
+	(void)EaListLength;
+	(void)EaIndex;
+	(void)RestartScan;
+
+	if (!IoStatusBlock)
+		return STATUS_ACCESS_VIOLATION;
+#ifdef __KERNEL__
+	if (!access_ok(IoStatusBlock, sizeof(IO_STATUS_BLOCK)))
+		return STATUS_ACCESS_VIOLATION;
+#endif
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb(IoStatusBlock, STATUS_INVALID_HANDLE);
+	ntio_file_put(file);
+	status = STATUS_NO_EAS_ON_FILE;
+	return ntio_complete_iosb(IoStatusBlock, status);
+}
+
+NTSTATUS nt_svc_NtSetEaFile(HANDLE FileHandle,
+			    PIO_STATUS_BLOCK __user IoStatusBlock,
+			    PVOID __user Buffer, ULONG Length)
+{
+	struct nt_file_object *file;
+	NTSTATUS status;
+
+	if (!IoStatusBlock)
+		return STATUS_ACCESS_VIOLATION;
+#ifdef __KERNEL__
+	if (!access_ok(IoStatusBlock, sizeof(IO_STATUS_BLOCK)))
+		return STATUS_ACCESS_VIOLATION;
+#endif
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb(IoStatusBlock, STATUS_INVALID_HANDLE);
+	ntio_file_put(file);
+	(void)Buffer;
+	status = Length == 0 ? STATUS_SUCCESS : STATUS_EAS_NOT_SUPPORTED;
+	return ntio_complete_iosb(IoStatusBlock, status);
+}
+
+
 /* -------------------------------------------------------------------------- */
 /* Module init / fini (userspace shim)                                          */
 /* -------------------------------------------------------------------------- */

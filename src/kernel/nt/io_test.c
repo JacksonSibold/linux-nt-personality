@@ -1301,6 +1301,47 @@ TEST(device_fs_control_unsupported)
 	PASS();
 }
 
+/* No extended attributes are stored: queries report STATUS_NO_EAS_ON_FILE,
+ * an empty set succeeds, and a non-empty set is refused. */
+TEST(ea_unsupported)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	UCHAR ea_buf[32] = { 0 };
+
+	reset_state();
+	ASSERT(write_file_at("ea.txt", "x"));
+	ASSERT_STATUS(open_test_file("ea.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+
+	iosb.Information = 0xDEAD;
+	iosb.DUMMYUNIONNAME.Status = STATUS_SUCCESS;
+	ASSERT_STATUS(nt_svc_NtQueryEaFile(h, &iosb, ea_buf, sizeof(ea_buf), 0,
+					   NULL, 0, NULL, 0),
+		      STATUS_NO_EAS_ON_FILE);
+	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_NO_EAS_ON_FILE);
+	ASSERT(iosb.Information == 0);
+
+	ASSERT_STATUS(nt_svc_NtSetEaFile(h, &iosb, NULL, 0), STATUS_SUCCESS);
+	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtSetEaFile(h, &iosb, ea_buf, 8),
+		      STATUS_EAS_NOT_SUPPORTED);
+	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_EAS_NOT_SUPPORTED);
+
+	ASSERT_STATUS(nt_svc_NtQueryEaFile(NULL, &iosb, ea_buf, sizeof(ea_buf), 0,
+					   NULL, 0, NULL, 0),
+		      STATUS_INVALID_HANDLE);
+	ASSERT_STATUS(nt_svc_NtSetEaFile(NULL, &iosb, NULL, 0), STATUS_INVALID_HANDLE);
+	ASSERT_STATUS(nt_svc_NtQueryEaFile(h, NULL, ea_buf, sizeof(ea_buf), 0,
+					   NULL, 0, NULL, 0),
+		      STATUS_ACCESS_VIOLATION);
+
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 /* NtOpenIoCompletion: names are not registered by NtCreateIoCompletion in
  * this build, so every name lookup misses. The NULL object-attributes case
  * is rejected before any lookup. */
@@ -1405,6 +1446,7 @@ int main(void)
 	RUN(query_info_classes);
 	RUN(set_info_classes);
 	RUN(device_fs_control_unsupported);
+	RUN(ea_unsupported);
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);
 

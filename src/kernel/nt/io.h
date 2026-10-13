@@ -408,6 +408,17 @@ NTSTATUS nt_svc_NtSetInformationFile(HANDLE FileHandle,
 NTSTATUS nt_svc_NtFlushBuffersFile(HANDLE FileHandle,
 				   PIO_STATUS_BLOCK IoStatusBlock);
 
+NTSTATUS nt_svc_NtQueryEaFile(HANDLE FileHandle,
+			      PIO_STATUS_BLOCK IoStatusBlock,
+			      PVOID Buffer, ULONG Length,
+			      BOOLEAN ReturnSingleEntry,
+			      PVOID EaList, ULONG EaListLength,
+			      PULONG EaIndex, BOOLEAN RestartScan);
+
+NTSTATUS nt_svc_NtSetEaFile(HANDLE FileHandle,
+			    PIO_STATUS_BLOCK IoStatusBlock,
+			    PVOID Buffer, ULONG Length);
+
 NTSTATUS nt_svc_NtDeviceIoControlFile(HANDLE FileHandle, HANDLE Event,
 				      PVOID ApcRoutine, PVOID ApcContext,
 				      PIO_STATUS_BLOCK IoStatusBlock,
