@@ -383,3 +383,36 @@ __attribute__((constructor)) static void khost_unbuffer_stdout(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
 }
+
+/* Scratch-root cleanup. A test that has created a root under /tmp (the
+ * scratch root, see host_temp_dir) calls khost_scratch_arm_cleanup() with
+ * the POSIX path. The root is then removed at exit, after a pass or a
+ * failure alike. KEEP_SCRATCH=1 in the environment keeps it for debugging.
+ * atexit handlers do not run on _exit(), so such a root is left behind. */
+static char g_scratch_cleanup[KHOST_PATH_MAX];
+
+static void scratch_cleanup_at_exit(void)
+{
+    const char *keep = getenv("KEEP_SCRATCH");
+    char cmd[KHOST_PATH_MAX + 32];
+    if (!g_scratch_cleanup[0])
+        return;
+    if (keep && strcmp(keep, "1") == 0) {
+        fprintf(stderr, "khost: KEEP_SCRATCH=1, keeping %s\n", g_scratch_cleanup);
+        return;
+    }
+    snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", g_scratch_cleanup);
+    khost_system(cmd);
+}
+
+void khost_scratch_arm_cleanup(const char *posix_root)
+{
+    static int registered;
+    if (!posix_root || !*posix_root)
+        return;
+    snprintf(g_scratch_cleanup, sizeof(g_scratch_cleanup), "%s", posix_root);
+    if (!registered) {
+        registered = 1;
+        atexit(scratch_cleanup_at_exit);
+    }
+}

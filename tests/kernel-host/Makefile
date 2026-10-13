@@ -177,3 +177,15 @@ stress: all
 
 clean:
 	rm -rf $(BUILD)
+
+# Removes scratch roots that earlier runs left in the temp dir: directories
+# named ntio_test_* (exact prefix) whose mtime is more than 1 day old, in the
+# same TEMP_DIR the tests use. Nothing else in that dir is touched. Under MSYS,
+# find must be the MSYS one (C:/msys64/usr/bin first on PATH, see TOOLCHAIN.md).
+clean-scratch:
+	@d=$$(cygpath -u "$(or $(TEMP_DIR),/tmp)" 2>/dev/null || echo "$(or $(TEMP_DIR),/tmp)"); \
+	n=$$(find "$$d" -maxdepth 1 -mindepth 1 -type d -name 'ntio_test_*' -mtime +1 -print | wc -l); \
+	find "$$d" -maxdepth 1 -mindepth 1 -type d -name 'ntio_test_*' -mtime +1 -exec rm -rf {} +; \
+	echo "clean-scratch: removed $$n stale ntio_test_* dirs from $$d"
+
+.PHONY: clean-scratch

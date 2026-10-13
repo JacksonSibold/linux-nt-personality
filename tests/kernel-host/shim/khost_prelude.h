@@ -32,6 +32,10 @@ int khost_rename(const char *from, const char *to);
 int khost_system(const char *command);
 DIR *khost_opendir(const char *path);
 
+/* Test scratch roots: remove posix_root (under /tmp) at exit, unless
+ * KEEP_SCRATCH=1. Implemented in posix_host.c. */
+void khost_scratch_arm_cleanup(const char *posix_root);
+
 #define pread(fd, buf, n, off)  khost_pread((fd), (buf), (n), (off))
 #define pwrite(fd, buf, n, off) khost_pwrite((fd), (buf), (n), (off))
 #define fsync(fd)               khost_fsync(fd)
