@@ -1256,6 +1256,105 @@ TEST(insert_publishes_entry_after_parent_set)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Symbolic links in the middle of a path (OB-2)                              */
+/* -------------------------------------------------------------------------- */
+
+/* Inserts a symbolic link object at path that points at target. */
+static NTSTATUS insert_link(const char *path, const char *target)
+{
+    static WCHAR lname[256], ltarget[256];
+    UNICODE_STRING us, tus;
+    make_us(&us, path, lname, sizeof(lname));
+    make_us(&tus, target, ltarget, sizeof(ltarget));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = ObCreateSymbolicLinkObject(&oa, &tus, &hdr);
+    if (!NT_SUCCESS(st))
+        return st;
+    return ObInsertObject(hdr, &oa, 0, NULL, NULL);
+}
+
+/* Inserts an unnamed-body test object at path. */
+static NTSTATUS insert_test_object(const char *path, struct nt_object_header **out)
+{
+    static WCHAR oname[256];
+    UNICODE_STRING us;
+    make_us(&us, path, oname, sizeof(oname));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    void *body = NULL;
+    NTSTATUS st = ObCreateObject(&nt_test_type, &oa, sizeof(struct nt_test_body), out, &body);
+    if (!NT_SUCCESS(st))
+        return st;
+    return ObInsertObject(*out, &oa, 0, NULL, NULL);
+}
+
+/* Name lookup with no type filter. Drops the reference it gets. */
+static NTSTATUS lookup_path(const char *path, struct nt_object_header **out)
+{
+    static WCHAR pname[256];
+    UNICODE_STRING us;
+    make_us(&us, path, pname, sizeof(pname));
+    return ObReferenceObjectByName(&us, NULL, KernelMode, 0, out);
+}
+
+/* A link in a middle component is followed (NT): the rest of the path is
+ * looked up under the link's target. */
+TEST(middle_symlink_is_followed)
+{
+    reset_ob();
+    struct nt_object_header *dir = NULL, *ev = NULL, *found = NULL;
+    static WCHAR dname[256];
+    UNICODE_STRING dus;
+    make_us(&dus, "\\BaseNamedObjects\\OB2Dir", dname, sizeof(dname));
+    OBJECT_ATTRIBUTES doa = make_oa(&dus, 0);
+    ASSERT_STATUS(ObCreateDirectoryObject(&doa, &dir), STATUS_SUCCESS);
+    ASSERT_STATUS(ObInsertObject(dir, &doa, 0, NULL, NULL), STATUS_SUCCESS);
+    ASSERT_STATUS(insert_test_object("\\BaseNamedObjects\\OB2Dir\\OB2Ev", &ev), STATUS_SUCCESS);
+    ASSERT_STATUS(insert_link("\\BaseNamedObjects\\OB2Link", "\\BaseNamedObjects\\OB2Dir"), STATUS_SUCCESS);
+
+    ASSERT_STATUS(lookup_path("\\BaseNamedObjects\\OB2Link\\OB2Ev", &found), STATUS_SUCCESS);
+    ASSERT(found == ev);
+    ObDereferenceObject(found);
+
+    /* A missing final name under a link is NAME_NOT_FOUND, not PATH_NOT_FOUND. */
+    ASSERT_STATUS(lookup_path("\\BaseNamedObjects\\OB2Link\\Missing", &found), STATUS_OBJECT_NAME_NOT_FOUND);
+    PASS();
+}
+
+/* A link whose target does not exist: the target path is missing, so the
+ * path is PATH_NOT_FOUND (the same as a missing directory in the path). */
+TEST(middle_symlink_dangling_is_path_not_found)
+{
+    reset_ob();
+    struct nt_object_header *found = NULL;
+    ASSERT_STATUS(insert_link("\\BaseNamedObjects\\OB2Dangle", "\\BaseNamedObjects\\OB2Missing"), STATUS_SUCCESS);
+    ASSERT_STATUS(lookup_path("\\BaseNamedObjects\\OB2Dangle\\X", &found), STATUS_OBJECT_PATH_NOT_FOUND);
+    PASS();
+}
+
+/* A link that leads back to itself through a middle component: the depth limit
+ * (32, as NT) ends the walk with the loop status used for final links. */
+TEST(middle_symlink_cycle_hits_depth_limit)
+{
+    reset_ob();
+    struct nt_object_header *found = NULL;
+    ASSERT_STATUS(insert_link("\\BaseNamedObjects\\OB2Loop", "\\BaseNamedObjects\\OB2Loop\\X"), STATUS_SUCCESS);
+    ASSERT_STATUS(lookup_path("\\BaseNamedObjects\\OB2Loop\\X", &found), STATUS_NAME_TOO_LONG);
+    PASS();
+}
+
+/* A middle link to an object that is not a directory has no further path. */
+TEST(middle_symlink_to_non_directory_is_path_not_found)
+{
+    reset_ob();
+    struct nt_object_header *obj = NULL, *found = NULL;
+    ASSERT_STATUS(insert_test_object("\\BaseNamedObjects\\OB2Obj", &obj), STATUS_SUCCESS);
+    ASSERT_STATUS(insert_link("\\BaseNamedObjects\\OB2Link2", "\\BaseNamedObjects\\OB2Obj"), STATUS_SUCCESS);
+    ASSERT_STATUS(lookup_path("\\BaseNamedObjects\\OB2Link2\\X", &found), STATUS_OBJECT_PATH_NOT_FOUND);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* main                                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -1296,6 +1395,10 @@ int main(void)
     RUN(create_directory_generic_access);
     RUN(remove_after_parent_directory_freed);
     RUN(insert_publishes_entry_after_parent_set);
+    RUN(middle_symlink_is_followed);
+    RUN(middle_symlink_dangling_is_path_not_found);
+    RUN(middle_symlink_cycle_hits_depth_limit);
+    RUN(middle_symlink_to_non_directory_is_path_not_found);
 
     printf("object_extra_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

@@ -520,11 +520,23 @@ static NTSTATUS ObpParsePath(PUNICODE_STRING path,
             return STATUS_SUCCESS;
         }
 
-        /* has more components: if found is symlink, we do not follow symlinks in middle (known gap, return path not found) */
+        /* A link in a middle component is followed (NT): the walk goes on from
+         * the link's target with the remaining components. The target is
+         * resolved with the same depth limit as a final link, so a cycle ends
+         * with STATUS_NAME_TOO_LONG. A missing target is a missing path
+         * component, so it is PATH_NOT_FOUND. */
         if (found->type == &nt_symlink_type) {
+            struct nt_object_header *resolved = NULL;
+            status = ObpResolveSymlink(found, NULL, 0, depth, &resolved);
             ObDereferenceObject(found);
             ObDereferenceObject(cur_hdr);
-            return STATUS_OBJECT_PATH_NOT_FOUND;
+            if (status == STATUS_OBJECT_NAME_NOT_FOUND)
+                return STATUS_OBJECT_PATH_NOT_FOUND;
+            if (!NT_SUCCESS(status))
+                return status;
+            cur_hdr = resolved;
+            depth++;
+            continue;
         }
 
         ObDereferenceObject(cur_hdr);
