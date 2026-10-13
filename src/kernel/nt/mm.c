@@ -1203,6 +1203,8 @@ NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     /* MEM_DECOMMIT */
     base = ntmm_round_down(base, NTMM_PAGE_SIZE);
     if (size == 0) return STATUS_INVALID_PARAMETER;
+    /* Reject a size whose page round-up wraps to 0 (it would pass the end check). */
+    if (size > (SIZE_T)(~(ULONG_PTR)0) - NTMM_PAGE_SIZE - base) return STATUS_INVALID_PARAMETER;
     size = (SIZE_T)ntmm_round_up(size, NTMM_PAGE_SIZE);
     /* base + size must not wrap past the top of the address space. */
     if ((ULONG_PTR)size > (ULONG_PTR)-1 - base) return STATUS_INVALID_PARAMETER;
@@ -1268,6 +1270,8 @@ NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     base = (ULONG_PTR)*BaseAddress;
     size = *RegionSize;
     base = ntmm_round_down(base, NTMM_PAGE_SIZE);
+    /* Reject a size whose page round-up wraps to 0 (it would pass the end check). */
+    if (size > (SIZE_T)(~(ULONG_PTR)0) - NTMM_PAGE_SIZE - base) return STATUS_INVALID_PARAMETER;
     size = (SIZE_T)ntmm_round_up(size, NTMM_PAGE_SIZE);
     /* base + size must not wrap past the top of the address space. */
     if ((ULONG_PTR)size > (ULONG_PTR)-1 - base) return STATUS_INVALID_PARAMETER;
