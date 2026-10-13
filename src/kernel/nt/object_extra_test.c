@@ -18,6 +18,7 @@
 #include <string.h>
 #include <wchar.h>
 #include <stdint.h>
+#include <pthread.h>
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -1079,11 +1080,128 @@ TEST(duplicate_null_target)
 }
 
 /* -------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------- */
+/* Namespace race regressions (OB-1, C-2)                                     */
+/* -------------------------------------------------------------------------- */
+
+/* One-shot pause at a named point in object.c, for one object. The hook runs
+ * on the thread that reaches the point and blocks there until released. */
+static pthread_mutex_t g_pause_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_pause_cv = PTHREAD_COND_INITIALIZER;
+static struct nt_object_header *g_pause_obj;
+static const char *g_pause_point;
+static int g_paused, g_resume;
+
+static void pause_hook(const char *point, struct nt_object_header *obj)
+{
+    if (obj != g_pause_obj || strcmp(point, g_pause_point) != 0)
+        return;
+    pthread_mutex_lock(&g_pause_mu);
+    g_pause_obj = NULL;
+    g_paused = 1;
+    pthread_cond_broadcast(&g_pause_cv);
+    while (!g_resume)
+        pthread_cond_wait(&g_pause_cv, &g_pause_mu);
+    pthread_mutex_unlock(&g_pause_mu);
+}
+
+static void pause_arm(struct nt_object_header *obj, const char *point)
+{
+    pthread_mutex_lock(&g_pause_mu);
+    g_pause_obj = obj;
+    g_pause_point = point;
+    g_paused = 0;
+    g_resume = 0;
+    pthread_mutex_unlock(&g_pause_mu);
+    ObTestPauseHook = pause_hook;
+}
+
+static void pause_wait(void)
+{
+    pthread_mutex_lock(&g_pause_mu);
+    while (!g_paused)
+        pthread_cond_wait(&g_pause_cv, &g_pause_mu);
+    pthread_mutex_unlock(&g_pause_mu);
+}
+
+static void pause_release(void)
+{
+    pthread_mutex_lock(&g_pause_mu);
+    g_resume = 1;
+    pthread_cond_broadcast(&g_pause_cv);
+    pthread_mutex_unlock(&g_pause_mu);
+    ObTestPauseHook = NULL;
+}
+
+struct temp_arg {
+    struct nt_object_header *obj;
+    NTSTATUS st;
+};
+
+static void *make_temporary_thread(void *p)
+{
+    struct temp_arg *a = (struct temp_arg *)p;
+    a->st = ObMakeTemporaryObject(a->obj);
+    return NULL;
+}
+
+/* OB-1: ObpRemoveFromDirectory read obj->parent_dir and then locked that
+ * directory with no reference. A remove of a child is paused after the parent
+ * pointer is read, the parent directory is then made temporary and freed, and
+ * the remove resumes. The freed directory must not be touched. main sets
+ * KSHIM_POISON, so the freed directory header reads as garbage and the old
+ * code faults on its lock. */
+TEST(remove_after_parent_directory_freed)
+{
+    reset_ob();
+    UNICODE_STRING dus;
+    make_us(&dus, "\\BaseNamedObjects\\OB1Dir", wbuf, sizeof(wbuf));
+    OBJECT_ATTRIBUTES doa = make_oa(&dus, 0);
+    struct nt_object_header *dir = NULL;
+    ASSERT_STATUS(ObCreateDirectoryObject(&doa, &dir), STATUS_SUCCESS);
+    ASSERT_STATUS(ObInsertObject(dir, &doa, 0, NULL, NULL), STATUS_SUCCESS);
+
+    UNICODE_STRING cus;
+    make_us(&cus, "\\BaseNamedObjects\\OB1Dir\\OB1Ev", wbuf2, sizeof(wbuf2));
+    OBJECT_ATTRIBUTES coa = make_oa(&cus, 0);
+    struct nt_object_header *child = NULL;
+    void *cbody = NULL;
+    ASSERT_STATUS(ObCreateObject(&nt_test_type, &coa, sizeof(struct nt_test_body), &child, &cbody), STATUS_SUCCESS);
+    ASSERT_STATUS(ObInsertObject(child, &coa, 0, NULL, NULL), STATUS_SUCCESS);
+    ObDereferenceObject(child);          /* creator ref; the directory entry keeps the child */
+    ObReferenceObject(child);            /* ref held by the remover thread */
+
+    /* The directory keeps its creator ref, so the deref below is the last one. */
+    struct temp_arg ta = { child, STATUS_UNSUCCESSFUL };
+    pthread_t th;
+    pause_arm(child, "remove");
+    ASSERT(pthread_create(&th, NULL, make_temporary_thread, &ta) == 0);
+    pause_wait();
+
+    /* Drop the entry (creator ref stays), then the creator ref frees the directory. */
+    ASSERT_STATUS(ObMakeTemporaryObject(dir), STATUS_SUCCESS);
+    ObDereferenceObject(dir);
+
+    pause_release();
+    pthread_join(th, NULL);
+    ASSERT_STATUS(ta.st, STATUS_SUCCESS);
+    ASSERT(child->parent_dir == NULL);
+    ASSERT(child->name.Buffer == NULL);
+
+    struct nt_object_header *gone = NULL;
+    ASSERT_STATUS(ObReferenceObjectByName(&cus, NULL, KernelMode, 0, &gone), STATUS_OBJECT_PATH_NOT_FOUND);
+    ObDereferenceObject(child);          /* last ref: frees the child */
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* main                                                                        */
 /* -------------------------------------------------------------------------- */
 
 int main(void)
 {
+    /* KSHIM_POISON is read on the first allocation, so set it before any. */
+    putenv("KSHIM_POISON=1");
     printf("object_extra_test\n");
     RUN(make_permanent_requires_privilege);
     RUN(make_permanent_with_privilege);
@@ -1115,6 +1233,7 @@ int main(void)
     RUN(create_directory_type_mismatch);
     RUN(create_directory_bad_paths_and_args);
     RUN(create_directory_generic_access);
+    RUN(remove_after_parent_directory_freed);
 
     printf("object_extra_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
