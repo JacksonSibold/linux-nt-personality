@@ -5,7 +5,7 @@ Related: `object.md` (process and thread objects), `handle.md` (creation returns
 
 ## Purpose
 
-Implements NT process and thread creation, suspend and resume counts, termination, open-by-id, information-class queries, and thread context access. The file has two complete compilation branches: a userspace shim (`#ifndef __KERNEL__`, pthreads, approximately lines 83-931) and a kernel branch (`#else`, approximately lines 932-1916) that is meant to use `kernel_clone` and the x86 GS base. The header comment states that the shim and kernel branches differ, and the design notes describe the intended kernel behaviour.
+Implements NT process and thread creation, suspend and resume counts, termination, open-by-id, information-class queries, and thread context access. The file has a userspace shim (`#ifndef __KERNEL__`, pthreads) and kernel code that starts at the `#else /* __KERNEL__ */` on `proc_thread.c:950` and runs to the end of the file (line 1954). The kernel side is meant to use `kernel_clone` and the x86 GS base. The shim's service bodies are at `proc_thread.c:667-949` and the kernel's at `:1656-1954`. The header comment states that the shim and kernel branches differ, and the design notes describe the intended kernel behaviour.
 
 ## Public API (proc_thread.h)
 
@@ -31,7 +31,9 @@ Service entry points (native-style signatures):
 
 Kernel helper:
 
-- `void nt_thread_check_suspend(void)` - call on return to user mode. It blocks while the thread's suspend count is non-zero (`proc_thread.c:263` for the shim and a second definition at `proc_thread.c:982` for the kernel branch).
+- `void nt_thread_check_suspend(void)` - call on return to user mode. It blocks while the thread's suspend count is non-zero (`proc_thread.c:280` for the shim and a second definition at `proc_thread.c:1000` for the kernel branch).
+
+Token slots (see `security.md`): a process object gets its primary token in `ObCreateProcessObject` (`object.c:1119`, token at `object.c:1175`). A thread object starts with a NULL impersonation token (`object.c:1214`). Both are released when the object is destroyed.
 
 ## Key data structures
 
@@ -48,13 +50,13 @@ Suspend count:
 
 Process creation:
 
-- The design note (top of file) says NT creates an empty process and then populates it, unlike Linux `execve`. The shim emulates this with an `eprocess` that has an empty handle table and no committed VADs. It does not `fork`, so there is no separate OS pid and all threads share one address space.
+- The design note (top of file) says NT creates an empty process and then populates it, unlike Linux `execve`. The shim emulates this with an `eprocess` that has an empty handle table and no committed VADs (`nt_create_process_internal`, `proc_thread.c:363`, called from `proc_thread.c:435` and `:458`). It does not `fork`, so there is no separate OS pid and all threads share one address space.
 - The kernel design plans `kernel_clone(CLONE_NEWPID|VM)` with an emptied mm (`proc_thread.c:49-50`). See the gaps below: this is not implemented in the code.
 
 Thread start:
 
-- A 48-byte synthetic user stub is copied into a page. It performs `NtTestAlert` (0x1c8), calls the start routine, then calls `NtTerminateThread` (`proc_thread.c:1063-1101`). The design note compares this with using `RtlUserThreadStart` from ntdll and keeps the stub. The `BUILD_BUG_ON` the comment mentions ensures the stub length is 48 bytes.
-- TEB: populated with `NtTib.Self`, stack bounds, the PEB pointer, client id, last error and TLS slots. The design note says static TLS from a PE `.tls` section is copied by `ldr_copy_static_tls()`. In the shim, the static TLS copy at `proc_thread.c:228` is a stub comment ("zero slots already"). GS base is set with `WRMSR` in the kernel and with `arch_prctl(ARCH_SET_GS, ...)` in the shim.
+- A 48-byte synthetic user stub is copied into a page. It performs `NtTestAlert` (0x1c8), calls the start routine, then calls `NtTerminateThread` (trampoline comment at `proc_thread.c:1077-1090`, stub bytes from `:1105`). The design note compares this with using `RtlUserThreadStart` from ntdll and keeps the stub. A `BUILD_BUG_ON` at `proc_thread.c:1118` keeps the stub length at 48 bytes. `nt_get_ntdll_RtlUserThreadStart` (`:1132`) probes for an ntdll export, and the minimal export lookup is not written (`:1152`).
+- TEB: populated with `NtTib.Self`, stack bounds, the PEB pointer, client id, last error and TLS slots. The design note says static TLS from a PE `.tls` section is copied by `ldr_copy_static_tls()`. In the shim, the static TLS copy at `proc_thread.c:248` is a stub comment ("zero slots already"). GS base is set with `WRMSR` in the kernel and with `arch_prctl(ARCH_SET_GS, ...)` in the shim (`proc_thread.c:244`).
 
 ## Invariants and locking (as implemented)
 
@@ -73,5 +75,5 @@ Thread start:
 - Open by id: an unknown process or thread id returns `STATUS_INVALID_CID`. The access-policy gap (a zero `DesiredAccess` grants `0x1FFFFF`, and any caller can open any process) is still open; see `docs/decisions/0002-process-open-access-check.md`.
 - `nt_svc_NtQueryInformationProcess` has real bodies in both branches (`proc_thread.c` shim and kernel). Several classes still return fixed zero values or are not implemented: `ProcessHandleCount` (20) returns 0, and `ProcessTimes` (4) returns zeros.
 - The shim documents its limits in the design note: no copy-on-write isolation, no separate VAD, no fork pid, exit codes propagate through a condition variable rather than `waitpid`, and the image name is synthesised rather than taken from `execve`.
-- The shim's note at `proc_thread.c:1024` says a helper is a documented gap in the shim, and the kernel calls the helper "if available". I did not trace that helper.
-- The trampoline design is a synthetic RWX-style page, which the design note itself flags as a W^X concern. The alternative (using ntdll's `RtlUserThreadStart`) is noted as not yet exported by ntdll.
+- The shim's note at `proc_thread.c:1042` says it documents this as a gap, and the kernel calls the helper "if available". I did not trace that helper.
+- The trampoline design is a synthetic RWX-style page, which the design note itself flags as a W^X concern (`proc_thread.c:1080-1090`). The alternative (using ntdll's `RtlUserThreadStart`) is noted as not yet exported by ntdll.

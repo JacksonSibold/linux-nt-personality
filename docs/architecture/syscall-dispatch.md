@@ -74,17 +74,24 @@ but this is not the same as the status convention above.
 ## Table coverage
 
 `nt_service_list.h` has 171 entries. `NT_NR_SERVICES` is 476, which is the
-highest SSN (0x1db) plus one. Checked by grep at this commit:
+highest SSN (0x1db) plus one (`nt_internal.h:16`). Checked at this commit:
 
-- 79 of the 171 names have a `nt_svc_` definition in `src/kernel/nt/`.
-- The other 92 names have no definition, so they return
-  `STATUS_NOT_IMPLEMENTED`. This includes `NtAllocateVirtualMemoryEx`,
-  `NtAlertResumeThread` and `NtWaitForAlertByThreadId`.
+- 122 of the 171 names have a `nt_svc_` definition in `src/kernel/nt/`
+  (non-test sources). `docs/status/SERVICES.md` counts 120 of them as
+  IMPLEMENTED and 2 (`NtGetContextThread`, `NtSetContextThread`) as
+  STUB-NOT-IMPLEMENTED.
+- The other 49 names have no definition, so they return
+  `STATUS_NOT_IMPLEMENTED`. The section services (`NtCreateSection`,
+  `NtOpenSection`, `NtMapViewOfSection`) and the port services are among them,
+  as are `NtAlertResumeThread` and `NtWaitForAlertByThreadId`. `NtAllocateVirtualMemoryEx`
+  now has a definition (`dispatch.c:348`).
 
-The kernel list and `src/ntdll/syscall_table.def` hold the same 171 names
-with the same SSNs at this commit. No generator produces `nt_service_list.h`.
-The two files are kept in step by hand. The comment at `nt_internal.h` line 57
-says the prototypes are generated from `syscall_table.def`, which is not true.
+`tools/check_syscall_tables.py` reports parity for the 171 services across the
+seven copies of the table. No generator produces `nt_service_list.h`. The
+copies are kept in step by hand and checked by that tool. The comment at
+`nt_internal.h:57` says the prototypes are generated from `syscall_table.def`.
+No generator in `build/` or `tools/` produces them, so that comment is not
+accurate.
 
 The SSNs are described as frozen for Windows Server 2022 build 20348. This
 repository does not contain a reference table from that build, so this page

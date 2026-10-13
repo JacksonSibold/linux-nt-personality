@@ -34,7 +34,7 @@ Signalling:
 - `nt_set_event(struct nt_event *, LONG *prev_state)`, `nt_reset_event(...)`, `nt_pulse_event(...)`.
 - `nt_release_mutant(struct nt_mutant *, LONG *prev_count)`.
 - `nt_release_semaphore(struct nt_semaphore *, LONG release_count, LONG *prev_count)`.
-- `nt_set_timer(struct nt_timer *, const LARGE_INTEGER *due_time, LONG period_ms, void (*apc_routine)(void *), void *apc_ctx)` and `nt_cancel_timer(struct nt_timer *, BOOLEAN *current_state)`.
+- `nt_set_timer(struct nt_timer *, const LARGE_INTEGER *due_time, LONG period_ms, void (*apc_routine)(void *), void *apc_ctx)` and `nt_cancel_timer(struct nt_timer *, BOOLEAN *current_state)`. A non-NULL `apc_routine` is refused with `STATUS_NOT_IMPLEMENTED` before any timer state changes, in both builds (`sync.c:876` shim, `sync.c:1721` kernel).
 - `nt_wait_for_keyed_event(...)` and `nt_release_keyed_event(...)` - keyed-event rendezvous with `key`, `alertable`, `timeout`.
 
 Waiting:
@@ -45,7 +45,14 @@ Waiting:
 - `nt_abandon_owned_mutants(struct nt_thread *)` - thread-exit hook that abandons mutants the thread still owns.
 - `nt_dispatcher_is_signaled(struct nt_dispatcher_header *h, struct nt_thread *for_thread)` - test helper.
 
-Service entry point defined here: `nt_svc_NtWaitForMultipleObjects`. The single-object and event/mutant/semaphore service wrappers are in `nt_obj.c` and `nt_services.c`.
+Service entry points defined here (`nt_svc_*` in `sync.c`, 12 in total):
+
+- Waits: `NtWaitForMultipleObjects` (`sync.c:2237`), `NtSignalAndWaitForSingleObject` (`sync.c:2679`).
+- Timers: `NtCreateTimer` (`:2460`), `NtOpenTimer` (`:2489`), `NtSetTimer` (`:2527`), `NtCancelTimer` (`:2567`), `NtQueryTimer` (`:2633`).
+- Keyed events: `NtCreateKeyedEvent` (`:2774`), `NtOpenKeyedEvent` (`:2804`), `NtWaitForKeyedEvent` (`:2856`), `NtReleaseKeyedEvent` (`:2864`).
+- Scheduler: `NtYieldExecution` (`:2874`).
+
+`NtWaitForSingleObject`, `NtCreateEvent`, mutant and semaphore services are in `nt_obj.c`. Event query and mutant/semaphore query services are in `nt_services.c`. `NtSetTimerResolution` and `NtQueryTimerResolution` are in `nt_services.c` too; there is no separate system unit, so they have no module page of their own.
 
 ## Key data structures
 
@@ -58,17 +65,18 @@ Service entry point defined here: `nt_svc_NtWaitForMultipleObjects`. The single-
 
 ## Invariants and locking (as implemented)
 
-- Multi-lock paths must take object locks in ascending address order and release them in reverse. The header comment (`sync.c:4-15`) names this as the basis for the WaitAll atomicity argument. The sort is `sort_by_addr` (`sync.c:394`), applied when `wait_type == WaitAll` (`sync.c:576`).
-- The same ordering is required in the acquisition loop, the undo-on-partial-failure path, waiter insertion and removal, and the zero-timeout poll. The comment at `sync.c:1214-1221` says to preserve it.
+- Multi-lock paths must take object locks in ascending address order and release them in reverse. The header comment (`sync.c:4-16`) names this as the basis for the WaitAll atomicity argument. The sort is `sort_by_addr` (`sync.c:399`) in the shim and `kernel_sort_by_addr` (`sync.c:1367`) in the kernel build, applied when `wait_type == WaitAll` (`sync.c:581` and `sync.c:2020`).
+- The same ordering is required in the acquisition loop, the undo-on-partial-failure path, waiter insertion and removal, and the zero-timeout poll. The kernel-side comment at `sync.c:1246` says to preserve it.
 - Waiter insertion happens while holding all object locks, followed by blocking on a per-waiter wait context. Signalers wake that context. This prevents lost wakeups.
-- Shim globals `g_keyed_lock` and `g_addr_lock` guard the keyed-event and address-wait lists. `pthread_once` initialises them (`sync.c:59`).
+- Shim globals guard the wait lists: `g_keyed_lock` protects `g_keyed_waiters` and `g_keyed_releasers`, and `g_addr_lock` protects `g_addr_waiters` (`sync.c:50-53`). `pthread_once` runs the initialiser (`sync.c:54-62`).
+- Timer signalling takes the timer lock and then the header lock (`timer_thread_func`, `sync.c:833`).
 - Owned mutants are linked into the owning thread's `owned_mutants` list, and thread exit calls `nt_abandon_owned_mutants`.
-- `sync.c` uses `spin_lock_irqsave` and `spin_unlock_irqrestore` at about 46 and 57 sites respectively (kernel build), and `pthread_mutex_lock`/`unlock` at about 62 and 78 sites (shim). I did not map each site to its field.
+- `sync.c` has 48 `spin_lock_irqsave` and 59 `spin_unlock_irqrestore` calls (kernel build) and 64 `pthread_mutex_lock` and 83 `pthread_mutex_unlock` calls (shim). The counts are for the whole file, not per build. I did not map each call to its field.
 
 ## Known gaps (evident in code)
 
-- The timer thread's sleep loop (`timer_thread_func`, `sync.c:813` onward) is commented as "simplified": it sleeps in one-second chunks and recomputes the remaining time approximately (`sync.c:849-852`).
-- Two sort helpers exist: `sort_by_addr` (`sync.c:394`, used on the WaitAll path at line 576) and `kernel_sort_by_addr` (`sync.c:1339`), which the file-level comments cite. I did not trace which helper each call site uses in each build.
-- `nt_svc_NtWaitForMultipleObjects` is the only wait service defined in this file. Other wait services are in `nt_obj.c`.
-- `nt_keyed_event` carries a comment that its header is "not really used; global table holds waiters". Keyed events share a global list rather than per-object state.
+- The shim timer thread (`timer_thread_func`, `sync.c:833`) waits on a condition variable with an absolute deadline (`pthread_cond_timedwait`). It no longer sleeps in one-second steps. Periodic timers skip missed periods rather than firing a burst. The kernel build uses `mod_timer` (`nt_set_timer`, `sync.c:1717`) and a different wait path.
+- Timer APC routines are not implemented in either build. `NtSetTimer` returns `STATUS_NOT_IMPLEMENTED` when a routine is given (`sync.c:2554`).
+- Two sort helpers exist: `sort_by_addr` (shim) and `kernel_sort_by_addr` (kernel), which the file-level comments cite. I did not trace which helper each call site uses in each build.
+- Keyed events share global lists (`g_keyed_waiters`, `g_keyed_releasers`) rather than per-object state. The struct comment at `sync.h:230` still says the header is "not really used; global table holds waiters".
 - The userspace build maps kernel primitives to pthreads. The kernel build's wait queues and TIF interaction are not exercised by the userspace tests (`sync_test.c`).
