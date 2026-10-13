@@ -345,9 +345,9 @@ TEST(ntstatus_dos_spot) {
 TEST(handle_table_lifetime) {
     reset_ob();
     struct nt_eprocess *proc=make_proc(3000,"life");
-    if (!proc) return;
+    ASSERT(proc != NULL);
     struct nt_ethread *thr=make_thread(proc,5);
-    if (!thr) return;
+    ASSERT(thr != NULL);
     ASSERT(proc->handle_table != NULL);
     /* Create and close to ensure table still alive */
     UNICODE_STRING us; make_us(&us, "\\BaseNamedObjects\\LifeEv", wbuf1,sizeof(wbuf1));

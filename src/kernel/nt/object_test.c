@@ -401,9 +401,9 @@ TEST(pseudo_handles)
 {
     reset_ob();
     struct nt_eprocess *proc = make_proc(300, "pseudo");
-    if (!proc) return;
+    ASSERT(proc != NULL);
     struct nt_ethread *thr = make_thread(proc, 20);
-    if (!thr) return;
+    ASSERT(thr != NULL);
     struct nt_object_header *obj;
     NTSTATUS st = ObReferenceObjectByHandle(proc, NtCurrentProcess(), &nt_process_type, UserMode, 0, &obj, NULL);
     ASSERT_STATUS(st, STATUS_SUCCESS);
