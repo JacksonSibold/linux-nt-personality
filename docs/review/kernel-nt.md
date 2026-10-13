@@ -195,6 +195,42 @@ The code is careful about `copy_from_user` at most service entry points, and the
 ### I-1 [Info] Stale comment about the call that frees the mapping
 - `src/kernel/nt/mm.c:1610-1613`: the comment says `vm_munmap` is called, but that line is commented out. The active call is `kshim_munmap` at `:1614`. Same behaviour, but the comment misleads the next reader.
 
+### T-1 [Medium] Timer handles are rejected by the single-object wait (fixed e2cf675)
+- `src/kernel/nt/nt_obj.c` (`nt_svc_NtWaitForSingleObject`, both branches) and `src/kernel/nt/sync.c` (`nt_svc_NtWaitForMultipleObjects`, kernel build) accept only event, mutant and semaphore types, so a timer returns `STATUS_OBJECT_TYPE_MISMATCH`. The wait engine already signals and consumes timers.
+- Fix: accept `nt_timer_type`. Synchronization timers reset when a wait consumes them, and notification timers stay set. `sync_extra_test` covers the single-object path. The multiple-object path is compiled only in the kernel build and is reviewed, not run here.
+
+### T-2 [Medium] Userspace timer fires after one second when the due time is two seconds or more, and cancel polls (fixed 3cbaa53)
+- `src/kernel/nt/sync.c`, `timer_thread_func` (userspace branch): each sleep is capped at one second, and the chunk is treated as the whole sleep, so a due time of two seconds or more signals early. `nt_cancel_timer` slept `usleep(2000)` and returned before the thread had exited.
+- Fix: the thread waits on `timer_cond` until the absolute NT expiry and re-reads the clock on each wake. Cancel wakes the thread and waits for it to exit. Periodic timers advance by the period without a burst. The kernel timer uses `mod_timer` with the full due time, so it is not affected.
+
+### T-3 [High] NtSetTimer runs a user APC routine on the timer thread or in softirq context (fixed 8e7fd33)
+- `src/kernel/nt/sync.c`: the userspace timer thread called `t->apc_routine` when no APC thread was set, and `timer_callback` called it in softirq context. `nt_svc_NtSetTimer` passed the user pointer through unchecked. No APC queue exists (`nt_thread_queue_apc` sets one flag), so the routine cannot be delivered to its thread.
+- Fix: a non-NULL `ApcRoutine` returns `STATUS_NOT_IMPLEMENTED` before any state changes, in the wrapper and in both `nt_set_timer` functions. The timer callbacks never call a routine.
+
+### K-1 [Medium] NtReleaseKeyedEvent with no waiter succeeds and drops the release (fixed ed89f0e for userspace; kernel open)
+- `src/kernel/nt/sync.c`, `nt_release_keyed_event`: with no waiter for the key it returned `STATUS_SUCCESS`. NT blocks the releaser until a waiter takes the release, or returns `STATUS_TIMEOUT` when the timeout ends (at once for zero).
+- Fix (userspace shim): a queued releaser list. A waiter that arrives first takes the release. Matching and waking happen under `g_keyed_lock`. The kernel keyed-event code (`nt_wait_for_keyed_event` and `nt_release_keyed_event` in the kernel branch, `:1756` and later) is a separate implementation with the same defect. It was not changed, because it cannot be built or run on this host.
+
+### T-4 [Low] NtWaitForMultipleObjects and the nt_internal.h prototypes take unsigned long arguments (not changed)
+- `src/kernel/nt/sync.c` (`nt_svc_NtWaitForMultipleObjects`) and `src/kernel/nt/nt_internal.h:73-74` take twelve `unsigned long` arguments. On an LLP64 host (Win64) a pointer argument is truncated to 32 bits. The kernel build is LP64, so the defect is latent there. The `nt_internal.h` prototype of `nt_svc_NtWaitForSingleObject` does not match its definition in `nt_obj.c` (`HANDLE`, `BOOLEAN`, `PLARGE_INTEGER`). Nothing in the host tests calls either through `nt_internal.h`.
+
+## Timer and keyed-event fixes (branch haiku/timerfix)
+
+The timer and keyed-event services were not on this branch. They were on `haiku/svcsync` and were picked up here first: `b891048`, `10ddb43`, `8ea698f`, `0258238`, `b9661c2`, `f8a0644`, and the build fix `5c5b570`. They are now `c4e9a6f`, `e388c15`, `67b98b2`, `a559148`, `16b16ed`, `8ddfe67`, and `3c73654`. Then, one commit per gap:
+
+- `e2cf675` T-1, timers are waitable (`sync_extra_test`: `wait_single_sync_timer_auto_reset`, `wait_single_notification_timer_stays_set`).
+- `3cbaa53` T-2, due time and period, cancel without polling (`set_timer_long_due_time_honoured`; guards `set_timer_period_repeats`, `cancel_timer_is_prompt`).
+- `8e7fd33` T-3, APC refusal (`set_timer_rejects_user_apc`).
+- `ed89f0e` K-1, keyed release blocks (`keyed_release_without_waiter_times_out`, `keyed_release_blocks_until_waiter`).
+
+The new tests were built against the sources before the fixes (`3c73654`, with `sync.c`, `sync.h` and `nt_obj.c` taken from that commit). Each of the four gaps failed for its stated reason (`0xc0000024` for T-1, a signal after the first 1 s chunk, before the 2 s check, for T-2, `STATUS_SUCCESS` for T-3, `STATUS_SUCCESS` for K-1). With the fixes, all 27 `sync_extra_test` cases pass.
+
+Not done or not verified on this host:
+- The kernel keyed-event release (K-1) and the kernel timer APC removal (T-3) are compiled only in the kernel build, which this host does not run. Only the APC refusal and the callback change were made there.
+- `tools/check_syscall_tables.py`, `tools/update_doc_counts.py --write`, and the Python unit suite were not run. `python` on this machine is the Windows Store alias stub. The counts in the Summary table and `docs/status/SERVICES.md` were not regenerated.
+- `stress_sync_test` was run once, seed 1 with 8 threads and `KSHIM_POISON=1`: 0 violations. Seeds 2 and 3 and the other stress programs were not run.
+- `mm_test.exe` returned 126 (Windows Application Control) on the first run and on one retry. It links `mm` and `kshim` only, so this change does not affect it. The other 11 `make check` programs pass.
+
 ## Fix status (branch haiku/ntfix)
 
 Fixed in this branch: H-1 (68fe25b), R-1 (0254b09; all eight user-output buffers in registry.c), S-1 (6f58d04), O-1 (30b200a), IO-1 read half (1d160e8). Already correct here, no change: D-1, M-2.
