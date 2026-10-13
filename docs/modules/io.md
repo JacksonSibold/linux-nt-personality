@@ -62,3 +62,6 @@ Path and test helpers:
 - Share enforcement is in-kernel only. Linux has no mandatory share mode, so non-NT opens of the same file are not blocked.
 - `ntio_resolve_path` translates NT paths to Linux paths. The `\??` and `\Device` namespace mapping was not traced in full.
 - The `security.md` module's access check is not called from `io.c`.
+- Directory enumeration (`NtQueryDirectoryFile`, `NtQueryDirectoryFileEx`) takes a name snapshot in the userspace build only. The kernel branch returns `STATUS_NOT_SUPPORTED` until an `iterate_dir` actor is written and built against the kernel.
+- Volume information: only `FileFsDeviceInformation` is answered. The other `FileFs*` classes return `STATUS_NOT_IMPLEMENTED`, and `NtSetVolumeInformationFile` refuses every class.
+- Byte-range locks refuse a conflict at once. Waiting for a lock (`FailImmediately` FALSE) is not supported. Extended attributes are not stored.

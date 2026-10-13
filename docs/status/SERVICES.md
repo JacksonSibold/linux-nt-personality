@@ -10,10 +10,10 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 88 |
+| IMPLEMENTED | 104 |
 | STUB-NOT-IMPLEMENTED | 2 |
 | WEAK-FALLBACK | 0 |
-| MISSING | 81 |
+| MISSING | 65 |
 
 ## By area
 
@@ -22,8 +22,8 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | system | 10 | 8 | 0 | 0 | 2 |
 | process-thread | 43 | 20 | 2 | 0 | 21 |
 | memory | 19 | 4 | 0 | 0 | 15 |
-| io | 30 | 9 | 0 | 0 | 21 |
-| sync | 32 | 31 | 0 | 0 | 1 |
+| io | 30 | 24 | 0 | 0 | 6 |
+| sync | 32 | 32 | 0 | 0 | 0 |
 | security | 10 | 0 | 0 | 0 | 10 |
 | registry | 11 | 11 | 0 | 0 | 0 |
 | ports | 10 | 0 | 0 | 0 | 10 |
@@ -125,24 +125,24 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | 0x0006 | `NtReadFile` | 9 | IMPLEMENTED | `src/kernel/nt/io.c` |
 | 0x0008 | `NtWriteFile` | 9 | IMPLEMENTED | `src/kernel/nt/io.c` |
 | 0x004b | `NtFlushBuffersFile` | 2 | IMPLEMENTED | `src/kernel/nt/io.c` |
-| 0x00eb | `NtFlushBuffersFileEx` | 5 | MISSING |  |
+| 0x00eb | `NtFlushBuffersFileEx` | 5 | IMPLEMENTED | `src/kernel/nt/io.c` |
 | 0x0011 | `NtQueryInformationFile` | 5 | IMPLEMENTED | `src/kernel/nt/io.c` |
 | 0x0027 | `NtSetInformationFile` | 5 | IMPLEMENTED | `src/kernel/nt/io.c` |
-| 0x0035 | `NtQueryDirectoryFile` | 11 | MISSING |  |
-| 0x0148 | `NtQueryDirectoryFileEx` | 10 | MISSING |  |
-| 0x0049 | `NtQueryVolumeInformationFile` | 5 | MISSING |  |
-| 0x01ba | `NtSetVolumeInformationFile` | 5 | MISSING |  |
-| 0x014b | `NtQueryEaFile` | 9 | MISSING |  |
-| 0x0199 | `NtSetEaFile` | 4 | MISSING |  |
-| 0x0110 | `NtLockFile` | 10 | MISSING |  |
-| 0x01d2 | `NtUnlockFile` | 5 | MISSING |  |
-| 0x005d | `NtCancelIoFile` | 2 | MISSING |  |
-| 0x0092 | `NtCancelIoFileEx` | 3 | MISSING |  |
-| 0x0007 | `NtDeviceIoControlFile` | 10 | MISSING |  |
-| 0x0039 | `NtFsControlFile` | 10 | MISSING |  |
-| 0x00d7 | `NtDeleteFile` | 1 | MISSING |  |
+| 0x0035 | `NtQueryDirectoryFile` | 11 | IMPLEMENTED | `src/kernel/nt/io.c` |
+| 0x0148 | `NtQueryDirectoryFileEx` | 10 | IMPLEMENTED | `src/kernel/nt/io.c` |
+| 0x0049 | `NtQueryVolumeInformationFile` | 5 | IMPLEMENTED | `src/kernel/nt/io.c` |
+| 0x01ba | `NtSetVolumeInformationFile` | 5 | IMPLEMENTED | `src/kernel/nt/io.c` |
+| 0x014b | `NtQueryEaFile` | 9 | IMPLEMENTED | `src/kernel/nt/io.c` |
+| 0x0199 | `NtSetEaFile` | 4 | IMPLEMENTED | `src/kernel/nt/io.c` |
+| 0x0110 | `NtLockFile` | 10 | IMPLEMENTED | `src/kernel/nt/io.c` |
+| 0x01d2 | `NtUnlockFile` | 5 | IMPLEMENTED | `src/kernel/nt/io.c` |
+| 0x005d | `NtCancelIoFile` | 2 | IMPLEMENTED | `src/kernel/nt/io.c` |
+| 0x0092 | `NtCancelIoFileEx` | 3 | IMPLEMENTED | `src/kernel/nt/io.c` |
+| 0x0007 | `NtDeviceIoControlFile` | 10 | IMPLEMENTED | `src/kernel/nt/io.c` |
+| 0x0039 | `NtFsControlFile` | 10 | IMPLEMENTED | `src/kernel/nt/io.c` |
+| 0x00d7 | `NtDeleteFile` | 1 | IMPLEMENTED | `src/kernel/nt/io.c` |
 | 0x003d | `NtQueryAttributesFile` | 2 | IMPLEMENTED | `src/kernel/nt/io.c` |
-| 0x014c | `NtQueryFullAttributesFile` | 2 | MISSING |  |
+| 0x014c | `NtQueryFullAttributesFile` | 2 | IMPLEMENTED | `src/kernel/nt/io.c` |
 | 0x0061 | `NtCancelTimer` | 2 | IMPLEMENTED | `src/kernel/nt/sync.c` |
 | 0x00a9 | `NtCreateDirectoryObject` | 3 | MISSING |  |
 | 0x0058 | `NtOpenDirectoryObject` | 3 | MISSING |  |
@@ -181,7 +181,7 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | 0x0176 | `NtReleaseKeyedEvent` | 4 | IMPLEMENTED | `src/kernel/nt/sync.c` |
 | 0x01da | `NtWaitForKeyedEvent` | 4 | IMPLEMENTED | `src/kernel/nt/sync.c` |
 | 0x00af | `NtCreateIoCompletion` | 4 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
-| 0x0124 | `NtOpenIoCompletion` | 3 | MISSING |  |
+| 0x0124 | `NtOpenIoCompletion` | 3 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
 | 0x01a9 | `NtSetIoCompletion` | 5 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
 | 0x01aa | `NtSetIoCompletionEx` | 6 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
 | 0x0009 | `NtRemoveIoCompletion` | 5 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
