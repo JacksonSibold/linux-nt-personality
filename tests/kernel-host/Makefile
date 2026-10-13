@@ -48,7 +48,7 @@ WARN    := -Wall -Wextra -Wuninitialized
 DEPFLAGS := -MMD -MP
 CFLAGS  := -std=gnu11 -g $(OPT) $(WARN) $(DEPFLAGS) $(COV_FLAGS) -DUSERSPACE_KSHIM \
            -include $(SHIM)/khost_prelude.h \
-           -iquote $(NT) -iquote $(LOADER) -iquote . -iquote $(BUILD) -I$(SHIM)
+           -iquote $(NT) -iquote $(LOADER) -iquote $(BUILD) -I$(SHIM)
 LDLIBS  := -lpthread -lws2_32 $(COV_LIBS)
 LDFLAGS := -fno-use-linker-plugin $(COV_FLAGS)
 

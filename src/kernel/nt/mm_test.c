@@ -17,7 +17,7 @@
 #include "object.h"
 #include "handle.h"
 #include "io.h"
-#include "pe_synth.h"
+#include "../../../tests/kernel-host/pe_synth.h"
 #include <limits.h>
 #include <fcntl.h>
 #include <sys/stat.h>

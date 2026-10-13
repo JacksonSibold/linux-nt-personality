@@ -17,7 +17,7 @@
 #define KHOST_PE_SYNTH_H
 
 #include <string.h>
-#include "pe_parse.h"
+#include <stdint.h>
 
 #define PES_FILE_SIZE   0x800u
 #define PES_OPT_OFF     0x98u     /* optional header: 0x80 + 4 + 20 */
@@ -29,34 +29,34 @@
 typedef struct pe_synth_opts {
     int pe32;               /* 1: optional magic 0x10B and machine i386 */
     int relocs;             /* 1: BASERELOC directory present, RELOCS_STRIPPED clear */
-    u64 image_base;         /* 0: PES_BASE_DEFAULT */
-    u32 section_alignment;  /* 0: 0x1000 */
+    uint64_t image_base;         /* 0: PES_BASE_DEFAULT */
+    uint32_t section_alignment;  /* 0: 0x1000 */
 } pe_synth_opts_t;
 
-static inline void pes_put16(u8 *p, u32 off, u32 v)
+static inline void pes_put16(uint8_t *p, uint32_t off, uint32_t v)
 {
-    p[off] = (u8)v;
-    p[off + 1] = (u8)(v >> 8);
+    p[off] = (uint8_t)v;
+    p[off + 1] = (uint8_t)(v >> 8);
 }
 
-static inline void pes_put32(u8 *p, u32 off, u32 v)
+static inline void pes_put32(uint8_t *p, uint32_t off, uint32_t v)
 {
-    for (int i = 0; i < 4; i++) p[off + i] = (u8)(v >> (8 * i));
+    for (int i = 0; i < 4; i++) p[off + i] = (uint8_t)(v >> (8 * i));
 }
 
-static inline void pes_put64(u8 *p, u32 off, u64 v)
+static inline void pes_put64(uint8_t *p, uint32_t off, uint64_t v)
 {
-    for (int i = 0; i < 8; i++) p[off + i] = (u8)(v >> (8 * i));
+    for (int i = 0; i < 8; i++) p[off + i] = (uint8_t)(v >> (8 * i));
 }
 
 /* Fills buf (at least PES_FILE_SIZE bytes) and returns the file size. */
-static inline size_t pe_synth_build(u8 *buf, const pe_synth_opts_t *o)
+static inline size_t pe_synth_build(uint8_t *buf, const pe_synth_opts_t *o)
 {
     int pe32 = o && o->pe32;
     int relocs = o && o->relocs;
-    u64 base = (o && o->image_base) ? o->image_base : PES_BASE_DEFAULT;
-    u32 sa = (o && o->section_alignment) ? o->section_alignment : 0x1000u;
-    u32 i;
+    uint64_t base = (o && o->image_base) ? o->image_base : PES_BASE_DEFAULT;
+    uint32_t sa = (o && o->section_alignment) ? o->section_alignment : 0x1000u;
+    uint32_t i;
 
     memset(buf, 0, PES_FILE_SIZE);
     buf[0] = 'M';
@@ -103,8 +103,8 @@ static inline size_t pe_synth_build(u8 *buf, const pe_synth_opts_t *o)
 
     /* Section contents: a pattern per section so tests can compare bytes. */
     for (i = 0; i < 0x200; i++) {
-        buf[0x400 + i] = (u8)(i * 7 + 3);
-        buf[0x600 + i] = (u8)(i * 11 + 5);
+        buf[0x400 + i] = (uint8_t)(i * 7 + 3);
+        buf[0x600 + i] = (uint8_t)(i * 11 + 5);
     }
     return PES_FILE_SIZE;
 }

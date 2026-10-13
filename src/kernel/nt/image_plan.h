@@ -17,7 +17,7 @@
 #ifndef NT_IMAGE_PLAN_H
 #define NT_IMAGE_PLAN_H
 
-#include "pe_parse.h"
+#include "../../loader/pe_parse.h"
 #include <string.h>
 
 #define IP_PAGE_SIZE          0x1000u
