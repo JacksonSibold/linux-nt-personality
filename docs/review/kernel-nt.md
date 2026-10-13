@@ -188,9 +188,9 @@ The code is careful about `copy_from_user` at most service entry points, and the
 - Fix `ecc7f83`: re-check `parent_dir` under the directory's write lock, and drop the reference only when this call unlinked the entry. Regression: `50dbf92` (round in `stress_object_test.c`, which failed before the fix). Free-time poisoning under `KSHIM_POISON=1` that supports the check: `a164b43`.
 - Not the same as O-5: O-5 is a single-caller ordering question, and this is a concurrent double drop.
 
-### C-2 [Low] Named insert publishes the directory entry before setting parent_dir (not reproduced, not fixed)
+### C-2 [Low] Named insert publishes the directory entry before setting parent_dir (fixed d963217)
 - `src/kernel/nt/object.c`, `ObpInsertDirectoryEntry`: the entry is linked and the write lock is released, then `ObReferenceObject(obj)` runs, and only after that `obj->parent_dir` and `obj->name` are set, without the lock. A thread that finds the name in that window (`ObReferenceObjectByName`) and calls `ObMakeTemporaryObject` sees `parent_dir == NULL` and returns. The delete is lost and the name stays in the directory until a later delete.
-- Not reproduced by `stress_object_test`; the window is a few instructions wide. Suggested fix: take the directory's reference and set `parent_dir` and `name` inside the write lock, before `write_unlock`.
+- Not reproduced by `stress_object_test`; the window is a few instructions wide. Fixed in d963217 as suggested: the reference, `parent_dir` and `name` are set before the entry is linked, under the directory lock. `object_extra_test` `insert_publishes_entry_after_parent_set` pauses the insert in that window and fails on the old order (it found `parent_dir == NULL`).
 
 ### I-1 [Info] Stale comment about the call that frees the mapping
 - `src/kernel/nt/mm.c:1610-1613`: the comment says `vm_munmap` is called, but that line is commented out. The active call is `kshim_munmap` at `:1614`. Same behaviour, but the comment misleads the next reader.
@@ -312,16 +312,16 @@ Six programs were added to `make stress`, each run with 16 workers and seeds 1 t
 - Not fixed: moving the persist under the lock is not safe in the kernel. `k->lock` is an `rwlock_t`, and the persist path does file I/O. A fix needs a sleepable per-key lock covering set persistence and value free, or a deferred free. That is a design decision.
 - Related, not a memory error: `NtDeleteValueKey` persists the deletion after unlocking, so a concurrent set of the same name can be unlinked on disk after it was written. Not tested.
 
-### OB-1 [Medium] ObpRemoveFromDirectory reads the parent directory without a reference (open, suspected)
+### OB-1 [Medium] ObpRemoveFromDirectory reads the parent directory without a reference (fixed c2b32a1)
 
-- `stress_namespace_test` under `KSHIM_POISON=1` faulted in `libwinpthread-1.dll`, reading address -1 inside a lock. Three of six poisoned runs faulted with 16 workers (seed 1, 16 workers, 4096 ops). In `make stress`, seeds 1 and 3 faulted and seed 2 passed. Without poison, no fault in the runs tried.
-- Suspected cause, from the code and not reproduced by a minimal test: `ObpRemoveFromDirectory` (`object.c`, around line 312) reads `obj->parent_dir` and then takes `dir->lock`. Nothing holds a reference on the directory across that gap, so a concurrent `ObMakeTemporaryObject` of the directory can free it first.
-- Open: the fix needs a parent-directory lifetime rule, either a reference taken under a lock that `directory_delete` also takes, or a parent pointer guarded by the child's lock. That is a design decision.
+- `stress_namespace_test` under `KSHIM_POISON=1` faulted in `libwinpthread-1.dll`, reading address -1 inside a lock. Before the fix, 5 of 10 poisoned runs at 8 threads and 6 of 6 at 16 threads faulted (seed 1). Without poison, no fault.
+- Cause, confirmed: the stress "delete a name" step calls `ObReferenceObjectByName` on a link name, which follows the link and returns the directory. `ObMakeTemporaryObject` then removed the directory, and its last reference freed it while another worker's `ObpRemoveFromDirectory` had read the directory pointer from a child and was about to lock it.
+- Fix: `ob_ns_lock` covers every `parent_dir` and every directory entry list. Lock order is `ob_ns_lock`, then a directory's lock. `directory_delete` and the root cleanup detach entries under the lock and release them with no lock held. Regression test `remove_after_parent_directory_freed` (object_extra_test.c, poison on) faults before the fix and passes after. Under poison, `stress_namespace_test` passes 14 of 14 runs at 8 and 16 threads, and seeds 1 to 3 at 16 threads.
 
-### OB-2 [Low] Symbolic links are followed only as the last path component (open)
+### OB-2 [Low] Symbolic links are followed only as the last path component (fixed db4e61d)
 
-- `object.c` resolves a symlink only when it is the final component (around line 446). A link in the middle of a path returns `STATUS_OBJECT_PATH_NOT_FOUND`, because the link type has no parse routine. `stress_namespace_test` counts successful opens through a link, and that count is 0 on every run.
-- Not fixed: a parse routine for links changes path semantics. Not a concurrency issue.
+- `object.c` resolved a symlink only when it was the final component. A link in a middle component returned `STATUS_OBJECT_PATH_NOT_FOUND`, so a path through a link never opened. `stress_namespace_test` counted 0 opens through a link on every run.
+- Fix: a middle link is resolved with the final-link depth limit (32) and the walk continues from its target. A cycle returns `STATUS_NAME_TOO_LONG`, as the final-link loop does. A missing target is `STATUS_OBJECT_PATH_NOT_FOUND`. A missing final name is `STATUS_OBJECT_NAME_NOT_FOUND`. Tests `middle_symlink_is_followed` and `middle_symlink_cycle_hits_depth_limit` failed before the fix. `stress_namespace_test` now records 1000 to 1400 opens through a link per run.
 
 ### SYNC-3 [Medium] stress_sync_test fails about half its runs at seed 2 (open, pre-existing, not minimised)
 
@@ -332,7 +332,7 @@ Six programs were added to `make stress`, each run with 16 workers and seeds 1 t
 
 - SEC-1 (ACL table overflow) reproduces as stated: with 300 live ACLs, `acl_add_allowed_ace` on the 300th returns `STATUS_BUFFER_TOO_SMALL`, and the first ACL still grows. Design record 0035 still applies.
 - The host shim maps file-backed section views as zero-filled anonymous memory (`tests/kernel-host/shim/mman_win.c`). `stress_section_test` therefore checks that file views map and read, not their contents.
-- Passing with 16 workers and seeds 1 to 3: `stress_token_test` (after the fix), `stress_section_test` (after the fix), `stress_sd_test` (no torn or unknown descriptors), `stress_timer_test`. `stress_namespace_test` passed seed 2 in `make stress` and 3 of 3 unpoisoned runs at 16 workers (it fails under poison, OB-1).
+- Passing with 16 workers and seeds 1 to 3: `stress_token_test` (after the fix), `stress_section_test` (after the fix), `stress_sd_test` (no torn or unknown descriptors), `stress_timer_test`. `stress_namespace_test` passed seed 2 in `make stress` and 3 of 3 unpoisoned runs at 16 workers (under poison it failed before c2b32a1, OB-1).
 - `make check-quick` passes after both fixes. `tools/update_doc_counts.py` and the Python unit suite were not run: this host has no working Python, so the count blocks in `docs/review/INDEX.md` are not regenerated.
 
 ## Not verified / out of scope

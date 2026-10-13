@@ -23,9 +23,9 @@ Counts are per report and were recounted on 2026-10-12 from each finding's recor
 | [loader.md](loader.md) | 17 | 10 | 0 | 2 | 2 | 3 |
 | [kernel-fs.md](kernel-fs.md) | 24 | 16 | 1 | 4 | 0 | 3 |
 | [arch-x86-nt.md](arch-x86-nt.md) | 63 | 33 | 2 | 17 | 2 | 9 |
-| [kernel-nt.md](kernel-nt.md) | 35 | 22 | 1 | 4 | 2 | 6 |
+| [kernel-nt.md](kernel-nt.md) | 35 | 25 | 1 | 4 | 2 | 3 |
 | [ntdll.md](ntdll.md) | 74 | 42 | 5 | 15 | 0 | 12 |
-| **Total** | **213** | **123** | **9** | **42** | **6** | **33** |
+| **Total** | **213** | **126** | **9** | **42** | **6** | **30** |
 
 Totals match the severity table above (213 findings in both tables; the per-report rows sum to the total row in each). Open findings by severity are not split out here; each report lists them. The per-report `Fix status` sections name the commits.
 
