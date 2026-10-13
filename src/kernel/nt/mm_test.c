@@ -501,6 +501,65 @@ static int test_alloc_size_wrap(void) {
  * Files are made on the host under g_mmf_root and opened through
  * nt_svc_NtCreateFile, so each file handle is a real io file object. The host
  * reads and writes check what reached the file. */
+/* NtLockVirtualMemory / NtUnlockVirtualMemory: range bookkeeping per address
+ * space and the host lock. A range must be committed. MapType is MAP_PROCESS (1)
+ * or MAP_SYSTEM (2); MAP_SYSTEM needs SeLockMemoryPrivilege, which this test
+ * process does not hold. Unlocking pages that are not locked is STATUS_NOT_LOCKED.
+ * Decommit drops the lock. */
+NTSTATUS NtLockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType);
+NTSTATUS NtUnlockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType);
+static int test_lock_virtual_memory(void) {
+    PVOID base = NULL;
+    SIZE_T size = 2 * 4096;
+    NTSTATUS st;
+    st = NtAllocateVirtualMemory((HANDLE)-1, &base, 0, &size, MEM_COMMIT, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "commit: 0x%x", (unsigned)st);
+    PVOID lb = base;
+    SIZE_T ls = size;
+    /* Argument checks: NULL pointers, unknown MapType */
+    ASSERT(NtLockVirtualMemory((HANDLE)-1, NULL, &ls, 1) == STATUS_INVALID_PARAMETER, "null base");
+    ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, NULL, 1) == STATUS_INVALID_PARAMETER, "null size");
+    ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 0) == STATUS_INVALID_PARAMETER, "maptype 0");
+    ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 3) == STATUS_INVALID_PARAMETER, "maptype 3");
+    ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 2) == STATUS_PRIVILEGE_NOT_HELD, "map_system privilege");
+    /* Lock both pages, twice: idempotent, base and size come back page-aligned */
+    lb = base; ls = size;
+    ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "lock range");
+    ASSERT(lb == base && ls == size, "lock returns range");
+    lb = base; ls = size;
+    ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "lock again");
+    /* Unlock the first page: the second is still locked, so the full range is not */
+    lb = base; ls = 4096;
+    ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "unlock first page");
+    lb = base; ls = size;
+    ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_NOT_LOCKED, "unlock range with unlocked page");
+    lb = (PVOID)((char *)base + 4096); ls = 4096;
+    ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "unlock second page");
+    ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_NOT_LOCKED, "unlock twice");
+    /* A reserved (not committed) range cannot be locked */
+    PVOID rb = NULL;
+    SIZE_T rs = 4096;
+    ASSERT(NtAllocateVirtualMemory((HANDLE)-1, &rb, 0, &rs, MEM_RESERVE, PAGE_READWRITE) == STATUS_SUCCESS, "reserve");
+    lb = rb; ls = 4096;
+    ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_NOT_COMMITTED, "lock reserved");
+    /* Lock again, then decommit: the decommit drops the lock */
+    lb = base; ls = size;
+    ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "relock");
+    PVOID db = base; SIZE_T dsz = size;
+    ASSERT(NtFreeVirtualMemory((HANDLE)-1, &db, &dsz, MEM_DECOMMIT) == STATUS_SUCCESS, "decommit");
+    lb = base; ls = size;
+    ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_NOT_LOCKED, "decommit dropped lock");
+    /* Recommit and lock again works */
+    db = base; dsz = size;
+    ASSERT(NtAllocateVirtualMemory((HANDLE)-1, &db, 0, &dsz, MEM_COMMIT, PAGE_READWRITE) == STATUS_SUCCESS, "recommit");
+    lb = base; ls = size;
+    ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "lock after recommit");
+    /* Releasing the allocation drops the lock too */
+    db = base; dsz = 0;
+    ASSERT(NtFreeVirtualMemory((HANDLE)-1, &db, &dsz, MEM_RELEASE) == STATUS_SUCCESS, "release");
+    return 1;
+}
+
 static char g_mmf_root[512];
 
 /* Defined in tests/kernel-host/shim/posix_host.c; declared here as the prelude does. */
@@ -2251,6 +2310,7 @@ int main(void) {
     RUN_TEST(test_fuzz);
     RUN_TEST(test_vad_matrix);
     RUN_TEST(test_alloc_size_wrap);
+    RUN_TEST(test_lock_virtual_memory);
     mmf_setup();
     RUN_TEST(test_file_section_shared_write_reaches_file);
     RUN_TEST(test_file_section_cow_does_not_modify_file);

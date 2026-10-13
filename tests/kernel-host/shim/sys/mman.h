@@ -34,5 +34,8 @@ void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off);
 int munmap(void *addr, size_t len);
 int mprotect(void *addr, size_t len, int prot);
 int madvise(void *addr, size_t len, int advice);
+/* Lock pages in physical memory: VirtualLock / VirtualUnlock on the host. */
+int mlock(const void *addr, size_t len);
+int munlock(const void *addr, size_t len);
 
 #endif

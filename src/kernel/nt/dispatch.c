@@ -155,6 +155,8 @@ extern NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PS
 #define MEM_RELEASE 0x00008000UL
 #endif
 extern NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG NewProtect, ULONG *OldProtect);
+extern NTSTATUS NtLockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType);
+extern NTSTATUS NtUnlockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType);
 extern NTSTATUS NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, ULONG MemoryInformationClass, PVOID MemoryInformation, SIZE_T MemoryInformationLength, PSIZE_T ReturnLength);
 extern NTSTATUS NtReadVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, PVOID Buffer, SIZE_T BufferSize, PSIZE_T NumberOfBytesRead);
 extern NTSTATUS NtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, PVOID Buffer, SIZE_T BufferSize, PSIZE_T NumberOfBytesWritten);
@@ -246,6 +248,50 @@ NTSTATUS nt_svc_NtProtectVirtualMemory(unsigned long a0, unsigned long a1, unsig
     if (copy_to_user(OldProtect, &kold, sizeof(kold)))
         return STATUS_ACCESS_VIOLATION;
     return st;
+}
+
+/* NtLockVirtualMemory and NtUnlockVirtualMemory share the BaseAddress and
+ * RegionSize copy-in and copy-out. The service itself is in mm.c. */
+static NTSTATUS dispatch_lock_common(int unlock, unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3)
+{
+    HANDLE ProcessHandle = (HANDLE)a0;
+    PVOID __user *BaseAddress = (PVOID __user *)a1;
+    PSIZE_T RegionSize = (PSIZE_T)a2;
+    ULONG MapType = (ULONG)a3;
+    PVOID base;
+    SIZE_T size;
+    PVOID kbase;
+    SIZE_T ksize;
+    NTSTATUS st;
+    if (!BaseAddress || !RegionSize)
+        return STATUS_INVALID_PARAMETER;
+    if (!access_ok(BaseAddress, sizeof(PVOID)) || !access_ok(RegionSize, sizeof(SIZE_T)))
+        return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(&base, BaseAddress, sizeof(base)))
+        return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(&size, RegionSize, sizeof(size)))
+        return STATUS_ACCESS_VIOLATION;
+    kbase = base;
+    ksize = size;
+    st = unlock ? NtUnlockVirtualMemory(ProcessHandle, &kbase, &ksize, MapType)
+                : NtLockVirtualMemory(ProcessHandle, &kbase, &ksize, MapType);
+    if (copy_to_user(BaseAddress, &kbase, sizeof(kbase)))
+        return STATUS_ACCESS_VIOLATION;
+    if (copy_to_user(RegionSize, &ksize, sizeof(ksize)))
+        return STATUS_ACCESS_VIOLATION;
+    return st;
+}
+
+NTSTATUS nt_svc_NtLockVirtualMemory(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    return dispatch_lock_common(0, a0, a1, a2, a3);
+}
+
+NTSTATUS nt_svc_NtUnlockVirtualMemory(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    return dispatch_lock_common(1, a0, a1, a2, a3);
 }
 
 NTSTATUS nt_svc_NtQueryVirtualMemory(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)

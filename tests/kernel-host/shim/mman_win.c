@@ -168,6 +168,26 @@ int mprotect(void *addr, size_t len, int prot)
     return 0;
 }
 
+/* VirtualLock keeps the pages in the working set; failure (typically the
+ * working-set quota) is ENOMEM. */
+int mlock(const void *addr, size_t len)
+{
+    if (!VirtualLock((LPVOID)addr, len)) {
+        errno = ENOMEM;
+        return -1;
+    }
+    return 0;
+}
+
+int munlock(const void *addr, size_t len)
+{
+    if (!VirtualUnlock((LPVOID)addr, len)) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
 int madvise(void *addr, size_t len, int advice)
 {
     (void)addr; (void)len;

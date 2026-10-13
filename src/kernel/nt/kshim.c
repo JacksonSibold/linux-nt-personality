@@ -164,6 +164,16 @@ int kshim_mprotect(void *addr, size_t size, int prot) {
     return mprotect(addr, size, prot);
 }
 
+/* Lock and unlock pages in physical memory. 0 on success, -1 with errno set
+ * when the host refuses (for example the working-set quota). */
+int kshim_mlock(void *addr, size_t size) {
+    return mlock(addr, size);
+}
+
+int kshim_munlock(void *addr, size_t size) {
+    return munlock(addr, size);
+}
+
 void kshim_madvise_free(void *addr, size_t size) {
     /* MEM_RESET: contents become undefined. Use MADV_DONTNEED to zero next touch */
 #ifdef MADV_FREE
