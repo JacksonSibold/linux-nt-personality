@@ -12,6 +12,7 @@
 #include "mm.h"
 #include "object.h"
 #include "handle.h"
+#include "io.h"
 #ifndef __KERNEL__
 #include <limits.h>
 #include <string.h>
@@ -31,6 +32,7 @@
 #include <linux/security.h>
 #include <linux/personality.h>
 #include <linux/sched.h>
+#include <linux/fs.h>
 #ifndef ARCH_VM_PKEY_FLAGS
 #define ARCH_VM_PKEY_FLAGS 0
 #endif
@@ -160,6 +162,14 @@ static inline void *kshim_section_map(struct kshim_section_backing *b, void *add
         if (IS_ERR_VALUE(a)) return NULL;
         return (void*)a;
     }
+}
+/* File-backed view: the file's own pages, mapped by the kernel. Shared views
+ * share the page cache; copy-on-write views are private. */
+static inline void *kshim_section_map_file(struct kshim_section_backing *b, void *addr, size_t offset, size_t size, int prot, int cow){
+    unsigned long flags = (cow ? MAP_PRIVATE : MAP_SHARED) | MAP_FIXED;
+    unsigned long a = vm_mmap(b->file, (unsigned long)addr, size, prot, flags, offset);
+    if (IS_ERR_VALUE(a)) return NULL;
+    return (void*)a;
 }
 #endif
 
@@ -1592,16 +1602,33 @@ NTSTATUS NtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
     return st;
 }
 
+#ifndef __KERNEL__
+/* Host shim only. A file view is a copy (kshim_section_map_file), so a shared
+ * writable view is written back to its file for [from, to). Copy-on-write and
+ * read-only views are not written back. The kernel maps the file's own pages. */
+static void nt_view_writeback(const struct nt_vad *vad, ULONG_PTR from, ULONG_PTR to) {
+    ULONG prot;
+    if (!vad->section || !vad->section->is_file || vad->state != MEM_COMMIT) return;
+    prot = vad->protect & 0xFFUL;
+    if (prot != PAGE_READWRITE && prot != PAGE_EXECUTE_READWRITE) return;
+    if (from < vad->start) from = vad->start;
+    if (to > vad->end) to = vad->end;
+    if (from >= to) return;
+    pwrite(vad->section->backing.fd, (void *)from, (size_t)(to - from),
+           (off_t)(vad->section_offset + (from - vad->start)));
+}
+#endif
+
 /* -------------------------------------------------------------------------- */
 /* NtFlushVirtualMemory                                                       */
 /* -------------------------------------------------------------------------- */
 
-/* Nothing needs writing back: private pages and views of anonymous or memfd
- * backing are already coherent, because there is no file backing yet (file
- * sections are STATUS_NOT_IMPLEMENTED). So the flush checks the range and
- * reports it flushed. The range is page-rounded, as NT does. Every byte must
- * sit in a committed VAD: no VAD is STATUS_INVALID_ADDRESS, a reserved one is
- * STATUS_NOT_COMMITTED. */
+/* Private pages and anonymous or memfd views are already coherent, so they need
+ * no write-back. File views in the kernel build share the page cache, so they
+ * need none either. The host shim copies file views, so a flush writes shared
+ * writable file views back (nt_view_writeback). The range is page-rounded, as NT
+ * does. Every byte must sit in a committed VAD: no VAD is STATUS_INVALID_ADDRESS,
+ * a reserved one is STATUS_NOT_COMMITTED. */
 NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
                               PSIZE_T RegionSize, PIO_STATUS_BLOCK IoStatus) {
     struct nt_mm *mm = &g_nt_mm;
@@ -1624,6 +1651,16 @@ NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
         if (vad->state != MEM_COMMIT) { st = STATUS_NOT_COMMITTED; break; }
         cur = vad->end;
     }
+#ifndef __KERNEL__
+    if (st == STATUS_SUCCESS) {
+        for (cur = start; cur < end; ) {
+            struct nt_vad *vad = nt_vad_find(mm, cur);
+            ULONG_PTR stop = vad->end < end ? vad->end : end;
+            nt_view_writeback(vad, cur, stop);
+            cur = stop;
+        }
+    }
+#endif
     ntmm_unlock(mm);
     *BaseAddress = (PVOID)start;
     *RegionSize = (SIZE_T)(end - start);
@@ -1697,6 +1734,9 @@ static void nt_section_delete(struct nt_object_header *hdr)
 #ifndef __KERNEL__
     if (sec->backing.fd >= 0) close(sec->backing.fd);
     if (sec->backing.mem) kshim_munmap(sec->backing.mem, sec->backing.size);
+#else
+    /* A file section holds one struct file reference, taken in nt_section_attach_file. */
+    if (sec->backing.file) { fput(sec->backing.file); sec->backing.file = NULL; }
 #endif
     sec->backing.fd = -1;
     sec->backing.mem = NULL;
@@ -1731,6 +1771,113 @@ static ACCESS_MASK nt_section_map_access(ULONG Win32Protect)
     return need;
 }
 
+static int nt_protect_writable(ULONG prot) {
+    ULONG base = prot & 0xFFUL;
+    return base == PAGE_READWRITE || base == PAGE_EXECUTE_READWRITE;
+}
+
+/* Data-section protections a file section supports. Execute views need image
+ * rules (SEC_IMAGE, not built), so they are refused as not implemented. */
+static NTSTATUS nt_file_section_protect_ok(ULONG prot) {
+    switch (prot & 0xFFUL) {
+    case PAGE_READONLY:
+    case PAGE_WRITECOPY:
+    case PAGE_READWRITE:
+        return STATUS_SUCCESS;
+    case PAGE_EXECUTE:
+    case PAGE_EXECUTE_READ:
+    case PAGE_EXECUTE_WRITECOPY:
+    case PAGE_EXECUTE_READWRITE:
+        return STATUS_NOT_IMPLEMENTED;
+    default:
+        return STATUS_INVALID_PAGE_PROTECTION;
+    }
+}
+
+/* Gives the section its own reference to the file's data, so the file handle
+ * can close while views exist. Userspace: a dup of the host fd. Kernel: a
+ * struct file reference, which keeps the file open. */
+static NTSTATUS nt_section_attach_file(struct kshim_section_backing *b, struct nt_file_object *file) {
+#ifdef __KERNEL__
+    b->file = get_file(file->filp);
+    return STATUS_SUCCESS;
+#else
+    int fd = dup(file->filp->fd);
+    if (fd < 0) return STATUS_NO_MEMORY;
+    b->fd = fd;
+    return STATUS_SUCCESS;
+#endif
+}
+
+/* Creates a file-backed data section (SEC_COMMIT with a FileHandle). The handle
+ * must be a file object that holds the access the protection needs
+ * (FILE_WRITE_DATA for a shared read-write section, FILE_READ_DATA otherwise).
+ * A zero-size file, and a read-only section larger than its file, are refused as
+ * NT does. A read-write section larger than its file extends the file. */
+static NTSTATUS nt_create_file_section(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                                       POBJECT_ATTRIBUTES ObjectAttributes,
+                                       PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
+                                       ULONG AllocationAttributes, HANDLE FileHandle) {
+    struct nt_object_header *hdr = NULL;
+    struct nt_section *sec = NULL;
+    struct nt_file_object *file = NULL;
+    LONGLONG file_size = 0, size;
+    ULONG need = nt_protect_writable(SectionPageProtection) ? FILE_WRITE_DATA : FILE_READ_DATA;
+    void *obj;
+    NTSTATUS st;
+
+    /* Only SEC_COMMIT data sections are built. SEC_RESERVE on a file is not. */
+    if (!(AllocationAttributes & SEC_COMMIT)) return STATUS_NOT_IMPLEMENTED;
+    st = nt_file_section_protect_ok(SectionPageProtection);
+    if (!NT_SUCCESS(st)) return st;
+
+    /* A handle that is not open is INVALID_HANDLE. An open handle that is not a
+     * file is a type mismatch. A file without the needed access is ACCESS_DENIED. */
+    obj = ntio_handle_peek(FileHandle);
+    if (!obj) return STATUS_INVALID_HANDLE;
+    if (*(ULONG *)obj != NTIO_FILE_MAGIC) return STATUS_OBJECT_TYPE_MISMATCH;
+    file = (struct nt_file_object *)ntio_handle_lookup(FileHandle, need);
+    if (!file) return STATUS_ACCESS_DENIED;
+
+    if (file->is_directory) { st = STATUS_INVALID_FILE_FOR_SECTION; goto out_put; }
+    st = ntio_file_section_size(file, &file_size);
+    if (!NT_SUCCESS(st)) goto out_put;
+
+    if (MaximumSize) {
+        if (MaximumSize->QuadPart < 0) { st = STATUS_INVALID_PARAMETER; goto out_put; }
+        size = MaximumSize->QuadPart;
+    } else {
+        size = file_size;
+    }
+    if (size == 0) { st = STATUS_MAPPED_FILE_SIZE_ZERO; goto out_put; }
+    if (size > file_size) {
+        if (!nt_protect_writable(SectionPageProtection)) { st = STATUS_SECTION_TOO_BIG; goto out_put; }
+        st = ntio_file_section_extend(file, size);
+        if (!NT_SUCCESS(st)) goto out_put;
+    }
+
+    ObRegisterObjectType(&nt_section_type);
+    st = ObCreateObject(&nt_section_type, ObjectAttributes, sizeof(*sec), &hdr, (void **)&sec);
+    if (!NT_SUCCESS(st)) goto out_put;
+    /* Set the backing before any failure path: the delete callback releases it. */
+    sec->backing.fd = -1;
+    sec->backing.mem = NULL;
+#ifdef __KERNEL__
+    sec->backing.file = NULL;
+#endif
+    sec->is_file = 1;
+    sec->attributes = AllocationAttributes | SEC_FILE;
+    sec->page_protection = SectionPageProtection;
+    sec->size = (SIZE_T)size;
+    st = nt_section_attach_file(&sec->backing, file);
+    if (NT_SUCCESS(st))
+        st = ObInsertObject(hdr, ObjectAttributes, DesiredAccess, kshim_current_process(), SectionHandle);
+    ObDereferenceObject(hdr);
+out_put:
+    ntio_file_put(file);
+    return st;
+}
+
 NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
                          POBJECT_ATTRIBUTES ObjectAttributes,
                          PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
@@ -1741,12 +1888,15 @@ NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
     NTSTATUS st;
     if (!SectionHandle) return STATUS_INVALID_PARAMETER;
     if (!ntmm_protection_valid(SectionPageProtection)) return STATUS_INVALID_PAGE_PROTECTION;
-    /* File-backed sections are not implemented: the handle is never looked up,
-     * so the section would be zeroed anonymous memory, not the file. */
-    if (FileHandle) return STATUS_NOT_IMPLEMENTED;
+    /* SEC_IMAGE is refused with or without a file. It needs image sections, a
+     * separate milestone (process-creation M6). Until then it must not be mapped
+     * as plain data. */
+    if (AllocationAttributes & SEC_IMAGE) return STATUS_NOT_IMPLEMENTED;
+    if (FileHandle)
+        return nt_create_file_section(SectionHandle, DesiredAccess, ObjectAttributes, MaximumSize,
+                                      SectionPageProtection, AllocationAttributes, FileHandle);
     if (MaximumSize) size = (SIZE_T)MaximumSize->QuadPart;
     else return STATUS_INVALID_PARAMETER;
-    if (AllocationAttributes & SEC_IMAGE) return STATUS_INVALID_PARAMETER;
 
     ObRegisterObjectType(&nt_section_type);
     st = ObCreateObject(&nt_section_type, ObjectAttributes, sizeof(*sec), &hdr, (void **)&sec);
@@ -1778,8 +1928,11 @@ static NTSTATUS nt_map_view_of_section(struct nt_section *sec, PVOID *BaseAddres
     ULONG_PTR offset = 0, base = 0, actual_size = 0;
     int commit;
     if (SectionOffset) offset = (ULONG_PTR)SectionOffset->QuadPart;
-    // Windows requires SectionOffset be aligned to allocation granularity (64K) for image sections, otherwise page size for data
-    if (sec->attributes & SEC_IMAGE) {
+    /* A shared writable view writes to the file, so the section must be writable. */
+    if (sec->is_file && nt_protect_writable(Win32Protect) && !nt_protect_writable(sec->page_protection))
+        return STATUS_SECTION_PROTECTION;
+    // Windows requires SectionOffset be aligned to allocation granularity (64K) for image and file sections, otherwise page size for data
+    if ((sec->attributes & SEC_IMAGE) || sec->is_file) {
         if (offset & (NTMM_ALLOC_GRANULARITY - 1)) return STATUS_MAPPED_ALIGNMENT;
     } else {
         if (offset & (NTMM_PAGE_SIZE - 1)) return STATUS_MAPPED_ALIGNMENT;
@@ -1818,7 +1971,9 @@ static NTSTATUS nt_map_view_of_section(struct nt_section *sec, PVOID *BaseAddres
     ntmm_unlock(mm);
     int prot = commit ? ntmm_prot_to_linux(Win32Protect) : PROT_NONE;
     int cow = (Win32Protect == PAGE_WRITECOPY || Win32Protect == PAGE_EXECUTE_WRITECOPY) ? 1 : 0;
-    void *p = kshim_section_map(&sec->backing, (void *)base, offset, (size_t)actual_size, prot, cow);
+    void *p = (sec->is_file && commit)
+        ? kshim_section_map_file(&sec->backing, (void *)base, offset, (size_t)actual_size, prot, cow)
+        : kshim_section_map(&sec->backing, (void *)base, offset, (size_t)actual_size, prot, cow);
     if (!p) {
         ntmm_lock(mm);
         nt_list_remove(mm, vad);
@@ -1882,6 +2037,7 @@ NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
     while (cur) {
         struct nt_vad *next = cur->list_next;
         if (cur->alloc_base == base && cur->start >= unmap_start && cur->end <= unmap_end) {
+            nt_view_writeback(cur, cur->start, cur->end);
             nt_list_remove(mm, cur);
             nt_vad_free(cur);
         }

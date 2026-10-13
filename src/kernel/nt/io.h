@@ -621,6 +621,15 @@ ULONG ntio_pointer_count_for_file(struct nt_file_object *f);
 struct nt_file_object *ntio_file_get(struct nt_file_object *file);
 void ntio_file_put(struct nt_file_object *file);
 
+/* Value of the first word of every file object (ntio_handle_peek on a handle
+ * tells a file from an IOCP by it). */
+#define NTIO_FILE_MAGIC 0x46494C45UL
+
+/* File-backed sections (mm.c). The size is the file's current size. Extend
+ * grows the file to at least size bytes. */
+NTSTATUS ntio_file_section_size(struct nt_file_object *file, LONGLONG *size);
+NTSTATUS ntio_file_section_extend(struct nt_file_object *file, LONGLONG size);
+
 /* Path helpers. */
 NTSTATUS ntio_resolve_path(POBJECT_ATTRIBUTES obj_attr, char *linux_path,
 			   size_t pathlen, bool *is_dir);

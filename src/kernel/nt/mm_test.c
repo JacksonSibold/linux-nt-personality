@@ -502,6 +502,9 @@ static int test_alloc_size_wrap(void) {
  * reads and writes check what reached the file. */
 static char g_mmf_root[512];
 
+/* Defined in tests/kernel-host/shim/posix_host.c; declared here as the prelude does. */
+void khost_scratch_arm_cleanup(const char *posix_root);
+
 /* Removed at exit, pass or fail, as io_test does. The host helpers below use
  * open/pread/pwrite (the shim maps /tmp for those); stdio fopen does not map it. */
 static void mmf_setup(void) {
@@ -700,8 +703,15 @@ static int test_file_section_handle_closed_keeps_view(void) {
     ASSERT(mmf_open("closed.bin", FILE_READ_DATA | FILE_WRITE_DATA, &fh) == STATUS_SUCCESS, "open");
     ASSERT(mmf_section(fh, &sec, PAGE_READWRITE, 0) == STATUS_SUCCESS, "create section");
     ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close file handle first");
-    ASSERT(mmf_section(fh, &sec, PAGE_READWRITE, 0) == STATUS_INVALID_HANDLE, "closed file handle refused");
-    ASSERT(mmf_map(sec, 0, 0, PAGE_READWRITE, &base) == STATUS_SUCCESS, "map after file handle closed");
+    {
+        HANDLE refused = NULL;
+        ASSERT(mmf_section(fh, &refused, PAGE_READWRITE, 0) == STATUS_INVALID_HANDLE, "closed file handle refused");
+        ASSERT(refused == NULL, "no section for closed file handle");
+    }
+    {
+        NTSTATUS mst = mmf_map(sec, 0, 0, PAGE_READWRITE, &base);
+        ASSERT(mst == STATUS_SUCCESS, "map after file handle closed 0x%lx", (unsigned long)mst);
+    }
     ASSERT(((unsigned char *)base)[0] == 'A', "view reads after file handle closed");
     ((unsigned char *)base)[0x20] = 'C';
     ASSERT(mmf_flush(base, 0x1000) == STATUS_SUCCESS, "flush after file handle closed");
