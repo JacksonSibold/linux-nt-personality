@@ -45,8 +45,8 @@ hybrid, the first strong definition in file order decides the class.
 | WEAK-FALLBACK | 0 |
 | UNREACHABLE-WRAPPER-MISSING | 0 |
 | MISSING | 31 |
-| IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 76 |
-| IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 3 |
+| IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 77 |
+| IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 2 |
 | REFUSES (userspace) / IMPLEMENTED (kernel) | 1 |
 | STUB-NOT-IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 3 |
 
@@ -83,7 +83,7 @@ hybrid, the first strong definition in file order decides the class.
 
 | SSN | Service | Argc | Status | Handler file |
 |---|---|---:|---|---|
-| 0x00cd | `NtCreateUserProcess` | 11 | IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | `src/kernel/nt/proc_thread.c` |
+| 0x00cd | `NtCreateUserProcess` | 11 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/proc_thread.c` |
 | 0x00bc | `NtCreateProcess` | 8 | IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | `src/kernel/nt/proc_thread.c` |
 | 0x004d | `NtCreateProcessEx` | 9 | IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | `src/kernel/nt/proc_thread.c` |
 | 0x002c | `NtTerminateProcess` | 2 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/proc_thread.c` |
