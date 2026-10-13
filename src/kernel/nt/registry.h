@@ -141,6 +141,10 @@ typedef struct _KEY_BASIC_INFORMATION_ENUM {
  *  Backing: per-key directory tree under <g_kshim_root>/nt_registry
  *           + monolithic snapshot file <g_kshim_root>/nt_registry/hive_snapshot.bin
  *           with pseudo-regf header "NTREG\x01" for externally-parseable inspection.
+ *  Snapshot layout (written by NtFlushKey, little-endian): "NTREG\x01", u32 key
+ *           count, then one record per key in depth-first order: u32 path bytes,
+ *           path (UTF-16LE), u32 value count, then per value: u32 name bytes, name
+ *           (UTF-16LE), u32 type, u32 data length, data bytes.
  *  Trade-off: directory tree is immediately parseable with ls/cat, survives power cut
  *  per-file fsync, and maps 1:1 to regf NK/VK records; monolithic hive.bin is single-file
  *  externally parseable but requires atomic rename+fsync. Real regf would replace

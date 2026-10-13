@@ -9,6 +9,9 @@
 #include <string.h>
 #include <wchar.h>
 #include <assert.h>
+#include <stddef.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 static int g_pass=0,g_fail=0;
 #define ASSERT(cond) do{ if(!(cond)){ fprintf(stderr,"FAIL %s:%d: %s\n",__FILE__,__LINE__,#cond); g_fail++; return; } }while(0)
@@ -319,6 +322,217 @@ static void test_delete_and_enum(void){
     PASS();
 }
 
+/* Test 11: NtFlushKey writes a snapshot that describes the tree (not a zero count).
+   Layout (see registry.h): "NTREG\x01", u32 key count, then per key:
+   u32 path bytes, path (UTF-16LE), u32 value count, then per value:
+   u32 name bytes, name, u32 type, u32 data length, data. */
+static size_t snap_read(unsigned char *buf, size_t cap){
+    char path[2 * PATH_MAX];
+    snprintf(path, sizeof(path), "%s/nt_registry/hive_snapshot.bin", g_kshim_root);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    size_t total = 0;
+    for (;;) {
+        if (total == cap) break;
+        ssize_t r = read(fd, buf + total, cap - total);
+        if (r <= 0) break;
+        total += (size_t)r;
+    }
+    close(fd);
+    return total;
+}
+static unsigned u32le(const unsigned char *p){
+    return (unsigned)p[0] | ((unsigned)p[1] << 8) | ((unsigned)p[2] << 16) | ((unsigned)p[3] << 24);
+}
+/* true when the UTF-16LE bytes equal the ASCII string s */
+static int wmatch(const unsigned char *p, size_t bytes, const char *s){
+    size_t n = strlen(s);
+    if (bytes != n * 2) return 0;
+    for (size_t i = 0; i < n; i++)
+        if (p[2*i] != (unsigned char)s[i] || p[2*i+1] != 0) return 0;
+    return 1;
+}
+static void test_flush_snapshot(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1000,"regflush");
+    struct nt_ethread *thr=make_thread(proc,1);
+    UNICODE_STRING us; make_us(&us,"\\Registry\\User\\Software\\ntpers_flush_probe",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE hk=NULL; ULONG disp=0;
+    ASSERT_STATUS(NtCreateKey(&hk, KEY_ALL_ACCESS, &oa, 0, NULL, 0, &disp), STATUS_SUCCESS);
+    WCHAR vb[64]; UNICODE_STRING vn; make_us(&vn,"Alpha",vb,sizeof(vb));
+    ULONG v=42;
+    ASSERT_STATUS(NtSetValueKey(hk, &vn, 0, REG_DWORD, &v, sizeof(v)), STATUS_SUCCESS);
+    ASSERT_STATUS(NtFlushKey(hk), STATUS_SUCCESS);
+
+    static unsigned char snap[1<<16];
+    size_t n = snap_read(snap, sizeof(snap));
+    ASSERT(n >= 10);
+    ASSERT(memcmp(snap, "NTREG\x01", 6) == 0);
+    unsigned cnt = u32le(snap + 6);
+    ASSERT(cnt >= 5); /* \Registry\Machine, \Registry\Machine\Software, \Registry\User, \Registry\User\Software, probe */
+    size_t off = 10;
+    unsigned parsed = 0, hits = 0;
+    for (unsigned r = 0; r < cnt; r++) {
+        ASSERT(off + 4 <= n);
+        unsigned plen = u32le(snap + off); off += 4;
+        ASSERT(off + plen <= n);
+        int is_probe = wmatch(snap + off, plen, "\\Registry\\User\\Software\\ntpers_flush_probe");
+        off += plen;
+        ASSERT(off + 4 <= n);
+        unsigned vcnt = u32le(snap + off); off += 4;
+        if (is_probe) {
+            hits++;
+            ASSERT(vcnt == 1);
+        }
+        for (unsigned j = 0; j < vcnt; j++) {
+            ASSERT(off + 4 <= n);
+            unsigned nlen = u32le(snap + off); off += 4;
+            ASSERT(off + nlen <= n);
+            int is_alpha = is_probe && wmatch(snap + off, nlen, "Alpha");
+            off += nlen;
+            ASSERT(off + 8 <= n);
+            unsigned type = u32le(snap + off), dlen = u32le(snap + off + 4); off += 8;
+            ASSERT(off + dlen <= n);
+            if (is_alpha) {
+                ASSERT(type == REG_DWORD);
+                ASSERT(dlen == 4);
+                ASSERT(u32le(snap + off) == 42);
+                hits++;
+            }
+            off += dlen;
+        }
+        parsed++;
+    }
+    ASSERT(parsed == cnt);
+    ASSERT(off == n);
+    ASSERT(hits == 2);
+    ASSERT_STATUS(NtDeleteKey(hk), STATUS_SUCCESS);
+    ObCloseHandle(proc,hk);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
+/* Test 13: deleting a subkey removes it from its parent's list and namespace. */
+static void test_delete_nested(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1000,"regnest");
+    struct nt_ethread *thr=make_thread(proc,1);
+    UNICODE_STRING pus; make_us(&pus,"\\Registry\\User\\Software\\ntpers_nest_probe",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES poa=make_oa(&pus);
+    HANDLE hp=NULL; ULONG disp=0;
+    ASSERT_STATUS(NtCreateKey(&hp, KEY_ALL_ACCESS, &poa, 0, NULL, 0, &disp), STATUS_SUCCESS);
+    UNICODE_STRING cus; make_us(&cus,"\\Registry\\User\\Software\\ntpers_nest_probe\\child",wbuf2,sizeof(wbuf2));
+    OBJECT_ATTRIBUTES coa=make_oa(&cus);
+    HANDLE hc=NULL;
+    ASSERT_STATUS(NtCreateKey(&hc, KEY_ALL_ACCESS, &coa, 0, NULL, 0, &disp), STATUS_SUCCESS);
+    ASSERT_STATUS(NtDeleteKey(hc), STATUS_SUCCESS);
+
+    unsigned char buf[256]; ULONG rlen=0;
+    ASSERT_STATUS(NtEnumerateKey(hp, 0, KeyBasicInformation, buf, sizeof(buf), &rlen), STATUS_NO_MORE_ENTRIES);
+    HANDLE h2=NULL;
+    ASSERT_STATUS(NtOpenKey(&h2, KEY_READ, &coa), STATUS_OBJECT_NAME_NOT_FOUND);
+    ASSERT_STATUS(NtDeleteKey(hp), STATUS_SUCCESS);
+
+    ObCloseHandle(proc,hc); ObCloseHandle(proc,hp);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
+/* Test 12: NtEnumerateKey KeyNodeInformation: name, class and their offsets. */
+static void test_enumerate_node(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1000,"regnode");
+    struct nt_ethread *thr=make_thread(proc,1);
+    UNICODE_STRING pus; make_us(&pus,"\\Registry\\User\\Software\\ntpers_node_probe",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES poa=make_oa(&pus);
+    HANDLE hp=NULL; ULONG disp=0;
+    ASSERT_STATUS(NtCreateKey(&hp, KEY_ALL_ACCESS, &poa, 0, NULL, 0, &disp), STATUS_SUCCESS);
+    UNICODE_STRING cus; make_us(&cus,"\\Registry\\User\\Software\\ntpers_node_probe\\child",wbuf2,sizeof(wbuf2));
+    OBJECT_ATTRIBUTES coa=make_oa(&cus);
+    WCHAR cbuf[64]; UNICODE_STRING cls; make_us(&cls,"ClassOne",cbuf,sizeof(cbuf));
+    HANDLE hc=NULL;
+    ASSERT_STATUS(NtCreateKey(&hc, KEY_ALL_ACCESS, &coa, 0, &cls, 0, &disp), STATUS_SUCCESS);
+
+    unsigned char buf[256]; ULONG rlen=0;
+    ASSERT_STATUS(NtEnumerateKey(hp, 0, KeyNodeInformation, buf, sizeof(buf), &rlen), STATUS_SUCCESS);
+    KEY_NODE_INFORMATION *ni=(KEY_NODE_INFORMATION*)buf;
+    ASSERT(ni->NameLength == 5*sizeof(WCHAR));
+    ASSERT(wmatch((const unsigned char*)ni->Name, ni->NameLength, "child"));
+    ASSERT(ni->ClassLength == 8*sizeof(WCHAR));
+    ASSERT(ni->ClassOffset == offsetof(KEY_NODE_INFORMATION, Name) + ni->NameLength);
+    ASSERT(wmatch(buf + ni->ClassOffset, ni->ClassLength, "ClassOne"));
+    ASSERT(rlen == ni->ClassOffset + ni->ClassLength);
+
+    /* a buffer that cannot hold the name reports the required size */
+    ULONG small = (ULONG)offsetof(KEY_NODE_INFORMATION, Name) + 2;
+    ASSERT_STATUS(NtEnumerateKey(hp, 0, KeyNodeInformation, buf, small, &rlen), STATUS_BUFFER_TOO_SMALL);
+    ASSERT(rlen == (ULONG)offsetof(KEY_NODE_INFORMATION, Name) + 5*sizeof(WCHAR) + 8*sizeof(WCHAR));
+
+    ASSERT_STATUS(NtDeleteKey(hc), STATUS_SUCCESS);
+    ASSERT_STATUS(NtDeleteKey(hp), STATUS_SUCCESS);
+    ObCloseHandle(proc,hc); ObCloseHandle(proc,hp);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
+/* Test 14: value information classes with 64-bit alignment (Align64).
+   Full: the data starts at an 8-byte aligned DataOffset, padding is zero.
+   Partial: Type, DataLength, then Data at offset 8 (no TitleIndex). */
+static void test_value_align64(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1000,"regalign");
+    struct nt_ethread *thr=make_thread(proc,1);
+    UNICODE_STRING us; make_us(&us,"\\\\Registry\\\\User\\\\Software\\\\ntpers_align_probe",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE hk=NULL; ULONG disp=0;
+    ASSERT_STATUS(NtCreateKey(&hk, KEY_ALL_ACCESS, &oa, 0, NULL, 0, &disp), STATUS_SUCCESS);
+    WCHAR vb[64]; UNICODE_STRING vn; make_us(&vn,"Big",vb,sizeof(vb));
+    static const unsigned char data[5] = {1,2,3,4,5};
+    ASSERT_STATUS(NtSetValueKey(hk, &vn, 0, REG_BINARY, (PVOID)data, sizeof(data)), STATUS_SUCCESS);
+
+    unsigned char buf[128]; ULONG rlen=0;
+    memset(buf, 0xAA, sizeof(buf));
+    ASSERT_STATUS(NtQueryValueKey(hk, &vn, KeyValueFullInformationAlign64, buf, sizeof(buf), &rlen), STATUS_SUCCESS);
+    KEY_VALUE_FULL_INFORMATION *fi=(KEY_VALUE_FULL_INFORMATION*)buf;
+    ASSERT(fi->Type == REG_BINARY);
+    ASSERT(fi->NameLength == 3*sizeof(WCHAR));
+    ASSERT(wmatch((const unsigned char*)fi->Name, fi->NameLength, "Big"));
+    ASSERT(fi->DataOffset == 32);            /* 20 + 6 name bytes, rounded up to 8 */
+    ASSERT(fi->DataLength == 5);
+    ASSERT(rlen == 37);
+    for (ULONG i=26;i<32;i++) ASSERT(buf[i] == 0);
+    ASSERT(memcmp(buf+32, data, 5) == 0);
+
+    memset(buf, 0xAA, sizeof(buf)); rlen=0;
+    ASSERT_STATUS(NtQueryValueKey(hk, &vn, KeyValuePartialInformationAlign64, buf, sizeof(buf), &rlen), STATUS_SUCCESS);
+    KEY_VALUE_PARTIAL_INFORMATION_ALIGN64 *pa=(KEY_VALUE_PARTIAL_INFORMATION_ALIGN64*)buf;
+    ASSERT(pa->Type == REG_BINARY);
+    ASSERT(pa->DataLength == 5);
+    ASSERT(rlen == 13);
+    ASSERT(memcmp(pa->Data, data, 5) == 0);
+
+    memset(buf, 0xAA, sizeof(buf)); rlen=0;
+    ASSERT_STATUS(NtEnumerateValueKey(hk, 0, KeyValueFullInformationAlign64, buf, sizeof(buf), &rlen), STATUS_SUCCESS);
+    ASSERT(((KEY_VALUE_FULL_INFORMATION*)buf)->DataOffset == 32);
+    ASSERT(rlen == 37);
+    ASSERT(memcmp(buf+32, data, 5) == 0);
+
+    /* too small for the data: the required length is still reported */
+    ASSERT_STATUS(NtQueryValueKey(hk, &vn, KeyValuePartialInformationAlign64, buf, 12, &rlen), STATUS_BUFFER_TOO_SMALL);
+    ASSERT(rlen == 13);
+    ASSERT_STATUS(NtQueryValueKey(hk, &vn, 7, buf, sizeof(buf), &rlen), STATUS_INVALID_INFO_CLASS);
+
+    ASSERT_STATUS(NtDeleteKey(hk), STATUS_SUCCESS);
+    ObCloseHandle(proc,hk);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
 int main(void){
     printf("registry shim tests starting\n");
     ntreg_init();
@@ -333,6 +547,10 @@ int main(void){
         {test_access_denied,"access_denied"},
         {test_wow64,"wow64"},
         {test_delete_and_enum,"delete_and_enum"},
+        {test_flush_snapshot,"flush_snapshot"},
+        {test_delete_nested,"delete_nested"},
+        {test_enumerate_node,"enumerate_node"},
+        {test_value_align64,"value_align64"},
     };
     for(size_t i=0;i<sizeof(tests)/sizeof(tests[0]);i++){
         printf(" RUN %s\n",tests[i].name);

@@ -943,7 +943,8 @@ NTSTATUS NtDeleteKey(HANDLE KeyHandle) {
     if (slash>0) {
         UNICODE_STRING parent; parent.Buffer=k->full_path.Buffer; parent.Length=(USHORT)(slash*sizeof(WCHAR)); parent.MaximumLength=parent.Length;
         struct nt_object_header *phdr=NULL;
-        if (NT_SUCCESS(ObReferenceObjectByName(&parent, NULL, UserMode,0,&phdr))) {
+        /* registry_find_key walks key objects; ObReferenceObjectByName does not */
+        if (NT_SUCCESS(registry_find_key(&parent, &phdr))) {
             if (phdr->type==&nt_key_type) {
                 struct nt_key *pk=(struct nt_key*)nt_object_body(phdr);
                 write_lock(&pk->lock);
@@ -966,55 +967,194 @@ NTSTATUS NtDeleteKey(HANDLE KeyHandle) {
     // But per NT, deleting key doesn't close handle until NtClose
     return STATUS_SUCCESS;
 }
+/* ------------------------------------------------------------------ */
+/* NtFlushKey: hive snapshot                                           */
+/* The snapshot describes the whole in-memory tree under \Registry.    */
+/* Layout: "NTREG\x01", u32 key count, then one record per key in      */
+/* depth-first order (see registry.h). All integers are little-endian. */
+/* ------------------------------------------------------------------ */
+struct snap_buf {
+    uint8_t *data;
+    size_t len;
+    size_t cap;
+    uint32_t keys;
+    bool oom;
+};
+
+static void snap_put(struct snap_buf *b, const void *p, size_t n) {
+    if (b->oom || n == 0) return;
+    if (b->len + n > b->cap) {
+        size_t ncap = b->cap ? b->cap : 4096;
+        while (ncap < b->len + n) ncap *= 2;
+        uint8_t *nd = (uint8_t *)kmalloc(ncap, GFP_ATOMIC);
+        if (!nd) { b->oom = true; return; }
+        if (b->len) memcpy(nd, b->data, b->len);
+        if (b->data) kfree(b->data);
+        b->data = nd;
+        b->cap = ncap;
+    }
+    memcpy(b->data + b->len, p, n);
+    b->len += n;
+}
+static void snap_put_u32(struct snap_buf *b, uint32_t v) {
+    uint8_t t[4] = { (uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24) };
+    snap_put(b, t, 4);
+}
+static void snap_put_us(struct snap_buf *b, PCUNICODE_STRING us) {
+    snap_put_u32(b, us->Length);
+    snap_put(b, us->Buffer, us->Length);
+}
+
+static void snap_walk_key(struct nt_object_header *hdr, struct snap_buf *b) {
+    struct nt_key *k = (struct nt_key *)nt_object_body(hdr);
+    struct nt_object_header **kids = NULL;
+    size_t nkids = 0;
+    struct subkey_entry *e;
+    struct reg_value *v;
+
+    read_lock(&k->lock);
+    b->keys++;
+    snap_put_us(b, &k->full_path);
+    size_t nv = 0;
+    list_for_each_entry(v, &k->values, link) nv++;
+    snap_put_u32(b, (uint32_t)nv);
+    list_for_each_entry(v, &k->values, link) {
+        snap_put_us(b, &v->name);
+        snap_put_u32(b, v->type);
+        snap_put_u32(b, v->data_len);
+        snap_put(b, v->data, v->data_len);
+    }
+    list_for_each_entry(e, &k->subkeys, link) nkids++;
+    if (nkids) {
+        kids = (struct nt_object_header **)kmalloc(nkids * sizeof(*kids), GFP_ATOMIC);
+        if (!kids) b->oom = true;
+        else {
+            size_t i = 0;
+            list_for_each_entry(e, &k->subkeys, link) {
+                if (i < nkids) { ObReferenceObject(e->hdr); kids[i++] = e->hdr; }
+            }
+            nkids = i;
+        }
+    }
+    read_unlock(&k->lock);
+
+    for (size_t i = 0; kids && i < nkids; i++) {
+        snap_walk_key(kids[i], b);
+        ObDereferenceObject(kids[i]);
+    }
+    if (kids) kfree(kids);
+}
+
+/* Walks every key object directly under \Registry (Machine, User, and any
+   other top-level key) and their subkeys. */
+static NTSTATUS snap_walk_registry(struct snap_buf *b) {
+    WCHAR reg[] = { (WCHAR)'\\',(WCHAR)'R',(WCHAR)'e',(WCHAR)'g',(WCHAR)'i',(WCHAR)'s',(WCHAR)'t',(WCHAR)'r',(WCHAR)'y',0 };
+    UNICODE_STRING regUs; regUs.Buffer=reg; regUs.Length=9*sizeof(WCHAR); regUs.MaximumLength=regUs.Length;
+    struct nt_object_header *dir = NULL;
+    NTSTATUS st = ObReferenceObjectByName(&regUs, &nt_directory_type, KernelMode, 0, &dir);
+    if (!NT_SUCCESS(st)) return st;
+    struct nt_directory *d = (struct nt_directory *)nt_object_body(dir);
+    struct nt_object_header **roots = NULL;
+    struct nt_dir_entry *de;
+    size_t nroots = 0;
+
+    read_lock(&d->lock);
+    list_for_each_entry(de, &d->entries, link) {
+        if (de->obj && de->obj->type == &nt_key_type) nroots++;
+    }
+    if (nroots) {
+        roots = (struct nt_object_header **)kmalloc(nroots * sizeof(*roots), GFP_ATOMIC);
+        if (!roots) b->oom = true;
+        else {
+            size_t i = 0;
+            list_for_each_entry(de, &d->entries, link) {
+                if (de->obj && de->obj->type == &nt_key_type && i < nroots) {
+                    ObReferenceObject(de->obj); roots[i++] = de->obj;
+                }
+            }
+            nroots = i;
+        }
+    }
+    read_unlock(&d->lock);
+
+    for (size_t i = 0; roots && i < nroots; i++) {
+        snap_walk_key(roots[i], b);
+        ObDereferenceObject(roots[i]);
+    }
+    if (roots) kfree(roots);
+    ObDereferenceObject(dir);
+    return b->oom ? STATUS_NO_MEMORY : STATUS_SUCCESS;
+}
+
+/* Replaces <base>/hive_snapshot.bin with the buffer. */
+static NTSTATUS snap_write_file(const uint8_t *data, size_t len) {
+#ifdef __KERNEL__
+    char *base = kmalloc(PATH_MAX, GFP_KERNEL);
+    char *fpath = kmalloc(PATH_MAX, GFP_KERNEL);
+    if (!base || !fpath) {
+        if (base) kfree(base);
+        if (fpath) kfree(fpath);
+        return STATUS_NO_MEMORY;
+    }
+#else
+    char base[PATH_MAX];
+    char fpath[PATH_MAX];
+#endif
+    hive_base_path(base, PATH_MAX);
+    snprintf(fpath, PATH_MAX, "%s/hive_snapshot.bin", base);
+    ensure_hive_dir();
+    NTSTATUS st = STATUS_SUCCESS;
+#ifndef __KERNEL__
+    int fd = open(fpath, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+    if (fd < 0) st = STATUS_ACCESS_DENIED;
+    else {
+        size_t off = 0;
+        while (off < len) {
+            ssize_t w = write(fd, data + off, len - off);
+            if (w <= 0) { st = STATUS_ACCESS_DENIED; break; }
+            off += (size_t)w;
+        }
+        fsync(fd);
+        close(fd);
+        int dfd = open(base, O_DIRECTORY);
+        if (dfd >= 0) { fsync(dfd); close(dfd); }
+    }
+#else
+    struct file *filp = filp_open(fpath, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+    if (IS_ERR(filp)) st = STATUS_ACCESS_DENIED;
+    else {
+        loff_t pos = 0;
+        if (kernel_write(filp, data, len, &pos) != (ssize_t)len) st = STATUS_ACCESS_DENIED;
+        vfs_fsync(filp, 0);
+        filp_close(filp, NULL);
+    }
+    kfree(fpath);
+    kfree(base);
+#endif
+    return st;
+}
+
 NTSTATUS NtFlushKey(HANDLE KeyHandle) {
     ntreg_init();
     struct nt_eprocess *proc=kshim_current_process();
     struct nt_object_header *hdr=NULL;
     NTSTATUS st=ObReferenceObjectByHandle(proc,KeyHandle,&nt_key_type,UserMode,0,&hdr,NULL);
     if (!NT_SUCCESS(st)) return st;
-    /* persist snapshot */
-#ifdef __KERNEL__
-    char *snap = kmalloc(PATH_MAX, GFP_KERNEL);
-    char *base = kmalloc(PATH_MAX, GFP_KERNEL);
-    if (!snap || !base) { if (snap) kfree(snap); if (base) kfree(base); ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
-    hive_base_path(base,PATH_MAX);
-    snprintf(snap,PATH_MAX,"%s/hive_snapshot.bin",base);
-#else
-    char snap[PATH_MAX]; char base[PATH_MAX]; hive_base_path(base,sizeof(base));
-    snprintf(snap,sizeof(snap),"%s/hive_snapshot.bin",base);
-#endif
-#ifndef __KERNEL__
-    ensure_hive_dir();
-    int fd=open(snap,O_WRONLY|O_CREAT|O_TRUNC,0644);
-    if (fd>=0){
-        const char *magic="NTREG\x01";
-        (void)write(fd,magic,6);
-        uint32_t cnt=0;
-        (void)write(fd,&cnt,4);
-        fsync(fd); close(fd);
-        int dfd=open(base,O_DIRECTORY);
-        if(dfd>=0){ fsync(dfd); close(dfd); }
+    struct snap_buf b;
+    memset(&b, 0, sizeof(b));
+    snap_put(&b, "NTREG\x01", 6);
+    snap_put_u32(&b, 0); /* key count, patched below once the walk has run */
+    st = snap_walk_registry(&b);
+    if (NT_SUCCESS(st)) {
+        b.data[6] = (uint8_t)b.keys;
+        b.data[7] = (uint8_t)(b.keys >> 8);
+        b.data[8] = (uint8_t)(b.keys >> 16);
+        b.data[9] = (uint8_t)(b.keys >> 24);
+        st = snap_write_file(b.data, b.len);
     }
-#else
-    {
-        struct file *filp = filp_open(snap, O_WRONLY|O_CREAT|O_TRUNC, 0644);
-        if (!IS_ERR(filp)) {
-            loff_t pos=0;
-            const char magic[6]="NTREG\x01";
-            kernel_write(filp, magic, 6, &pos);
-            uint32_t cnt=0; kernel_write(filp, &cnt, 4, &pos);
-            vfs_fsync(filp, 0);
-            filp_close(filp, NULL);
-        }
-        ensure_hive_dir();
-    }
-#endif
-#ifdef __KERNEL__
-    kfree(snap);
-    kfree(base);
-#endif
+    if (b.data) kfree(b.data);
     ObDereferenceObject(hdr);
-    return STATUS_SUCCESS;
+    return st;
 }
 
 NTSTATUS NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleIndex, ULONG Type, PVOID Data, ULONG DataSize) {
@@ -1078,6 +1218,79 @@ NTSTATUS NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleI
         return STATUS_SUCCESS;
     }
 }
+/* Layout of the value information classes. The Align64 full class pads the
+   name so that the data starts at an 8-byte aligned DataOffset. The Align64
+   partial class has no TitleIndex, so its data starts at offset 8. Returns
+   STATUS_INVALID_INFO_CLASS for a class that is not a value class. */
+static NTSTATUS value_info_layout(ULONG cls, ULONG name_len, ULONG data_len, ULONG *needed, ULONG *data_off)
+{
+    ULONG off;
+    switch (cls) {
+    case KeyValueBasicInformation:
+        *data_off = 0;
+        *needed = (ULONG)offsetof(KEY_VALUE_BASIC_INFORMATION, Name) + name_len;
+        return STATUS_SUCCESS;
+    case KeyValueFullInformation:
+        off = (ULONG)offsetof(KEY_VALUE_FULL_INFORMATION, Name) + name_len;
+        break;
+    case KeyValueFullInformationAlign64:
+        off = (ULONG)offsetof(KEY_VALUE_FULL_INFORMATION, Name) + name_len;
+        off = (off + 7UL) & ~7UL;
+        break;
+    case KeyValuePartialInformation:
+        off = (ULONG)offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data);
+        break;
+    case KeyValuePartialInformationAlign64:
+        off = (ULONG)offsetof(KEY_VALUE_PARTIAL_INFORMATION_ALIGN64, Data);
+        break;
+    default:
+        return STATUS_INVALID_INFO_CLASS;
+    }
+    *data_off = off;
+    *needed = off + data_len;
+    return STATUS_SUCCESS;
+}
+
+/* Writes a value record in the class laid out by value_info_layout. The
+   caller has checked that the buffer holds `needed` bytes. Padding is zeroed,
+   so no uninitialised bytes reach the caller. */
+static void value_info_write(ULONG cls, ULONG type, PCUNICODE_STRING name,
+                             const uint8_t *data, ULONG data_len, ULONG data_off, void *out)
+{
+    uint8_t *o = (uint8_t *)out;
+    switch (cls) {
+    case KeyValueBasicInformation: {
+        PKEY_VALUE_BASIC_INFORMATION p=(PKEY_VALUE_BASIC_INFORMATION)out;
+        p->TitleIndex=0; p->Type=type; p->NameLength=name->Length;
+        if (name->Length) memcpy(p->Name, name->Buffer, name->Length);
+        break;
+    }
+    case KeyValueFullInformation:
+    case KeyValueFullInformationAlign64: {
+        PKEY_VALUE_FULL_INFORMATION p=(PKEY_VALUE_FULL_INFORMATION)out;
+        ULONG name_end = (ULONG)offsetof(KEY_VALUE_FULL_INFORMATION, Name) + name->Length;
+        p->TitleIndex=0; p->Type=type; p->DataOffset=data_off;
+        p->DataLength=data_len; p->NameLength=name->Length;
+        if (name->Length) memcpy(p->Name, name->Buffer, name->Length);
+        if (data_off > name_end) memset(o + name_end, 0, data_off - name_end);
+        if (data_len && data) memcpy(o + data_off, data, data_len);
+        break;
+    }
+    case KeyValuePartialInformation: {
+        PKEY_VALUE_PARTIAL_INFORMATION p=(PKEY_VALUE_PARTIAL_INFORMATION)out;
+        p->TitleIndex=0; p->Type=type; p->DataLength=data_len;
+        if (data_len && data) memcpy(p->Data, data, data_len);
+        break;
+    }
+    default: {
+        /* KeyValuePartialInformationAlign64 */
+        KEY_VALUE_PARTIAL_INFORMATION_ALIGN64 *p=(KEY_VALUE_PARTIAL_INFORMATION_ALIGN64 *)out;
+        p->Type=type; p->DataLength=data_len;
+        if (data_len && data) memcpy(p->Data, data, data_len);
+        break;
+    }
+    }
+}
 NTSTATUS NtQueryValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG KeyValueInformationClass, PVOID KeyValueInformation, ULONG Length, PULONG ResultLength) {
     ntreg_init();
     struct nt_eprocess *proc=kshim_current_process();
@@ -1107,36 +1320,13 @@ NTSTATUS NtQueryValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG KeyV
         ObDereferenceObject(hdr);
         return STATUS_OBJECT_NAME_NOT_FOUND;
     }
-    ULONG needed=0;
-    if (KeyValueInformationClass==KeyValuePartialInformation) {
-        needed = (ULONG)offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data) + target->data_len;
-    } else if (KeyValueInformationClass==KeyValueBasicInformation) {
-        needed = (ULONG)offsetof(KEY_VALUE_BASIC_INFORMATION, Name) + target->name.Length;
-    } else if (KeyValueInformationClass==KeyValueFullInformation) {
-        needed = (ULONG)offsetof(KEY_VALUE_FULL_INFORMATION, Name) + target->name.Length + target->data_len;
-    } else {
-        read_unlock(&k->lock); ObDereferenceObject(hdr); return STATUS_INVALID_INFO_CLASS;
-    }
+    ULONG needed=0, data_off=0;
+    st = value_info_layout(KeyValueInformationClass, target->name.Length, target->data_len, &needed, &data_off);
+    if (!NT_SUCCESS(st)) { read_unlock(&k->lock); ObDereferenceObject(hdr); return st; }
     if (ResultLength) *ResultLength = needed;
     if (Length < needed) { read_unlock(&k->lock); ObDereferenceObject(hdr); return STATUS_BUFFER_TOO_SMALL; }
     if (!KeyValueInformation) { read_unlock(&k->lock); ObDereferenceObject(hdr); return STATUS_INVALID_PARAMETER; }
-    if (KeyValueInformationClass==KeyValuePartialInformation) {
-        PKEY_VALUE_PARTIAL_INFORMATION p=(PKEY_VALUE_PARTIAL_INFORMATION)KeyValueInformation;
-        p->TitleIndex=0;
-        p->Type=target->type;
-        p->DataLength=target->data_len;
-        if (target->data_len && target->data) memcpy(p->Data, target->data, target->data_len);
-    } else if (KeyValueInformationClass==KeyValueBasicInformation) {
-        PKEY_VALUE_BASIC_INFORMATION p=(PKEY_VALUE_BASIC_INFORMATION)KeyValueInformation;
-        p->TitleIndex=0; p->Type=target->type; p->NameLength=target->name.Length;
-        if (target->name.Length) memcpy(p->Name, target->name.Buffer, target->name.Length);
-    } else {
-        PKEY_VALUE_FULL_INFORMATION p=(PKEY_VALUE_FULL_INFORMATION)KeyValueInformation;
-        p->TitleIndex=0; p->Type=target->type; p->DataOffset = (ULONG)offsetof(KEY_VALUE_FULL_INFORMATION, Name) + target->name.Length;
-        p->DataLength=target->data_len; p->NameLength=target->name.Length;
-        if (target->name.Length) memcpy(p->Name, target->name.Buffer, target->name.Length);
-        if (target->data_len) memcpy((char*)p + p->DataOffset, target->data, target->data_len);
-    }
+    value_info_write(KeyValueInformationClass, target->type, &target->name, target->data, target->data_len, data_off, KeyValueInformation);
     read_unlock(&k->lock);
     ObDereferenceObject(hdr);
     return STATUS_SUCCESS;
@@ -1191,6 +1381,20 @@ NTSTATUS NtEnumerateKey(HANDLE KeyHandle, ULONG Index, ULONG KeyInformationClass
         p->TitleIndex=0;
         p->NameLength=nameLen;
         if (nameLen) memcpy(p->Name, e->name.Buffer, nameLen);
+    } else if (KeyInformationClass==KeyNodeInformation) {
+        struct nt_key *ck=(struct nt_key*)nt_object_body(e->hdr);
+        ULONG classLen = ck->class_name.Length;
+        needed = (ULONG)offsetof(KEY_NODE_INFORMATION, Name) + nameLen + classLen;
+        if (ResultLength) *ResultLength = needed;
+        if (Length < needed) { read_unlock(&k->lock); ObDereferenceObject(hdr); return STATUS_BUFFER_TOO_SMALL; }
+        PKEY_NODE_INFORMATION p=(PKEY_NODE_INFORMATION)KeyInformation;
+        p->LastWriteTime.QuadPart = ck->last_write_time.QuadPart;
+        p->TitleIndex=0;
+        p->ClassOffset = (ULONG)offsetof(KEY_NODE_INFORMATION, Name) + nameLen;
+        p->ClassLength = classLen;
+        p->NameLength = nameLen;
+        if (nameLen) memcpy(p->Name, e->name.Buffer, nameLen);
+        if (classLen) memcpy((char*)p + p->ClassOffset, ck->class_name.Buffer, classLen);
     } else {
         read_unlock(&k->lock); ObDereferenceObject(hdr); return STATUS_INVALID_INFO_CLASS;
     }
@@ -1212,31 +1416,13 @@ NTSTATUS NtEnumerateValueKey(HANDLE KeyHandle, ULONG Index, ULONG KeyValueInform
     size_t idx=0; v=NULL;
     list_for_each_entry(v,&k->values,link){ if(idx==Index) break; idx++; }
     if (!v){ read_unlock(&k->lock); ObDereferenceObject(hdr); return STATUS_NO_MORE_ENTRIES; }
-    ULONG needed=0;
-    if (KeyValueInformationClass==KeyValueBasicInformation) {
-        needed = (ULONG)offsetof(KEY_VALUE_BASIC_INFORMATION, Name)+v->name.Length;
-    } else if (KeyValueInformationClass==KeyValueFullInformation) {
-        needed = (ULONG)offsetof(KEY_VALUE_FULL_INFORMATION, Name)+v->name.Length+v->data_len;
-    } else if (KeyValueInformationClass==KeyValuePartialInformation) {
-        needed = (ULONG)offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data)+v->data_len;
-    } else { read_unlock(&k->lock); ObDereferenceObject(hdr); return STATUS_INVALID_INFO_CLASS; }
+    ULONG needed=0, data_off=0;
+    st = value_info_layout(KeyValueInformationClass, v->name.Length, v->data_len, &needed, &data_off);
+    if (!NT_SUCCESS(st)) { read_unlock(&k->lock); ObDereferenceObject(hdr); return st; }
     if (ResultLength) *ResultLength=needed;
     if (Length < needed){ read_unlock(&k->lock); ObDereferenceObject(hdr); return STATUS_BUFFER_TOO_SMALL; }
-    if (KeyValueInformationClass==KeyValueBasicInformation){
-        PKEY_VALUE_BASIC_INFORMATION p=(PKEY_VALUE_BASIC_INFORMATION)KeyValueInformation;
-        p->TitleIndex=0; p->Type=v->type; p->NameLength=v->name.Length;
-        if(v->name.Length) memcpy(p->Name,v->name.Buffer,v->name.Length);
-    } else if (KeyValueInformationClass==KeyValueFullInformation){
-        PKEY_VALUE_FULL_INFORMATION p=(PKEY_VALUE_FULL_INFORMATION)KeyValueInformation;
-        p->TitleIndex=0; p->Type=v->type; p->NameLength=v->name.Length; p->DataLength=v->data_len;
-        p->DataOffset= (ULONG)offsetof(KEY_VALUE_FULL_INFORMATION, Name)+v->name.Length;
-        if(v->name.Length) memcpy(p->Name,v->name.Buffer,v->name.Length);
-        if(v->data_len) memcpy((char*)p + p->DataOffset, v->data, v->data_len);
-    } else {
-        PKEY_VALUE_PARTIAL_INFORMATION p=(PKEY_VALUE_PARTIAL_INFORMATION)KeyValueInformation;
-        p->TitleIndex=0; p->Type=v->type; p->DataLength=v->data_len;
-        if(v->data_len) memcpy(p->Data,v->data,v->data_len);
-    }
+    if (!KeyValueInformation) { read_unlock(&k->lock); ObDereferenceObject(hdr); return STATUS_INVALID_PARAMETER; }
+    value_info_write(KeyValueInformationClass, v->type, &v->name, v->data, v->data_len, data_off, KeyValueInformation);
     read_unlock(&k->lock);
     ObDereferenceObject(hdr);
     return STATUS_SUCCESS;
