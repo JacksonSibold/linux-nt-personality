@@ -613,6 +613,10 @@ NTSTATUS nt_svc_NtDuplicateObject(HANDLE SourceProcessHandle, HANDLE SourceHandl
 
     /* Delegate to handle.c's NtDuplicateObject which implements access narrowing, SAME_ACCESS, CLOSE_SOURCE */
     HANDLE nh = NULL;
+    /* Without a TargetHandle the duplicate is closed below. A protect-from-close
+     * duplicate cannot be closed, so the attribute is not applied to it. */
+    if (!TargetHandle)
+        HandleAttributes &= ~OBJ_PROTECT_FROM_CLOSE;
     NTSTATUS st = NtDuplicateObject(src_proc, SourceHandle, dst_proc, &nh, DesiredAccess, HandleAttributes, Options);
     if (NT_SUCCESS(st)) {
         if (TargetHandle) *TargetHandle = nh;

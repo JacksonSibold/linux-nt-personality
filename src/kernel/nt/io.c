@@ -2665,11 +2665,17 @@ static NTSTATUS ntio_set_rename(struct nt_file_object *file,
 	UNICODE_STRING uname;
 	NTSTATUS status;
 	bool replace;
+	char *dup;
 
 	if (len < sizeof(FILE_RENAME_INFORMATION) - sizeof(WCHAR))
 		return STATUS_INFO_LENGTH_MISMATCH;
 
 	ri = (PFILE_RENAME_INFORMATION)buf;
+	/* The name must lie inside the caller's buffer, and fit UNICODE_STRING. */
+	if (ri->FileNameLength > len - offsetof(FILE_RENAME_INFORMATION, FileName))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	if (ri->FileNameLength > 0xFFFF)
+		return STATUS_NAME_TOO_LONG;
 	if (ex) {
 		PFILE_RENAME_INFORMATION_EX rx = (PFILE_RENAME_INFORMATION_EX)buf;
 
@@ -2685,14 +2691,22 @@ static NTSTATUS ntio_set_rename(struct nt_file_object *file,
 
 	if (ri->RootDirectory) {
 		struct nt_file_object *root = ntio_handle_lookup(ri->RootDirectory, 0);
-		if (!root || !root->linux_path)
-			return STATUS_INVALID_HANDLE;
 		char rel[PATH_MAX];
+		int n = -1;
+		/* ntio_handle_lookup takes a reference: drop it on every path. */
+		if (!root)
+			return STATUS_INVALID_HANDLE;
+		if (!root->linux_path) {
+			ntio_file_put(root);
+			return STATUS_INVALID_HANDLE;
+		}
 		status = kshim_ntpath_to_linux(&uname, rel, sizeof(rel));
+		if (NT_SUCCESS(status))
+			n = snprintf(newpath, sizeof(newpath), "%s/%s",
+				     root->linux_path, rel);
+		ntio_file_put(root);
 		if (!NT_SUCCESS(status))
 			return status;
-		int n = snprintf(newpath, sizeof(newpath), "%s/%s",
-				 root->linux_path, rel);
 		if (n < 0 || (size_t)n >= sizeof(newpath))
 			return STATUS_NAME_TOO_LONG;
 	} else {
@@ -2712,11 +2726,18 @@ static NTSTATUS ntio_set_rename(struct nt_file_object *file,
 		}
 	}
 
-	if (kshim_vfs_rename(file->linux_path, newpath) != 0)
+	/* Allocate the new path before renaming: a failure after the rename would
+	 * leave the file moved while the object still names the old path (or none). */
+	dup = kstrdup(newpath, GFP_KERNEL);
+	if (!dup)
+		return STATUS_NO_MEMORY;
+	if (kshim_vfs_rename(file->linux_path, newpath) != 0) {
+		kfree(dup);
 		return STATUS_ACCESS_DENIED;
+	}
 
 	kfree(file->linux_path);
-	file->linux_path = kstrdup(newpath, GFP_KERNEL);
+	file->linux_path = dup;
 	return STATUS_SUCCESS;
 }
 

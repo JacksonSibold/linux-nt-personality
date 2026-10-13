@@ -35,6 +35,7 @@ DIR *khost_opendir(const char *path);
 /* Test scratch roots: remove posix_root (under /tmp) at exit, unless
  * KEEP_SCRATCH=1. Implemented in posix_host.c. */
 void khost_scratch_arm_cleanup(const char *posix_root);
+#define KHOST_SCRATCH_CLEANUP 1
 
 #define pread(fd, buf, n, off)  khost_pread((fd), (buf), (n), (off))
 #define pwrite(fd, buf, n, off) khost_pwrite((fd), (buf), (n), (off))

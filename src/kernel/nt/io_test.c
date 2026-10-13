@@ -79,7 +79,9 @@ static void setup_root(void)
 			 "/tmp/ntio_test_%d", (int)getpid());
 		/* Removed at exit, pass or fail (KEEP_SCRATCH=1 keeps it).
 		 * A caller-supplied NTIO_TEST_ROOT is never removed. */
+#ifdef KHOST_SCRATCH_CLEANUP
 		khost_scratch_arm_cleanup(g_test_root);
+#endif
 	}
 	kshim_set_root(g_test_root);
 
@@ -1165,6 +1167,74 @@ static ULONG make_rename_buf(void *buf, size_t buflen, BOOLEAN replace,
 	return total;
 }
 
+/* FileNameLength that runs past the information buffer is refused. The name
+ * bytes must come from the caller's buffer only, never past its end. */
+TEST(rename_name_length_bounded)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	unsigned char rbuf[sizeof(FILE_RENAME_INFORMATION_EX) + 2 * PATH_MAX];
+	PFILE_RENAME_INFORMATION ri = (PFILE_RENAME_INFORMATION)rbuf;
+	ULONG rlen;
+
+	reset_state();
+	ASSERT(write_file_at("rn_a.txt", "data"));
+	ASSERT_STATUS(open_test_file("rn_a.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE |
+				     FILE_SYNCHRONOUS_IO_NONALERT, &h),
+		      STATUS_SUCCESS);
+
+	/* Header plus 9 characters, but FileNameLength claims 200 characters. */
+	memset(rbuf, 'a', sizeof(rbuf));
+	rlen = make_rename_buf(rbuf, sizeof(rbuf), 0, 0, false, "rn_c.txt");
+	ri->FileNameLength = 200 * sizeof(WCHAR);
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, rbuf, rlen,
+						  FileRenameInformation),
+		      STATUS_INFO_LENGTH_MISMATCH);
+	ASSERT(file_exists_at("rn_a.txt"));
+	ASSERT(!file_exists_at("rn_c.txt"));
+	nt_svc_NtClose(h);
+	PASS();
+}
+
+/* A rename relative to RootDirectory takes a reference on the root handle's
+ * file object. Once every handle is closed, nothing may still hold it. */
+TEST(rename_root_directory_releases_ref)
+{
+	HANDLE hd = NULL, hf = NULL;
+	IO_STATUS_BLOCK iosb;
+	unsigned char rbuf[sizeof(FILE_RENAME_INFORMATION_EX) + 2 * PATH_MAX];
+	PFILE_RENAME_INFORMATION ri = (PFILE_RENAME_INFORMATION)rbuf;
+	ULONG rlen;
+
+	reset_state();
+	create_dir_at("rr_dir");
+	ASSERT(write_file_at("rr_src.txt", "x"));
+	ASSERT_STATUS(open_test_file("rr_dir", FILE_GENERIC_READ, FILE_SHARE_READ |
+				     FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+				     FILE_DIRECTORY_FILE, &hd), STATUS_SUCCESS);
+	ASSERT_STATUS(open_test_file("rr_src.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE |
+				     FILE_SYNCHRONOUS_IO_NONALERT, &hf), STATUS_SUCCESS);
+	/* The status is not checked: a RootDirectory name is joined to the root
+	 * path by kshim_ntpath_to_linux, which treats it as absolute, so this
+	 * rename fails on the host. That is a separate defect (see the audit
+	 * notes). The reference is taken before any of that, and must go. */
+	rlen = make_rename_buf(rbuf, sizeof(rbuf), 0, 0, false, "rr_moved.txt");
+	ri->RootDirectory = hd;
+	(void)nt_svc_NtSetInformationFile(hf, &iosb, rbuf, rlen, FileRenameInformation);
+	nt_svc_NtClose(hf);
+	nt_svc_NtClose(hd);
+	/* A leaked reference keeps the directory in the share registry with read
+	 * access granted, so an open that allows no sharing would conflict. */
+	ASSERT_STATUS(open_test_file("rr_dir", FILE_GENERIC_READ, 0, FILE_OPEN,
+				     FILE_DIRECTORY_FILE, &hd), STATUS_SUCCESS);
+	nt_svc_NtClose(hd);
+	PASS();
+}
+
 TEST(set_info_classes)
 {
 	HANDLE h = NULL, hb = NULL;
@@ -1983,6 +2053,8 @@ int main(void)
 	RUN(query_attributes_file);
 	RUN(ci_component_length_limit);
 	RUN(query_info_classes);
+	RUN(rename_name_length_bounded);
+	RUN(rename_root_directory_releases_ref);
 	RUN(set_info_classes);
 	RUN(device_fs_control_unsupported);
 	RUN(ea_unsupported);

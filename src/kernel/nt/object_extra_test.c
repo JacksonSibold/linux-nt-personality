@@ -1037,6 +1037,14 @@ TEST(duplicate_null_target)
     ASSERT(atomic64_read(&hdr->handle_count) == before);
     ObDereferenceObject(hdr);
 
+    /* A duplicate that is closed again must not stay open because it was made
+     * protect-from-close: the handle count is still unchanged. */
+    ASSERT_STATUS(nt_svc_NtDuplicateObject(NtCurrentProcess(), h, NtCurrentProcess(), NULL,
+                                           0, OBJ_PROTECT_FROM_CLOSE, DUPLICATE_SAME_ACCESS), STATUS_SUCCESS);
+    ASSERT_STATUS(ObReferenceObjectByHandle(proc, h, NULL, KernelMode, 0, &hdr, NULL), STATUS_SUCCESS);
+    ASSERT(atomic64_read(&hdr->handle_count) == before);
+    ObDereferenceObject(hdr);
+
     /* With DUPLICATE_CLOSE_SOURCE the source is closed even without a target. */
     ASSERT_STATUS(nt_svc_NtDuplicateObject(NtCurrentProcess(), h, NtCurrentProcess(), NULL,
                                            0, 0, DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE), STATUS_SUCCESS);

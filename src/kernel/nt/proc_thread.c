@@ -2234,17 +2234,20 @@ NTSTATUS nt_svc_NtSetInformationThread(HANDLE ThreadHandle, ULONG Class, PVOID I
     NTSTATUS st;
 
     switch (Class) {
+    /* Info is a user pointer in the kernel build: copy it, never dereference it. */
     case ThreadPriority:
     case ThreadBasePriority:
         if (Length != sizeof(LONG)) return STATUS_INFO_LENGTH_MISMATCH;
         if (!Info) return STATUS_INVALID_PARAMETER;
-        pri = *(LONG *)Info;
+        if (!access_ok(Info, sizeof(LONG)) || copy_from_user(&pri, Info, sizeof(pri)))
+            return STATUS_ACCESS_VIOLATION;
         if (pri < -15 || pri > 15) return STATUS_INVALID_PARAMETER;
         break;
     case ThreadAffinityMask:
         if (Length != sizeof(ULONG_PTR)) return STATUS_INFO_LENGTH_MISMATCH;
         if (!Info) return STATUS_INVALID_PARAMETER;
-        mask = *(ULONG_PTR *)Info;
+        if (!access_ok(Info, sizeof(ULONG_PTR)) || copy_from_user(&mask, Info, sizeof(mask)))
+            return STATUS_ACCESS_VIOLATION;
         break;
     default:
         return STATUS_INVALID_INFO_CLASS;
