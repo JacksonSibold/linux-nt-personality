@@ -2512,6 +2512,17 @@ static NTSTATUS ntsec_privilege_check_core(HANDLE h, ULONG count, ULONG control,
 /* Walks a self-relative SD and returns the byte length it occupies. */
 #define NTSEC_SD_MAX_LENGTH (64U * 1024U)
 
+/* Grows *total to cover [off, off + size). The end is summed in 64 bits, so an offset near
+ * ULONG_MAX cannot wrap into a small length. A result past NTSEC_SD_MAX_LENGTH is refused
+ * and *total is left unchanged. */
+NTSTATUS ntsec_sr_extend(ULONG *total, ULONG off, ULONG size)
+{
+    unsigned long long end = (unsigned long long)off + size;
+    if (end > NTSEC_SD_MAX_LENGTH) return STATUS_INVALID_SECURITY_DESCR;
+    if (end > *total) *total = (ULONG)end;
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS ntsec_sr_length(const void *base, ULONG *out)
 {
     SECURITY_DESCRIPTOR_RELATIVE hdr;
@@ -2540,9 +2551,9 @@ static NTSTATUS ntsec_sr_length(const void *base, ULONG *out)
             if (a.AclSize < sizeof(ACL)) return STATUS_INVALID_ACL;
             size = a.AclSize;
         }
-        if ((unsigned long long)offs[i] + size > total) total = (ULONG)(offs[i] + size);
+        st = ntsec_sr_extend(&total, offs[i], size);
+        if (!NT_SUCCESS(st)) return st;
     }
-    if (total > NTSEC_SD_MAX_LENGTH) return STATUS_INVALID_SECURITY_DESCR;
     *out = total;
     return STATUS_SUCCESS;
 }

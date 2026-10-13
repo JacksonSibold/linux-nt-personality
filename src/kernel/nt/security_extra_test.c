@@ -1004,6 +1004,25 @@ static void *make_allow_sd(const char *user_sid, ACCESS_MASK allow_mask, ULONG *
     return buf;
 }
 
+/* ntsec_sr_extend: the running length of a self-relative descriptor is computed in 64 bits.
+ * An offset near ULONG_MAX must not wrap into a small length. The host cannot reach this
+ * through NtAccessCheck (the component read at the offset faults first), so the arithmetic
+ * is tested directly. 64 KiB is NTSEC_SD_MAX_LENGTH. */
+TEST(sr_extend_refuses_ulong_wrap)
+{
+    ULONG total = 0x14;
+    ASSERT_STATUS(ntsec_sr_extend(&total, 0x14, 0x20), STATUS_SUCCESS);
+    ASSERT(total == 0x34);
+    total = 0x14;
+    ASSERT_STATUS(ntsec_sr_extend(&total, 0xFFFFFFF0UL, 0x20), STATUS_INVALID_SECURITY_DESCR);
+    ASSERT(total == 0x14);
+    ASSERT_STATUS(ntsec_sr_extend(&total, 0xFFFFFFFFUL, 0xFFFFFFFFUL), STATUS_INVALID_SECURITY_DESCR);
+    ASSERT_STATUS(ntsec_sr_extend(&total, 64U * 1024U - 4U, 4U), STATUS_SUCCESS);
+    ASSERT(total == 64U * 1024U);
+    ASSERT_STATUS(ntsec_sr_extend(&total, 64U * 1024U - 4U, 8U), STATUS_INVALID_SECURITY_DESCR);
+    PASS();
+}
+
 TEST(access_check_self_relative_sd)
 {
     struct nt_eprocess *caller = make_current_process_as("acc_caller", "S-1-5-21-0-0-0-1000");
@@ -1087,6 +1106,7 @@ int main(void)
     RUN(adjust_privileges_enable_disable);
     RUN(adjust_privileges_needs_adjust_right);
     RUN(privilege_check_all_and_any);
+    RUN(sr_extend_refuses_ulong_wrap);
     RUN(access_check_self_relative_sd);
     printf("security extra tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
