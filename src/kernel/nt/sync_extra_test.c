@@ -454,6 +454,25 @@ static void *keyed_waiter_thread(void *p) {
     return NULL;
 }
 
+/* Rights: NtWaitForKeyedEvent needs KEYEDEVENT_WAIT and NtReleaseKeyedEvent needs
+ * KEYEDEVENT_WAKE. A handle without the right is refused, and the other right works. */
+#define T_KEYEDEVENT_WAIT 0x0001UL
+#define T_KEYEDEVENT_WAKE 0x0002UL
+TEST(keyed_event_checks_rights) {
+    reset_ob();
+    HANDLE wake_only = NULL, wait_only = NULL;
+    ASSERT_STATUS(t_create_keyed(&wake_only, T_KEYEDEVENT_WAKE, NULL, 0), STATUS_SUCCESS);
+    ASSERT_STATUS(t_create_keyed(&wait_only, T_KEYEDEVENT_WAIT, NULL, 0), STATUS_SUCCESS);
+    int key_marker = 0;
+    LARGE_INTEGER zero;
+    zero.QuadPart = 0;
+    ASSERT_STATUS(t_wait_keyed(wake_only, &key_marker, &zero), STATUS_ACCESS_DENIED);
+    ASSERT_STATUS(t_release_keyed(wait_only, &key_marker, &zero), STATUS_ACCESS_DENIED);
+    ASSERT_STATUS(t_wait_keyed(wait_only, &key_marker, &zero), STATUS_TIMEOUT);
+    ASSERT_STATUS(t_release_keyed(wake_only, &key_marker, &zero), STATUS_TIMEOUT);
+    PASS();
+}
+
 TEST(keyed_release_wakes_waiter) {
     reset_ob();
     HANDLE h = NULL;
@@ -653,6 +672,7 @@ int main(void) {
     RUN(signal_and_wait_checks_rights);
     RUN(keyed_create_and_open);
     RUN(keyed_wait_times_out);
+    RUN(keyed_event_checks_rights);
     RUN(keyed_release_wakes_waiter);
     RUN(keyed_release_without_waiter_times_out);
     RUN(keyed_release_blocks_until_waiter);

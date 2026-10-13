@@ -2860,6 +2860,10 @@ NTSTATUS nt_svc_NtOpenKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG
     return st;
 }
 
+/* Keyed event access rights (NT values): wait needs KEYEDEVENT_WAIT, release needs KEYEDEVENT_WAKE. */
+#define SYNC_KEYEDEVENT_WAIT 0x0001UL
+#define SYNC_KEYEDEVENT_WAKE 0x0002UL
+
 /* Shared body of NtWaitForKeyedEvent and NtReleaseKeyedEvent. */
 static NTSTATUS keyed_event_op(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3, bool wait)
 {
@@ -2877,7 +2881,8 @@ static NTSTATUS keyed_event_op(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_P
         p_timeout = &k_timeout;
     }
     struct nt_object_header *hdr = NULL;
-    NTSTATUS st = ObReferenceObjectByHandle(proc, KeyedEventHandle, &nt_keyed_event_type, UserMode, 0, &hdr, NULL);
+    ACCESS_MASK desired = wait ? SYNC_KEYEDEVENT_WAIT : SYNC_KEYEDEVENT_WAKE;
+    NTSTATUS st = ObReferenceObjectByHandle(proc, KeyedEventHandle, &nt_keyed_event_type, UserMode, desired, &hdr, NULL);
     if (!NT_SUCCESS(st)) return st;
     struct nt_keyed_event *k = (struct nt_keyed_event *)nt_object_body(hdr);
     if (wait) st = nt_wait_for_keyed_event(k, Key, Alertable, p_timeout);
