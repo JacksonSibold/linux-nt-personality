@@ -118,8 +118,8 @@ static NTSTATUS t_set_timer(HANDLE h, LARGE_INTEGER *due, void (*apc)(void *), v
 static NTSTATUS t_cancel_timer(HANDLE h, BOOLEAN *cur) {
     return nt_svc_NtCancelTimer((ULONG_PTR)h, (ULONG_PTR)cur, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 }
-/* Wait through the wait engine directly: the handle-level single-object
- * wait in nt_obj.c does not accept timers. */
+/* Wait through the wait engine directly, without the handle lookup and type
+ * check that nt_svc_NtWaitForSingleObject (nt_obj.c) performs. */
 static NTSTATUS t_wait_handle(HANDLE h, LARGE_INTEGER *timeout) {
     struct nt_object_header *hdr = NULL;
     NTSTATUS st = ObReferenceObjectByHandle(kshim_current_process(), h, NULL, UserMode, 0, &hdr, NULL);
