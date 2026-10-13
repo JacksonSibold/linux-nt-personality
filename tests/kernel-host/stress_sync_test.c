@@ -23,6 +23,7 @@
  *
  * Link set matches i2_test (object handle nt_obj nt_services sync proc_thread
  * kshim ntstatus_kernel). Usage: stress_sync_test [seed] [threads] [ops].
+ * STRESS_SYNC_SKIP=<mask> disables operation families (bits above SKIP_EVENT_SET).
  */
 
 #include "object.h"
@@ -67,6 +68,21 @@ NTSTATUS nt_svc_NtReleaseSemaphore(HANDLE SemaphoreHandle, LONG ReleaseCount, PL
 #define LOCAL_MAX       24
 #define OPS_PER_EPOCH   64
 #define SEM_LIMIT       3
+
+/* Minimisation switch. STRESS_SYNC_SKIP=<mask> (environment, read once at
+ * start) turns off operation families so a failure can be attributed to the
+ * families that remain. A skipped family draws the same random values but
+ * performs no call. Bits: */
+#define SKIP_EVENT_SET    0x001
+#define SKIP_WAIT         0x002   /* short timed waits on events */
+#define SKIP_MUTANT       0x004
+#define SKIP_SEM          0x008
+#define SKIP_DUP          0x010
+#define SKIP_NAMED_CREATE 0x020
+#define SKIP_NAMED_OPEN   0x040
+#define SKIP_CLOSE        0x080
+#define SKIP_OWNED_WAIT   0x100   /* zero-timeout wait on a held handle */
+static unsigned g_skip;
 
 extern _Atomic long kshim_alloc_count;
 
@@ -130,6 +146,21 @@ static NTSTATUS short_wait(worker_t *w, HANDLE h)
     return st;
 }
 
+/* The SKIP_* bit of the operation family that draw r selects (see worker_main). */
+static unsigned family_bit(uint32_t r)
+{
+    if (r < 12) return SKIP_EVENT_SET;
+    if (r < 22) return SKIP_EVENT_SET;
+    if (r < 36) return SKIP_WAIT;
+    if (r < 48) return SKIP_MUTANT;
+    if (r < 56) return SKIP_SEM;
+    if (r < 66) return SKIP_DUP;
+    if (r < 74) return SKIP_NAMED_CREATE;
+    if (r < 80) return SKIP_NAMED_OPEN;
+    if (r < 90) return SKIP_CLOSE;
+    return SKIP_OWNED_WAIT;
+}
+
 static void *worker_main(void *arg)
 {
     worker_t *w = (worker_t *)arg;
@@ -147,6 +178,7 @@ static void *worker_main(void *arg)
             uint32_t r = stress_rnd(&w->rng, 100);
             int idx = (int)stress_rnd(&w->rng, NEVENTS);
 
+            if (g_skip & family_bit(r)) { stress_progress(&g_wd); continue; }
             if (r < 12) {
                 st = nt_svc_NtSetEvent(g_master[idx], NULL);
                 STRESS_CHECK(st == STATUS_SUCCESS, "set event 0x%lx", (unsigned long)st);
@@ -300,6 +332,9 @@ int main(int argc, char **argv)
 {
     stress_args a;
     stress_parse_args(argc, argv, &a, "stress_sync_test", 4096U);
+    const char *skip = getenv("STRESS_SYNC_SKIP");
+    g_skip = skip ? (unsigned)strtoul(skip, NULL, 0) : 0U;
+    if (g_skip) printf("stress_sync_test: STRESS_SYNC_SKIP=0x%x (families disabled)\n", g_skip);
     stress_seed_for_report = a.seed;
     stress_watchdog_start(&g_wd, "stress_sync_test", a.seed);
 
