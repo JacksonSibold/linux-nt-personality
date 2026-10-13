@@ -1201,6 +1201,39 @@ static int test_flush_virtual_memory(void) {
     return 1;
 }
 
+/* NtAllocateVirtualMemoryEx: without extended parameters it is
+ * NtAllocateVirtualMemory. Extended parameters (NUMA, address requirements)
+ * are not supported, and other process handles are STATUS_NOT_SUPPORTED. */
+static int test_allocate_ex(void) {
+    PVOID base = NULL;
+    SIZE_T size = 0x1000;
+    NTSTATUS st = NtAllocateVirtualMemoryEx((HANDLE)-1, &base, &size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS, "ex alloc 0x%lx", (unsigned long)st);
+    ASSERT(base != NULL, "ex alloc base");
+    ASSERT(size == 0x10000 || size == 0x1000, "ex size 0x%zx", (size_t)size);
+
+    MEMORY_BASIC_INFORMATION mbi;
+    ASSERT(query(base, &mbi), "query ex");
+    ASSERT(mbi.State == MEM_COMMIT, "ex state 0x%lx", (unsigned long)mbi.State);
+    ASSERT(mbi.Protect == PAGE_READWRITE, "ex protect");
+
+    /* Extended parameters are refused, and the base is not written. */
+    PVOID b2 = NULL;
+    SIZE_T s2 = 0x1000;
+    int dummy = 0;
+    st = NtAllocateVirtualMemoryEx((HANDLE)-1, &b2, &s2, MEM_RESERVE, PAGE_READWRITE, (void *)&dummy, 1);
+    ASSERT(st == STATUS_NOT_SUPPORTED, "ext param status 0x%lx", (unsigned long)st);
+    ASSERT(b2 == NULL, "ext param base untouched");
+
+    /* Another process handle is refused. */
+    b2 = NULL;
+    st = NtAllocateVirtualMemoryEx((HANDLE)0x1234, &b2, &s2, MEM_RESERVE, PAGE_READWRITE, NULL, 0);
+    ASSERT(st == STATUS_NOT_SUPPORTED, "other process status 0x%lx", (unsigned long)st);
+    ASSERT(b2 == NULL, "other process base untouched");
+    ntmm_reset(); /* release VADs: last test */
+    return 1;
+}
+
 int main(void) {
     printf("=== ntmm tests ===\n");
     RUN_TEST(test_reserve_commit_subrange);
@@ -1224,6 +1257,7 @@ int main(void) {
     RUN_TEST(test_query_region_info);
     RUN_TEST(test_rw_virtual_memory);
     RUN_TEST(test_flush_virtual_memory);
+    RUN_TEST(test_allocate_ex);
     printf("\n=== RESULT %d/%d passed, %d failed ===\n", tests_pass, tests_run, tests_fail);
     extern _Atomic long kshim_alloc_count;
     long leaks = atomic_load(&kshim_alloc_count);

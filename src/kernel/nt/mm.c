@@ -1603,6 +1603,26 @@ NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
 }
 
 /* -------------------------------------------------------------------------- */
+/* NtAllocateVirtualMemoryEx                                                  */
+/* -------------------------------------------------------------------------- */
+
+/* Without extended parameters this is NtAllocateVirtualMemory. Extended
+ * parameters (NUMA node, address requirements) need placement support that
+ * this manager does not have, so any count is STATUS_NOT_SUPPORTED. Other
+ * process handles are refused here, unlike NtAllocateVirtualMemory, which
+ * still ignores ProcessHandle (known gap). */
+NTSTATUS NtAllocateVirtualMemoryEx(HANDLE ProcessHandle, PVOID *BaseAddress,
+                                   PSIZE_T RegionSize, ULONG AllocationType,
+                                   ULONG PageProtection, PVOID ExtendedParameters,
+                                   ULONG ExtendedParameterCount) {
+    (void)ExtendedParameters;
+    if (ProcessHandle != (HANDLE)-1) return STATUS_NOT_SUPPORTED;
+    if (ExtendedParameterCount != 0) return STATUS_NOT_SUPPORTED;
+    return NtAllocateVirtualMemory(ProcessHandle, BaseAddress, 0, RegionSize,
+                                   AllocationType, PageProtection);
+}
+
+/* -------------------------------------------------------------------------- */
 /* Guard fault helper                                                         */
 /* -------------------------------------------------------------------------- */
 

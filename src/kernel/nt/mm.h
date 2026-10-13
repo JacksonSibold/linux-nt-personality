@@ -275,6 +275,10 @@ NTSTATUS NtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
                               PSIZE_T NumberOfBytesWritten);
 NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
                               PSIZE_T RegionSize, PIO_STATUS_BLOCK IoStatus);
+NTSTATUS NtAllocateVirtualMemoryEx(HANDLE ProcessHandle, PVOID *BaseAddress,
+                                    PSIZE_T RegionSize, ULONG AllocationType,
+                                    ULONG PageProtection, PVOID ExtendedParameters,
+                                    ULONG ExtendedParameterCount);
 
 /* Guard fault helper: simulate access to addr. Returns STATUS_GUARD_PAGE_VIOLATION
  * on first access to a guarded page and clears the guard bit. Returns STATUS_SUCCESS
