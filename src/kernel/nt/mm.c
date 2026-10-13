@@ -2349,12 +2349,17 @@ NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
         n = next;
     }
 #endif
-    ntmm_unlock(mm);
 #ifdef __KERNEL__
-    /* Kernel: vm_munmap with mmap_lock */
-    /* vm_munmap(unmap_start, unmap_end - unmap_start); */
-#endif
+    /* Kernel: vm_munmap takes mmap_lock, so it stays outside the VAD lock. */
+    ntmm_unlock(mm);
     kshim_munmap((void *)unmap_start, (size_t)(unmap_end - unmap_start));
+#else
+    /* Userspace: release the host range while the VAD lock is held. If it is
+     * released first, another thread can map the freed range in between and
+     * this munmap then removes that thread's view. */
+    kshim_munmap((void *)unmap_start, (size_t)(unmap_end - unmap_start));
+    ntmm_unlock(mm);
+#endif
     return STATUS_SUCCESS;
 }
 

@@ -193,6 +193,11 @@ separate `BUILD=build-o2` directory (`build-*/` is git-ignored).
   not through the `\\?\` path. A name ending in `.` can therefore be stripped
   to the wrong file. No test exercises that yet.
 - **mman_test intermittent failure: fixed** (test bug, see "mman_test flake" above).
+- **Stress findings still open (`make stress` is not green).** Each is recorded in `docs/review/kernel-nt.md`, with the seed that reproduces it:
+  - `stress_registry_test` faults under `KSHIM_POISON=1` (every seed): `NtSetValueKey` persists a value after releasing the key lock, and `NtDeleteValueKey` can free that value first (REG-1).
+  - `stress_namespace_test` faults in a libwinpthread lock about one run in three under `KSHIM_POISON=1` (OB-1). Without poison it passed every run tried.
+  - `stress_sync_test` fails about half the runs at seed 2 with 16 workers, both with and without poison. The base commit before this work (`45a70b4`) fails the same way (SYNC-3, not minimised).
+  - Opening an event through a path that crosses a symbolic link always fails with `STATUS_OBJECT_PATH_NOT_FOUND` (OB-2). The namespace test keeps that probe, so its counter `thru_link` stays 0.
 
 ## Modules that cannot be built here
 
@@ -250,8 +255,9 @@ These do not appear in `TESTS` or `BUILD_ONLY`.
 
 ## Stress tests (not part of `check`)
 
-Three concurrency stress programs drive the userspace kshim build of the
-object, handle, and sync code with several threads at once. They are built by
+Nine concurrency stress programs drive the userspace kshim build of the
+object, handle, sync, token, section, namespace, security-descriptor, registry
+and timer code with several threads at once. They are built by
 `make all` and run only by `make stress`. `check` does not run them.
 
 | Program | Sources linked | Covers |
@@ -259,6 +265,12 @@ object, handle, and sync code with several threads at once. They are built by
 | `stress_handle_test` | `object handle kshim` | create, close, duplicate (same and cross process, with move), ref and deref through handles, and a race round where every worker calls `ObCloseHandle` on one value |
 | `stress_object_test` | `object handle kshim` | named create and insert, open, reference by name, delete (`ObMakeTemporaryObject`), unnamed ref and deref, and a regression round for concurrent make-temporary |
 | `stress_sync_test` | `object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel` | `nt_svc_*` events, mutants, and semaphores with 0 to 2 ms waits, recursive mutant ownership, duplicate and close, named events, and a race round where every worker calls `NtClose` on one value |
+| `stress_token_test` | `security object handle kshim` | process-token open with random access masks, duplicate (of a shared token and of a worker's own), disable-all-privileges and TokenUser query, checked against the access each handle was granted; a race round of closes on one duplicate |
+| `stress_section_test` | `mm security object handle io iocp nt_obj_weak sync kshim` | anonymous sections with a private RW view and a tag round trip, file-backed read-only views of four 64 KiB files, named sections created and opened by name, view unmap and handle close in independent orders, delete by name; a race round of closes |
+| `stress_namespace_test` | `security object handle nt_obj sync kshim` | directories (permanent and temporary names), events inside them, symbolic links to directory paths, open of links and of events by path, permanent and temporary changes; a race round where every worker opens one event by path while it is deleted |
+| `stress_sd_test` | `security object handle nt_obj sync kshim` | `NtSetSecurityObject` with one of four DACL variants and `NtQuerySecurityObject` into large and small buffers on shared events; each query must parse and match an installed variant; a race round of set-or-query then close |
+| `stress_registry_test` | `security registry object handle nt_obj sync kshim` | key create, open, delete and flush under `\Registry\User\Software`, DWORD value set, query and delete; every result must be in the call's allowed set; a race round where every worker opens a key that is deleted at the same moment |
+| `stress_timer_test` | `security object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel` | real nt threads: waitable timers set (some periodic) and cancelled, waits with 0 to 2 ms timeouts, keyed-event release and wait with per-worker keys, alertable waits on an event that is never signalled, `NtAlertThread` between workers and on self |
 
 Usage (run from `tests/kernel-host`, or from `build/`):
 
@@ -291,10 +303,6 @@ memory then produces a visibly wrong value or a fault.
 A watchdog thread in each program aborts the process with a report if no worker
 has completed an operation for 60 seconds. That is treated as a deadlock.
 
-Expected duration on this machine (2026-10-12, UCRT gcc, Windows 11, 16 workers):
-about 2 s per seed for `stress_handle_test`, about 2 s for `stress_object_test`,
-and about 36 s for `stress_sync_test` per seed (the timed waits dominate). A full
-`make stress STRESS_THREADS=16` with the three default seeds takes about 2 minutes
-(127 s measured). `make stress` writes each program's output to
+Measured on this machine (2026-10-12, UCRT gcc, Windows 11, 16 workers, `KSHIM_POISON=1`, seed 2, default op counts): `stress_token_test` 1 s, `stress_handle_test` 2 s, `stress_section_test` 2 s, `stress_sd_test` 3 s, `stress_namespace_test` 11 s, `stress_object_test` 18 s, `stress_sync_test` 16 s (the timed waits dominate, and it fails about half the runs, see below), `stress_timer_test` 28 s, `stress_registry_test` faults in under 1 s (see below). A full `make stress STRESS_THREADS=16` (three seeds, nine programs) took about 2 min 40 s on the 2026-10-12 run, with the failures listed below. `make stress` writes each program's output to
 `build/<program>.seed<N>.log`. `nt_obj.c` and `proc_thread.c` print debug lines
 (`W1_INSTR`, `NtWaitForSingleObject:`) on every call. Those lines are now compiled out unless `NT_DEBUG_TRACE` is defined (`src/kernel/nt/kshim.h`), so the logs are small by default.
