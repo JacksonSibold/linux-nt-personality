@@ -608,6 +608,110 @@ NTSTATUS ObInsertObject(struct nt_object_header *obj,
     return status;
 }
 
+NTSTATUS ObCreateDirectoryObject(POBJECT_ATTRIBUTES oa, struct nt_object_header **out_hdr)
+{
+    struct nt_object_header *hdr = NULL;
+    struct nt_directory *dir = NULL;
+    NTSTATUS st;
+    if (!out_hdr)
+        return STATUS_INVALID_PARAMETER;
+    st = ObCreateObject(&nt_directory_type, oa, sizeof(*dir), &hdr, (void **)&dir);
+    if (!NT_SUCCESS(st))
+        return st;
+    INIT_LIST_HEAD(&dir->entries);
+    rwlock_init(&dir->lock);
+    *out_hdr = hdr;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS ObCreateSymbolicLinkObject(POBJECT_ATTRIBUTES oa, PCUNICODE_STRING target,
+                                    struct nt_object_header **out_hdr)
+{
+    struct nt_object_header *hdr = NULL;
+    struct nt_symlink *link = NULL;
+    NTSTATUS st;
+    if (!out_hdr || !target || target->Length == 0)
+        return STATUS_INVALID_PARAMETER;
+    st = ObCreateObject(&nt_symlink_type, oa, sizeof(*link), &hdr, (void **)&link);
+    if (!NT_SUCCESS(st))
+        return st;
+    st = nt_dup_unicodestring(target, &link->target);
+    if (!NT_SUCCESS(st)) {
+        /* symlink_delete frees whatever target holds (nothing, here). */
+        ObDereferenceObject(hdr);
+        return st;
+    }
+    *out_hdr = hdr;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS ObInsertOrOpenNamedObject(struct nt_object_header *obj,
+                                   POBJECT_ATTRIBUTES oa,
+                                   ACCESS_MASK access,
+                                   struct nt_eprocess *proc,
+                                   PHANDLE out_handle)
+{
+    unsigned int attempt;
+    if (!obj || !out_handle)
+        return STATUS_INVALID_PARAMETER;
+    for (attempt = 0; attempt < 2; attempt++) {
+        struct nt_object_header *found = NULL;
+        NTSTATUS st;
+        if (oa && oa->ObjectName && oa->ObjectName->Length) {
+            const UNICODE_STRING *path = oa->ObjectName;
+            size_t len = (size_t)path->Length / sizeof(WCHAR);
+            ssize_t slash = -1;
+            ssize_t i;
+            if (path->Length & (sizeof(WCHAR) - 1))
+                return STATUS_OBJECT_NAME_INVALID;
+            if (len == 0 || path->Buffer[len - 1] == (WCHAR)'\\')
+                return STATUS_OBJECT_NAME_INVALID;
+            for (i = (ssize_t)len - 1; i >= 0; i--) {
+                if (path->Buffer[i] == (WCHAR)'\\') { slash = i; break; }
+            }
+            /* A missing parent is PATH_NOT_FOUND, not NAME_NOT_FOUND. */
+            if (slash > 0) {
+                UNICODE_STRING parent = *path;
+                struct nt_object_header *parent_hdr = NULL;
+                parent.Length = (USHORT)(slash * sizeof(WCHAR));
+                parent.MaximumLength = parent.Length;
+                st = ObpParsePath(&parent, 0, NULL, 0, &parent_hdr);
+                if (st == STATUS_OBJECT_NAME_NOT_FOUND)
+                    return STATUS_OBJECT_PATH_NOT_FOUND;
+                if (NT_SUCCESS(st))
+                    ObDereferenceObject(parent_hdr);
+            }
+            /* OBJ_OPENLINK: look at a symbolic link at the last component
+             * itself, not at its target. */
+            st = ObpParsePath(oa->ObjectName, OBJ_OPENLINK, NULL, 0, &found);
+            if (NT_SUCCESS(st)) {
+                ULONG hattr = 0;
+                if (found->type != obj->type) {
+                    ObDereferenceObject(found);
+                    return STATUS_OBJECT_TYPE_MISMATCH;
+                }
+                if (!(oa->Attributes & OBJ_OPENIF)) {
+                    ObDereferenceObject(found);
+                    return STATUS_OBJECT_NAME_COLLISION;
+                }
+                if (oa->Attributes & OBJ_INHERIT) hattr |= OBJ_INHERIT;
+                if (oa->Attributes & OBJ_PROTECT_FROM_CLOSE) hattr |= OBJ_PROTECT_FROM_CLOSE;
+                st = ObCreateHandle(proc ? proc : kshim_current_process(), found, access, hattr, out_handle);
+                ObDereferenceObject(found);
+                return NT_SUCCESS(st) ? STATUS_OBJECT_NAME_EXISTS : st;
+            }
+        }
+        {
+            NTSTATUS st = ObInsertObject(obj, oa, access, proc, out_handle);
+            if (st != STATUS_OBJECT_NAME_COLLISION)
+                return st;
+            /* Another thread inserted the same name after our lookup: look again
+             * so the result matches the existing object. */
+        }
+    }
+    return STATUS_OBJECT_NAME_COLLISION;
+}
+
 void ObReferenceObject(struct nt_object_header *obj)
 {
     if (!obj) return;

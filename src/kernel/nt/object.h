@@ -34,6 +34,28 @@ extern "C" {
 #define OBJ_DONT_RESOLVE_LINK   OBJ_OPENLINK
 #define OBJ_VALID_ATTRIBUTES    (OBJ_INHERIT|OBJ_PERMANENT|OBJ_EXCLUSIVE|OBJ_CASE_INSENSITIVE|OBJ_OPENIF|OBJ_OPENLINK|OBJ_KERNEL_HANDLE|OBJ_FORCE_ACCESS_CHECK|OBJ_PROTECT_FROM_CLOSE)
 
+/* Object directory access rights (winnt.h). Values are not in security.h, so
+ * they are defined here for the namespace services in nt_obj.c. */
+#define DIRECTORY_QUERY                 0x0001UL
+#define DIRECTORY_TRAVERSE              0x0002UL
+#define DIRECTORY_CREATE_OBJECT         0x0004UL
+#define DIRECTORY_CREATE_SUBDIRECTORY   0x0008UL
+#define DIRECTORY_ALL_ACCESS            0x000F000FUL
+
+/* Symbolic link object access rights (winnt.h). */
+#define SYMBOLIC_LINK_QUERY             0x0001UL
+#define SYMBOLIC_LINK_ALL_ACCESS        0x000F0001UL
+
+/* STATUS for a create that found an existing object and opened it (ntstatus.h). */
+#ifndef STATUS_OBJECT_NAME_EXISTS
+#define STATUS_OBJECT_NAME_EXISTS ((NTSTATUS)0x40000000L)
+#endif
+
+/* STATUS for a create that found an existing object and opened it. */
+#ifndef STATUS_OBJECT_NAME_EXISTS
+#define STATUS_OBJECT_NAME_EXISTS ((NTSTATUS)0x40000000L)
+#endif
+
 /* STATUS for protected handle close */
 #ifndef STATUS_HANDLE_NOT_CLOSABLE
 #define STATUS_HANDLE_NOT_CLOSABLE ((NTSTATUS)0xC0000235L)
@@ -233,6 +255,31 @@ NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj);
 /* Sets OBJ_PERMANENT on obj. Does not check SeCreatePermanentPrivilege; the
  * caller does. */
 NTSTATUS ObMakePermanentObject(struct nt_object_header *obj);
+
+/* New, unnamed or named, directory object with an empty entry list. The caller
+ * inserts it with ObInsertOrOpenNamedObject. */
+NTSTATUS ObCreateDirectoryObject(POBJECT_ATTRIBUTES oa, struct nt_object_header **out_hdr);
+
+/* New symbolic link object whose target is a copy of target (absolute path,
+ * even length, non-empty). The caller inserts it with
+ * ObInsertOrOpenNamedObject. */
+NTSTATUS ObCreateSymbolicLinkObject(POBJECT_ATTRIBUTES oa, PCUNICODE_STRING target,
+                                    struct nt_object_header **out_hdr);
+
+/* Inserts obj under oa's name (or leaves it unnamed when oa has no name) and
+ * creates a handle for it in proc. Create-or-open rules (NT):
+ *  - the name exists and has another object type: STATUS_OBJECT_TYPE_MISMATCH;
+ *  - the name exists and OBJ_OPENIF is not set: STATUS_OBJECT_NAME_COLLISION;
+ *  - the name exists and OBJ_OPENIF is set: a handle to the existing object,
+ *    STATUS_OBJECT_NAME_EXISTS. obj is not inserted and the caller still
+ *    releases it.
+ * A missing parent directory gives STATUS_OBJECT_PATH_NOT_FOUND. The name
+ * lookup does not follow a symbolic link at the last component. */
+NTSTATUS ObInsertOrOpenNamedObject(struct nt_object_header *obj,
+                                   POBJECT_ATTRIBUTES oa,
+                                   ACCESS_MASK access,
+                                   struct nt_eprocess *proc,
+                                   PHANDLE out_handle);
 
 /* Attaches a copy of the self-relative descriptor sd (length bytes) to obj,
  * replacing and freeing any previous one. sd == NULL clears it. The object

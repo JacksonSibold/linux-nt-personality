@@ -44,6 +44,7 @@ static int g_fail = 0;
 
 NTSTATUS nt_svc_NtMakePermanentObject(HANDLE Handle);
 NTSTATUS nt_svc_NtMakeTemporaryObject(HANDLE Handle);
+NTSTATUS nt_svc_NtCreateDirectoryObject(PHANDLE DirectoryHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes);
 
 static WCHAR wbuf[256];
 
@@ -215,6 +216,154 @@ TEST(make_permanent_no_token)
 }
 
 /* -------------------------------------------------------------------------- */
+/* 2. NtCreateDirectoryObject                                                  */
+/* -------------------------------------------------------------------------- */
+
+static void teardown(struct nt_eprocess *proc)
+{
+    ObDestroyProcessObject(proc);
+    kshim_set_current_process(NULL);
+}
+
+TEST(create_directory_anonymous)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(311, "dir1");
+    ASSERT(proc != NULL);
+    HANDLE h = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(&h, DIRECTORY_QUERY | DIRECTORY_TRAVERSE, NULL), STATUS_SUCCESS);
+    ASSERT(h != NULL);
+    struct nt_object_header *hdr = NULL;
+    ASSERT_STATUS(ObReferenceObjectByHandle(proc, h, &nt_directory_type, KernelMode, DIRECTORY_QUERY, &hdr, NULL), STATUS_SUCCESS);
+    ASSERT(ObGetObjectType(hdr) == &nt_directory_type);
+    ObDereferenceObject(hdr);
+    /* Only the requested rights are granted. */
+    ASSERT_STATUS(ObReferenceObjectByHandle(proc, h, NULL, KernelMode, DIRECTORY_CREATE_OBJECT, &hdr, NULL), STATUS_ACCESS_DENIED);
+    ObCloseHandle(proc, h);
+    teardown(proc);
+    PASS();
+}
+
+TEST(create_directory_named_and_collision)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(312, "dir2");
+    ASSERT(proc != NULL);
+    UNICODE_STRING us;
+    make_us(&us, "\\BaseNamedObjects\\DirA", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    HANDLE h1 = NULL, h2 = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(&h1, DIRECTORY_QUERY, &oa), STATUS_SUCCESS);
+    ASSERT(h1 != NULL);
+    struct nt_object_header *found = NULL;
+    ASSERT_STATUS(ObReferenceObjectByName(&us, &nt_directory_type, KernelMode, 0, &found), STATUS_SUCCESS);
+    ObDereferenceObject(found);
+
+    /* Same name without OBJ_OPENIF: collision, and no handle is written. */
+    ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(&h2, DIRECTORY_QUERY, &oa), STATUS_OBJECT_NAME_COLLISION);
+    ASSERT(h2 == NULL);
+
+    ObCloseHandle(proc, h1);
+    teardown(proc);
+    PASS();
+}
+
+TEST(create_directory_openif)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(313, "dir3");
+    ASSERT(proc != NULL);
+    UNICODE_STRING us;
+    make_us(&us, "\\BaseNamedObjects\\DirB", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    HANDLE h1 = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(&h1, DIRECTORY_QUERY, &oa), STATUS_SUCCESS);
+
+    /* OBJ_OPENIF opens the existing directory and reports NAME_EXISTS. */
+    OBJECT_ATTRIBUTES oa_if = make_oa(&us, OBJ_OPENIF);
+    HANDLE h2 = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(&h2, DIRECTORY_QUERY, &oa_if), STATUS_OBJECT_NAME_EXISTS);
+    ASSERT(h2 != NULL);
+    struct nt_object_header *a = NULL, *b = NULL;
+    ASSERT_STATUS(ObReferenceObjectByHandle(proc, h1, NULL, KernelMode, 0, &a, NULL), STATUS_SUCCESS);
+    ASSERT_STATUS(ObReferenceObjectByHandle(proc, h2, NULL, KernelMode, 0, &b, NULL), STATUS_SUCCESS);
+    ASSERT(a == b);
+    ObDereferenceObject(a);
+    ObDereferenceObject(b);
+
+    ObCloseHandle(proc, h2);
+    ObCloseHandle(proc, h1);
+    teardown(proc);
+    PASS();
+}
+
+TEST(create_directory_type_mismatch)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(314, "dir4");
+    ASSERT(proc != NULL);
+    HANDLE ht = NULL;
+    ASSERT_STATUS(insert_named(proc, "\\BaseNamedObjects\\NotADir", &ht), STATUS_SUCCESS);
+
+    UNICODE_STRING us;
+    make_us(&us, "\\BaseNamedObjects\\NotADir", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, OBJ_OPENIF);
+    HANDLE h = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(&h, DIRECTORY_QUERY, &oa), STATUS_OBJECT_TYPE_MISMATCH);
+    ASSERT(h == NULL);
+
+    ObCloseHandle(proc, ht);
+    teardown(proc);
+    PASS();
+}
+
+TEST(create_directory_bad_paths_and_args)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(315, "dir5");
+    ASSERT(proc != NULL);
+    HANDLE h = NULL;
+    UNICODE_STRING us;
+
+    ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(NULL, DIRECTORY_QUERY, NULL), STATUS_INVALID_PARAMETER);
+
+    make_us(&us, "\\BaseNamedObjects\\NoSuch\\Dir", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(&h, DIRECTORY_QUERY, &oa), STATUS_OBJECT_PATH_NOT_FOUND);
+    ASSERT(h == NULL);
+
+    make_us(&us, "\\BaseNamedObjects\\", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    oa = make_oa(&us, 0);
+    ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(&h, DIRECTORY_QUERY, &oa), STATUS_OBJECT_NAME_INVALID);
+
+    make_us(&us, "BaseNamedObjects\\Rel", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    oa = make_oa(&us, 0);
+    ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(&h, DIRECTORY_QUERY, &oa), STATUS_OBJECT_PATH_SYNTAX_BAD);
+
+    oa = make_oa(&us, 0);
+    oa.Length = 0;
+    ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(&h, DIRECTORY_QUERY, &oa), STATUS_INVALID_PARAMETER);
+
+    teardown(proc);
+    PASS();
+}
+
+TEST(create_directory_generic_access)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(316, "dir6");
+    ASSERT(proc != NULL);
+    HANDLE h = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(&h, GENERIC_ALL, NULL), STATUS_SUCCESS);
+    struct nt_object_header *hdr = NULL;
+    ASSERT_STATUS(ObReferenceObjectByHandle(proc, h, NULL, KernelMode, DIRECTORY_CREATE_SUBDIRECTORY | DIRECTORY_QUERY, &hdr, NULL), STATUS_SUCCESS);
+    ObDereferenceObject(hdr);
+    ObCloseHandle(proc, h);
+    teardown(proc);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* main                                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -225,6 +374,12 @@ int main(void)
     RUN(make_permanent_with_privilege);
     RUN(make_permanent_bad_handle);
     RUN(make_permanent_no_token);
+    RUN(create_directory_anonymous);
+    RUN(create_directory_named_and_collision);
+    RUN(create_directory_openif);
+    RUN(create_directory_type_mismatch);
+    RUN(create_directory_bad_paths_and_args);
+    RUN(create_directory_generic_access);
 
     printf("object_extra_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

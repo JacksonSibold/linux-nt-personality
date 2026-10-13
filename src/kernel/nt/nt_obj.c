@@ -130,6 +130,22 @@ static void nt_ensure_obj_types(void)
     nt_obj_types_registered = true;
 }
 
+/* Maps the generic rights of a directory object request (NT GENERIC_MAPPING for
+ * object directories). Other bits pass through unchanged. */
+static ACCESS_MASK nt_map_directory_access(ACCESS_MASK a)
+{
+    ACCESS_MASK m = a & ~(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL);
+    if (a & GENERIC_READ)
+        m |= READ_CONTROL | DIRECTORY_QUERY | DIRECTORY_TRAVERSE;
+    if (a & GENERIC_WRITE)
+        m |= READ_CONTROL | DIRECTORY_CREATE_OBJECT | DIRECTORY_CREATE_SUBDIRECTORY;
+    if (a & GENERIC_EXECUTE)
+        m |= READ_CONTROL | DIRECTORY_TRAVERSE;
+    if (a & GENERIC_ALL)
+        m |= DIRECTORY_ALL_ACCESS;
+    return m;
+}
+
 /* ------------------------------------------------------------------ */
 /* Helpers for dispatcher header init (shared with sync.c)              */
 /* ------------------------------------------------------------------ */
@@ -775,6 +791,29 @@ NTSTATUS nt_svc_NtMakeTemporaryObject(HANDLE Handle)
     return st;
 }
 
+/* NtCreateDirectoryObject: create-or-open rules are in
+ * ObInsertOrOpenNamedObject (object.c). */
+NTSTATUS nt_svc_NtCreateDirectoryObject(PHANDLE DirectoryHandle, ACCESS_MASK DesiredAccess,
+                                        POBJECT_ATTRIBUTES ObjectAttributes)
+{
+    struct nt_eprocess *proc = kshim_current_process();
+    struct nt_object_header *hdr = NULL;
+    HANDLE h = NULL;
+    NTSTATUS st;
+    if (!DirectoryHandle || !proc)
+        return STATUS_INVALID_PARAMETER;
+    if (ObjectAttributes && ObjectAttributes->Length != sizeof(*ObjectAttributes))
+        return STATUS_INVALID_PARAMETER;
+    st = ObCreateDirectoryObject(ObjectAttributes, &hdr);
+    if (!NT_SUCCESS(st))
+        return st;
+    st = ObInsertOrOpenNamedObject(hdr, ObjectAttributes, nt_map_directory_access(DesiredAccess), proc, &h);
+    ObDereferenceObject(hdr);
+    if (NT_SUCCESS(st))
+        *DirectoryHandle = h;
+    return st;
+}
+
 /* Needs SeCreatePermanentPrivilege on the effective token, checked before the
  * handle is looked up (as NT does). */
 NTSTATUS nt_svc_NtMakePermanentObject(HANDLE Handle)
@@ -1170,6 +1209,36 @@ NTSTATUS nt_svc_NtMakePermanentObject(unsigned long a0, unsigned long a1, unsign
     if (!NT_SUCCESS(st)) return st;
     st = ObMakePermanentObject(hdr);
     ObDereferenceObject(hdr);
+    return st;
+}
+
+NTSTATUS nt_svc_NtCreateDirectoryObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                        unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                        unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    PHANDLE DirectoryHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    HANDLE h = NULL; OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL; struct nt_object_header *hdr = NULL; NTSTATUS st; struct nt_eprocess *proc;
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!DirectoryHandle || !access_ok(DirectoryHandle, sizeof(*DirectoryHandle)))
+        return STATUS_ACCESS_VIOLATION;
+    proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    st = nt_ensure_handle_table(proc);
+    if (!NT_SUCCESS(st)) return st;
+    st = k_copy_oa(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObCreateDirectoryObject(oa, &hdr);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObInsertOrOpenNamedObject(hdr, oa, nt_map_directory_access(DesiredAccess), proc, &h);
+    ObDereferenceObject(hdr);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(DirectoryHandle, &h, sizeof(h))) {
+        ObCloseHandle(proc, h);
+        return STATUS_ACCESS_VIOLATION;
+    }
     return st;
 }
 
