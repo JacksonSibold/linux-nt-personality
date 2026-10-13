@@ -6,7 +6,7 @@
  *   0x000-0x400  headers (SizeOfHeaders 0x400)
  *   RVA 0x1000   .text  raw 0x400 size 0x200, VirtualSize 0x100 (RX)
  *   RVA 0x2000   .data  raw 0x600 size 0x200, VirtualSize 0x1800 (RW, COW)
- *   SizeOfImage 0x4000, file size 0x800, ImageBase 0x140000000.
+ *   SizeOfImage 0x4000, file size 0x800, ImageBase 0x20000000 (the host test image itself is linked at 0x140000000).
  *
  * Field offsets in the section table (for patching in tests):
  *   .text header at PES_TEXT_HDR, .data header at PES_DATA_HDR. Each entry is
@@ -24,7 +24,7 @@
 #define PES_TEXT_HDR    0x188u    /* PES_OPT_OFF + 240 */
 #define PES_DATA_HDR    0x1B0u
 #define PES_SIZE_OF_IMAGE_OFF (PES_OPT_OFF + 56)
-#define PES_BASE_DEFAULT 0x140000000ULL
+#define PES_BASE_DEFAULT 0x20000000ULL  /* not 0x140000000: MinGW places the test exe there */
 
 typedef struct pe_synth_opts {
     int pe32;               /* 1: optional magic 0x10B and machine i386 */
