@@ -1,6 +1,6 @@
 # 0036: Import walk has no total bound across descriptors (L-16)
 
-Status: Implemented in COMMIT_PENDING (L-16). `pe_imports_walk` in `src/loader/pe_parse.c` counts descriptors and thunks over the whole walk and fails with `PE_ERR_CORRUPT` at `PE_MAX_IMPORT_DESCRIPTORS` (1024) and `PE_MAX_IMPORT_THUNKS` (262144). The limits are in `src/loader/pe_parse.h`. Host tests: `test_import_thunk_budget_exact`, `test_import_thunk_budget_exceeded`, `test_import_descriptor_count_bounded` in `tests/host/test_pe_parse.c`. Not covered: `tests/fuzz` seed (the fuzzer directory is on branch `haiku/fuzz`, not on this branch, so no seed was added here).
+Status: Implemented in 7f7e5d1 (L-16). `pe_imports_walk` in `src/loader/pe_parse.c` counts descriptors and thunks over the whole walk and fails with `PE_ERR_CORRUPT` at `PE_MAX_IMPORT_DESCRIPTORS` (1024) and `PE_MAX_IMPORT_THUNKS` (262144). The limits are in `src/loader/pe_parse.h`. Host tests: `test_import_thunk_budget_exact`, `test_import_thunk_budget_exceeded`, `test_import_descriptor_count_bounded` in `tests/host/test_pe_parse.c`. Not covered: `tests/fuzz` seed (the fuzzer directory is on branch `haiku/fuzz`, not on this branch, so no seed was added here).
 Finding: `docs/review/loader.md` L-16 (Medium).
 Date: 2026-10-12
 
