@@ -316,6 +316,13 @@ struct nt_ethread {
     /* Impersonation token (one reference held), NULL unless the thread is
      * impersonating. Released in ObDestroyThreadObject. */
     struct _ACCESS_TOKEN    *impersonation_token;
+    /* Scheduling and alert state (proc_thread.c, iocp.c). All zero by default:
+     * priority 0 is THREAD_PRIORITY_NORMAL relative to the process, affinity 0
+     * means "inherit the process affinity mask", and alerted false means no
+     * alert is pending. Written under the thread lock. */
+    LONG                     priority;       /* relative, -15..15 */
+    ULONG_PTR                affinity_mask;  /* 0 = inherit process mask */
+    bool                     alerted;        /* consumed by NtTestAlert */
 };
 
 NTSTATUS ObCreateProcessObject(struct nt_eprocess **out, ULONG pid, const char *name);
