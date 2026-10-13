@@ -288,24 +288,33 @@ static void ObpRemoveFromDirectory(struct nt_object_header *obj)
 {
     struct nt_directory *dir = obj->parent_dir;
     struct nt_dir_entry *de;
+    bool removed = false;
     if (!dir)
         return;
     write_lock(&dir->lock);
-    list_for_each_entry(de, &dir->entries, link) {
-        if (de->obj == obj) {
-            list_del(&de->link);
-            /* Header name points to this entry's name buffer. Clear header name after freeing. */
-            nt_free_unicodestring(&de->name);
-            kfree(de);
-            break;
+    /* Re-check parent_dir under the directory lock. Two callers can read the same
+     * non-NULL parent_dir (concurrent ObMakeTemporaryObject). Only the one that
+     * still finds the entry linked removes it and drops the directory's
+     * reference; the other sees NULL and does nothing. */
+    if (obj->parent_dir == dir) {
+        list_for_each_entry(de, &dir->entries, link) {
+            if (de->obj == obj) {
+                list_del(&de->link);
+                /* Header name points to this entry's name buffer. Clear header name after freeing. */
+                nt_free_unicodestring(&de->name);
+                kfree(de);
+                break;
+            }
         }
+        obj->parent_dir = NULL;
+        obj->name.Buffer = NULL;
+        obj->name.Length = 0;
+        obj->name.MaximumLength = 0;
+        removed = true;
     }
     write_unlock(&dir->lock);
-    obj->parent_dir = NULL;
-    obj->name.Buffer = NULL;
-    obj->name.Length = 0;
-    obj->name.MaximumLength = 0;
-    ObDereferenceObject(obj);
+    if (removed)
+        ObDereferenceObject(obj);
 }
 
 /* -------------------------------------------------------------------------- */

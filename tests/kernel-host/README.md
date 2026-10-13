@@ -258,10 +258,9 @@ A watchdog thread in each program aborts the process with a report if no worker
 has completed an operation for 60 seconds. That is treated as a deadlock.
 
 Expected duration on this machine (2026-10-12, UCRT gcc, Windows 11, 16 workers):
-about 1 s per seed for `stress_handle_test`, about 36 s per seed for
-`stress_sync_test` (the timed waits dominate). `stress_object_test` duration is
-not yet measured: until the make-temporary fix in `src/kernel/nt/object.c` lands,
-its random phase aborts on the double release described in
-`docs/review/kernel-nt.md` (C-1). `make stress` writes each program's output to
+about 2 s per seed for `stress_handle_test`, about 2 s for `stress_object_test`,
+and about 36 s for `stress_sync_test` per seed (the timed waits dominate). A full
+`make stress STRESS_THREADS=16` with the three default seeds takes about 2 minutes
+(127 s measured). `make stress` writes each program's output to
 `build/<program>.seed<N>.log`. `nt_obj.c` and `proc_thread.c` print debug lines
 (`W1_INSTR`, `NtWaitForSingleObject:`) on every call, so those logs are large.
