@@ -1022,88 +1022,6 @@ TEST(query_attributes_file)
 	PASS();
 }
 
-/* NtOpenIoCompletion: names are not registered by NtCreateIoCompletion in
- * this build, so every name lookup misses. The NULL object-attributes case
- * is rejected before any lookup. */
-TEST(iocp_open_by_name)
-{
-	HANDLE iocp = NULL, opened = NULL;
-	OBJECT_ATTRIBUTES oa;
-	NTSTATUS st;
-
-	reset_state();
-	ASSERT_STATUS(nt_svc_NtCreateIoCompletion(&iocp, IO_COMPLETION_ALL_ACCESS,
-						  NULL, 0), STATUS_SUCCESS);
-
-	oa = make_obj_attr("named_iocp");
-	st = nt_svc_NtOpenIoCompletion(&opened, IO_COMPLETION_ALL_ACCESS, &oa);
-	ASSERT_STATUS(st, STATUS_OBJECT_NAME_NOT_FOUND);
-	ASSERT(opened == NULL);
-
-	ASSERT_STATUS(nt_svc_NtOpenIoCompletion(&opened, IO_COMPLETION_ALL_ACCESS,
-						NULL),
-		      STATUS_INVALID_PARAMETER);
-	ASSERT_STATUS(nt_svc_NtOpenIoCompletion(NULL, IO_COMPLETION_ALL_ACCESS,
-						&oa),
-		      STATUS_ACCESS_VIOLATION);
-	nt_svc_NtClose(iocp);
-	PASS();
-}
-
-/* NtQueryIoCompletion(IoCompletionBasicInformation) reports the number of
- * queued packets as a LONG Depth, and the class/length checks match NT. */
-TEST(iocp_query_depth)
-{
-	HANDLE iocp = NULL;
-	LONG depth = -1;
-	ULONG retlen = 0;
-	ULONG key = 0, value_dummy = 0;
-	IO_STATUS_BLOCK iosb;
-	LARGE_INTEGER zero;
-	NTSTATUS st;
-	int i;
-
-	reset_state();
-	ASSERT_STATUS(nt_svc_NtCreateIoCompletion(&iocp, IO_COMPLETION_ALL_ACCESS,
-						  NULL, 0), STATUS_SUCCESS);
-
-	st = nt_svc_NtQueryIoCompletion(iocp, IoCompletionBasicInformation,
-					&depth, sizeof(depth), &retlen);
-	ASSERT_STATUS(st, STATUS_SUCCESS);
-	ASSERT(depth == 0);
-	ASSERT(retlen == sizeof(LONG));
-
-	for (i = 0; i < 3; i++)
-		ASSERT_STATUS(nt_svc_NtSetIoCompletion(iocp, i, NULL,
-						       STATUS_SUCCESS, i),
-			      STATUS_SUCCESS);
-	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(iocp, IoCompletionBasicInformation,
-						 &depth, sizeof(depth), &retlen),
-		      STATUS_SUCCESS);
-	ASSERT(depth == 3);
-
-	zero.QuadPart = 0;
-	ASSERT_STATUS(nt_svc_NtRemoveIoCompletion(iocp, &key, &value_dummy,
-						  &iosb, &zero),
-		      STATUS_SUCCESS);
-	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(iocp, IoCompletionBasicInformation,
-						 &depth, sizeof(depth), &retlen),
-		      STATUS_SUCCESS);
-	ASSERT(depth == 2);
-
-	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(iocp, IoCompletionBasicInformation,
-						 &depth, 2, &retlen),
-		      STATUS_INFO_LENGTH_MISMATCH);
-	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(iocp, 7,
-						 &depth, sizeof(depth), &retlen),
-		      STATUS_INVALID_INFO_CLASS);
-	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(NULL, IoCompletionBasicInformation,
-						 &depth, sizeof(depth), &retlen),
-		      STATUS_INVALID_HANDLE);
-	nt_svc_NtClose(iocp);
-	PASS();
-}
-
 static bool write_file_at(const char *relpath, const char *data)
 {
 	char full[PATH_MAX];
@@ -1208,6 +1126,221 @@ TEST(query_info_classes)
 	PASS();
 }
 
+/* Build a FILE_RENAME_INFORMATION(_EX) buffer for a relative name. */
+static ULONG make_rename_buf(void *buf, size_t buflen, BOOLEAN replace,
+			     ULONG ex_flags, bool ex, const char *name)
+{
+	WCHAR wname[PATH_MAX];
+	size_t i, n = strlen(name);
+	PFILE_RENAME_INFORMATION ri = (PFILE_RENAME_INFORMATION)buf;
+	PFILE_RENAME_INFORMATION_EX rx = (PFILE_RENAME_INFORMATION_EX)buf;
+	ULONG total;
+
+	for (i = 0; i < n; i++)
+		wname[i] = (WCHAR)(unsigned char)name[i];
+	total = (ULONG)(offsetof(FILE_RENAME_INFORMATION, FileName) + n * sizeof(WCHAR));
+	(void)buflen;
+	if (ex) {
+		rx->Flags = ex_flags;
+		rx->RootDirectory = NULL;
+		rx->FileNameLength = (ULONG)(n * sizeof(WCHAR));
+		memcpy(rx->FileName, wname, n * sizeof(WCHAR));
+	} else {
+		ri->ReplaceIfExists = replace;
+		ri->RootDirectory = NULL;
+		ri->FileNameLength = (ULONG)(n * sizeof(WCHAR));
+		memcpy(ri->FileName, wname, n * sizeof(WCHAR));
+	}
+	return total;
+}
+
+TEST(set_info_classes)
+{
+	HANDLE h = NULL, hb = NULL;
+	IO_STATUS_BLOCK iosb;
+	FILE_STANDARD_INFORMATION std;
+	FILE_ALLOCATION_INFORMATION alloc_info;
+	FILE_DISPOSITION_INFORMATION_EX dispx;
+	unsigned char rbuf[sizeof(FILE_RENAME_INFORMATION_EX) + 2 * PATH_MAX];
+	ULONG rlen;
+
+	reset_state();
+	ASSERT(write_file_at("set_a.txt", "hello"));
+	ASSERT(write_file_at("set_b.txt", "world"));
+	ASSERT_STATUS(open_test_file("set_a.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE |
+				     FILE_SYNCHRONOUS_IO_NONALERT, &h),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(open_test_file("set_b.txt", FILE_GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE |
+				     FILE_SHARE_DELETE, FILE_OPEN, FILE_NON_DIRECTORY_FILE, &hb),
+		      STATUS_SUCCESS);
+
+	/* Rename onto an existing target without ReplaceIfExists: collision. */
+	rlen = make_rename_buf(rbuf, sizeof(rbuf), 0, 0, false, "set_b.txt");
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, rbuf, rlen,
+						  FileRenameInformation),
+		      STATUS_OBJECT_NAME_COLLISION);
+	ASSERT(file_exists_at("set_a.txt"));
+	ASSERT(file_exists_at("set_b.txt"));
+
+	/* Same collision check through FileRenameInformationEx, Flags = 0. */
+	rlen = make_rename_buf(rbuf, sizeof(rbuf), 0, 0, true, "set_b.txt");
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, rbuf, rlen,
+						  FileRenameInformationEx),
+		      STATUS_OBJECT_NAME_COLLISION);
+
+	/* Unknown Ex flags are not supported. */
+	rlen = make_rename_buf(rbuf, sizeof(rbuf), 0, 0x2, true, "set_c.txt");
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, rbuf, rlen,
+						  FileRenameInformationEx),
+		      STATUS_NOT_SUPPORTED);
+	ASSERT(file_exists_at("set_a.txt"));
+
+	/* Replacing rename succeeds. The target is closed first: the Windows host
+	 * will not replace a file that is still open. */
+	nt_svc_NtClose(hb);
+	hb = NULL;
+	rlen = make_rename_buf(rbuf, sizeof(rbuf), 1, 0, false, "set_b.txt");
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, rbuf, rlen,
+						  FileRenameInformation),
+		      STATUS_SUCCESS);
+	ASSERT(!file_exists_at("set_a.txt"));
+	ASSERT(file_exists_at("set_b.txt"));
+
+	/* Allocation size below EOF truncates; equal size is a no-op. */
+	alloc_info.AllocationSize.QuadPart = 3;
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, &alloc_info,
+						  sizeof(alloc_info),
+						  FileAllocationInformation),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &std, sizeof(std),
+						    FileStandardInformation),
+		      STATUS_SUCCESS);
+	ASSERT(std.EndOfFile.QuadPart == 3);
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, &alloc_info,
+						  sizeof(alloc_info),
+						  FileAllocationInformation),
+		      STATUS_SUCCESS);
+	alloc_info.AllocationSize.QuadPart = 100;
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, &alloc_info,
+						  sizeof(alloc_info),
+						  FileAllocationInformation),
+		      STATUS_NOT_SUPPORTED);
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, &alloc_info, 1,
+						  FileAllocationInformation),
+		      STATUS_INFO_LENGTH_MISMATCH);
+
+	/* FileDispositionInformationEx: DELETE sets delete pending, others refused. */
+	dispx.Flags = FILE_DISPOSITION_DELETE;
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, &dispx, sizeof(dispx),
+						  FileDispositionInformationEx),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &std, sizeof(std),
+						    FileStandardInformation),
+		      STATUS_SUCCESS);
+	ASSERT(std.DeletePending != 0);
+	dispx.Flags = 0x2;
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, &dispx, sizeof(dispx),
+						  FileDispositionInformationEx),
+		      STATUS_NOT_SUPPORTED);
+	dispx.Flags = 0;
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, &dispx, sizeof(dispx),
+						  FileDispositionInformationEx),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &std, sizeof(std),
+						    FileStandardInformation),
+		      STATUS_SUCCESS);
+	ASSERT(std.DeletePending == 0);
+
+	if (hb)
+		nt_svc_NtClose(hb);
+	nt_svc_NtClose(h);
+	PASS();
+}
+
+/* NtOpenIoCompletion: names are not registered by NtCreateIoCompletion in
+ * this build, so every name lookup misses. The NULL object-attributes case
+ * is rejected before any lookup. */
+TEST(iocp_open_by_name)
+{
+	HANDLE iocp = NULL, opened = NULL;
+	OBJECT_ATTRIBUTES oa;
+	NTSTATUS st;
+
+	reset_state();
+	ASSERT_STATUS(nt_svc_NtCreateIoCompletion(&iocp, IO_COMPLETION_ALL_ACCESS,
+						  NULL, 0), STATUS_SUCCESS);
+
+	oa = make_obj_attr("named_iocp");
+	st = nt_svc_NtOpenIoCompletion(&opened, IO_COMPLETION_ALL_ACCESS, &oa);
+	ASSERT_STATUS(st, STATUS_OBJECT_NAME_NOT_FOUND);
+	ASSERT(opened == NULL);
+
+	ASSERT_STATUS(nt_svc_NtOpenIoCompletion(&opened, IO_COMPLETION_ALL_ACCESS,
+						NULL),
+		      STATUS_INVALID_PARAMETER);
+	ASSERT_STATUS(nt_svc_NtOpenIoCompletion(NULL, IO_COMPLETION_ALL_ACCESS,
+						&oa),
+		      STATUS_ACCESS_VIOLATION);
+	nt_svc_NtClose(iocp);
+	PASS();
+}
+
+/* NtQueryIoCompletion(IoCompletionBasicInformation) reports the number of
+ * queued packets as a LONG Depth, and the class/length checks match NT. */
+TEST(iocp_query_depth)
+{
+	HANDLE iocp = NULL;
+	LONG depth = -1;
+	ULONG retlen = 0;
+	ULONG key = 0, value_dummy = 0;
+	IO_STATUS_BLOCK iosb;
+	LARGE_INTEGER zero;
+	NTSTATUS st;
+	int i;
+
+	reset_state();
+	ASSERT_STATUS(nt_svc_NtCreateIoCompletion(&iocp, IO_COMPLETION_ALL_ACCESS,
+						  NULL, 0), STATUS_SUCCESS);
+
+	st = nt_svc_NtQueryIoCompletion(iocp, IoCompletionBasicInformation,
+					&depth, sizeof(depth), &retlen);
+	ASSERT_STATUS(st, STATUS_SUCCESS);
+	ASSERT(depth == 0);
+	ASSERT(retlen == sizeof(LONG));
+
+	for (i = 0; i < 3; i++)
+		ASSERT_STATUS(nt_svc_NtSetIoCompletion(iocp, i, NULL,
+						       STATUS_SUCCESS, i),
+			      STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(iocp, IoCompletionBasicInformation,
+						 &depth, sizeof(depth), &retlen),
+		      STATUS_SUCCESS);
+	ASSERT(depth == 3);
+
+	zero.QuadPart = 0;
+	ASSERT_STATUS(nt_svc_NtRemoveIoCompletion(iocp, &key, &value_dummy,
+						  &iosb, &zero),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(iocp, IoCompletionBasicInformation,
+						 &depth, sizeof(depth), &retlen),
+		      STATUS_SUCCESS);
+	ASSERT(depth == 2);
+
+	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(iocp, IoCompletionBasicInformation,
+						 &depth, 2, &retlen),
+		      STATUS_INFO_LENGTH_MISMATCH);
+	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(iocp, 7,
+						 &depth, sizeof(depth), &retlen),
+		      STATUS_INVALID_INFO_CLASS);
+	ASSERT_STATUS(nt_svc_NtQueryIoCompletion(NULL, IoCompletionBasicInformation,
+						 &depth, sizeof(depth), &retlen),
+		      STATUS_INVALID_HANDLE);
+	nt_svc_NtClose(iocp);
+	PASS();
+}
+
 int main(void)
 {
 	setup_root();
@@ -1228,6 +1361,7 @@ int main(void)
 	RUN(query_attributes_file);
 	RUN(ci_component_length_limit);
 	RUN(query_info_classes);
+	RUN(set_info_classes);
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);
 

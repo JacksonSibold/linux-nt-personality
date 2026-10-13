@@ -302,12 +302,18 @@ int khost_rmdir(const char *path)
     return _rmdir(buf);
 }
 
+/* POSIX rename() replaces an existing target. The CRT rename() on Windows
+ * does not, so use MoveFileEx with MOVEFILE_REPLACE_EXISTING to match. */
 int khost_rename(const char *from, const char *to)
 {
     char a[KHOST_PATH_MAX], b[KHOST_PATH_MAX];
     translate(from, a, sizeof(a));
     translate(to, b, sizeof(b));
-    return rename(a, b);
+    if (!MoveFileExA(a, b, MOVEFILE_REPLACE_EXISTING)) {
+        errno = EACCES;
+        return -1;
+    }
+    return 0;
 }
 
 static int run_segment(char *seg)

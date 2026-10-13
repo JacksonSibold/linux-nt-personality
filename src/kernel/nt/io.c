@@ -2519,18 +2519,77 @@ static NTSTATUS ntio_set_disposition(struct nt_file_object *file,
 	return STATUS_SUCCESS;
 }
 
+/*
+ * AllocationSize. Shrinking below EndOfFile truncates the file, as NT does.
+ * Growing the allocation is not tracked separately from EndOfFile in this
+ * implementation, so a larger value is refused rather than silently dropped.
+ */
+static NTSTATUS ntio_set_allocation(struct nt_file_object *file,
+				    PVOID buf, ULONG len)
+{
+	PFILE_ALLOCATION_INFORMATION ai;
+	struct kstat st;
+
+	if (len < sizeof(*ai))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	ai = (PFILE_ALLOCATION_INFORMATION)buf;
+	if (ai->AllocationSize.QuadPart < 0)
+		return STATUS_INVALID_PARAMETER;
+	if (kshim_vfs_getattr(file->filp, &st) != 0)
+		return STATUS_UNSUCCESSFUL;
+	if (ai->AllocationSize.QuadPart == (LONGLONG)st.size)
+		return STATUS_SUCCESS;
+	if (ai->AllocationSize.QuadPart < (LONGLONG)st.size) {
+		if (kshim_vfs_truncate(file->filp, ai->AllocationSize.QuadPart) != 0)
+			return STATUS_DISK_FULL;
+		return STATUS_SUCCESS;
+	}
+	return STATUS_NOT_SUPPORTED;
+}
+
+/* FileDispositionInformationEx: only FILE_DISPOSITION_DELETE is honoured. */
+static NTSTATUS ntio_set_disposition_ex(struct nt_file_object *file,
+					PVOID buf, ULONG len)
+{
+	PFILE_DISPOSITION_INFORMATION_EX di;
+
+	if (len < sizeof(*di))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	di = (PFILE_DISPOSITION_INFORMATION_EX)buf;
+	if (di->Flags & ~FILE_DISPOSITION_DELETE)
+		return STATUS_NOT_SUPPORTED;
+	file->delete_pending = (di->Flags & FILE_DISPOSITION_DELETE) != 0;
+	return STATUS_SUCCESS;
+}
+
+/*
+ * Rename. With ReplaceIfExists FALSE (or Flags without
+ * FILE_RENAME_REPLACE_IF_EXISTS) an existing target is a name collision,
+ * unless it is the source file itself (a case-only rename on a case-folding
+ * volume).
+ */
 static NTSTATUS ntio_set_rename(struct nt_file_object *file,
-				PVOID buf, ULONG len)
+				PVOID buf, ULONG len, bool ex)
 {
 	PFILE_RENAME_INFORMATION ri;
 	char newpath[PATH_MAX];
 	UNICODE_STRING uname;
 	NTSTATUS status;
+	bool replace;
 
 	if (len < sizeof(FILE_RENAME_INFORMATION) - sizeof(WCHAR))
 		return STATUS_INFO_LENGTH_MISMATCH;
 
 	ri = (PFILE_RENAME_INFORMATION)buf;
+	if (ex) {
+		PFILE_RENAME_INFORMATION_EX rx = (PFILE_RENAME_INFORMATION_EX)buf;
+
+		if (rx->Flags & ~FILE_RENAME_REPLACE_IF_EXISTS)
+			return STATUS_NOT_SUPPORTED;
+		replace = (rx->Flags & FILE_RENAME_REPLACE_IF_EXISTS) != 0;
+	} else {
+		replace = ri->ReplaceIfExists != 0;
+	}
 	uname.Buffer = ri->FileName;
 	uname.Length = (USHORT)ri->FileNameLength;
 	uname.MaximumLength = uname.Length;
@@ -2551,6 +2610,17 @@ static NTSTATUS ntio_set_rename(struct nt_file_object *file,
 		status = kshim_ntpath_to_linux(&uname, newpath, sizeof(newpath));
 		if (!NT_SUCCESS(status))
 			return status;
+	}
+
+	if (!replace) {
+		struct kstat src_st, dst_st;
+
+		if (ntio_getattr_path(newpath, &dst_st) == 0) {
+			if (kshim_vfs_getattr(file->filp, &src_st) != 0)
+				return STATUS_UNSUCCESSFUL;
+			if (dst_st.dev != src_st.dev || dst_st.ino != src_st.ino)
+				return STATUS_OBJECT_NAME_COLLISION;
+		}
 	}
 
 	if (kshim_vfs_rename(file->linux_path, newpath) != 0)
@@ -2633,7 +2703,16 @@ NTSTATUS nt_svc_NtSetInformationFile(HANDLE FileHandle,
 		status = ntio_set_disposition(file, kbuf, Length);
 		break;
 	case FileRenameInformation:
-		status = ntio_set_rename(file, kbuf, Length);
+		status = ntio_set_rename(file, kbuf, Length, false);
+		break;
+	case FileRenameInformationEx:
+		status = ntio_set_rename(file, kbuf, Length, true);
+		break;
+	case FileAllocationInformation:
+		status = ntio_set_allocation(file, kbuf, Length);
+		break;
+	case FileDispositionInformationEx:
+		status = ntio_set_disposition_ex(file, kbuf, Length);
 		break;
 	default:
 		status = STATUS_INVALID_INFO_CLASS;
@@ -2659,7 +2738,16 @@ NTSTATUS nt_svc_NtSetInformationFile(HANDLE FileHandle,
 		status = ntio_set_disposition(file, FileInformation, Length);
 		break;
 	case FileRenameInformation:
-		status = ntio_set_rename(file, FileInformation, Length);
+		status = ntio_set_rename(file, FileInformation, Length, false);
+		break;
+	case FileRenameInformationEx:
+		status = ntio_set_rename(file, FileInformation, Length, true);
+		break;
+	case FileAllocationInformation:
+		status = ntio_set_allocation(file, FileInformation, Length);
+		break;
+	case FileDispositionInformationEx:
+		status = ntio_set_disposition_ex(file, FileInformation, Length);
 		break;
 	default:
 		status = STATUS_INVALID_INFO_CLASS;
