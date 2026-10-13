@@ -49,33 +49,52 @@ static struct {
 } g_acl_caps[ACL_CAP_MAX];
 static int g_acl_cap_used = 0;
 
+/* Guards g_acl_caps and g_acl_cap_used. Every ACL create, free and capacity
+ * check reads or writes the table, so it is only touched under this lock. */
+#ifdef __KERNEL__
+static DEFINE_SPINLOCK(g_acl_cap_lock);
+#else
+static spinlock_t g_acl_cap_lock = PTHREAD_MUTEX_INITIALIZER;   /* userspace kshim */
+#endif
+
 static USHORT acl_capacity_lookup(PACL acl)
 {
-    for (int i = 0; i < g_acl_cap_used; i++) {
-        if (g_acl_caps[i].acl == acl)
-            return g_acl_caps[i].cap;
+    USHORT cap = 0;
+    int found = 0;
+    spin_lock(&g_acl_cap_lock);
+    for (int i = 0; i < g_acl_cap_used && !found; i++) {
+        if (g_acl_caps[i].acl == acl) {
+            cap = g_acl_caps[i].cap;
+            found = 1;
+        }
     }
+    spin_unlock(&g_acl_cap_lock);
+    if (found) return cap;
     /* fallback: assume AclSize is capacity if not registered (for imported ACLs) */
     if (acl) return acl->AclSize;
     return 0;
 }
 static void acl_capacity_register(PACL acl, USHORT cap)
 {
+    spin_lock(&g_acl_cap_lock);
     if (g_acl_cap_used < ACL_CAP_MAX) {
         g_acl_caps[g_acl_cap_used].acl = acl;
         g_acl_caps[g_acl_cap_used].cap = cap;
         g_acl_cap_used++;
     }
+    spin_unlock(&g_acl_cap_lock);
 }
 static void acl_capacity_unregister(PACL acl)
 {
+    spin_lock(&g_acl_cap_lock);
     for (int i = 0; i < g_acl_cap_used; i++) {
         if (g_acl_caps[i].acl == acl) {
             g_acl_caps[i] = g_acl_caps[g_acl_cap_used - 1];
             g_acl_cap_used--;
-            return;
+            break;
         }
     }
+    spin_unlock(&g_acl_cap_lock);
 }
 
 /* -------------------------------------------------------------------------- */
