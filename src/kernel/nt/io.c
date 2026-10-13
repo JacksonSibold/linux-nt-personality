@@ -610,15 +610,26 @@ static void ntio_lock_init(void)
  * by a shared lock held by another file object as well as an exclusive one.
  * Caller holds ntio_lock_mutex.
  */
+/* End of the byte range [start, start + length), saturated at the largest
+ * LONGLONG so that a range near the offset limit cannot wrap negative. */
+#define NTIO_LLONG_MAX ((LONGLONG)(~0ULL >> 1))
+static LONGLONG ntio_range_end(LONGLONG start, LONGLONG length)
+{
+	if (length > 0 && start > NTIO_LLONG_MAX - length)
+		return NTIO_LLONG_MAX;
+	return start + length;
+}
+
 static bool ntio_lock_conflicts(struct nt_file_object *file, dev_t dev, ino_t ino,
 				LONGLONG start, LONGLONG length, bool exclusive_request)
 {
 	struct ntio_byte_lock *l;
+	LONGLONG end = ntio_range_end(start, length);
 
 	list_for_each_entry(l, &ntio_lock_list, entry) {
 		if (l->owner == file || l->dev != dev || l->ino != ino)
 			continue;
-		if (!(l->start < start + length && start < l->start + l->length))
+		if (!(l->start < end && start < ntio_range_end(l->start, l->length)))
 			continue;
 		if (l->exclusive || exclusive_request)
 			return true;

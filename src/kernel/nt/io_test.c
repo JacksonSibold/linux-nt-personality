@@ -1575,6 +1575,41 @@ TEST(delete_and_full_attributes)
 
 /* Byte-range locks: conflicts between open handles, shared and exclusive
  * rules, read/write enforcement, exact-match unlock, and release on close. */
+/* A read whose end passes LLONG_MAX must still see a lock that covers the
+ * part of it below LLONG_MAX. The range end is saturated, not wrapped. */
+TEST(lock_conflict_near_offset_limit)
+{
+	HANDLE h1 = NULL, h2 = NULL;
+	IO_STATUS_BLOCK iosb;
+	LARGE_INTEGER off, len;
+	char data[16], buf[16];
+	LONGLONG top = (LONGLONG)(~0ULL >> 1);
+
+	reset_state();
+	memset(data, 'a', sizeof(data));
+	ASSERT(write_file_at("lock_top.txt", data));
+	ASSERT_STATUS(open_test_file("lock_top.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h1),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(open_test_file("lock_top.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h2),
+		      STATUS_SUCCESS);
+	/* h1 locks [top-16, top-1) exclusively. */
+	off.QuadPart = top - 16;
+	len.QuadPart = 15;
+	ASSERT_STATUS(nt_svc_NtLockFile(h1, NULL, NULL, NULL, &iosb, &off, &len,
+					7, 1, 1), STATUS_SUCCESS);
+	/* h2 reads [top-8, top+8): it overlaps the lock, so it is refused. */
+	off.QuadPart = top - 8;
+	ASSERT_STATUS(nt_svc_NtReadFile(h2, NULL, NULL, NULL, &iosb, buf, 16,
+					&off, NULL), STATUS_FILE_LOCK_CONFLICT);
+	nt_svc_NtClose(h2);
+	nt_svc_NtClose(h1);
+	PASS();
+}
+
 TEST(byte_range_locks)
 {
 	HANDLE h1 = NULL, h2 = NULL;
@@ -2100,6 +2135,7 @@ int main(void)
 	RUN(cancel_io_no_pending);
 	RUN(delete_and_full_attributes);
 	RUN(byte_range_locks);
+	RUN(lock_conflict_near_offset_limit);
 	RUN(query_directory_scan);
 	RUN(query_volume_device);
 	RUN(set_volume_unsupported);
