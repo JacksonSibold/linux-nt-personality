@@ -55,7 +55,7 @@ LDFLAGS := -fno-use-linker-plugin $(COV_FLAGS)
 SHIM_OBJS := $(BUILD)/mman_win.o $(BUILD)/posix_host.o $(BUILD)/posix_raw.o
 
 # Test programs and the module objects each one links against.
-TESTS := security_extra_test object_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test
+TESTS := security_extra_test object_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test system_test
 
 # Tests kept in this directory (not in src/kernel/nt). Their sources are $(t).c here.
 LOCAL_TESTS := handle_edge_test registry_ops_test
@@ -79,6 +79,7 @@ registry_test_OBJS    := security registry object handle nt_obj sync kshim
 io_test_OBJS          := security io object handle iocp nt_obj_weak sync kshim
 proc_thread_test_OBJS := security proc_thread object handle nt_obj sync nt_services kshim
 i2_test_OBJS          := security object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
+system_test_OBJS        := security object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
 handle_edge_test_OBJS := security object handle kshim
 registry_ops_test_OBJS := security registry object handle nt_obj sync kshim
 stress_handle_test_OBJS := security object handle kshim
