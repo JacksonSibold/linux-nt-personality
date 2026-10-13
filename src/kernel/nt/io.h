@@ -355,6 +355,14 @@ struct nt_file_object {
 	char *linux_path;
 };
 
+/* NtFlushBuffersFileEx flags. */
+#define FLUSH_FLAGS_FILE_DATA_ONLY      0x00000001
+#define FLUSH_FLAGS_NO_SYNC             0x00000002
+#define FLUSH_FLAGS_FILE_DATA_SYNC_ONLY 0x00000004
+#define FLUSH_FLAGS_VALID_MASK          (FLUSH_FLAGS_FILE_DATA_ONLY | \
+					 FLUSH_FLAGS_NO_SYNC | \
+					 FLUSH_FLAGS_FILE_DATA_SYNC_ONLY)
+
 /* -------------------------------------------------------------------------- */
 /* Service entry points (called through nt_service_table).                      */
 /* -------------------------------------------------------------------------- */
@@ -407,6 +415,10 @@ NTSTATUS nt_svc_NtSetInformationFile(HANDLE FileHandle,
 
 NTSTATUS nt_svc_NtFlushBuffersFile(HANDLE FileHandle,
 				   PIO_STATUS_BLOCK IoStatusBlock);
+
+NTSTATUS nt_svc_NtFlushBuffersFileEx(HANDLE FileHandle, ULONG Flags,
+				     PVOID Parameters, ULONG ParametersSize,
+				     PIO_STATUS_BLOCK IoStatusBlock);
 
 NTSTATUS nt_svc_NtQueryEaFile(HANDLE FileHandle,
 			      PIO_STATUS_BLOCK IoStatusBlock,

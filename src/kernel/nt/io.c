@@ -3046,6 +3046,37 @@ NTSTATUS nt_svc_NtSetEaFile(HANDLE FileHandle,
 }
 
 
+/*
+ * NtFlushBuffersFileEx. The flush flags are validated. A sync-free flush
+ * (FLUSH_FLAGS_NO_SYNC) has nothing to write back and completes without an
+ * fsync. Any other flush uses the same fsync as NtFlushBuffersFile, which is
+ * a superset of FLUSH_FLAGS_FILE_DATA_ONLY and FLUSH_FLAGS_FILE_DATA_SYNC_ONLY.
+ * Parameters (for the redirector commit path) are not supported.
+ */
+
+NTSTATUS nt_svc_NtFlushBuffersFileEx(HANDLE FileHandle, ULONG Flags,
+				     PVOID Parameters, ULONG ParametersSize,
+				     PIO_STATUS_BLOCK __user IoStatusBlock)
+{
+	struct nt_file_object *file;
+
+	if (!IoStatusBlock)
+		return STATUS_ACCESS_VIOLATION;
+	if (Flags & ~FLUSH_FLAGS_VALID_MASK)
+		return STATUS_INVALID_PARAMETER;
+	if (Parameters || ParametersSize)
+		return STATUS_NOT_SUPPORTED;
+	if (!(Flags & FLUSH_FLAGS_NO_SYNC) || ntio_is_console_handle(FileHandle))
+		return nt_svc_NtFlushBuffersFile(FileHandle, IoStatusBlock);
+
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb(IoStatusBlock, STATUS_INVALID_HANDLE);
+	ntio_file_put(file);
+	return ntio_complete_iosb(IoStatusBlock, STATUS_SUCCESS);
+}
+
+
 /* -------------------------------------------------------------------------- */
 /* Module init / fini (userspace shim)                                          */
 /* -------------------------------------------------------------------------- */

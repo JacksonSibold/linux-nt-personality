@@ -1342,6 +1342,46 @@ TEST(ea_unsupported)
 	PASS();
 }
 
+/* NtFlushBuffersFileEx: flags are validated, the no-sync flush completes
+ * without an fsync, and unknown handles and parameters are refused. */
+TEST(flush_buffers_ex)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+
+	reset_state();
+	ASSERT(write_file_at("flushex.txt", "x"));
+	ASSERT_STATUS(open_test_file("flushex.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+
+	iosb.DUMMYUNIONNAME.Status = STATUS_UNSUCCESSFUL;
+	ASSERT_STATUS(nt_svc_NtFlushBuffersFileEx(h, 0, NULL, 0, &iosb),
+		      STATUS_SUCCESS);
+	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtFlushBuffersFileEx(h, FLUSH_FLAGS_FILE_DATA_SYNC_ONLY,
+						  NULL, 0, &iosb),
+		      STATUS_SUCCESS);
+	iosb.DUMMYUNIONNAME.Status = STATUS_UNSUCCESSFUL;
+	ASSERT_STATUS(nt_svc_NtFlushBuffersFileEx(h, FLUSH_FLAGS_NO_SYNC, NULL, 0, &iosb),
+		      STATUS_SUCCESS);
+	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_SUCCESS);
+
+	ASSERT_STATUS(nt_svc_NtFlushBuffersFileEx(h, 0x100, NULL, 0, &iosb),
+		      STATUS_INVALID_PARAMETER);
+	ASSERT_STATUS(nt_svc_NtFlushBuffersFileEx(h, 0, &iosb, sizeof(iosb), &iosb),
+		      STATUS_NOT_SUPPORTED);
+	ASSERT_STATUS(nt_svc_NtFlushBuffersFileEx(NULL, FLUSH_FLAGS_NO_SYNC, NULL, 0,
+						  &iosb),
+		      STATUS_INVALID_HANDLE);
+	ASSERT_STATUS(nt_svc_NtFlushBuffersFileEx(h, 0, NULL, 0, NULL),
+		      STATUS_ACCESS_VIOLATION);
+
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 /* NtOpenIoCompletion: names are not registered by NtCreateIoCompletion in
  * this build, so every name lookup misses. The NULL object-attributes case
  * is rejected before any lookup. */
@@ -1447,6 +1487,7 @@ int main(void)
 	RUN(set_info_classes);
 	RUN(device_fs_control_unsupported);
 	RUN(ea_unsupported);
+	RUN(flush_buffers_ex);
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);
 
