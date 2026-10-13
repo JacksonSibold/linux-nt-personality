@@ -1194,6 +1194,67 @@ TEST(remove_after_parent_directory_freed)
     PASS();
 }
 
+struct insert_arg {
+    struct nt_object_header *obj;
+    OBJECT_ATTRIBUTES *oa;
+    NTSTATUS st;
+};
+
+static void *insert_thread(void *p)
+{
+    struct insert_arg *a = (struct insert_arg *)p;
+    a->st = ObInsertObject(a->obj, a->oa, 0, NULL, NULL);
+    return NULL;
+}
+
+/* C-2: ObpInsertDirectoryEntry published the entry before it set obj's parent
+ * and name. A name lookup needs only the directory lock, so it could return
+ * the object in that window. The insert is paused after the entry is linked,
+ * and the lookup must already see a parented object. */
+TEST(insert_publishes_entry_after_parent_set)
+{
+    reset_ob();
+    UNICODE_STRING us;
+    make_us(&us, "\\BaseNamedObjects\\C2Obj", wbuf, sizeof(wbuf));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    struct nt_object_header *obj = NULL;
+    void *body = NULL;
+    ASSERT_STATUS(ObCreateObject(&nt_test_type, &oa, sizeof(struct nt_test_body), &obj, &body), STATUS_SUCCESS);
+
+    struct insert_arg ia = { obj, &oa, STATUS_UNSUCCESSFUL };
+    pthread_t th;
+    pause_arm(obj, "insert");
+    ASSERT(pthread_create(&th, NULL, insert_thread, &ia) == 0);
+    pause_wait();
+
+    /* Look up while the insert is paused. Record what is seen, then release the
+     * insert before any assertion, so a failure cannot leave it blocked. */
+    struct nt_object_header *found = NULL;
+    NTSTATUS fst = ObReferenceObjectByName(&us, NULL, KernelMode, 0, &found);
+    bool same = (found == obj);
+    bool parented = found && found->parent_dir != NULL;
+    bool named = found && found->name.Buffer != NULL;
+    if (found)
+        ObDereferenceObject(found);
+
+    pause_release();
+    pthread_join(th, NULL);
+    ASSERT_STATUS(fst, STATUS_SUCCESS);
+    ASSERT(same);
+    ASSERT(parented);
+    ASSERT(named);
+    ASSERT_STATUS(ia.st, STATUS_SUCCESS);
+
+    /* The name is in the directory: making it temporary must remove it. */
+    struct nt_object_header *again = NULL;
+    ASSERT_STATUS(ObReferenceObjectByName(&us, NULL, KernelMode, 0, &again), STATUS_SUCCESS);
+    ASSERT_STATUS(ObMakeTemporaryObject(again), STATUS_SUCCESS);
+    ObDereferenceObject(again);
+    ASSERT_STATUS(ObReferenceObjectByName(&us, NULL, KernelMode, 0, &again), STATUS_OBJECT_NAME_NOT_FOUND);
+    ObDereferenceObject(obj);            /* creator ref: frees the object */
+    PASS();
+}
+
 /* -------------------------------------------------------------------------- */
 /* main                                                                        */
 /* -------------------------------------------------------------------------- */
@@ -1234,6 +1295,7 @@ int main(void)
     RUN(create_directory_bad_paths_and_args);
     RUN(create_directory_generic_access);
     RUN(remove_after_parent_directory_freed);
+    RUN(insert_publishes_entry_after_parent_set);
 
     printf("object_extra_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

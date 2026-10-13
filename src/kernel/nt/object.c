@@ -335,12 +335,16 @@ static NTSTATUS ObpInsertDirectoryEntry(struct nt_directory *dir,
     }
     de->obj = obj;
     INIT_LIST_HEAD(&de->link);
-    list_add_tail(&de->link, &dir->entries);
-    write_unlock(&dir->lock);
+    /* The entry is published last. A name lookup needs only dir->lock, so
+     * obj must already hold its directory reference, parent and name when
+     * the entry becomes visible (C-2). */
     ObReferenceObject(obj);
     obj->parent_dir = dir;
-    /* Save copy of name in header (points to dir entry's copy). We duplicate again for header ownership? Keep header name pointing to entry's buffer for test introspection. */
+    /* Header name points to the entry's name buffer (freed with the entry). */
     obj->name = de->name;
+    list_add_tail(&de->link, &dir->entries);
+    write_unlock(&dir->lock);
+    OB_TEST_PAUSE("insert", obj);
     write_unlock(&ob_ns_lock);
     if (obj->flags & OBJ_PERMANENT)
         obj->is_permanent = true;
