@@ -1478,6 +1478,46 @@ static int test_nt_svc_open_section_errors(void) {
     return 1;
 }
 
+/* ---- nt_svc_ section entry points: map / unmap family ---- */
+
+/* A view mapped through the entry point is writable and unmaps once. */
+static int test_nt_svc_map_unmap(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE h = NULL;
+    NTSTATUS st = nt_svc_NtCreateSection(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "svc map create 0x%lx", (unsigned long)st);
+    LARGE_INTEGER off; off.QuadPart = 0;
+    PVOID base = NULL; SIZE_T vs = 0;
+    st = nt_svc_NtMapViewOfSection(h, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "svc map 0x%lx", (unsigned long)st);
+    ASSERT(base != NULL && vs == 0x2000, "svc map base and size 0x%zx", (size_t)vs);
+    *(volatile unsigned char *)base = 0x33;
+    ASSERT(nt_svc_NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "svc unmap");
+    ASSERT(nt_svc_NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_NOT_MAPPED_VIEW, "svc unmap twice");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "svc map close");
+    return 1;
+}
+
+/* Bad arguments and bad handles are refused, and no base is written. */
+static int test_nt_svc_map_errors(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x1000;
+    HANDLE h = NULL;
+    NTSTATUS st = nt_svc_NtCreateSection(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "map err create 0x%lx", (unsigned long)st);
+    LARGE_INTEGER off; off.QuadPart = 0;
+    PVOID base = NULL; SIZE_T vs = 0;
+    ASSERT(nt_svc_NtMapViewOfSection(h, (HANDLE)-1, NULL, 0, 0, &off, &vs, 0, 0, PAGE_READWRITE) == STATUS_INVALID_PARAMETER,
+           "map null base");
+    ASSERT(nt_svc_NtMapViewOfSection(h, (HANDLE)-1, &base, 0, 0, &off, NULL, 0, 0, PAGE_READWRITE) == STATUS_INVALID_PARAMETER,
+           "map null view size");
+    ASSERT(base == NULL, "base untouched by refused map");
+    st = nt_svc_NtMapViewOfSection((HANDLE)0x1234, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READWRITE);
+    ASSERT(st != STATUS_SUCCESS && base == NULL, "forged section handle 0x%lx", (unsigned long)st);
+    ASSERT(nt_svc_NtUnmapViewOfSection((HANDLE)-1, (PVOID)0x1000) == STATUS_NOT_MAPPED_VIEW, "unmap unmapped address");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "map err close");
+    return 1;
+}
+
 int main(void) {
     printf("=== ntmm tests ===\n");
     if (!mm_setup_objects()) {
@@ -1516,6 +1556,8 @@ int main(void) {
     RUN_TEST(test_nt_svc_create_section_unnamed);
     RUN_TEST(test_nt_svc_named_section_open);
     RUN_TEST(test_nt_svc_open_section_errors);
+    RUN_TEST(test_nt_svc_map_unmap);
+    RUN_TEST(test_nt_svc_map_errors);
     ntmm_reset();
     ObDestroyProcessObject(g_mm_proc);
     ObCleanupObjectManager();

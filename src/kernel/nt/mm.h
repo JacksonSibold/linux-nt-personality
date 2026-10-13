@@ -295,6 +295,12 @@ NTSTATUS nt_svc_NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess
                                 ULONG AllocationAttributes, HANDLE FileHandle);
 NTSTATUS nt_svc_NtOpenSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
                               POBJECT_ATTRIBUTES ObjectAttributes);
+NTSTATUS nt_svc_NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
+                                   PVOID *BaseAddress, ULONG_PTR ZeroBits,
+                                   SIZE_T CommitSize, PLARGE_INTEGER SectionOffset,
+                                   PSIZE_T ViewSize, ULONG InheritDisposition,
+                                   ULONG AllocationType, ULONG Win32Protect);
+NTSTATUS nt_svc_NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress);
 #endif
 NTSTATUS NtReadVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
                              PVOID Buffer, SIZE_T BufferSize,

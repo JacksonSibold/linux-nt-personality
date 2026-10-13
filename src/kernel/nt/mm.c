@@ -2033,3 +2033,79 @@ NTSTATUS nt_svc_NtOpenSection(unsigned long a0, unsigned long a1, unsigned long 
 }
 
 #endif /* __KERNEL__ */
+
+/* Service entry points for NtMapViewOfSection and NtUnmapViewOfSection. */
+#ifndef __KERNEL__
+
+NTSTATUS nt_svc_NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
+                                   PVOID *BaseAddress, ULONG_PTR ZeroBits,
+                                   SIZE_T CommitSize, PLARGE_INTEGER SectionOffset,
+                                   PSIZE_T ViewSize, ULONG InheritDisposition,
+                                   ULONG AllocationType, ULONG Win32Protect) {
+    return NtMapViewOfSection(SectionHandle, ProcessHandle, BaseAddress, ZeroBits, CommitSize,
+                              SectionOffset, ViewSize, InheritDisposition, AllocationType, Win32Protect);
+}
+
+NTSTATUS nt_svc_NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
+    return NtUnmapViewOfSection(ProcessHandle, BaseAddress);
+}
+
+#else /* __KERNEL__ */
+
+/* The base address and view size are in and out. Both are copied in before the
+ * call, and copied back only when the map succeeds (NT writes nothing on
+ * failure). SectionOffset is optional and read-only. A view that maps but
+ * cannot be reported back to the caller is unmapped again. */
+NTSTATUS nt_svc_NtMapViewOfSection(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                   unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                   unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE SectionHandle = (HANDLE)a0;
+    HANDLE ProcessHandle = (HANDLE)a1;
+    PVOID *BaseAddress = (PVOID *)a2;
+    ULONG_PTR ZeroBits = (ULONG_PTR)a3;
+    SIZE_T CommitSize = (SIZE_T)a4;
+    PLARGE_INTEGER SectionOffset = (PLARGE_INTEGER)a5;
+    PSIZE_T ViewSize = (PSIZE_T)a6;
+    ULONG InheritDisposition = (ULONG)a7;
+    ULONG AllocationType = (ULONG)a8;
+    ULONG Win32Protect = (ULONG)a9;
+    PVOID kbase;
+    SIZE_T ksize;
+    LARGE_INTEGER koff;
+    PLARGE_INTEGER poff = NULL;
+    NTSTATUS st;
+    (void)a10; (void)a11;
+    if (!BaseAddress || !ViewSize) return STATUS_INVALID_PARAMETER;
+    if (!access_ok(BaseAddress, sizeof(PVOID)) || !access_ok(ViewSize, sizeof(SIZE_T)))
+        return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(&kbase, BaseAddress, sizeof(kbase))) return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(&ksize, ViewSize, sizeof(ksize))) return STATUS_ACCESS_VIOLATION;
+    if (SectionOffset) {
+        if (!access_ok(SectionOffset, sizeof(*SectionOffset))) return STATUS_ACCESS_VIOLATION;
+        if (copy_from_user(&koff, SectionOffset, sizeof(koff))) return STATUS_ACCESS_VIOLATION;
+        poff = &koff;
+    }
+    st = NtMapViewOfSection(SectionHandle, ProcessHandle, &kbase, ZeroBits, CommitSize,
+                            poff, &ksize, InheritDisposition, AllocationType, Win32Protect);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(BaseAddress, &kbase, sizeof(kbase)) ||
+        copy_to_user(ViewSize, &ksize, sizeof(ksize))) {
+        NtUnmapViewOfSection(ProcessHandle, kbase);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return st;
+}
+
+/* The base address is a value, not a user pointer, so nothing is copied. */
+NTSTATUS nt_svc_NtUnmapViewOfSection(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                     unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                     unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE ProcessHandle = (HANDLE)a0;
+    PVOID BaseAddress = (PVOID)a1;
+    (void)a2; (void)a3; (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    return NtUnmapViewOfSection(ProcessHandle, BaseAddress);
+}
+
+#endif /* __KERNEL__ */
