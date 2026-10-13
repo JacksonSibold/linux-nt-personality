@@ -9,6 +9,8 @@
 #include <string.h>
 #include <wchar.h>
 #include <assert.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 static int g_pass=0,g_fail=0;
 #define ASSERT(cond) do{ if(!(cond)){ fprintf(stderr,"FAIL %s:%d: %s\n",__FILE__,__LINE__,#cond); g_fail++; return; } }while(0)
@@ -319,6 +321,98 @@ static void test_delete_and_enum(void){
     PASS();
 }
 
+/* Test 11: NtFlushKey writes a snapshot that describes the tree (not a zero count).
+   Layout (see registry.h): "NTREG\x01", u32 key count, then per key:
+   u32 path bytes, path (UTF-16LE), u32 value count, then per value:
+   u32 name bytes, name, u32 type, u32 data length, data. */
+static size_t snap_read(unsigned char *buf, size_t cap){
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/nt_registry/hive_snapshot.bin", g_kshim_root);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    size_t total = 0;
+    for (;;) {
+        if (total == cap) break;
+        ssize_t r = read(fd, buf + total, cap - total);
+        if (r <= 0) break;
+        total += (size_t)r;
+    }
+    close(fd);
+    return total;
+}
+static unsigned u32le(const unsigned char *p){
+    return (unsigned)p[0] | ((unsigned)p[1] << 8) | ((unsigned)p[2] << 16) | ((unsigned)p[3] << 24);
+}
+/* true when the UTF-16LE bytes equal the ASCII string s */
+static int wmatch(const unsigned char *p, size_t bytes, const char *s){
+    size_t n = strlen(s);
+    if (bytes != n * 2) return 0;
+    for (size_t i = 0; i < n; i++)
+        if (p[2*i] != (unsigned char)s[i] || p[2*i+1] != 0) return 0;
+    return 1;
+}
+static void test_flush_snapshot(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1000,"regflush");
+    struct nt_ethread *thr=make_thread(proc,1);
+    UNICODE_STRING us; make_us(&us,"\\Registry\\User\\Software\\ntpers_flush_probe",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE hk=NULL; ULONG disp=0;
+    ASSERT_STATUS(NtCreateKey(&hk, KEY_ALL_ACCESS, &oa, 0, NULL, 0, &disp), STATUS_SUCCESS);
+    WCHAR vb[64]; UNICODE_STRING vn; make_us(&vn,"Alpha",vb,sizeof(vb));
+    ULONG v=42;
+    ASSERT_STATUS(NtSetValueKey(hk, &vn, 0, REG_DWORD, &v, sizeof(v)), STATUS_SUCCESS);
+    ASSERT_STATUS(NtFlushKey(hk), STATUS_SUCCESS);
+
+    static unsigned char snap[1<<16];
+    size_t n = snap_read(snap, sizeof(snap));
+    ASSERT(n >= 10);
+    ASSERT(memcmp(snap, "NTREG\x01", 6) == 0);
+    unsigned cnt = u32le(snap + 6);
+    ASSERT(cnt >= 5); /* \Registry\Machine, \Registry\Machine\Software, \Registry\User, \Registry\User\Software, probe */
+    size_t off = 10;
+    unsigned parsed = 0, hits = 0;
+    for (unsigned r = 0; r < cnt; r++) {
+        ASSERT(off + 4 <= n);
+        unsigned plen = u32le(snap + off); off += 4;
+        ASSERT(off + plen <= n);
+        int is_probe = wmatch(snap + off, plen, "\\Registry\\User\\Software\\ntpers_flush_probe");
+        off += plen;
+        ASSERT(off + 4 <= n);
+        unsigned vcnt = u32le(snap + off); off += 4;
+        if (is_probe) {
+            hits++;
+            ASSERT(vcnt == 1);
+        }
+        for (unsigned j = 0; j < vcnt; j++) {
+            ASSERT(off + 4 <= n);
+            unsigned nlen = u32le(snap + off); off += 4;
+            ASSERT(off + nlen <= n);
+            int is_alpha = is_probe && wmatch(snap + off, nlen, "Alpha");
+            off += nlen;
+            ASSERT(off + 8 <= n);
+            unsigned type = u32le(snap + off), dlen = u32le(snap + off + 4); off += 8;
+            ASSERT(off + dlen <= n);
+            if (is_alpha) {
+                ASSERT(type == REG_DWORD);
+                ASSERT(dlen == 4);
+                ASSERT(u32le(snap + off) == 42);
+                hits++;
+            }
+            off += dlen;
+        }
+        parsed++;
+    }
+    ASSERT(parsed == cnt);
+    ASSERT(off == n);
+    ASSERT(hits == 2);
+    ASSERT_STATUS(NtDeleteKey(hk), STATUS_SUCCESS);
+    ObCloseHandle(proc,hk);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
 int main(void){
     printf("registry shim tests starting\n");
     ntreg_init();
@@ -333,6 +427,7 @@ int main(void){
         {test_access_denied,"access_denied"},
         {test_wow64,"wow64"},
         {test_delete_and_enum,"delete_and_enum"},
+        {test_flush_snapshot,"flush_snapshot"},
     };
     for(size_t i=0;i<sizeof(tests)/sizeof(tests[0]);i++){
         printf(" RUN %s\n",tests[i].name);
