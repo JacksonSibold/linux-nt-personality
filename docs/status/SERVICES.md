@@ -39,12 +39,12 @@ hybrid, the first strong definition in file order decides the class.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 63 |
+| IMPLEMENTED | 72 |
 | STUB-NOT-IMPLEMENTED | 0 |
 | REFUSES | 0 |
 | WEAK-FALLBACK | 0 |
 | UNREACHABLE-WRAPPER-MISSING | 0 |
-| MISSING | 19 |
+| MISSING | 10 |
 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 83 |
 | IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 2 |
 | REFUSES (userspace) / IMPLEMENTED (kernel) | 1 |
@@ -61,7 +61,7 @@ hybrid, the first strong definition in file order decides the class.
 | sync | 32 | 15 | 0 | 0 | 0 | 0 | 0 | 17 |
 | security | 10 | 0 | 0 | 0 | 0 | 0 | 1 | 9 |
 | registry | 11 | 0 | 0 | 0 | 0 | 0 | 0 | 11 |
-| ports | 10 | 0 | 0 | 0 | 0 | 0 | 10 | 0 |
+| ports | 10 | 9 | 0 | 0 | 0 | 0 | 1 | 0 |
 | object | 6 | 0 | 0 | 0 | 0 | 0 | 0 | 6 |
 
 ## Area: system
@@ -258,16 +258,16 @@ hybrid, the first strong definition in file order decides the class.
 
 | SSN | Service | Argc | Status | Handler file |
 |---|---|---:|---|---|
-| 0x00ba | `NtCreatePort` | 5 | MISSING |  |
-| 0x00a2 | `NtConnectPort` | 8 | MISSING |  |
-| 0x0109 | `NtListenPort` | 2 | MISSING |  |
-| 0x0002 | `NtAcceptConnectPort` | 9 | MISSING |  |
-| 0x00a0 | `NtCompleteConnectPort` | 1 | MISSING |  |
-| 0x0022 | `NtRequestWaitReplyPort` | 3 | MISSING |  |
-| 0x000c | `NtReplyPort` | 2 | MISSING |  |
-| 0x000b | `NtReplyWaitReceivePort` | 4 | MISSING |  |
+| 0x00ba | `NtCreatePort` | 5 | IMPLEMENTED | `src/kernel/nt/port.c` |
+| 0x00a2 | `NtConnectPort` | 8 | IMPLEMENTED | `src/kernel/nt/port.c` |
+| 0x0109 | `NtListenPort` | 2 | IMPLEMENTED | `src/kernel/nt/port.c` |
+| 0x0002 | `NtAcceptConnectPort` | 9 | IMPLEMENTED | `src/kernel/nt/port.c` |
+| 0x00a0 | `NtCompleteConnectPort` | 1 | IMPLEMENTED | `src/kernel/nt/port.c` |
+| 0x0022 | `NtRequestWaitReplyPort` | 3 | IMPLEMENTED | `src/kernel/nt/port.c` |
+| 0x000c | `NtReplyPort` | 2 | IMPLEMENTED | `src/kernel/nt/port.c` |
+| 0x000b | `NtReplyWaitReceivePort` | 4 | IMPLEMENTED | `src/kernel/nt/port.c` |
 | 0x002b | `NtReplyWaitReceivePortEx` | 5 | MISSING |  |
-| 0x017e | `NtReplyWaitReplyPort` | 2 | MISSING |  |
+| 0x017e | `NtReplyWaitReplyPort` | 2 | IMPLEMENTED | `src/kernel/nt/port.c` |
 
 ## Area: object
 
