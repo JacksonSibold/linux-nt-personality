@@ -10,10 +10,12 @@ Severity: High / Medium / Low / Info. "Latent" means the defect is real in the c
 
 | Severity | Count |
 |---|---|
-| High | 7 |
+| High | 8 |
 | Medium | 9 |
-| Low | 18 |
+| Low | 19 |
 | Info | 1 |
+
+The C-* findings are the exception to the static method above. They were found by the concurrency stress programs in `tests/kernel-host` (`make stress`, branch `haiku/stress`, 2026-10-12, 16 workers, seeds 1 to 3). C-1 was reproduced and fixed. C-2 was not reproduced. The stress run also found no handle-table, sync, or allocation-leak defects.
 
 The code is careful about `copy_from_user` at most service entry points, and the object, handle, and dispatch layers are structured clearly. The problems cluster in four places: (1) kernel-heap memory returned to user space without being initialised, (2) user-controlled values used as kernel pointers or table indices without range checks, (3) kernel-build registries that keep pointers to freed objects, and (4) waits and I/O that do not check object type or access rights.
 
@@ -179,6 +181,16 @@ The code is careful about `copy_from_user` at most service entry points, and the
 ### D-2 [Low] Debug log on a user-triggerable path
 - `src/kernel/nt/dispatch.c:113-115`: `pr_info` runs for six specific SSNs on every call, from any caller. A loop can flood the kernel log.
 - Fix: remove, or switch to `pr_debug` or a ratelimited call.
+
+### C-1 [High] Concurrent ObMakeTemporaryObject drops the directory reference more than once (fixed ecc7f83)
+- `src/kernel/nt/object.c`, `ObpRemoveFromDirectory`: the function read `obj->parent_dir` and dropped the directory's reference without re-checking under the directory lock. Two threads calling `ObMakeTemporaryObject` on the same named object (for example, two handles with delete access) could both see the same non-NULL `parent_dir`. The second call found no entry but still called `ObDereferenceObject`, so the count fell below the number of live references.
+- Found by `make stress` in `tests/kernel-host` (`stress_object_test`, its make-temporary round). Before the fix the count read 9 where 16 was expected, and then `KASSERT(c >= 0)` fired in `ObDereferenceObject`. The random phase hit the same assertion at seeds 1 to 3 with 8 threads.
+- Fix `ecc7f83`: re-check `parent_dir` under the directory's write lock, and drop the reference only when this call unlinked the entry. Regression: `50dbf92` (round in `stress_object_test.c`, which failed before the fix). Free-time poisoning under `KSHIM_POISON=1` that supports the check: `a164b43`.
+- Not the same as O-5: O-5 is a single-caller ordering question, and this is a concurrent double drop.
+
+### C-2 [Low] Named insert publishes the directory entry before setting parent_dir (not reproduced, not fixed)
+- `src/kernel/nt/object.c`, `ObpInsertDirectoryEntry`: the entry is linked and the write lock is released, then `ObReferenceObject(obj)` runs, and only after that `obj->parent_dir` and `obj->name` are set, without the lock. A thread that finds the name in that window (`ObReferenceObjectByName`) and calls `ObMakeTemporaryObject` sees `parent_dir == NULL` and returns. The delete is lost and the name stays in the directory until a later delete.
+- Not reproduced by `stress_object_test`; the window is a few instructions wide. Suggested fix: take the directory's reference and set `parent_dir` and `name` inside the write lock, before `write_unlock`.
 
 ### I-1 [Info] Stale comment about the call that frees the mapping
 - `src/kernel/nt/mm.c:1610-1613`: the comment says `vm_munmap` is called, but that line is commented out. The active call is `kshim_munmap` at `:1614`. Same behaviour, but the comment misleads the next reader.
