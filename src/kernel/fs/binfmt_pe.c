@@ -794,6 +794,8 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
             u32 reloc_rva = pe_load_u32((u8*)hdr + oh_off + 112 + 5*8);
             u32 reloc_size = pe_load_u32((u8*)hdr + oh_off + 112 + 5*8 + 4);
             if (reloc_rva && reloc_size) {
+                /* Same refusal as the exe path (K-11): do not load unrelocated. */
+                if (reloc_size > PE_MAX_RELOC_BYTES) { kfree(hdr); filp_close(f, NULL); return -ENOEXEC; }
                 u32 reloc_off = 0;
                 bool found = false;
                 for (u16 i=0; i<num_sections; ++i) {
