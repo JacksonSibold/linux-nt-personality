@@ -2796,7 +2796,7 @@ NTSTATUS nt_svc_NtCreateKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULO
     HANDLE h = NULL;
     st = keyed_create_internal(proc, DesiredAccess, oa, &h);
     if (NT_SUCCESS(st) || st == STATUS_OBJECT_NAME_COLLISION) {
-        if (copy_to_user(KeyedEventHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+        if (copy_to_user(KeyedEventHandle, &h, sizeof(h))) { ObCloseHandle(proc, h); return STATUS_ACCESS_VIOLATION; }
     }
     return st;
 }
@@ -2823,7 +2823,7 @@ NTSTATUS nt_svc_NtOpenKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG
     if (!NT_SUCCESS(st)) return st;
     HANDLE h = NULL;
     st = sync_open_named(&h, DesiredAccess, oa, &nt_keyed_event_type, proc);
-    if (NT_SUCCESS(st) && copy_to_user(KeyedEventHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+    if (NT_SUCCESS(st) && copy_to_user(KeyedEventHandle, &h, sizeof(h))) { ObCloseHandle(proc, h); return STATUS_ACCESS_VIOLATION; }
     return st;
 }
 
