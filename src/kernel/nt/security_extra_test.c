@@ -590,6 +590,196 @@ TEST(query_token_buffer_and_errors)
 }
 
 /* -------------------------------------------------------------------------- */
+/* NtDuplicateToken                                                           */
+/* -------------------------------------------------------------------------- */
+
+NTSTATUS nt_svc_NtDuplicateToken(HANDLE ExistingTokenHandle, ACCESS_MASK DesiredAccess,
+                                 POBJECT_ATTRIBUTES ObjectAttributes, BOOLEAN EffectiveOnly,
+                                 TOKEN_TYPE TokenType, PHANDLE NewTokenHandle);
+
+/* Current process whose primary token is user_sid (the rich token's user, so
+ * the owner-based DACL of duplicates admits the caller). */
+static struct nt_eprocess *make_current_process_as(const char *name, const char *user_sid)
+{
+    struct nt_eprocess *p = make_process_as(name, user_sid);
+    if (p) {
+        kshim_set_current_process(p);
+        kshim_set_current_thread(NULL);
+    }
+    return p;
+}
+
+static ACCESS_TOKEN *token_of_handle(struct nt_eprocess *p, HANDLE h)
+{
+    struct nt_object_header *hdr = NULL;
+    ACCESS_TOKEN *tok = NULL;
+    if (ObReferenceObjectByHandle(p, h, &nt_token_type, KernelMode, 0, &hdr, NULL) != STATUS_SUCCESS)
+        return NULL;
+    tok = ((struct nt_token_body *)nt_object_body(hdr))->token;
+    ObDereferenceObject(hdr);
+    return tok;
+}
+
+TEST(duplicate_primary_token)
+{
+    struct nt_eprocess *caller = make_current_process_as("dup_caller", "S-1-5-21-11-22-33-1001");
+    ASSERT(caller != NULL);
+    ACCESS_TOKEN *src = make_rich_token();
+    ASSERT(src != NULL);
+    HANDLE hs = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, src, TOKEN_ALL_ACCESS, 0, &hs), STATUS_SUCCESS);
+    token_dereference(src);
+
+    HANDLE hd = NULL;
+    ASSERT_STATUS(nt_svc_NtDuplicateToken(hs, TOKEN_QUERY | TOKEN_DUPLICATE, NULL, FALSE,
+                                          TokenPrimary, &hd), STATUS_SUCCESS);
+    ASSERT(hd != NULL && hd != hs);
+    ASSERT(token_of_handle(caller, hd) != token_of_handle(caller, hs));
+
+    unsigned char buf[64];
+    ULONG ret = 0;
+    ASSERT_STATUS(query_token(hd, TokenType, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    ASSERT(*(ULONG *)buf == TokenPrimary);
+
+    ASSERT_STATUS(ObCloseHandle(caller, hd), STATUS_SUCCESS);
+    ASSERT_STATUS(ObCloseHandle(caller, hs), STATUS_SUCCESS);
+    ObDestroyProcessObject(caller);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(duplicate_impersonation_token)
+{
+    struct nt_eprocess *caller = make_current_process_as("dup_imp", "S-1-5-21-11-22-33-1001");
+    ASSERT(caller != NULL);
+    ACCESS_TOKEN *src = make_rich_token();
+    ASSERT(src != NULL);
+    HANDLE hs = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, src, TOKEN_ALL_ACCESS, 0, &hs), STATUS_SUCCESS);
+    token_dereference(src);
+
+    HANDLE hi = NULL;
+    ASSERT_STATUS(nt_svc_NtDuplicateToken(hs, TOKEN_QUERY, NULL, FALSE, TokenImpersonation, &hi),
+                  STATUS_SUCCESS);
+    unsigned char buf[64];
+    ULONG ret = 0;
+    ASSERT_STATUS(query_token(hi, TokenType, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    ASSERT(*(ULONG *)buf == TokenImpersonation);
+    ASSERT_STATUS(query_token(hi, TokenImpersonationLevel, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    ASSERT(*(ULONG *)buf == SecurityImpersonation);
+
+    ASSERT_STATUS(ObCloseHandle(caller, hi), STATUS_SUCCESS);
+    ASSERT_STATUS(ObCloseHandle(caller, hs), STATUS_SUCCESS);
+    ObDestroyProcessObject(caller);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(duplicate_is_independent_of_source)
+{
+    struct nt_eprocess *caller = make_current_process_as("dup_indep", "S-1-5-21-11-22-33-1001");
+    ASSERT(caller != NULL);
+    ACCESS_TOKEN *src = make_rich_token();
+    ASSERT(src != NULL);
+    HANDLE hs = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, src, TOKEN_ALL_ACCESS, 0, &hs), STATUS_SUCCESS);
+    token_dereference(src);
+
+    HANDLE hd = NULL;
+    ASSERT_STATUS(nt_svc_NtDuplicateToken(hs, TOKEN_ALL_ACCESS, NULL, FALSE, TokenPrimary, &hd),
+                  STATUS_SUCCESS);
+    ACCESS_TOKEN *dup = token_of_handle(caller, hd);
+    ASSERT(dup != NULL);
+    ASSERT_STATUS(token_adjust_privileges(dup, TRUE, NULL, 0, 0), STATUS_SUCCESS);
+
+    unsigned char buf[256];
+    ULONG ret = 0;
+    ASSERT_STATUS(query_token(hs, TokenPrivileges, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    LUID_AND_ATTRIBUTES *pv = (LUID_AND_ATTRIBUTES *)(buf + offsetof(struct tp_hdr, Privileges));
+    ASSERT(pv[0].Attributes == SE_PRIVILEGE_ENABLED);
+    ASSERT_STATUS(query_token(hd, TokenPrivileges, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    pv = (LUID_AND_ATTRIBUTES *)(buf + offsetof(struct tp_hdr, Privileges));
+    ASSERT((pv[0].Attributes & SE_PRIVILEGE_ENABLED) == 0);
+
+    ASSERT_STATUS(ObCloseHandle(caller, hd), STATUS_SUCCESS);
+    ASSERT_STATUS(ObCloseHandle(caller, hs), STATUS_SUCCESS);
+    ObDestroyProcessObject(caller);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(duplicate_effective_only)
+{
+    struct nt_eprocess *caller = make_current_process_as("dup_eff", "S-1-5-21-11-22-33-1001");
+    ASSERT(caller != NULL);
+    ACCESS_TOKEN *src = make_rich_token();
+    ASSERT(src != NULL);
+    HANDLE hs = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, src, TOKEN_ALL_ACCESS, 0, &hs), STATUS_SUCCESS);
+    token_dereference(src);
+
+    /* The source has two groups; only one is enabled. */
+    HANDLE he = NULL;
+    ASSERT_STATUS(nt_svc_NtDuplicateToken(hs, TOKEN_QUERY, NULL, TRUE, TokenPrimary, &he),
+                  STATUS_SUCCESS);
+    unsigned char buf[256];
+    ULONG ret = 0;
+    ASSERT_STATUS(query_token(he, TokenGroups, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    ASSERT(*(ULONG *)buf == 1);
+    ASSERT_STATUS(query_token(hs, TokenGroups, buf, sizeof(buf), &ret), STATUS_SUCCESS);
+    ASSERT(*(ULONG *)buf == 2);
+
+    ASSERT_STATUS(ObCloseHandle(caller, he), STATUS_SUCCESS);
+    ASSERT_STATUS(ObCloseHandle(caller, hs), STATUS_SUCCESS);
+    ObDestroyProcessObject(caller);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+TEST(duplicate_token_rights_and_arguments)
+{
+    struct nt_eprocess *caller = make_current_process_as("dup_args", "S-1-5-21-11-22-33-1001");
+    ASSERT(caller != NULL);
+    ACCESS_TOKEN *src = make_rich_token();
+    ASSERT(src != NULL);
+    HANDLE hq = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, src, TOKEN_QUERY, 0, &hq), STATUS_SUCCESS);
+    token_dereference(src);
+
+    HANDLE hd = NULL;
+    /* No TOKEN_DUPLICATE on the source handle. */
+    ASSERT_STATUS(nt_svc_NtDuplicateToken(hq, TOKEN_QUERY, NULL, FALSE, TokenPrimary, &hd),
+                  STATUS_ACCESS_DENIED);
+    ASSERT(hd == NULL);
+
+    /* Invalid token type and NULL output. */
+    ASSERT_STATUS(nt_svc_NtDuplicateToken(hq, TOKEN_QUERY, NULL, FALSE, (TOKEN_TYPE)3, &hd),
+                  STATUS_INVALID_PARAMETER);
+    ASSERT_STATUS(nt_svc_NtDuplicateToken(hq, TOKEN_QUERY, NULL, FALSE, TokenPrimary, NULL),
+                  STATUS_INVALID_PARAMETER);
+
+    /* OBJ_INHERIT in ObjectAttributes is carried onto the new handle. */
+    ACCESS_TOKEN *src2 = make_rich_token();
+    ASSERT(src2 != NULL);
+    HANDLE hs2 = NULL;
+    ASSERT_STATUS(ObCreateTokenHandle(caller, src2, TOKEN_ALL_ACCESS, 0, &hs2), STATUS_SUCCESS);
+    token_dereference(src2);
+    OBJECT_ATTRIBUTES oa;
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(oa);
+    oa.Attributes = OBJ_INHERIT;
+    ASSERT_STATUS(nt_svc_NtDuplicateToken(hs2, TOKEN_QUERY, &oa, FALSE, TokenPrimary, &hd),
+                  STATUS_SUCCESS);
+    ASSERT(hd != NULL);
+    ASSERT_STATUS(ObCloseHandle(caller, hd), STATUS_SUCCESS);
+    ASSERT_STATUS(ObCloseHandle(caller, hs2), STATUS_SUCCESS);
+    ASSERT_STATUS(ObCloseHandle(caller, hq), STATUS_SUCCESS);
+    ObDestroyProcessObject(caller);
+    kshim_set_current_process(NULL);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* Driver                                                                     */
 /* -------------------------------------------------------------------------- */
 int main(void)
@@ -609,6 +799,11 @@ int main(void)
     RUN(query_token_user_groups_privs);
     RUN(query_token_owner_group_type_stats_session_il);
     RUN(query_token_buffer_and_errors);
+    RUN(duplicate_primary_token);
+    RUN(duplicate_impersonation_token);
+    RUN(duplicate_is_independent_of_source);
+    RUN(duplicate_effective_only);
+    RUN(duplicate_token_rights_and_arguments);
     printf("security extra tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

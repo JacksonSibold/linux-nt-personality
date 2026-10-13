@@ -2282,3 +2282,99 @@ NTSTATUS nt_svc_NtQueryInformationToken(unsigned long a0, unsigned long a1, unsi
     return st;
 }
 #endif /* __KERNEL__ */
+
+/* -------------------------------------------------------------------------- */
+/* NtDuplicateToken                                                           */
+/* -------------------------------------------------------------------------- */
+
+/* Handle attributes that NtDuplicateToken carries from ObjectAttributes. */
+static ULONG ntsec_oa_attributes(const OBJECT_ATTRIBUTES *oa)
+{
+    return oa ? (oa->Attributes & (OBJ_INHERIT | OBJ_PROTECT_FROM_CLOSE)) : 0;
+}
+
+/* EffectiveOnly: the copy keeps only enabled groups and enabled privileges. */
+static void ntsec_keep_effective(ACCESS_TOKEN *tok)
+{
+    ULONG keep = 0;
+    for (ULONG i = 0; i < tok->group_count; i++) {
+        if (tok->groups[i].Attributes & SE_GROUP_ENABLED) {
+            tok->groups[keep++] = tok->groups[i];
+        } else {
+            sid_free(tok->groups[i].Sid);
+        }
+    }
+    tok->group_count = keep;
+
+    keep = 0;
+    for (ULONG i = 0; i < tok->privilege_count; i++) {
+        if (tok->privileges[i].Attributes & SE_PRIVILEGE_ENABLED)
+            tok->privileges[keep++] = tok->privileges[i];
+    }
+    tok->privilege_count = keep;
+}
+
+static NTSTATUS ntsec_duplicate_token(HANDLE src, ACCESS_MASK desired, ULONG attributes,
+                                      BOOLEAN effective_only, ULONG type, PHANDLE out)
+{
+    struct nt_eprocess *caller = NTSEC_CURRENT_PROCESS();
+    struct nt_object_header *hdr = NULL;
+    ACCESS_TOKEN *dup;
+    NTSTATUS st;
+
+    if (!out || !caller) return STATUS_INVALID_PARAMETER;
+    if (type != TokenPrimary && type != TokenImpersonation) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(caller, src, &nt_token_type, KernelMode,
+                                   TOKEN_DUPLICATE, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+
+    dup = token_duplicate(((struct nt_token_body *)nt_object_body(hdr))->token);
+    if (!dup) {
+        ObDereferenceObject(hdr);
+        return STATUS_NO_MEMORY;
+    }
+    /* Impersonation tokens made here get the default SecurityImpersonation
+     * level (ObjectAttributes SQOS is not parsed). */
+    dup->token_type = (TOKEN_TYPE)type;
+    dup->impersonation_level = (type == TokenImpersonation) ? SecurityImpersonation
+                                                            : SecurityAnonymous;
+    if (effective_only) ntsec_keep_effective(dup);
+
+    /* The new token has its own descriptor, so DesiredAccess is checked against it. */
+    st = ntsec_open_token_for(caller, dup, FALSE, desired, attributes, out);
+    token_dereference(dup);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+#ifndef __KERNEL__
+NTSTATUS nt_svc_NtDuplicateToken(HANDLE ExistingTokenHandle, ACCESS_MASK DesiredAccess,
+                                 POBJECT_ATTRIBUTES ObjectAttributes, BOOLEAN EffectiveOnly,
+                                 TOKEN_TYPE TokenType, PHANDLE NewTokenHandle)
+{
+    return ntsec_duplicate_token(ExistingTokenHandle, DesiredAccess,
+                                 ntsec_oa_attributes(ObjectAttributes), EffectiveOnly,
+                                 (ULONG)TokenType, NewTokenHandle);
+}
+#else
+NTSTATUS nt_svc_NtDuplicateToken(unsigned long a0, unsigned long a1, unsigned long a2,
+                                 unsigned long a3, unsigned long a4, unsigned long a5,
+                                 unsigned long a6, unsigned long a7, unsigned long a8,
+                                 unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    POBJECT_ATTRIBUTES user_oa = (POBJECT_ATTRIBUTES)a2;
+    OBJECT_ATTRIBUTES k_oa;
+    ULONG attr = 0;
+    HANDLE h = NULL;
+    NTSTATUS st;
+    (void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+
+    if (user_oa) {
+        if (copy_from_user(&k_oa, user_oa, sizeof(k_oa))) return STATUS_ACCESS_VIOLATION;
+        attr = ntsec_oa_attributes(&k_oa);
+    }
+    st = ntsec_duplicate_token((HANDLE)a0, (ACCESS_MASK)a1, attr, (BOOLEAN)(a3 != 0),
+                               (ULONG)a4, &h);
+    return ntsec_return_handle(h, (PHANDLE)a5, st);
+}
+#endif /* __KERNEL__ */
