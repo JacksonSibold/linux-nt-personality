@@ -547,6 +547,41 @@ Observed, not a verdict:
 - `proc_thread_test` prints `leaks 34` at exit and still returns 0. The line is the same before and after `6c650e3`.
 - `io_test` syntax warnings rose from the third-pass count with the new tests. They were not classified individually.
 
+## SUSPECT: fourth-pass resolution
+
+Date: 2026-10-12. Branch `haiku/suspects4`, worktree `ntpers-suspects4`. Each of the 17 SUSPECT items above was re-read against its diff, its audit note and the code at HEAD. Several were already fixed by commits that landed on this branch after the audited HEAD (`e2d279e`); those are listed with the fixing hash. Every fix is its own commit, and each has a failing test first where the host can run it.
+
+| Item | Commit | Resolution | Hash |
+|---|---|---|---|
+| 1 | `cbd67a7` | fixed: `ObCreateSymbolicLinkObject` refuses a target with a NULL buffer (`STATUS_INVALID_PARAMETER`). Test `create_symlink_null_target_buffer` segfaulted before, passes after | `cac7296` |
+| 2 | `7a676a1` | needs-owner: should `ObInsertOrOpenNamedObject` honour `OBJECT_ATTRIBUTES.RootDirectory` (object.c:648), or keep refusing relative names with `PATH_SYNTAX_BAD`? Missing feature, not an unsafe path | none |
+| 3 | `6b86fe8` | needs-owner: should an anonymous `OBJ_PERMANENT` object keep a reference until it is made temporary? `is_permanent` is set (object.c:304) and never read; the only reader is the test | none |
+| 4 | `3477776` | needs-owner: confirm that an object with no descriptor refuses every set. The code says "unprotected, and nothing can change it" (security.c:2817) and the test asserts it (security_extra_test.c:1449). NT would let a WRITE_DAC holder attach one | none |
+| 5 | `ef03f4b` | accepted-with-reason: a documented model limit (nt_services.c:44-47). It is one aligned ULONG that only sets an advisory resolution; no unsafe access results | none |
+| 6 | `22f2688` | fixed: one alert flag, on the sync thread that alertable waits test. `NtAlertThread`, `NtAlertResumeThread` and `NtTestAlert` use it; the kernel `NtDelayExecution` honours it when alertable. Test `test_alert_satisfies_alertable_wait` failed before (STATUS_TIMEOUT), passes after. The kernel delay path is not host-testable | `a1d128c` |
+| 7 | `9bb018d` | fixed: `NtAllocateVirtualMemoryEx` releases the region when the base or size copy-out faults. Not host-testable (host `copy_to_user` cannot fault) | `f583b05`, `165bca4` |
+| 8 | `7e43c43` | fixed: entry names are decoded from UTF-8 to UTF-16 (test `query_directory_utf8_name`); a listing whose path stopped being a directory returns `STATUS_NOT_A_DIRECTORY` (test `query_directory_replaced_by_file`). Both failed before | `3b187d5` |
+| 9 | `7bc43a3` | fixed: the byte-range end is saturated at LLONG_MAX in the conflict test. Test `lock_conflict_near_offset_limit` failed before (STATUS_UNSUCCESSFUL, expected STATUS_FILE_LOCK_CONFLICT), passes after | `fcca36a` |
+| 10 | `bc82d49` | fixed: a relative rename with RootDirectory resolves inside that directory (test `rename_relative_to_root_directory` failed before with STATUS_ACCESS_DENIED). The earlier three items of this commit were fixed in 170edb9, 520cf42 and e3bf004 | `32816fb` |
+| 11 | `4260f62` | already fixed: the self-relative length is summed in 64 bits (`ntsec_sr_extend`) | `de11c20` |
+| 12 | `c1934e9` | already fixed: `nt_relative_expiry_100ns` saturates for a relative due time of INT64_MIN | `0589b08` |
+| 13 | `1e8f0dd` | already fixed: each token has a LUID from a counter as its TokenId, so no kernel address is returned. The fill pass is accepted-with-reason: tokens are immutable after creation, so the measure pass fixes the length the fill pass writes | `222f64d` |
+| 14 | `0520a92` | needs-owner: what depth bound should `snap_walk_key` (registry.c:1045) apply, and which status should a deeper tree return? The recursion has no bound today | none |
+| 15 | `ecc7f83` | needs-owner: `ObpRemoveFromDirectory` reads `parent_dir` before taking the directory lock (object.c:312). Choose one: each entry holds a reference on its directory (it must then not be cyclic with `directory_delete`), or `parent_dir` is protected by one global lock | none |
+| 16 | `b9661c2` | already fixed: keyed-event wait and release check KEYEDEVENT_WAIT and KEYEDEVENT_WAKE | `7c6f281` |
+| 17 | `0258238` | already fixed: `NtSignalAndWaitForSingleObject` checks the signal and wait rights | `accf1ce` |
+
+Checks on the fixed tree (`haiku/suspects4` at the last fix commit):
+
+- `make -C tests/kernel-host check-quick`: exit 0.
+- `make -C tests/kernel-host check`: exit 0; all 15 programs return 0.
+- Python unit suite (`-I -m unittest discover tests/unit`): 546 run, OK (skipped 1).
+- `bash tests/syntax/check.sh`: passed 36, failed 5, warnings 482. The five failing files are the same as the third pass (`src/kernel/nt/dispatch.c`, `src/kernel/nt/kshim.c`, `src/kernel/fs/binfmt_pe.c`, `src/kernel/fs/binfmt_pe_test.c`, `arch/x86/nt/dispatch.c`). `dispatch.c` gained no new error; the `MEM_RELEASE` name from `f583b05` was fixed in `165bca4`.
+- `tools/update_doc_counts.py --write`: counts already current.
+
+Not covered by the host: the kernel branches of `sync.c` (`nt_thread_alert_pending`, `nt_thread_consume_alert`), `nt_obj.c` (`NtDelayExecution`) and `dispatch.c` (the copy-out unwind) need a kernel build, which this host cannot run. The syntax check compiles the shim branch only.
+
+
 ## Per-commit audit
 
 Newest first. Files: basenames of every file the commit touches. Location: `file:line` in the post-image at HEAD (`e2d279e` for unchanged code), or at the commit where the line was first changed.
