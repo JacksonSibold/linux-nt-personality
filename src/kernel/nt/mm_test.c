@@ -14,6 +14,8 @@
 
 #include "mm.h"
 #include "kshim.h"
+#include "object.h"
+#include "handle.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +23,7 @@
 #include <unistd.h>
 #include <assert.h>
 
+static struct nt_eprocess *g_mm_proc = NULL;
 static int tests_run = 0;
 static int tests_pass = 0;
 static int tests_fail = 0;
@@ -505,7 +508,7 @@ static int test_file_section_unsupported(void) {
 static int test_view_size_round_up_wrap(void) {
     LARGE_INTEGER sz; sz.QuadPart = 0x2000;
     HANDLE sec = NULL;
-    NTSTATUS st = NtCreateSection(&sec, 0, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    NTSTATUS st = NtCreateSection(&sec, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
     ASSERT(st == STATUS_SUCCESS, "create wrap section 0x%lx", (unsigned long)st);
     LARGE_INTEGER off; off.QuadPart = 0;
     PVOID base = NULL;
@@ -513,11 +516,7 @@ static int test_view_size_round_up_wrap(void) {
     st = NtMapViewOfSection(sec, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READWRITE);
     ASSERT(st == STATUS_INVALID_VIEW_SIZE, "wrapping view size status 0x%lx", (unsigned long)st);
     ASSERT(base == NULL, "no base for wrapping view size");
-    struct nt_section *s = (struct nt_section *)sec;
-    int fd = s->backing.fd; void *mem = s->backing.mem; size_t bsz = s->backing.size;
-    kfree(s);
-    if (mem) kshim_munmap(mem, bsz);
-    (void)fd;
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close wrap section");
     return 1;
 }
 
@@ -543,12 +542,203 @@ static int test_wrapping_size_protect_decommit(void) {
     return 1;
 }
 
+/* ADR 0001: section handles are object-table handles. These helpers use the
+ * same process and handle table as the object manager tests. */
+static int mm_setup_objects(void) {
+    if (ObInitObjectManager() != STATUS_SUCCESS) return 0;
+    if (ObCreateProcessObject(&g_mm_proc, 4242, "mmtest") != STATUS_SUCCESS || !g_mm_proc) return 0;
+    kshim_set_current_process(g_mm_proc);
+    return 1;
+}
+
+static NTSTATUS mm_make_section(HANDLE *h, ACCESS_MASK access, ULONG prot, SIZE_T size) {
+    LARGE_INTEGER sz;
+    sz.QuadPart = (LONGLONG)size;
+    *h = NULL;
+    return NtCreateSection(h, access, NULL, &sz, prot, SEC_COMMIT, NULL);
+}
+
+static NTSTATUS mm_map_view(HANDLE h, PVOID *base, SIZE_T *vs, ULONG prot) {
+    LARGE_INTEGER off;
+    off.QuadPart = 0;
+    *base = NULL;
+    *vs = 0;
+    return NtMapViewOfSection(h, (HANDLE)-1, base, 0, 0, &off, vs, 0, 0, prot);
+}
+
+/* The handle is a handle-table index, not the address of the section object. */
+static int test_section_handle_is_object(void) {
+    HANDLE h = NULL;
+    NTSTATUS st = mm_make_section(&h, SECTION_ALL_ACCESS, PAGE_READWRITE, 0x2000);
+    ASSERT(st == STATUS_SUCCESS, "create 0x%lx", (unsigned long)st);
+    ASSERT(h != NULL, "handle is null");
+    struct nt_object_header *hdr = NULL;
+    st = ObReferenceObjectByHandle(g_mm_proc, h, &nt_section_type, KernelMode, 0, &hdr, NULL);
+    ASSERT(st == STATUS_SUCCESS, "reference by handle 0x%lx", (unsigned long)st);
+    ASSERT(hdr && hdr->type == &nt_section_type, "object type is Section");
+    ASSERT((ULONG_PTR)h != (ULONG_PTR)nt_object_body(hdr), "handle equals object address");
+    ObDereferenceObject(hdr);
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "close");
+    return 1;
+}
+
+/* Forged values, including the address of the section body (the old
+ * pointer-as-handle hole), are rejected without being dereferenced. */
+static int test_section_forged_handle_rejected(void) {
+    HANDLE h = NULL;
+    NTSTATUS st = mm_make_section(&h, SECTION_ALL_ACCESS, PAGE_READWRITE, 0x2000);
+    ASSERT(st == STATUS_SUCCESS, "create 0x%lx", (unsigned long)st);
+    struct nt_object_header *hdr = NULL;
+    st = ObReferenceObjectByHandle(g_mm_proc, h, &nt_section_type, KernelMode, 0, &hdr, NULL);
+    ASSERT(st == STATUS_SUCCESS, "reference 0x%lx", (unsigned long)st);
+    void *body = nt_object_body(hdr);
+    ObDereferenceObject(hdr);
+    volatile int local = 0;
+    HANDLE forged[] = { (HANDLE)0x1234, (HANDLE)(ULONG_PTR)0xFFFFFFFFFFFF0000ULL,
+                        (HANDLE)body, (HANDLE)&local };
+    for (size_t i = 0; i < sizeof(forged) / sizeof(forged[0]); i++) {
+        PVOID base = NULL; SIZE_T vs = 0;
+        LARGE_INTEGER off; off.QuadPart = 0;
+        st = NtMapViewOfSection(forged[i], (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READWRITE);
+        ASSERT(st == STATUS_INVALID_HANDLE, "forged[%zu] status 0x%lx", i, (unsigned long)st);
+        ASSERT(base == NULL, "forged[%zu] mapped a view", i);
+    }
+    /* The real handle still maps. */
+    PVOID base = NULL; SIZE_T vs = 0;
+    st = mm_map_view(h, &base, &vs, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "real handle after forgery 0x%lx", (unsigned long)st);
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "unmap");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "close");
+    return 1;
+}
+
+/* A handle to an object of another type is rejected with a type mismatch. */
+static int test_section_wrong_type_rejected(void) {
+    struct nt_object_header *hdr = NULL;
+    void *body = NULL;
+    NTSTATUS st = ObCreateObject(&nt_test_type, NULL, sizeof(struct nt_test_body), &hdr, &body);
+    ASSERT(st == STATUS_SUCCESS, "create test object 0x%lx", (unsigned long)st);
+    HANDLE h = NULL;
+    st = ObInsertObject(hdr, NULL, SECTION_ALL_ACCESS, g_mm_proc, &h);
+    ObDereferenceObject(hdr);
+    ASSERT(st == STATUS_SUCCESS, "insert test object 0x%lx", (unsigned long)st);
+    PVOID base = NULL; SIZE_T vs = 0;
+    st = mm_map_view(h, &base, &vs, PAGE_READWRITE);
+    ASSERT(st == STATUS_OBJECT_TYPE_MISMATCH, "wrong type status 0x%lx", (unsigned long)st);
+    ASSERT(base == NULL, "wrong type mapped a view");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "close");
+    return 1;
+}
+
+static int test_section_closed_handle_rejected(void) {
+    HANDLE h = NULL;
+    NTSTATUS st = mm_make_section(&h, SECTION_ALL_ACCESS, PAGE_READWRITE, 0x2000);
+    ASSERT(st == STATUS_SUCCESS, "create 0x%lx", (unsigned long)st);
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "close");
+    PVOID base = NULL; SIZE_T vs = 0;
+    st = mm_map_view(h, &base, &vs, PAGE_READWRITE);
+    ASSERT(st == STATUS_INVALID_HANDLE, "closed handle status 0x%lx", (unsigned long)st);
+    ASSERT(base == NULL, "closed handle mapped a view");
+    return 1;
+}
+
+/* Mapping needs SECTION_MAP_READ, and write protection needs SECTION_MAP_WRITE. */
+static int test_section_access_mask(void) {
+    HANDLE ro = NULL;
+    NTSTATUS st = mm_make_section(&ro, SECTION_MAP_READ, PAGE_READWRITE, 0x2000);
+    ASSERT(st == STATUS_SUCCESS, "create read-only handle 0x%lx", (unsigned long)st);
+    PVOID base = NULL; SIZE_T vs = 0;
+    st = mm_map_view(ro, &base, &vs, PAGE_READONLY);
+    ASSERT(st == STATUS_SUCCESS, "read map 0x%lx", (unsigned long)st);
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "unmap read");
+    base = NULL; vs = 0;
+    st = mm_map_view(ro, &base, &vs, PAGE_READWRITE);
+    ASSERT(st == STATUS_ACCESS_DENIED, "write map without MAP_WRITE 0x%lx", (unsigned long)st);
+    ASSERT(base == NULL, "denied map returned a base");
+    HANDLE q = NULL;
+    st = mm_make_section(&q, SECTION_QUERY, PAGE_READWRITE, 0x2000);
+    ASSERT(st == STATUS_SUCCESS, "create query-only 0x%lx", (unsigned long)st);
+    base = NULL; vs = 0;
+    st = mm_map_view(q, &base, &vs, PAGE_READONLY);
+    ASSERT(st == STATUS_ACCESS_DENIED, "map without MAP_READ 0x%lx", (unsigned long)st);
+    ASSERT(ObCloseHandle(g_mm_proc, ro) == STATUS_SUCCESS, "close ro");
+    ASSERT(ObCloseHandle(g_mm_proc, q) == STATUS_SUCCESS, "close q");
+    return 1;
+}
+
+/* Lifetime: the section is freed only after the last handle and the last view
+ * are gone. kshim_alloc_count is the allocation tracker. */
+static int test_section_lifetime(void) {
+    HANDLE warm = NULL;
+    ASSERT(mm_make_section(&warm, SECTION_ALL_ACCESS, PAGE_READWRITE, 0x1000) == STATUS_SUCCESS, "warm");
+    ASSERT(ObCloseHandle(g_mm_proc, warm) == STATUS_SUCCESS, "warm close");
+    long before = atomic_load(&kshim_alloc_count);
+
+    /* Two views; the handle closes first. */
+    HANDLE h = NULL;
+    ASSERT(mm_make_section(&h, SECTION_ALL_ACCESS, PAGE_READWRITE, 0x2000) == STATUS_SUCCESS, "create");
+    PVOID b1 = NULL; SIZE_T v1 = 0;
+    ASSERT(mm_map_view(h, &b1, &v1, PAGE_READWRITE) == STATUS_SUCCESS, "map 1");
+    PVOID b2 = NULL; SIZE_T v2 = 0;
+    ASSERT(mm_map_view(h, &b2, &v2, PAGE_READWRITE) == STATUS_SUCCESS, "map 2");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "close handle");
+    ((volatile char *)b1)[0] = 1;
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, b1) == STATUS_SUCCESS, "unmap 1");
+    ASSERT(atomic_load(&kshim_alloc_count) > before, "freed with one view left");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, b2) == STATUS_SUCCESS, "unmap 2");
+    ASSERT(atomic_load(&kshim_alloc_count) == before, "not freed after last view: %ld vs %ld",
+           atomic_load(&kshim_alloc_count), before);
+
+    /* Handle last: map, unmap, then close. */
+    HANDLE h2 = NULL;
+    ASSERT(mm_make_section(&h2, SECTION_ALL_ACCESS, PAGE_READWRITE, 0x2000) == STATUS_SUCCESS, "create 2");
+    PVOID b3 = NULL; SIZE_T v3 = 0;
+    ASSERT(mm_map_view(h2, &b3, &v3, PAGE_READWRITE) == STATUS_SUCCESS, "map 3");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, b3) == STATUS_SUCCESS, "unmap 3");
+    ASSERT(atomic_load(&kshim_alloc_count) > before, "freed before the last handle closed");
+    ASSERT(ObCloseHandle(g_mm_proc, h2) == STATUS_SUCCESS, "close 2");
+    ASSERT(atomic_load(&kshim_alloc_count) == before, "not freed after last handle: %ld vs %ld",
+           atomic_load(&kshim_alloc_count), before);
+
+    /* No views: closing the only handle frees it. */
+    HANDLE h3 = NULL;
+    ASSERT(mm_make_section(&h3, SECTION_ALL_ACCESS, PAGE_READWRITE, 0x1000) == STATUS_SUCCESS, "create 3");
+    ASSERT(ObCloseHandle(g_mm_proc, h3) == STATUS_SUCCESS, "close 3");
+    ASSERT(atomic_load(&kshim_alloc_count) == before, "view-less section leaked");
+    return 1;
+}
+
+/* Protect of a sub-range splits the view, and the split copies the section
+ * pointer into new VADs. Each VAD must hold its own reference, so unmapping the
+ * whole view frees the section exactly once. */
+static int test_section_view_split_refcount(void) {
+    HANDLE warm = NULL;
+    ASSERT(mm_make_section(&warm, SECTION_ALL_ACCESS, PAGE_READWRITE, 0x1000) == STATUS_SUCCESS, "warm");
+    ASSERT(ObCloseHandle(g_mm_proc, warm) == STATUS_SUCCESS, "warm close");
+    long before = atomic_load(&kshim_alloc_count);
+
+    HANDLE h = NULL;
+    ASSERT(mm_make_section(&h, SECTION_ALL_ACCESS, PAGE_READWRITE, 0x4000) == STATUS_SUCCESS, "create");
+    PVOID base = NULL; SIZE_T vs = 0;
+    ASSERT(mm_map_view(h, &base, &vs, PAGE_READWRITE) == STATUS_SUCCESS, "map");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "close handle");
+    PVOID pb = (PVOID)((ULONG_PTR)base + 0x1000);
+    SIZE_T ps = 0x1000;
+    ULONG old = 0;
+    NTSTATUS st = NtProtectVirtualMemory((HANDLE)-1, &pb, &ps, PAGE_READONLY, &old);
+    ASSERT(st == STATUS_SUCCESS, "protect middle 0x%lx", (unsigned long)st);
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "unmap split view");
+    ASSERT(atomic_load(&kshim_alloc_count) == before, "split view leaked or double-freed: %ld vs %ld",
+           atomic_load(&kshim_alloc_count), before);
+    return 1;
+}
+
 /* 8. sections */
 static int test_sections(void) {
     LARGE_INTEGER sz;
     sz.QuadPart = 0x2000;
     HANDLE sec;
-    NTSTATUS st = NtCreateSection(&sec, 0, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    NTSTATUS st = NtCreateSection(&sec, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
     ASSERT(st==STATUS_SUCCESS, "create sec");
     PVOID base=NULL; SIZE_T vs=0;
     LARGE_INTEGER off; off.QuadPart=0;
@@ -562,7 +752,7 @@ static int test_sections(void) {
     /* Test SEC_RESERVE */
     LARGE_INTEGER sz2; sz2.QuadPart=0x4000;
     HANDLE sec2;
-    st = NtCreateSection(&sec2, 0, NULL, &sz2, PAGE_READWRITE, SEC_RESERVE, NULL);
+    st = NtCreateSection(&sec2, SECTION_ALL_ACCESS, NULL, &sz2, PAGE_READWRITE, SEC_RESERVE, NULL);
     ASSERT(st==STATUS_SUCCESS, "sec reserve");
     PVOID base2=NULL; SIZE_T vs2=0x1000;
     off.QuadPart=0x1000;
@@ -572,7 +762,7 @@ static int test_sections(void) {
     /* Copy-on-write */
     LARGE_INTEGER sz3; sz3.QuadPart=0x1000;
     HANDLE sec3;
-    st = NtCreateSection(&sec3, 0, NULL, &sz3, PAGE_WRITECOPY, SEC_COMMIT, NULL);
+    st = NtCreateSection(&sec3, SECTION_ALL_ACCESS, NULL, &sz3, PAGE_WRITECOPY, SEC_COMMIT, NULL);
     ASSERT(st==STATUS_SUCCESS, "sec cow");
     PVOID base3=NULL; SIZE_T vs3=0;
     off.QuadPart=0;
@@ -588,22 +778,10 @@ static int test_sections(void) {
     ASSERT(st==STATUS_SUCCESS, "unmap2");
     st = NtUnmapViewOfSection((HANDLE)-1, base3);
     ASSERT(st==STATUS_SUCCESS, "unmap3");
-    /* Free section objects (shim) */
-    struct nt_section *s1 = (struct nt_section *)sec;
-    struct nt_section *s2 = (struct nt_section *)sec2;
-    struct nt_section *s3 = (struct nt_section *)sec3;
-    int fd1 = s1->backing.fd; void *mem1 = s1->backing.mem; size_t sz1 = s1->backing.size;
-    int fd2 = s2->backing.fd; void *mem2 = s2->backing.mem; size_t sz2_ = s2->backing.size;
-    int fd3 = s3->backing.fd; void *mem3 = s3->backing.mem; size_t sz3_ = s3->backing.size;
-    kfree(s1);
-    kfree(s2);
-    kfree(s3);
-    if (mem1) kshim_munmap(mem1, sz1);
-    if (mem2) kshim_munmap(mem2, sz2_);
-    if (mem3) kshim_munmap(mem3, sz3_);
-    if (fd1 >= 0) close(fd1);
-    if (fd2 >= 0) close(fd2);
-    if (fd3 >= 0) close(fd3);
+    /* Closing the last handle frees each section (its views are already gone). */
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close sec");
+    ASSERT(ObCloseHandle(g_mm_proc, sec2) == STATUS_SUCCESS, "close sec2");
+    ASSERT(ObCloseHandle(g_mm_proc, sec3) == STATUS_SUCCESS, "close sec3");
     return 1;
 }
 
@@ -1038,7 +1216,7 @@ static int test_query_region_info(void) {
     /* Mapped section view reports the page-file region type. */
     LARGE_INTEGER sz; sz.QuadPart = 0x10000;
     HANDLE sec = NULL;
-    st = NtCreateSection(&sec, 0, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    st = NtCreateSection(&sec, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
     ASSERT(st == STATUS_SUCCESS, "section create 0x%lx", (unsigned long)st);
     PVOID vbase = NULL; SIZE_T vsize = 0; LARGE_INTEGER off; off.QuadPart = 0;
     st = NtMapViewOfSection(sec, (HANDLE)-1, &vbase, 0, 0, &off, &vsize, 0, 0, PAGE_READWRITE);
@@ -1048,14 +1226,7 @@ static int test_query_region_info(void) {
     ASSERT(info.RegionType & MEM_REGION_MAPPED_PAGEFILE, "view region type 0x%lx", (unsigned long)info.RegionType);
     ASSERT(!(info.RegionType & MEM_REGION_PRIVATE), "view not private");
     NtUnmapViewOfSection((HANDLE)-1, vbase);
-    /* No section destroy routine yet (review M-3): the test releases it. */
-    {
-        struct nt_section *s = (struct nt_section *)sec;
-        int fd = s->backing.fd; void *mem = s->backing.mem; size_t bsz = s->backing.size;
-        kfree(s);
-        if (mem) kshim_munmap(mem, bsz);
-        if (fd >= 0) close(fd);
-    }
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close region section");
 
     /* Classes that need a working-set or file-name model are not supported;
      * unknown classes are invalid. */
@@ -1174,7 +1345,7 @@ static int test_flush_virtual_memory(void) {
     /* Mapped section view: anonymous backing is coherent, so flush succeeds. */
     LARGE_INTEGER sz; sz.QuadPart = 0x2000;
     HANDLE sec = NULL;
-    st = NtCreateSection(&sec, 0, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    st = NtCreateSection(&sec, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
     ASSERT(st == STATUS_SUCCESS, "section 0x%lx", (unsigned long)st);
     PVOID vbase = NULL; SIZE_T vsize = 0; LARGE_INTEGER off; off.QuadPart = 0;
     st = NtMapViewOfSection(sec, (HANDLE)-1, &vbase, 0, 0, &off, &vsize, 0, 0, PAGE_READWRITE);
@@ -1183,13 +1354,7 @@ static int test_flush_virtual_memory(void) {
     st = NtFlushVirtualMemory((HANDLE)-1, &fbase, &fsize, &iosb);
     ASSERT(st == STATUS_SUCCESS, "flush view 0x%lx", (unsigned long)st);
     NtUnmapViewOfSection((HANDLE)-1, vbase);
-    {
-        struct nt_section *s = (struct nt_section *)sec;
-        int fd = s->backing.fd; void *mem = s->backing.mem; size_t bsz = s->backing.size;
-        kfree(s);
-        if (mem) kshim_munmap(mem, bsz);
-        if (fd >= 0) close(fd);
-    }
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close flush section");
 
     /* Argument and process checks. */
     st = NtFlushVirtualMemory((HANDLE)-1, NULL, &fsize, &iosb);
@@ -1236,6 +1401,17 @@ static int test_allocate_ex(void) {
 
 int main(void) {
     printf("=== ntmm tests ===\n");
+    if (!mm_setup_objects()) {
+        printf("object manager setup failed\n");
+        return 1;
+    }
+    RUN_TEST(test_section_handle_is_object);
+    RUN_TEST(test_section_forged_handle_rejected);
+    RUN_TEST(test_section_wrong_type_rejected);
+    RUN_TEST(test_section_closed_handle_rejected);
+    RUN_TEST(test_section_access_mask);
+    RUN_TEST(test_section_lifetime);
+    RUN_TEST(test_section_view_split_refcount);
     RUN_TEST(test_reserve_commit_subrange);
     RUN_TEST(test_granularity);
     RUN_TEST(test_release_nonzero);
@@ -1258,6 +1434,9 @@ int main(void) {
     RUN_TEST(test_rw_virtual_memory);
     RUN_TEST(test_flush_virtual_memory);
     RUN_TEST(test_allocate_ex);
+    ntmm_reset();
+    ObDestroyProcessObject(g_mm_proc);
+    ObCleanupObjectManager();
     printf("\n=== RESULT %d/%d passed, %d failed ===\n", tests_pass, tests_run, tests_fail);
     extern _Atomic long kshim_alloc_count;
     long leaks = atomic_load(&kshim_alloc_count);

@@ -1,6 +1,6 @@
 # 0001: Section handles come from the object table (M-1)
 
-Status: Proposed. Needs an object-model decision; not implemented.
+Status: Accepted. Implemented in c8f479e (option 1, src/kernel/nt only). Arch is not changed; see 0021.
 Finding: `docs/review/kernel-nt.md` M-1 (High).
 Date: 2026-10-12
 
@@ -38,6 +38,15 @@ Option 1, landed together with 0004 (M-3), since the section object needs a dele
 - A file or event handle passed to `NtMapViewOfSection` returns `STATUS_OBJECT_TYPE_MISMATCH`.
 - `tests/kernel-host` is owned by another workstream and is not used.
 
-## Open questions
+## Outcome (c8f479e)
 
-- `NtCreateSection` ignores `DesiredAccess` (`mm.c:1456`). Section access masks (`SECTION_MAP_READ`, `SECTION_MAP_WRITE`, `SECTION_MAP_EXECUTE`) should be checked in `NtMapViewOfSection` once the handle carries a granted mask.
+- `NtCreateSection` creates a Section object (`nt_section_type`, `src/kernel/nt/mm.c`) and returns a handle-table index from `ObInsertObject`. The granted access is `DesiredAccess`.
+- `NtMapViewOfSection` resolves the handle with `ObReferenceObjectByHandle` against `nt_section_type`. The required mask is `SECTION_MAP_READ`, plus `SECTION_MAP_WRITE` for `PAGE_READWRITE` and `SECTION_MAP_EXECUTE` for the `PAGE_EXECUTE*` protections. A missing right gives `STATUS_ACCESS_DENIED`. The lookup reference is dropped after mapping.
+- Each VAD that holds a section holds one object reference. Splits take a reference per copy and every VAD free drops one (`nt_vad_free`). The section is freed when the last handle and the last view are gone.
+- Tests: `src/kernel/nt/mm_test.c` (handle is an object handle, forged integers and the body address are rejected, wrong type, closed handle, access masks, lifetime with the allocation tracker, split view).
+
+Still open:
+
+- `NtQuerySection`, `NtExtendSection` and `NtOpenSection` are in the service list but are not implemented in this tree. Named sections are not supported; `ObjectAttributes` is ignored.
+- `arch/x86/nt/mm.c` has its own section code and was not changed (0021).
+- Section lifetime (0004, kernel-nt M-3) is also covered by the lifetime tests in c8f479e, but that record was not changed here.

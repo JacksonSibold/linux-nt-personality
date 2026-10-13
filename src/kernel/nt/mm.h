@@ -218,6 +218,21 @@ struct nt_section {
     struct kshim_section_backing backing;
 };
 
+/* A section is an object-manager object. Its body is struct nt_section and its
+ * handle is a handle-table index (ADR 0001). A VAD that maps a view holds one
+ * object reference (nt_section_ref / nt_section_unref in mm.c). */
+struct nt_object_type;
+extern struct nt_object_type nt_section_type;
+
+#ifndef SECTION_QUERY
+#define SECTION_QUERY                   0x0001UL
+#define SECTION_MAP_WRITE               0x0002UL
+#define SECTION_MAP_READ                0x0004UL
+#define SECTION_MAP_EXECUTE             0x0008UL
+#define SECTION_EXTEND_SIZE             0x0010UL
+#define SECTION_ALL_ACCESS              0x000F001FUL
+#endif
+
 /* -------------------------------------------------------------------------- */
 /* Per-process address space                                                  */
 /* -------------------------------------------------------------------------- */

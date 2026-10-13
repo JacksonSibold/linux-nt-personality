@@ -48,7 +48,7 @@ The code is careful about `copy_from_user` at most service entry points, and the
 - `src/kernel/nt/registry.c:1621` (kernel branch of `nt_svc_NtQueryValueKey`; the shim at `:1448` is the same) allocates `kout = kmalloc(len)`.
 - `NtQueryValueKey` (`registry.c:1079-1140`) fills only `needed` bytes when `Length >= needed`, then the wrapper runs `copy_to_user(info, kout, len)` at `:1625` for the full `len`. The tail is uninitialised. Fix: `kzalloc`, or copy only `min(needed, len)`.
 
-### M-1 [High] Kernel pointer returned as section handle and used unvalidated
+### M-1 [High] Kernel pointer returned as section handle and used unvalidated (fixed c8f479e, record 0001)
 - `src/kernel/nt/mm.c:1498`: `NtCreateSection` returns `*SectionHandle = (HANDLE)sec;`, a kernel address, to the caller.
 - `src/kernel/nt/mm.c:1507-1515`: `NtMapViewOfSection` casts `SectionHandle` to `struct nt_section *` and reads `sec->attributes`, `sec->size`, `sec->page_protection` and `sec->backing` (`:1524-1552`) without any handle-table lookup or type check. `NtMapViewOfSection` is registered as a service (`nt_service_list.h:34`).
 - Impact: address disclosure through the returned handle (KASLR), and a forged handle makes the kernel dereference an arbitrary address and feed `sec->backing` into `kshim_section_map` (`kshim.c:117-137`).
@@ -241,7 +241,6 @@ Partly fixed: H-2 in d7adc94 (FIFO quarantine of closed slots, record 0003 optio
 
 Not fixed. Each has a design record in `docs/decisions/` (index: [docs/decisions/INDEX.md](../decisions/INDEX.md)):
 
-- M-1: NtCreateSection returns a kernel address as the handle. Needs a real object-table handle and a type-checked lookup in NtMapViewOfSection. Record 0001 (object-model change).
 - P-1: NtOpenProcess and NtOpenThread have no access or owner check and use the registry result unreferenced. Needs a policy for who may open which process. Record 0002.
 - M-3: section objects are never freed. Needs an object type with a delete callback; depends on M-1. Record 0004.
 - M-4: VAD rollback on failed commit or decommit. Recommended: validate, preallocate, then mutate. Record 0005.

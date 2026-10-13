@@ -9,11 +9,11 @@ Status values:
 - **no-change**: the record is accepted and no code change is needed.
 - **open**: the record is proposed and not implemented.
 
-Snapshot: 2026-10-12, `HEAD` at the time this index was written. 36 records: 12 fixed, 16 open, 7 blocked, 1 no-change.
+Snapshot: 2026-10-12, `HEAD` at the time this index was written. 36 records: 13 fixed, 15 open, 7 blocked, 1 no-change.
 
 | Record | Title | Status | Finding | Commit |
 |---|---|---|---|---|
-| [0001](0001-section-handle-object.md) | Section handles come from the object table | open | kernel-nt M-1 (High) | |
+| [0001](0001-section-handle-object.md) | Section handles come from the object table | fixed | kernel-nt M-1 (High) | c8f479e |
 | [0002](0002-process-open-access-check.md) | Access check and reference counting for NtOpenProcess / NtOpenThread | open | kernel-nt P-1 (High) | |
 | [0003](0003-handle-slot-reuse.md) | Handle slot reuse and index exhaustion | fixed (option 1; option 2 still open) | kernel-nt H-2 (Medium) | d7adc94 |
 | [0004](0004-section-object-lifetime.md) | Section object lifetime | open | kernel-nt M-3 (Medium) | |
