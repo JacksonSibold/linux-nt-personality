@@ -44,8 +44,8 @@ hybrid, the first strong definition in file order decides the class.
 | REFUSES | 0 |
 | WEAK-FALLBACK | 0 |
 | UNREACHABLE-WRAPPER-MISSING | 0 |
-| MISSING | 31 |
-| IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 77 |
+| MISSING | 25 |
+| IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 83 |
 | IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 2 |
 | REFUSES (userspace) / IMPLEMENTED (kernel) | 1 |
 | STUB-NOT-IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 3 |
@@ -55,7 +55,7 @@ hybrid, the first strong definition in file order decides the class.
 | Area | Total | IMPLEMENTED | STUB-NOT-IMPLEMENTED | REFUSES | WEAK-FALLBACK | UNREACHABLE-WRAPPER-MISSING | MISSING | hybrid |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | system | 10 | 2 | 0 | 0 | 0 | 0 | 0 | 8 |
-| process-thread | 43 | 8 | 0 | 0 | 0 | 0 | 15 | 20 |
+| process-thread | 43 | 8 | 0 | 0 | 0 | 0 | 9 | 26 |
 | memory | 19 | 8 | 0 | 0 | 0 | 0 | 5 | 6 |
 | io | 30 | 24 | 0 | 0 | 0 | 0 | 0 | 6 |
 | sync | 32 | 15 | 0 | 0 | 0 | 0 | 0 | 17 |
@@ -120,12 +120,12 @@ hybrid, the first strong definition in file order decides the class.
 | 0x00d3 | `NtDebugContinue` | 3 | MISSING |  |
 | 0x01d9 | `NtWaitForDebugEvent` | 4 | MISSING |  |
 | 0x0179 | `NtRemoveProcessDebug` | 2 | MISSING |  |
-| 0x00b0 | `NtCreateJobObject` | 3 | MISSING |  |
-| 0x0125 | `NtOpenJobObject` | 3 | MISSING |  |
-| 0x008f | `NtAssignProcessToJobObject` | 2 | MISSING |  |
-| 0x01c7 | `NtTerminateJobObject` | 2 | MISSING |  |
-| 0x0150 | `NtQueryInformationJobObject` | 5 | MISSING |  |
-| 0x019f | `NtSetInformationJobObject` | 4 | MISSING |  |
+| 0x00b0 | `NtCreateJobObject` | 3 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/job.c` |
+| 0x0125 | `NtOpenJobObject` | 3 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/job.c` |
+| 0x008f | `NtAssignProcessToJobObject` | 2 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/job.c` |
+| 0x01c7 | `NtTerminateJobObject` | 2 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/job.c` |
+| 0x0150 | `NtQueryInformationJobObject` | 5 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/job.c` |
+| 0x019f | `NtSetInformationJobObject` | 4 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/job.c` |
 
 ## Area: memory
 

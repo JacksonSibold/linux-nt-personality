@@ -1514,9 +1514,18 @@ NTSTATUS ObCreateThreadObject(struct nt_ethread **out, struct nt_eprocess *proc,
     return STATUS_SUCCESS;
 }
 
+/* Weak no-op fallback so builds without job.c still link. job.c provides the
+ * strong definition. */
+void __attribute__((weak)) nt_job_remove_process(struct nt_eprocess *proc)
+{
+    (void)proc;
+}
+
 void ObDestroyProcessObject(struct nt_eprocess *proc)
 {
     if (!proc) return;
+    /* Membership first: the job must drop proc before its handles are closed. */
+    nt_job_remove_process(proc);
     /* Unregister in both builds: a freed node left on the list is a use-after-free
      * for every pid lookup that follows. */
     ob_unregister_proc(proc);
