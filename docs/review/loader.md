@@ -10,7 +10,7 @@ Severity: High / Medium / Low / Info.
 | Severity | Count |
 |---|---|
 | High | 2 |
-| Medium | 3 |
+| Medium | 5 |
 | Low | 9 |
 | Info | 1 |
 
@@ -99,6 +99,19 @@ The parser in this directory is careful about bounds for most reads (`pe_check_r
 - **Status:** no change; the wrap is unreachable because SizeOfImage must be a multiple of SectionAlignment. See docs/decisions/0019-loader-aligned-highest-wrap.md.
 - `src/loader/pe_parse.c:565`: `(highest + SectionAlignment - 1) & ~(SectionAlignment - 1)` is computed in u32 and can wrap when `highest` is within one alignment unit of 4 GiB. The 1 MiB slack check at 570-571 currently rejects the wrapped value, so there is no accepted bad case today.
 - Fix: compute in u64.
+
+### L-15 [Medium] Walker RVAs not checked against SizeOfImage
+- **Status:** fixed in b448667 (failing regression tests first, in 3047209). Found by the fuzzer in `tests/fuzz` (`--keep-going`, base seeds 1 to 3, 100000 iterations per seed file, 7 seed files). Three violation classes and no memory faults. After the fix the same runs report no violations and no faults.
+- `pe_relocs_walk` (`src/loader/pe_parse.c`) returned a relocation block whose page RVA was at or above SizeOfImage (synth_reloc seed, block `VirtualAddress` set to `0x8C001000`). A loader that applies the block writes outside the mapped image.
+- `pe_exception_walk` returned RUNTIME_FUNCTION entries with BeginAddress or UnwindInfoAddress at or above SizeOfImage, or EndAddress above it (synth_exception seed).
+- `pe_export_build` returned export function RVAs at or above SizeOfImage (exports.dll fixture; the first hit minimised from 6899 to 4608 bytes with `--minimise`).
+- Fix: each case returns `PE_ERR_CORRUPT`. EndAddress is exclusive, so SizeOfImage itself is allowed for it. `pe_directory_get` already enforces the same bound for the directories.
+
+### L-16 [Medium] Import walk work is not bounded by the file size (open; needs owner decision)
+- **Status:** needs owner. Found by a hand-written probe, not by the fuzzer: the fuzzer's per-walk callback budget (size/8 + size/20 + 64) was never reached by its mutations.
+- `pe_imports_walk` walks each import descriptor's ILT to its zero terminator and keeps no total across descriptors. Several descriptors can point at the same ILT. The import directory is capped at 0x10000 bytes, so there are at most 3276 descriptors.
+- Probe (scratch program, not committed): a 512 KiB image with 3276 descriptors sharing one ILT of about 61000 thunks made 187,858,944 callbacks in 2.6 s. The same shape with 100 descriptors made 5,734,400 callbacks in 0.07 s. The work is descriptors times ILT length, so a 16 MiB file could reach about 7 x 10^9 callbacks.
+- Fix options: count thunks across the whole walk and fail with `PE_ERR_CORRUPT` above size/8, or reject descriptors whose ILT ranges overlap. Which of these is right depends on whether any real loader accepts shared ILTs. Not implemented.
 
 ## Not verified / out of scope
 - No compile, no sanitizer run, no fuzzing. Overflow claims are from reading the arithmetic.
