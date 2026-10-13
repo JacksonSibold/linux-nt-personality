@@ -43,12 +43,12 @@ hybrid, the first strong definition in file order decides the class.
 | STUB-NOT-IMPLEMENTED | 0 |
 | REFUSES | 0 |
 | WEAK-FALLBACK | 0 |
-| UNREACHABLE-WRAPPER-MISSING | 3 |
-| MISSING | 34 |
-| IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 72 |
+| UNREACHABLE-WRAPPER-MISSING | 0 |
+| MISSING | 31 |
+| IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 77 |
 | IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 3 |
 | REFUSES (userspace) / IMPLEMENTED (kernel) | 1 |
-| STUB-NOT-IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 2 |
+| STUB-NOT-IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 3 |
 
 ## By area
 
@@ -56,7 +56,7 @@ hybrid, the first strong definition in file order decides the class.
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | system | 10 | 2 | 0 | 0 | 0 | 0 | 0 | 8 |
 | process-thread | 43 | 7 | 0 | 0 | 0 | 0 | 15 | 21 |
-| memory | 19 | 8 | 0 | 0 | 0 | 3 | 8 | 0 |
+| memory | 19 | 8 | 0 | 0 | 0 | 0 | 5 | 6 |
 | io | 30 | 24 | 0 | 0 | 0 | 0 | 0 | 6 |
 | sync | 32 | 15 | 0 | 0 | 0 | 0 | 0 | 17 |
 | security | 10 | 0 | 0 | 0 | 0 | 0 | 1 | 9 |
@@ -141,15 +141,15 @@ hybrid, the first strong definition in file order decides the class.
 | 0x00f0 | `NtFlushVirtualMemory` | 4 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x0113 | `NtLockVirtualMemory` | 4 | MISSING |  |
 | 0x01d3 | `NtUnlockVirtualMemory` | 4 | MISSING |  |
-| 0x004a | `NtCreateSection` | 7 | UNREACHABLE-WRAPPER-MISSING | `src/kernel/nt/mm.c` |
+| 0x004a | `NtCreateSection` | 7 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/mm.c` |
 | 0x00c2 | `NtCreateSectionEx` | 9 | MISSING |  |
-| 0x0037 | `NtOpenSection` | 3 | MISSING |  |
-| 0x0028 | `NtMapViewOfSection` | 10 | UNREACHABLE-WRAPPER-MISSING | `src/kernel/nt/mm.c` |
+| 0x0037 | `NtOpenSection` | 3 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/mm.c` |
+| 0x0028 | `NtMapViewOfSection` | 10 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/mm.c` |
 | 0x011a | `NtMapViewOfSectionEx` | 9 | MISSING |  |
-| 0x002a | `NtUnmapViewOfSection` | 2 | UNREACHABLE-WRAPPER-MISSING | `src/kernel/nt/mm.c` |
+| 0x002a | `NtUnmapViewOfSection` | 2 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/mm.c` |
 | 0x01d4 | `NtUnmapViewOfSectionEx` | 3 | MISSING |  |
-| 0x00e7 | `NtExtendSection` | 2 | MISSING |  |
-| 0x0051 | `NtQuerySection` | 5 | MISSING |  |
+| 0x00e7 | `NtExtendSection` | 2 | STUB-NOT-IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | `src/kernel/nt/mm.c` |
+| 0x0051 | `NtQuerySection` | 5 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/mm.c` |
 
 ## Area: io
 

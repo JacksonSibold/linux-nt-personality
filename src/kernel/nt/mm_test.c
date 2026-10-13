@@ -1421,6 +1421,171 @@ static int test_top_of_space_range_refused(void) {
     return 1;
 }
 
+/* ---- nt_svc_ section entry points: create / open family ---- */
+
+static void mm_make_us(UNICODE_STRING *us, WCHAR *buf, size_t bufcount, const char *s) {
+    size_t n = strlen(s), i;
+    if (n >= bufcount) n = bufcount - 1;
+    for (i = 0; i < n; i++) buf[i] = (WCHAR)(unsigned char)s[i];
+    buf[n] = 0;
+    us->Buffer = buf;
+    us->Length = (USHORT)(n * sizeof(WCHAR));
+    us->MaximumLength = (USHORT)((n + 1) * sizeof(WCHAR));
+}
+
+static OBJECT_ATTRIBUTES mm_make_oa(UNICODE_STRING *us) {
+    OBJECT_ATTRIBUTES oa;
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(oa);
+    oa.ObjectName = us;
+    return oa;
+}
+
+/* An unnamed section through the entry point maps like NtCreateSection's. */
+static int test_nt_svc_create_section_unnamed(void) {
+    HANDLE h = NULL;
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    NTSTATUS st = nt_svc_NtCreateSection(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "svc create 0x%lx", (unsigned long)st);
+    ASSERT(h != NULL, "svc create handle");
+    PVOID base = NULL; SIZE_T vs = 0;
+    st = mm_map_view(h, &base, &vs, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS && base != NULL && vs == 0x2000, "svc create map 0x%lx", (unsigned long)st);
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "svc create unmap");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "svc create close");
+    ASSERT(nt_svc_NtCreateSection(NULL, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL) == STATUS_INVALID_PARAMETER,
+           "svc create null handle pointer");
+    ASSERT(nt_svc_NtCreateSection(&h, SECTION_ALL_ACCESS, NULL, NULL, PAGE_READWRITE, SEC_COMMIT, NULL) == STATUS_INVALID_PARAMETER,
+           "svc create null size");
+    return 1;
+}
+
+/* A named section is found by NtOpenSection, and both handles share its backing. */
+static int test_nt_svc_named_section_open(void) {
+    UNICODE_STRING us; WCHAR nbuf[64];
+    mm_make_us(&us, nbuf, 64, "\\BaseNamedObjects\\MmTestSecOpen");
+    OBJECT_ATTRIBUTES oa = mm_make_oa(&us);
+    LARGE_INTEGER sz; sz.QuadPart = 0x1000;
+    HANDLE h1 = NULL, h2 = NULL;
+    NTSTATUS st = nt_svc_NtCreateSection(&h1, SECTION_ALL_ACCESS, &oa, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "named create 0x%lx", (unsigned long)st);
+    st = nt_svc_NtOpenSection(&h2, SECTION_ALL_ACCESS, &oa);
+    ASSERT(st == STATUS_SUCCESS && h2 != NULL, "named open 0x%lx", (unsigned long)st);
+    /* Both handles resolve to the same section object. (The host shim gives
+     * each view its own copy of the backing, so view contents are not compared.) */
+    struct nt_object_header *o1 = NULL, *o2 = NULL;
+    ASSERT(ObReferenceObjectByHandle(g_mm_proc, h1, &nt_section_type, KernelMode, 0, &o1, NULL) == STATUS_SUCCESS, "named ref one");
+    ASSERT(ObReferenceObjectByHandle(g_mm_proc, h2, &nt_section_type, KernelMode, 0, &o2, NULL) == STATUS_SUCCESS, "named ref two");
+    ASSERT(o1 == o2, "named handles name one section");
+    ObDereferenceObject(o1);
+    ObDereferenceObject(o2);
+    PVOID b1 = NULL; SIZE_T v1 = 0;
+    ASSERT(mm_map_view(h2, &b1, &v1, PAGE_READWRITE) == STATUS_SUCCESS, "named map");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, b1) == STATUS_SUCCESS, "named unmap");
+    ASSERT(ObCloseHandle(g_mm_proc, h1) == STATUS_SUCCESS, "named close one");
+    ASSERT(ObCloseHandle(g_mm_proc, h2) == STATUS_SUCCESS, "named close two");
+    return 1;
+}
+
+/* Missing names and missing pointers are refused without writing a handle. */
+static int test_nt_svc_open_section_errors(void) {
+    UNICODE_STRING us; WCHAR nbuf[64];
+    HANDLE h = NULL;
+    mm_make_us(&us, nbuf, 64, "\\BaseNamedObjects\\MmTestNoSuchSection");
+    OBJECT_ATTRIBUTES oa = mm_make_oa(&us);
+    ASSERT(nt_svc_NtOpenSection(&h, SECTION_ALL_ACCESS, &oa) == STATUS_OBJECT_NAME_NOT_FOUND, "open missing name");
+    ASSERT(h == NULL, "no handle for missing name");
+    ASSERT(nt_svc_NtOpenSection(NULL, SECTION_ALL_ACCESS, &oa) == STATUS_INVALID_PARAMETER, "open null handle pointer");
+    ASSERT(nt_svc_NtOpenSection(&h, SECTION_ALL_ACCESS, NULL) == STATUS_INVALID_PARAMETER, "open null attributes");
+    return 1;
+}
+
+/* ---- nt_svc_ section entry points: map / unmap family ---- */
+
+/* A view mapped through the entry point is writable and unmaps once. */
+static int test_nt_svc_map_unmap(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE h = NULL;
+    NTSTATUS st = nt_svc_NtCreateSection(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "svc map create 0x%lx", (unsigned long)st);
+    LARGE_INTEGER off; off.QuadPart = 0;
+    PVOID base = NULL; SIZE_T vs = 0;
+    st = nt_svc_NtMapViewOfSection(h, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "svc map 0x%lx", (unsigned long)st);
+    ASSERT(base != NULL && vs == 0x2000, "svc map base and size 0x%zx", (size_t)vs);
+    *(volatile unsigned char *)base = 0x33;
+    ASSERT(nt_svc_NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "svc unmap");
+    ASSERT(nt_svc_NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_NOT_MAPPED_VIEW, "svc unmap twice");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "svc map close");
+    return 1;
+}
+
+/* Bad arguments and bad handles are refused, and no base is written. */
+static int test_nt_svc_map_errors(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x1000;
+    HANDLE h = NULL;
+    NTSTATUS st = nt_svc_NtCreateSection(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "map err create 0x%lx", (unsigned long)st);
+    LARGE_INTEGER off; off.QuadPart = 0;
+    PVOID base = NULL; SIZE_T vs = 0;
+    ASSERT(nt_svc_NtMapViewOfSection(h, (HANDLE)-1, NULL, 0, 0, &off, &vs, 0, 0, PAGE_READWRITE) == STATUS_INVALID_PARAMETER,
+           "map null base");
+    ASSERT(nt_svc_NtMapViewOfSection(h, (HANDLE)-1, &base, 0, 0, &off, NULL, 0, 0, PAGE_READWRITE) == STATUS_INVALID_PARAMETER,
+           "map null view size");
+    ASSERT(base == NULL, "base untouched by refused map");
+    st = nt_svc_NtMapViewOfSection((HANDLE)0x1234, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READWRITE);
+    ASSERT(st != STATUS_SUCCESS && base == NULL, "forged section handle 0x%lx", (unsigned long)st);
+    ASSERT(nt_svc_NtUnmapViewOfSection((HANDLE)-1, (PVOID)0x1000) == STATUS_NOT_MAPPED_VIEW, "unmap unmapped address");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "map err close");
+    return 1;
+}
+
+/* ---- nt_svc_ section entry points: query / extend family ---- */
+
+/* SectionBasicInformation reports the size and the allocation attributes. A
+ * short buffer, an unknown class and a handle without SECTION_QUERY are refused. */
+static int test_nt_svc_query_section(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE h = NULL;
+    NTSTATUS st = nt_svc_NtCreateSection(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "query create 0x%lx", (unsigned long)st);
+    SECTION_BASIC_INFORMATION info;
+    SIZE_T ret = 0;
+    st = nt_svc_NtQuerySection(h, 0, &info, sizeof(info), &ret);
+    ASSERT(st == STATUS_SUCCESS, "query basic 0x%lx", (unsigned long)st);
+    ASSERT(info.MaximumSize.QuadPart == 0x2000, "query size 0x%llx", (unsigned long long)info.MaximumSize.QuadPart);
+    ASSERT(info.AllocationAttributes == SEC_COMMIT, "query attributes 0x%lx", (unsigned long)info.AllocationAttributes);
+    ASSERT(ret == sizeof(info), "query return length %zu", (size_t)ret);
+    ASSERT(nt_svc_NtQuerySection(h, 0, &info, sizeof(info) - 1, &ret) == STATUS_INFO_LENGTH_MISMATCH, "query short buffer");
+    ASSERT(nt_svc_NtQuerySection(h, 7, &info, sizeof(info), &ret) == STATUS_INVALID_INFO_CLASS, "query unknown class");
+    ASSERT(nt_svc_NtQuerySection(h, 1, &info, sizeof(info), &ret) == STATUS_NOT_IMPLEMENTED, "query image class");
+
+    HANDLE mapOnly = NULL;
+    st = nt_svc_NtCreateSection(&mapOnly, SECTION_MAP_READ, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "query map-only create 0x%lx", (unsigned long)st);
+    ASSERT(nt_svc_NtQuerySection(mapOnly, 0, &info, sizeof(info), &ret) == STATUS_ACCESS_DENIED, "query without SECTION_QUERY");
+    ASSERT(ObCloseHandle(g_mm_proc, mapOnly) == STATUS_SUCCESS, "query close map-only");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "query close");
+    return 1;
+}
+
+/* Extending a section is not implemented. The call changes nothing, so the
+ * size reported afterwards is the original one. */
+static int test_nt_svc_extend_section(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE h = NULL;
+    NTSTATUS st = nt_svc_NtCreateSection(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "extend create 0x%lx", (unsigned long)st);
+    LARGE_INTEGER bigger; bigger.QuadPart = 0x4000;
+    ASSERT(nt_svc_NtExtendSection(h, &bigger) == STATUS_NOT_IMPLEMENTED, "extend status");
+    SECTION_BASIC_INFORMATION info;
+    SIZE_T ret = 0;
+    ASSERT(nt_svc_NtQuerySection(h, 0, &info, sizeof(info), &ret) == STATUS_SUCCESS, "extend query");
+    ASSERT(info.MaximumSize.QuadPart == 0x2000, "extend left size unchanged");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "extend close");
+    return 1;
+}
+
 int main(void) {
     printf("=== ntmm tests ===\n");
     if (!mm_setup_objects()) {
@@ -1457,6 +1622,13 @@ int main(void) {
     RUN_TEST(test_flush_virtual_memory);
     RUN_TEST(test_allocate_ex);
     RUN_TEST(test_top_of_space_range_refused);
+    RUN_TEST(test_nt_svc_create_section_unnamed);
+    RUN_TEST(test_nt_svc_named_section_open);
+    RUN_TEST(test_nt_svc_open_section_errors);
+    RUN_TEST(test_nt_svc_map_unmap);
+    RUN_TEST(test_nt_svc_map_errors);
+    RUN_TEST(test_nt_svc_query_section);
+    RUN_TEST(test_nt_svc_extend_section);
     ntmm_reset();
     ObDestroyProcessObject(g_mm_proc);
     ObCleanupObjectManager();

@@ -32,3 +32,9 @@ Option 1, implemented the same way as 0001 so both trees follow one rule.
 ## Not verified
 
 Not built or run. The `nt_svc_*` wrappers that forward these calls were not read.
+
+## Status note (2026-10-12): src/kernel/nt wrappers, arch not mirrored
+
+The section services in `src/kernel/nt` now have `nt_svc_` wrappers, so the table no longer returns STATUS_NOT_IMPLEMENTED for them: NtCreateSection and NtOpenSection (26f19fe), NtMapViewOfSection and NtUnmapViewOfSection (b35029b), NtQuerySection and NtExtendSection (ca82a8a). NtExtendSection is a stub. Its backing cannot be resized yet. NtCreateSectionEx, NtMapViewOfSectionEx and NtUnmapViewOfSectionEx have no wrappers and no implementation.
+
+The wrappers are not copied into `arch/x86/nt`. Its `mm.c` differs in structure from `src/kernel/nt/mm.c` (see Context and `docs/analysis/tree-divergence.md`). The arch dispatch and its argument handling have to be checked separately. Port this ADR's handle fix and the wrappers together, after the mm behaviour of the two trees is chosen.

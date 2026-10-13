@@ -16,6 +16,9 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/init.h>
+#ifdef __KERNEL__
+#include <linux/uaccess.h>
+#endif
 #endif
 
 /* -------------------------------------------------------------------------- */
@@ -872,6 +875,31 @@ NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs,
     ObDereferenceObject(obj);
     return status;
 }
+
+#ifdef __KERNEL__
+/* Copies a user OBJECT_ATTRIBUTES and its name into kernel storage. */
+NTSTATUS ObCopyObjectAttributesFromUser(POBJECT_ATTRIBUTES uptr, OBJECT_ATTRIBUTES *k_oa, UNICODE_STRING *k_name, WCHAR *k_buf, size_t k_buf_bytes, POBJECT_ATTRIBUTES *out_oa)
+{
+    if (!uptr) { memset(k_oa,0,sizeof(*k_oa)); k_oa->Length=sizeof(OBJECT_ATTRIBUTES); *out_oa=NULL; return STATUS_SUCCESS; }
+    if (!access_ok(uptr,sizeof(OBJECT_ATTRIBUTES))) return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(k_oa, uptr, sizeof(OBJECT_ATTRIBUTES))) return STATUS_ACCESS_VIOLATION;
+    if (k_oa->Length != sizeof(OBJECT_ATTRIBUTES)) return STATUS_INVALID_PARAMETER;
+    if (k_oa->ObjectName) {
+        if (!access_ok(k_oa->ObjectName, sizeof(UNICODE_STRING))) return STATUS_ACCESS_VIOLATION;
+        UNICODE_STRING tmp;
+        if (copy_from_user(&tmp, k_oa->ObjectName, sizeof(tmp))) return STATUS_ACCESS_VIOLATION;
+        if (tmp.Length) {
+            if (!access_ok(tmp.Buffer, tmp.Length)) return STATUS_ACCESS_VIOLATION;
+            if ((size_t)tmp.Length > k_buf_bytes) return STATUS_NAME_TOO_LONG;
+            if (copy_from_user(k_buf, tmp.Buffer, tmp.Length)) return STATUS_ACCESS_VIOLATION;
+            k_name->Buffer = k_buf; k_name->Length = tmp.Length; k_name->MaximumLength = tmp.Length;
+            k_oa->ObjectName = k_name;
+        } else k_oa->ObjectName=NULL;
+    }
+    *out_oa = k_oa;
+    return STATUS_SUCCESS;
+}
+#endif /* __KERNEL__ */
 
 NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj)
 {
