@@ -44,8 +44,8 @@ hybrid, the first strong definition in file order decides the class.
 | REFUSES | 0 |
 | WEAK-FALLBACK | 0 |
 | UNREACHABLE-WRAPPER-MISSING | 3 |
-| MISSING | 45 |
-| IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 60 |
+| MISSING | 41 |
+| IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 64 |
 | IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 3 |
 | REFUSES (userspace) / IMPLEMENTED (kernel) | 1 |
 | STUB-NOT-IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 2 |
@@ -59,7 +59,7 @@ hybrid, the first strong definition in file order decides the class.
 | memory | 19 | 8 | 0 | 0 | 0 | 3 | 8 | 0 |
 | io | 30 | 24 | 0 | 0 | 0 | 0 | 6 | 0 |
 | sync | 32 | 15 | 0 | 0 | 0 | 0 | 0 | 17 |
-| security | 10 | 0 | 0 | 0 | 0 | 0 | 5 | 5 |
+| security | 10 | 0 | 0 | 0 | 0 | 0 | 1 | 9 |
 | registry | 11 | 0 | 0 | 0 | 0 | 0 | 0 | 11 |
 | ports | 10 | 0 | 0 | 0 | 0 | 0 | 10 | 0 |
 | object | 6 | 1 | 0 | 0 | 0 | 0 | 1 | 4 |
@@ -229,14 +229,14 @@ hybrid, the first strong definition in file order decides the class.
 |---|---|---:|---|---|
 | 0x0042 | `NtDuplicateToken` | 6 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
 | 0x0021 | `NtQueryInformationToken` | 5 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
-| 0x01a3 | `NtSetInformationToken` | 4 | MISSING |  |
+| 0x01a3 | `NtSetInformationToken` | 4 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
 | 0x0041 | `NtAdjustPrivilegesToken` | 6 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
 | 0x0000 | `NtAccessCheck` | 8 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
 | 0x013d | `NtPrivilegeCheck` | 3 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
-| 0x01af | `NtSetSecurityObject` | 3 | MISSING |  |
-| 0x0161 | `NtQuerySecurityObject` | 5 | MISSING |  |
+| 0x01af | `NtSetSecurityObject` | 3 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
+| 0x0161 | `NtQuerySecurityObject` | 5 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
 | 0x003b | `NtCloseObjectAuditAlarm` | 3 | MISSING |  |
-| 0x0029 | `NtAccessCheckAndAuditAlarm` | 11 | MISSING |  |
+| 0x0029 | `NtAccessCheckAndAuditAlarm` | 11 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
 
 ## Area: registry
 
