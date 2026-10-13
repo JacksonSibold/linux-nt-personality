@@ -73,6 +73,7 @@
  */
 
 #include "proc_thread.h"
+#include "debugobj.h"
 #include "object.h"
 #include "handle.h"
 #include "sync.h"
@@ -310,6 +311,7 @@ static void *thread_trampoline(void *arg)
     pthread_cond_broadcast(&thr->suspend_cond);
     pthread_mutex_unlock(&thr->lock);
 
+    nt_debug_post_event(thr->process, DbgExitThreadStateChange, thr->tid, (NTSTATUS)ret);
     /* Also mark process exit if this is last thread? For now leave process alive */
     /* Wake process exit waiters? */
 
@@ -393,6 +395,7 @@ static NTSTATUS nt_create_thread_internal(HANDLE ProcessHandle, PVOID StartRouti
         return STATUS_NO_MEMORY;
     }
     thr->pthread_valid = true;
+    nt_debug_post_event(target, DbgCreateThreadStateChange, thr->tid, STATUS_SUCCESS);
     pthread_detach(thr->pthread); /* detach; exit code kept in thr struct */
 
     /* If not suspended, the thread will run immediately and may block on gate if count>0 */
@@ -616,6 +619,7 @@ NTSTATUS nt_svc_NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus)
         pthread_mutex_unlock(&thr->lock);
         nt_abandon_for_thread(thr);
         thread_sync_release();
+        nt_debug_post_event(thr->process, DbgExitThreadStateChange, thr->tid, ExitStatus);
         /* Exit current thread */
         pthread_exit((void*)(ULONG_PTR)ExitStatus);
         return STATUS_SUCCESS; /* not reached */
@@ -633,6 +637,7 @@ NTSTATUS nt_svc_NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus)
     pthread_cond_broadcast(&thr->exit_cond);
     pthread_cond_broadcast(&thr->suspend_cond);
     pthread_mutex_unlock(&thr->lock);
+    nt_debug_post_event(thr->process, DbgExitThreadStateChange, thr->tid, ExitStatus);
     /* Try to cancel if pthread valid */
     if (thr->pthread_valid) {
         pthread_cancel(thr->pthread);
@@ -658,6 +663,7 @@ NTSTATUS nt_svc_NtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus)
             pthread_cond_broadcast(&p->exit_cond);
             pthread_mutex_unlock(&p->lock);
             ObTerminateProcessThreads(p, ExitStatus);
+            nt_debug_post_event(p, DbgExitProcessStateChange, 0, ExitStatus);
             return STATUS_SUCCESS;
         }
         return STATUS_INVALID_HANDLE;
@@ -672,6 +678,7 @@ NTSTATUS nt_svc_NtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus)
     pthread_cond_broadcast(&target->exit_cond);
     pthread_mutex_unlock(&target->lock);
     ObTerminateProcessThreads(target, ExitStatus);
+    nt_debug_post_event(target, DbgExitProcessStateChange, 0, ExitStatus);
     return STATUS_SUCCESS;
 }
 

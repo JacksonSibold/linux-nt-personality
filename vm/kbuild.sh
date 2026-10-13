@@ -152,6 +152,7 @@ expected_objects=(
   "security.o"
   "job.o"
   "port.o"
+  "debugobj.o"
   "nt_obj.o"
   "nt_io.o"
   "ntstatus_kernel.o"

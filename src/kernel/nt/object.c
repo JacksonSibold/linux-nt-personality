@@ -8,6 +8,7 @@
  */
 
 #include "object.h"
+#include "debugobj.h"
 #include "handle.h"
 #include "security.h"
 #ifndef __KERNEL__
@@ -1519,6 +1520,14 @@ NTSTATUS ObCreateThreadObject(struct nt_ethread **out, struct nt_eprocess *proc,
 void __attribute__((weak)) nt_job_remove_process(struct nt_eprocess *proc)
 {
     (void)proc;
+}
+
+/* Weak no-op fallback so builds without debugobj.c still link. debugobj.c
+ * provides the strong definition. */
+void __attribute__((weak)) nt_debug_post_event(struct nt_eprocess *proc, DBG_STATE state,
+                                              ULONG tid, NTSTATUS status)
+{
+    (void)proc; (void)state; (void)tid; (void)status;
 }
 
 void ObDestroyProcessObject(struct nt_eprocess *proc)

@@ -79,6 +79,7 @@ struct nt_eprocess;
 struct nt_ethread;
 struct nt_handle_table;
 struct nt_job;
+struct nt_debug_obj;
 
 /* -------------------------------------------------------------------------- */
 /* Object type callbacks                                                      */
@@ -376,6 +377,9 @@ struct nt_eprocess {
     /* Job membership (job.c). NULL when the process is not in a job. Set and
      * cleared under the job lock; nt_job_remove_process clears it on destroy. */
     struct nt_job           *job;
+    /* Debug object attachment (debugobj.c). NULL when no debugger is attached.
+     * Set and cleared under the debug object lock and proc->lock. */
+    struct nt_debug_obj     *debug_obj;
 };
 
 struct nt_ethread {

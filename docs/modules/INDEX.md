@@ -21,6 +21,7 @@ The project is an incomplete research prototype (see the top-level `README.md`).
 | [process_params](./process_params.md) | `process_params.h` | Relocatable process parameter block (builder and validator). Not called by a service yet. |
 | [proc_create_args](./proc_create_args.md) | `proc_create_args.h` | Copy-in and validation of `NtCreateUserProcess` arguments. Stub calls it, then refuses. |
 | [job](./job.md) | `job.c`, `job.h` | Job objects: named and unnamed jobs, process membership (one job per process), termination, kill on last handle close, and the query and set information classes. Most limits are stored, not enforced. |
+| [debugobj](./debugobj.md) | `debugobj.c`, `debugobj.h` | DEBUG objects: attach and detach of processes, a queue of create, exit and continue events with blocking wait and continue, kill on close. Exception and DLL events are not generated. |
 | [dispatch](./dispatch.md) | `dispatch.c`, `nt_service_list.h`, `nt_internal.h` | SSN-indexed system-call table with weak service symbols, per-CPU counters, debugfs. |
 | [ntstatus_kernel](./ntstatus_kernel.md) | `ntstatus_kernel.c`, `ntstatus_kernel.h`, `gen_ntstatus_table.py` | NTSTATUS to DOS error mapping, generated from the userspace table. |
 
