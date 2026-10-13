@@ -375,6 +375,8 @@ One commit per item, in branch order. Each references the audited hash.
 - Python unit suite (`python -m unittest discover tests/unit`): 509 run, OK (skipped 1). Same as the second pass.
 - `bash tests/syntax/check.sh`: passed 35, failed 5, warnings 480. The five failures are the same files as before (`src/kernel/nt/dispatch.c`, `src/kernel/nt/kshim.c`, `src/kernel/fs/binfmt_pe.c`, `src/kernel/fs/binfmt_pe_test.c`, `arch/x86/nt/dispatch.c`). The pass count rose by three because new files were added since the second pass. The warning count rose from 452 with them; the new warnings were not classified individually.
 
+After the SUSPECT resolution (branch `haiku/suspects3`): `make -C tests/kernel-host check` runs all 13 programs with rc 0 (`sync_extra_test` 30/30, `mm_test` 30/30, `security_extra_test` 24/24, `io_test` 29/29). Python unit suite: 509 run, OK (skipped 1). `tests/syntax/check.sh`: passed 35, failed 5 (the same five files as above), warnings 479, the same per file as before the pass. `tools/update_doc_counts.py --write`: counts already current.
+
 ## SUSPECT: for review
 
 These need a decision. None was changed in this pass, except where a BROKEN fix above covers the same line.
@@ -387,6 +389,17 @@ These need a decision. None was changed in this pass, except where a BROKEN fix 
 6. **`4260f62`** (`src/kernel/nt/security.c:2530`): `ntsec_sr_length` adds the `ULONG` offset and size before the 64-bit comparison, so the total can wrap. `sd_from_self_relative` then rejects the descriptor, so the outcome is fail-closed.
 7. **`a90862b`** (`src/kernel/nt/mm.c:1534`): `ntmm_transfer` uses a 4 KiB kernel stack buffer. Kernel builds warn above 2 KiB frames. The same class of 4 KiB stack path buffer appears in `NtQueryAttributesFile`, `NtDeleteFile` and `NtQueryFullAttributesFile` (`src/kernel/nt/io.c:2723`, `3222`, `3258`). Decide one bound for kernel stack use.
 8. **`9bb018d`**: `test_allocate_ex` accepts either `0x10000` or `0x1000` (`src/kernel/nt/mm_test.c:1378`), a relaxed expectation. The dispatch wrapper (`src/kernel/nt/dispatch.c:182`) writes base and size back on any status except `STATUS_NOT_SUPPORTED`, as the other wrappers do.
+
+Resolution of the SUSPECT items (branch `haiku/suspects3`, 2026-10-12). Each fix is one commit. Each has a failing test first where the host can run it.
+
+1. **`2393db8`**: documented in `1267511`, skip kept. The create of a 255-byte component runs only when root + 1 + 255 fits PATH_MAX, which is 260 with the MinGW headers, so any root longer than 3 bytes skips it on this host. The comment now says so, and that it runs on Linux (PATH_MAX 4096). A relative root was tried and rejected: the path fits, but a 255-byte relative file cannot be removed afterwards on this host (MAX_PATH), so it would be left in the test directory.
+2. **`0258238`**: fixed in `accf1ce`. The signal handle needs its type's modify right (EVENT_MODIFY_STATE, MUTANT_MODIFY_STATE, SEMAPHORE_MODIFY_STATE) and the wait handle needs SYNCHRONIZE, through the existing desired-access check. Test `signal_and_wait_checks_rights` failed before the change.
+3. **`b9661c2`** (WAIT and RELEASE part): fixed in `7c6f281`. NtWaitForKeyedEvent needs KEYEDEVENT_WAIT (0x1) and NtReleaseKeyedEvent needs KEYEDEVENT_WAKE (0x2). Test `keyed_event_checks_rights` failed before the change.
+4. **`1e8f0dd`**: fixed in `222f64d`. Each token has a LUID (`token_id`) from a monotonically increasing counter, set on create and on duplicate, and TokenStatistics returns it. Test `token_statistics_id_is_counter_not_address` failed before the change. Fill-pass bound, accepted with reason: the group and privilege counts are set only on a new or private duplicate before publish (`security.c:942`, `959`, `1078`, `1091`, `2320`, `2327`), and nothing changes them afterwards, so the measured and filled lengths agree.
+5. **`c1934e9`**: fixed in `0589b08`. Both `timer_expiry_100ns` variants call `nt_relative_expiry_100ns`, which takes the magnitude as uint64 and saturates the expiry at INT64_MAX. Test `set_timer_int64_min_due_does_not_fire` failed before the change (the timer signalled within 300 ms). The kernel branch is checked by the syntax check only.
+6. **`4260f62`**: fixed in `de11c20`. `ntsec_sr_extend` sums the end in 64 bits and refuses a result past the 64 KiB limit. The outcome was already fail-closed. Test `sr_extend_refuses_ulong_wrap` calls the helper directly. It was not seen failing, because the helper did not exist before the change, and through NtAccessCheck the read at the offset faults on a 64-bit host first.
+7. **`a90862b`**: `ntmm_transfer` fixed in `19291fe` (heap bounce buffer, same copy behaviour; mm_test 30/30). Needs owner: NtQueryAttributesFile, NtDeleteFile and NtQueryFullAttributesFile (`io.c:2723`, `3222`, `3258`) still use 4 KiB stack path buffers. Should those move to the heap too, or is one 4 KiB frame accepted on those syscall paths?
+8. **`9bb018d`**: fixed in `646ce95`. The exact check `size == 0x1000` is restored. A NULL-base reserve is page-rounded, so 0x10000 cannot occur. mm_test 30/30 with the exact check.
 
 Also observed, not in this pass's scope or not a fix target here:
 
