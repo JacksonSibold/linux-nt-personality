@@ -2050,13 +2050,22 @@ static NTSTATUS pt_thread_from_handle(HANDLE h, struct nt_ethread **out)
  * cannot be alerted. */
 static NTSTATUS pt_thread_post_alert(struct nt_ethread *thr)
 {
+    struct nt_thread *st;
+
+    /* The alert is set on the sync thread, the flag every alertable wait
+     * tests. A thread gets its sync thread when it is created or enters the
+     * personality (dispatch.c), so one is missing only if that allocation
+     * failed; the alert cannot be recorded then. The sync thread is owned by
+     * the running thread and freed at its exit, so it is not created here. */
     spin_lock(&thr->lock);
     if (thr->terminated) {
         spin_unlock(&thr->lock);
         return STATUS_THREAD_IS_TERMINATING;
     }
-    thr->alerted = true;
+    st = thr->sync_thread;
     spin_unlock(&thr->lock);
+    if (!st) return STATUS_NO_MEMORY;
+    nt_thread_alert(st);
     return STATUS_SUCCESS;
 }
 

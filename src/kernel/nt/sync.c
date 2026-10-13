@@ -179,6 +179,23 @@ void nt_thread_clear_alert(struct nt_thread *t) {
     t->alert_pending = false;
     pthread_mutex_unlock(&t->lock);
 }
+bool nt_thread_alert_pending(struct nt_thread *t) {
+    bool al = false;
+    if (!t) return false;
+    pthread_mutex_lock(&t->lock);
+    al = t->alerted;
+    pthread_mutex_unlock(&t->lock);
+    return al;
+}
+bool nt_thread_consume_alert(struct nt_thread *t) {
+    bool al = false;
+    if (!t) return false;
+    pthread_mutex_lock(&t->lock);
+    al = t->alerted;
+    t->alerted = false;
+    pthread_mutex_unlock(&t->lock);
+    return al;
+}
 
 /* --------------------------------------------------------------- */
 /* Creation */
@@ -1453,6 +1470,27 @@ void nt_thread_clear_alert(struct nt_thread *t)
     t->alerted = false;
     t->alert_pending = false;
     spin_unlock_irqrestore(&t->lock, flags);
+}
+bool nt_thread_alert_pending(struct nt_thread *t)
+{
+    unsigned long flags;
+    bool al;
+    if (!t) return false;
+    spin_lock_irqsave(&t->lock, flags);
+    al = t->alerted;
+    spin_unlock_irqrestore(&t->lock, flags);
+    return al;
+}
+bool nt_thread_consume_alert(struct nt_thread *t)
+{
+    unsigned long flags;
+    bool al;
+    if (!t) return false;
+    spin_lock_irqsave(&t->lock, flags);
+    al = t->alerted;
+    t->alerted = false;
+    spin_unlock_irqrestore(&t->lock, flags);
+    return al;
 }
 
 /* timeout conversion: return jiffies timeout, -1 for infinite, 0 for poll */

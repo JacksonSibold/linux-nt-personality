@@ -2078,7 +2078,6 @@ extern struct nt_ethread *nt_current_ethread(void);
 extern struct nt_eprocess *nt_current_eprocess(void);
 NTSTATUS nt_svc_NtDelayExecution(BOOLEAN Alertable, PLARGE_INTEGER DelayInterval)
 {
-    (void)Alertable;
     NT_TRACE("W1_INSTR: NtDelayExecution DelayInterval=%p\n", DelayInterval);
     if (!DelayInterval) {
         struct nt_ethread *thr = nt_current_ethread();
@@ -2103,13 +2102,35 @@ NTSTATUS nt_svc_NtDelayExecution(BOOLEAN Alertable, PLARGE_INTEGER DelayInterval
         if (due100 <= now100) return STATUS_SUCCESS;
         ms = (long)((due100 - now100) / 10000);
     }
-    if (ms <= 0) return STATUS_SUCCESS;
     struct nt_ethread *thr = nt_current_ethread();
+    struct nt_thread *sync = thr ? thr->sync_thread : NULL;
+    /* An alertable delay reports and consumes a pending alert, as an
+     * alertable wait does (sync.c), before it sleeps. */
+    if (Alertable && sync && nt_thread_consume_alert(sync))
+        return STATUS_ALERTED;
+    if (ms <= 0) return STATUS_SUCCESS;
     if (thr && thr->terminated) {
         do_exit(0);
         return STATUS_THREAD_IS_TERMINATING;
     }
-    msleep_interruptible(ms);
+    if (!Alertable) {
+        msleep_interruptible(ms);
+    } else {
+        /* Sleep in short slices so an alert posted during the delay ends it
+         * early with STATUS_ALERTED. Latency is one slice. */
+        long left = ms;
+        while (left > 0) {
+            long slice = left < 10 ? left : 10;
+            msleep_interruptible(slice);
+            left -= slice;
+            if (sync && nt_thread_consume_alert(sync))
+                return STATUS_ALERTED;
+            if (thr && thr->terminated) {
+                do_exit(0);
+                return STATUS_THREAD_IS_TERMINATING;
+            }
+        }
+    }
     if (thr && thr->terminated) {
         do_exit(0);
         return STATUS_THREAD_IS_TERMINATING;

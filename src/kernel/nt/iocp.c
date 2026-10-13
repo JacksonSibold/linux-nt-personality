@@ -14,6 +14,7 @@
 #include "iocp.h"
 #include "io.h"
 #include "object.h"
+#include "sync.h"
 
 #ifndef __KERNEL__
 #include <string.h>
@@ -769,14 +770,8 @@ NTSTATUS nt_svc_NtTestAlert(void)
 	struct nt_ethread *thr = ntio_current_ethread();
 
 	ntio_apc_deliver_all();
-	if (thr) {
-		spin_lock(&thr->lock);
-		if (thr->alerted) {
-			thr->alerted = false;
-			st = STATUS_ALERTED;
-		}
-		spin_unlock(&thr->lock);
-	}
+	if (thr && thr->sync_thread && nt_thread_consume_alert(thr->sync_thread))
+		st = STATUS_ALERTED;
 	return st;
 }
 

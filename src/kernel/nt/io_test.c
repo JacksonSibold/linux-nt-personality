@@ -14,6 +14,7 @@
 
 #include "io.h"
 #include "iocp.h"
+#include "sync.h"
 #include "object.h"
 
 #pragma GCC diagnostic ignored "-Wformat-truncation"
@@ -2011,20 +2012,24 @@ TEST(iocp_query_depth)
 TEST(alert_consumed_once)
 {
 	struct nt_ethread thr;
+	struct nt_thread *synct = NULL;
 	NTSTATUS first, plain, second;
 	bool still_set;
 
 	memset(&thr, 0, sizeof(thr));
 	spin_lock_init(&thr.lock);
+	ASSERT_STATUS(nt_thread_create(&synct), STATUS_SUCCESS);
+	thr.sync_thread = synct;
 	kshim_set_current_thread(&thr);
 
 	plain = nt_svc_NtTestAlert();
-	thr.alerted = true;
+	nt_thread_alert(synct);
 	first = nt_svc_NtTestAlert();
 	second = nt_svc_NtTestAlert();
-	still_set = thr.alerted;
+	still_set = nt_thread_alert_pending(synct);
 
 	kshim_set_current_thread(NULL);
+	nt_thread_destroy(synct);
 
 	ASSERT_STATUS(plain, STATUS_SUCCESS);
 	ASSERT_STATUS(first, STATUS_ALERTED);
