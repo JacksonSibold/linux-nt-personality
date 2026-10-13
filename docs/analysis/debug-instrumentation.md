@@ -29,7 +29,7 @@ Gated = now behind `NT_TRACE`/`NT_TRACE_ERR`. Kept = unchanged, with reason.
 | 1443, 1447, 1449, 1452 | ERR | `NtWaitForSingleObject: ...` (kernel branch) | per call | gated |
 | 1478, 1486, 1489 | INFO | `W1_INSTR: NtDelayExecution ...` | per call | gated |
 
-### src/kernel/nt/proc_thread.c (commit see git log)
+### src/kernel/nt/proc_thread.c (commit 8140aec)
 
 | Line | Level | Text | Hot path | Action | Reason |
 |---|---|---|---|---|---|
