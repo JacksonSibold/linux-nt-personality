@@ -89,6 +89,11 @@ flowchart TD
 
 - There is one global address space in `mm.c` (`g_nt_mm`). The process handle
   argument is ignored. See [memory.md](memory.md).
+- Process creation: `NtCreateProcessEx`, `NtCreateProcess` and
+  `NtCreateUserProcess` return `STATUS_NOT_IMPLEMENTED` in the kernel build.
+  PE processes start only by `execve`. See
+  [process-creation.md](process-creation.md) and the open decision
+  [0037](../decisions/0037-process-creation.md).
 - The kernel loader maps ntdll from paths that the review flags as unsafe
   (K-5 in [kernel-fs.md](../review/kernel-fs.md)).
 - No Win32 user-mode surface beyond a minimal `kernel32` and `user32`.

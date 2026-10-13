@@ -9,7 +9,7 @@ Status values:
 - **no-change**: the record is accepted and no code change is needed.
 - **open**: the record is proposed and not implemented.
 
-Snapshot: 2026-10-12, `HEAD` at the time this index was written. 36 records: 13 fixed, 15 open, 7 blocked, 1 no-change.
+Snapshot: 2026-10-12, `HEAD` at the time this index was written. 37 records: 13 fixed, 16 open, 7 blocked, 1 no-change.
 
 | Record | Title | Status | Finding | Commit |
 |---|---|---|---|---|
@@ -49,6 +49,7 @@ Snapshot: 2026-10-12, `HEAD` at the time this index was written. 36 records: 13 
 | [0034](0034-kernel-timeout-pointer-provenance.md) | timeout_to_jiffies dereferences non-user pointers | blocked | kernel-nt SYNC-2 (Low) | |
 | [0035](0035-kernel-acl-capacity-table.md) | ACL capacity table silently drops registrations | blocked | kernel-nt SEC-1 (Low) | |
 | [0036](0036-loader-import-walk-budget.md) | Import walk has no total bound across descriptors | fixed | loader L-16 (Medium) | 7f7e5d1 |
+| [0037](0037-process-creation.md) | How NtCreateUserProcess and CreateProcess create a PE process | open | design (no review finding) | |
 
 ## Notes
 
