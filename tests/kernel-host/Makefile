@@ -48,7 +48,7 @@ WARN    := -Wall -Wextra -Wuninitialized
 DEPFLAGS := -MMD -MP
 CFLAGS  := -std=gnu11 -g $(OPT) $(WARN) $(DEPFLAGS) $(COV_FLAGS) -DUSERSPACE_KSHIM \
            -include $(SHIM)/khost_prelude.h \
-           -iquote $(NT) -iquote $(LOADER) -iquote $(BUILD) -I$(SHIM)
+           -iquote $(NT) -iquote $(LOADER) -iquote . -iquote $(BUILD) -I$(SHIM)
 LDLIBS  := -lpthread -lws2_32 $(COV_LIBS)
 LDFLAGS := -fno-use-linker-plugin $(COV_FLAGS)
 
@@ -76,7 +76,7 @@ sync_test_OBJS        := security sync kshim object handle nt_obj
 sync_extra_test_OBJS  := security object handle nt_obj sync kshim
 security_extra_test_OBJS      := security object handle kshim
 security_test_OBJS    := security object handle kshim
-mm_test_OBJS          := mm security object handle kshim io iocp nt_obj_weak sync
+mm_test_OBJS          := mm security object handle kshim io iocp nt_obj_weak sync pe_parse
 registry_test_OBJS    := security registry object handle nt_obj sync kshim
 io_test_OBJS          := security io object handle iocp nt_obj_weak sync kshim
 proc_thread_test_OBJS := security proc_thread object handle nt_obj sync nt_services kshim

@@ -17,6 +17,7 @@
 #include "object.h"
 #include "handle.h"
 #include "io.h"
+#include "pe_synth.h"
 #include <limits.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -783,18 +784,195 @@ static int test_file_section_size_rules(void) {
 
 /* SEC_IMAGE is a separate milestone (process-creation M6). Until then it must
  * refuse, never map the file as plain data. */
-static int test_sec_image_not_implemented(void) {
+/* SEC_IMAGE tests. Images are synthesized by pe_synth.h, written to the scratch
+ * root, and opened like any file. The view is read back through host pointers. */
+
+static int mmf_write_bytes(const char *name, const unsigned char *buf, size_t n) {
+    char p[512];
+    int fd;
+    mmf_path(p, sizeof(p), name);
+    fd = open(p, O_CREAT | O_TRUNC | O_WRONLY | O_BINARY, 0644);
+    if (fd < 0) return 0;
+    if (write(fd, buf, n) != (ssize_t)n) { close(fd); return 0; }
+    return close(fd) == 0;
+}
+
+static int all_zero(const unsigned char *p, size_t n) {
+    size_t i;
+    for (i = 0; i < n; i++) if (p[i]) return 0;
+    return 1;
+}
+
+/* Writes a synthesized image and creates a SEC_IMAGE section from it. The
+ * file handle stays open in *fh for the caller to close. */
+static NTSTATUS mmf_image_section(const char *name, const pe_synth_opts_t *o, HANDLE *fh, HANDLE *sec) {
+    unsigned char img[PES_FILE_SIZE];
+    NTSTATUS st;
+    *fh = NULL;
+    *sec = NULL;
+    pe_synth_build(img, o);
+    if (!mmf_write_bytes(name, img, sizeof img)) return STATUS_INVALID_PARAMETER;
+    st = mmf_open(name, FILE_READ_DATA, fh);
+    if (!NT_SUCCESS(st)) return st;
+    return NtCreateSection(sec, SECTION_ALL_ACCESS, NULL, NULL, PAGE_READONLY, SEC_IMAGE, *fh);
+}
+
+/* SEC_IMAGE with no file, or with a file that is not a PE image, is refused
+ * before any section object exists. */
+static int test_sec_image_file_rules(void) {
     HANDLE fh = NULL, sec = NULL;
     LARGE_INTEGER sz;
     sz.QuadPart = 0x1000;
-    ASSERT(mmf_make("image.bin", 0x1000, 'A'), "make file");
-    ASSERT(mmf_open("image.bin", FILE_READ_DATA, &fh) == STATUS_SUCCESS, "open");
-    ASSERT(NtCreateSection(&sec, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READONLY, SEC_IMAGE, fh)
-           == STATUS_NOT_IMPLEMENTED, "SEC_IMAGE with file refused");
-    ASSERT(sec == NULL, "no section for SEC_IMAGE");
     ASSERT(NtCreateSection(&sec, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READONLY, SEC_IMAGE, NULL)
-           == STATUS_NOT_IMPLEMENTED, "SEC_IMAGE without file refused");
-    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close file");
+           == STATUS_INVALID_PARAMETER, "SEC_IMAGE without a file refused");
+    ASSERT(sec == NULL, "no section for SEC_IMAGE without a file");
+    ASSERT(mmf_make("notpe.bin", 0x1000, 'A'), "make non-PE file");
+    ASSERT(mmf_open("notpe.bin", FILE_READ_DATA, &fh) == STATUS_SUCCESS, "open non-PE file");
+    ASSERT(NtCreateSection(&sec, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READONLY, SEC_IMAGE, fh)
+           == STATUS_INVALID_IMAGE_FORMAT, "SEC_IMAGE of a non-PE file refused");
+    ASSERT(sec == NULL, "no section for a non-PE image");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close non-PE file");
+    return 1;
+}
+
+/* The 32-bit optional header is refused. This personality maps 64-bit images only. */
+static int test_sec_image_pe32_refused(void) {
+    pe_synth_opts_t o = { 1, 0, 0, 0 };
+    HANDLE fh = NULL, sec = NULL;
+    ASSERT(mmf_image_section("pe32.exe", &o, &fh, &sec) == STATUS_INVALID_IMAGE_FORMAT,
+           "PE32 image refused");
+    ASSERT(sec == NULL, "no section for a PE32 image");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close PE32 file");
+    return 1;
+}
+
+/* Maps a synthesized image at a free base. Each segment has its own VAD type
+ * and protection, the file bytes are at their RVAs, and the zero tail is zero. */
+static int test_sec_image_maps_sections(void) {
+    unsigned char img[PES_FILE_SIZE];
+    pe_synth_opts_t o = { 0, 0, 0, 0 };
+    HANDLE fh = NULL, sec = NULL;
+    PVOID base = NULL;
+    LARGE_INTEGER off;
+    SIZE_T vs = 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    unsigned char *b;
+    NTSTATUS st;
+    pe_synth_build(img, &o);
+    ASSERT(mmf_image_section("image.exe", &o, &fh, &sec) == STATUS_SUCCESS, "create image section");
+    off.QuadPart = 0;
+    st = NtMapViewOfSection(sec, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READONLY);
+    ASSERT(st == STATUS_SUCCESS, "map image 0x%lx", (unsigned long)st);
+    ASSERT(base != NULL, "image base");
+    ASSERT(vs == 0x4000, "image view size 0x%zx want 0x4000", (size_t)vs);
+    b = (unsigned char *)base;
+
+    ASSERT(query(base, &mbi), "query header");
+    ASSERT(mbi.Type == MEM_IMAGE, "header region is MEM_IMAGE");
+    ASSERT(mbi.Protect == PAGE_READONLY && mbi.RegionSize == 0x1000, "header region read-only, one page");
+    ASSERT(query((PVOID)(b + 0x1000), &mbi), "query .text");
+    ASSERT(mbi.Protect == PAGE_EXECUTE_READ && mbi.RegionSize == 0x1000, ".text is RX");
+    ASSERT(query((PVOID)(b + 0x2000), &mbi), "query .data");
+    ASSERT(mbi.Protect == PAGE_WRITECOPY && mbi.RegionSize == 0x2000, ".data is copy-on-write");
+
+    ASSERT(memcmp(b, img, 0x400) == 0, "header bytes at base");
+    ASSERT(memcmp(b + 0x1000, img + 0x400, 0x100) == 0, ".text bytes at RVA 0x1000");
+    ASSERT(all_zero(b + 0x1100, 0xF00), ".text tail is zero");
+    ASSERT(memcmp(b + 0x2000, img + 0x600, 0x200) == 0, ".data bytes at RVA 0x2000");
+    ASSERT(all_zero(b + 0x2200, 0x1E00), ".data tail is zero");
+
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "unmap image");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close image section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close image file");
+    return 1;
+}
+
+/* An image view takes no offset, and it must cover the whole SizeOfImage. */
+static int test_sec_image_view_rules(void) {
+    pe_synth_opts_t o = { 0, 0, 0, 0 };
+    HANDLE fh = NULL, sec = NULL;
+    PVOID base = NULL;
+    LARGE_INTEGER off;
+    SIZE_T vs;
+    NTSTATUS st;
+    ASSERT(mmf_image_section("view.exe", &o, &fh, &sec) == STATUS_SUCCESS, "create image section");
+    off.QuadPart = 0x1000;
+    vs = 0;
+    st = NtMapViewOfSection(sec, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READONLY);
+    ASSERT(st == STATUS_INVALID_PARAMETER, "image view with an offset refused 0x%lx", (unsigned long)st);
+    ASSERT(base == NULL, "no base for an offset image view");
+    off.QuadPart = 0;
+    vs = 0x1000;
+    st = NtMapViewOfSection(sec, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READONLY);
+    ASSERT(st == STATUS_INVALID_VIEW_SIZE, "image view smaller than SizeOfImage refused 0x%lx", (unsigned long)st);
+    ASSERT(base == NULL, "no base for a short image view");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close image section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close image file");
+    return 1;
+}
+
+/* With the preferred base taken, a relocatable image maps elsewhere and reports
+ * STATUS_IMAGE_NOT_AT_BASE. Relocations are not applied (documented gap). A
+ * non-relocatable image cannot move, so the map fails. */
+static int test_sec_image_not_at_base(void) {
+    PVOID pref = (PVOID)(ULONG_PTR)PES_BASE_DEFAULT;
+    SIZE_T rsz = 0x1000, zero = 0;
+    pe_synth_opts_t reloc_o = { 0, 1, 0, 0 };
+    pe_synth_opts_t fixed_o = { 0, 0, 0, 0 };
+    HANDLE fh = NULL, sec = NULL;
+    PVOID base = NULL;
+    LARGE_INTEGER off;
+    SIZE_T vs;
+    NTSTATUS st;
+    ASSERT(NtAllocateVirtualMemory((HANDLE)-1, &pref, 0, &rsz, MEM_RESERVE, PAGE_READWRITE) == STATUS_SUCCESS,
+           "occupy the preferred base");
+    ASSERT(pref == (PVOID)(ULONG_PTR)PES_BASE_DEFAULT, "reservation at the preferred base");
+
+    ASSERT(mmf_image_section("reloc.exe", &reloc_o, &fh, &sec) == STATUS_SUCCESS, "create relocatable image");
+    off.QuadPart = 0;
+    vs = 0;
+    st = NtMapViewOfSection(sec, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READONLY);
+    ASSERT(st == STATUS_IMAGE_NOT_AT_BASE, "relocatable image at a taken base: 0x%lx", (unsigned long)st);
+    ASSERT(base != NULL && base != pref, "relocated image lands elsewhere");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "unmap relocated image");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close relocatable section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close relocatable file");
+
+    ASSERT(mmf_image_section("fixed.exe", &fixed_o, &fh, &sec) == STATUS_SUCCESS, "create fixed image");
+    base = NULL;
+    off.QuadPart = 0;
+    vs = 0;
+    st = NtMapViewOfSection(sec, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READONLY);
+    ASSERT(st == STATUS_CONFLICTING_ADDRESSES, "non-relocatable image at a taken base: 0x%lx", (unsigned long)st);
+    ASSERT(base == NULL, "no base for a non-relocatable image at a taken base");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close fixed section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close fixed file");
+
+    ASSERT(NtFreeVirtualMemory((HANDLE)-1, &pref, &zero, MEM_RELEASE) == STATUS_SUCCESS, "release preferred base");
+    return 1;
+}
+
+/* Unmapping an image view frees its region, and closing the handles returns
+ * every allocation the section made (the planner copy included). */
+static int test_sec_image_unmap_frees(void) {
+    pe_synth_opts_t o = { 0, 0, 0, 0 };
+    HANDLE fh = NULL, sec = NULL;
+    PVOID base = NULL;
+    LARGE_INTEGER off;
+    SIZE_T vs = 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    long before;
+    before = atomic_load(&kshim_alloc_count);
+    ASSERT(mmf_image_section("unmap.exe", &o, &fh, &sec) == STATUS_SUCCESS, "create image section");
+    off.QuadPart = 0;
+    ASSERT(NtMapViewOfSection(sec, (HANDLE)-1, &base, 0, 0, &off, &vs, 0, 0, PAGE_READONLY) == STATUS_SUCCESS,
+           "map image");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "unmap image");
+    ASSERT(query(base, &mbi), "query after unmap");
+    ASSERT(mbi.State == MEM_FREE, "image region free after unmap");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close image section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close image file");
+    ASSERT(atomic_load(&kshim_alloc_count) == before, "image section leaked allocations");
     return 1;
 }
 
@@ -1940,7 +2118,12 @@ int main(void) {
     RUN_TEST(test_file_section_offset_alignment);
     RUN_TEST(test_file_section_query_file_attribute);
     RUN_TEST(test_file_section_size_rules);
-    RUN_TEST(test_sec_image_not_implemented);
+    RUN_TEST(test_sec_image_file_rules);
+    RUN_TEST(test_sec_image_pe32_refused);
+    RUN_TEST(test_sec_image_maps_sections);
+    RUN_TEST(test_sec_image_view_rules);
+    RUN_TEST(test_sec_image_not_at_base);
+    RUN_TEST(test_sec_image_unmap_frees);
     RUN_TEST(test_file_section_forged_handle);
     RUN_TEST(test_file_section_leak_tracker);
     RUN_TEST(test_wrapping_size_protect_decommit);
