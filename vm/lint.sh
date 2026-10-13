@@ -44,8 +44,20 @@ if [[ $fail -eq 0 ]]; then
 fi
 
 if command -v shellcheck >/dev/null 2>&1; then
-    echo "=== lint: shellcheck (severity >= $SEVERITY) ==="
-    if ! shellcheck --severity="$SEVERITY" "${FILES[@]}"; then
+    # Scripts that are known to be broken and deprecated (docs/vm/CLEANUP.md, section 1).
+    # The linter cannot parse them, so they are exempt from it only; bash -n above still
+    # checks them. Remove an entry when the file is deleted.
+    SHELLCHECK_EXEMPT=("vm/m0_diag2.sh")
+    SC_FILES=()
+    for f in "${FILES[@]}"; do
+        skip=0
+        for x in "${SHELLCHECK_EXEMPT[@]}"; do
+            [[ "$f" == "$x" ]] && skip=1
+        done
+        [[ $skip -eq 0 ]] && SC_FILES+=("$f")
+    done
+    echo "=== lint: shellcheck (severity >= $SEVERITY) on ${#SC_FILES[@]} scripts ==="
+    if ! shellcheck --severity="$SEVERITY" "${SC_FILES[@]}"; then
         fail=1
     fi
 else
