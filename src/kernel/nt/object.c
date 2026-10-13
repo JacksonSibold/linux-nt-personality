@@ -675,6 +675,30 @@ NTSTATUS ObInsertObject(struct nt_object_header *obj,
     return status;
 }
 
+NTSTATUS ObOpenNamedHolderAfterCollision(struct nt_object_type *type,
+                                         POBJECT_ATTRIBUTES attrs,
+                                         ACCESS_MASK access,
+                                         struct nt_eprocess *proc,
+                                         PHANDLE out_handle)
+{
+    struct nt_object_header *existing = NULL;
+    ULONG hattr = 0;
+    HANDLE h = NULL;
+    NTSTATUS st;
+
+    if (!type || !attrs || !attrs->ObjectName || !attrs->ObjectName->Length || !out_handle)
+        return STATUS_OBJECT_NAME_COLLISION;
+    st = ObReferenceObjectByName(attrs->ObjectName, type, UserMode, access, &existing);
+    if (!NT_SUCCESS(st)) return st;
+    if (attrs->Attributes & OBJ_INHERIT) hattr |= OBJ_INHERIT;
+    if (attrs->Attributes & OBJ_PROTECT_FROM_CLOSE) hattr |= OBJ_PROTECT_FROM_CLOSE;
+    st = ObCreateHandle(proc ? proc : kshim_current_process(), existing, access, hattr, &h);
+    ObDereferenceObject(existing);
+    if (!NT_SUCCESS(st)) return st;
+    *out_handle = h;
+    return STATUS_OBJECT_NAME_COLLISION;
+}
+
 NTSTATUS ObCreateDirectoryObject(POBJECT_ATTRIBUTES oa, struct nt_object_header **out_hdr)
 {
     struct nt_object_header *hdr = NULL;
@@ -1547,6 +1571,12 @@ void ObDestroyProcessObject(struct nt_eprocess *proc)
     if (proc->peb) kfree(proc->peb);
 #endif
     if (proc->handle_table) ObDestroyHandleTable(proc->handle_table);
+    /* A foreign process's address space (ADR 0073) goes with it: its VADs drop
+     * their section references and the host arena is released. */
+    if (proc->aspace && proc->aspace_free) {
+        proc->aspace_free(proc->aspace);
+        proc->aspace = NULL;
+    }
     if (proc->primary_token) {
         token_dereference(proc->primary_token);
         proc->primary_token = NULL;

@@ -1,0 +1,6 @@
+# Local harness dependencies. Install into the interpreter that runs the harness:
+#   python -m pip install --user -r tests/harness/requirements.txt
+# CI does not install these: the CI workflow does not run the DoD harness
+# (see docs/status/HARNESS-ENV.md). Without PyYAML, dodrun.py cannot parse
+# registry.yaml and the CRIT-* selftests fail.
+pyyaml==6.0.3

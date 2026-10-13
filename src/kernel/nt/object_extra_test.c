@@ -266,9 +266,11 @@ TEST(create_directory_named_and_collision)
     ASSERT_STATUS(ObReferenceObjectByName(&us, &nt_directory_type, KernelMode, 0, &found), STATUS_SUCCESS);
     ObDereferenceObject(found);
 
-    /* Same name without OBJ_OPENIF: collision, and no handle is written. */
+    /* Same name without OBJ_OPENIF: collision, and no handle is written. The
+     * output keeps its sentinel, so the caller never sees an indeterminate value. */
+    h2 = (HANDLE)(ULONG_PTR)0x5E171E1;
     ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(&h2, DIRECTORY_QUERY, &oa), STATUS_OBJECT_NAME_COLLISION);
-    ASSERT(h2 == NULL);
+    ASSERT(h2 == (HANDLE)(ULONG_PTR)0x5E171E1);
 
     ObCloseHandle(proc, h1);
     teardown(proc);
@@ -718,8 +720,9 @@ TEST(create_symlink_collision_and_openif)
     HANDLE h1 = NULL, h2 = NULL;
     ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&h1, SYMBOLIC_LINK_QUERY, &oa, &target), STATUS_SUCCESS);
 
+    h2 = (HANDLE)(ULONG_PTR)0x5E171E1;
     ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&h2, SYMBOLIC_LINK_QUERY, &oa, &target), STATUS_OBJECT_NAME_COLLISION);
-    ASSERT(h2 == NULL);
+    ASSERT(h2 == (HANDLE)(ULONG_PTR)0x5E171E1);
 
     OBJECT_ATTRIBUTES oa_if = make_oa(&us, OBJ_OPENIF);
     ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&h2, SYMBOLIC_LINK_QUERY, &oa_if, &target), STATUS_OBJECT_NAME_EXISTS);

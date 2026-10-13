@@ -14,7 +14,7 @@ SCRIPT = pathlib.Path(__file__).resolve().parents[2] / "build" / "gen_ntdll_def.
 
 # Exports the script always emits, regardless of the syscall table.
 # NtRaiseException is a syscall-table entry, so it is not in the fixed set.
-FIXED_EXPORT_COUNT = 5 + 12 + 10 + 3  # Ldr + Rtl + exception/VEH + misc
+FIXED_EXPORT_COUNT = 6 + 12 + 10 + 3  # Ldr + Rtl + exception/VEH + misc
 
 
 def run_script(src_text):

@@ -1,0 +1,38 @@
+{
+  "probe": "probe_sync",
+  "windows_build": "26200.9168",
+  "windows_version": "10.0.26200",
+  "arch": "x64",
+  "events": {
+    "auto": {"initial_wait":258,"after_set_wait1":0,"after_set_wait2":258},
+    "manual": {"initial_wait":258,"after_set_wait1":0,"after_set_wait2":0,"after_reset":258},
+    "pulse_auto": {"ntstatus":0,"ntstatus_hex":"0x00000000","prev":0,"waiter_result":0,"after_pulse_wait":258},
+    "pulse_manual": {"ntstatus":0,"ntstatus_hex":"0x00000000","prev":0,"waiter1":0,"waiter2":0,"after_pulse_wait":258}
+  },
+  "mutant": {
+    "recursive_acquire": [0,0,0],
+    "recursive_release": [{"success":true,"err":0},{"success":true,"err":0},{"success":true,"err":0}],
+    "non_owner_win32_success": false,
+    "non_owner_win32_err": 288,
+    "non_owner_win32_err_hex": "0x00000120",
+    "non_owner_ntstatus": -1073741754,
+    "non_owner_ntstatus_hex": "0xc0000046",
+    "non_owner_prev": -99,
+    "owner_release_after": {"success":true,"err":0},
+    "extra_release": {"success":false,"err":288,"ntstatus":-1073741754,"ntstatus_hex":"0xc0000046","prev":-99},
+    "abandon": {"thread_exit":0,"wait_result":128,"wait_hex":"0x00000080","release_after_abandon_success":true,"release_err":0}
+  },
+  "semaphore": {
+    "initial1_max3": [{"release1_success":true,"prev":1,"err":0},{"release2_success":true,"prev":2,"err":0},{"over_release_success":false,"prev":-1,"err":298,"err_hex":"0x12A"}],
+    "nt_over_release": {"ntstatus":-1073741753,"ntstatus_hex":"0xc0000047","prev":-1},
+    "prev_count_test": {"initial0_max5_release2_prev":0,"success":true,"wait1":0,"wait2":0,"wait3":258}
+  },
+  "wait_multiple": {
+    "wait_any_index": 1,
+    "wait_all_2signaled": 0,
+    "wait_all_timeout": 258,
+    "wait_any_abandoned": 128,
+    "wait_all_abandoned": 128
+  },
+  "timeout": {"wait_100ms_result":258,"elapsed_ms":111.164}
+}

@@ -14,6 +14,9 @@ NTSTATUS nt_svc_NtCreateEvent(PHANDLE EventHandle, ACCESS_MASK DesiredAccess,
                               ULONG EventType, BOOLEAN InitialState);
 NTSTATUS nt_svc_NtCreateMutant(PHANDLE MutantHandle, ACCESS_MASK DesiredAccess,
                                POBJECT_ATTRIBUTES ObjectAttributes, BOOLEAN InitialOwner);
+NTSTATUS nt_svc_NtCreateSemaphore(PHANDLE SemaphoreHandle, ACCESS_MASK DesiredAccess,
+                                  POBJECT_ATTRIBUTES ObjectAttributes,
+                                  LONG InitialCount, LONG MaximumCount);
 NTSTATUS nt_svc_NtCreateTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
                               ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
                               ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
@@ -237,6 +240,76 @@ TEST(create_event_name_held_by_mutant) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Named creates over a name held by another type (SYNC-3 policy)       */
+/* ------------------------------------------------------------------ */
+/* ObInsertObject reports NAME_COLLISION when another type holds the name.
+ * The service must not copy an indeterminate or NULL handle back. The holder
+ * is opened by type: another type gives OBJECT_TYPE_MISMATCH and no handle.
+ * The output stays at its sentinel. */
+#define SYNC_SENTINEL ((HANDLE)(ULONG_PTR)0x5E171E1)
+extern struct nt_object_type nt_mutant_type; /* nt_obj.c */
+
+TEST(create_mutant_name_held_by_event) {
+    reset_ob();
+    UNICODE_STRING us;
+    make_us(&us, "\\BaseNamedObjects\\ExtMutOverEv", wbuf1, sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, OBJ_CASE_INSENSITIVE);
+    HANDLE ev = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&ev, 0x1F0003, &oa, NotificationEvent, 0), STATUS_SUCCESS);
+    HANDLE m = SYNC_SENTINEL;
+    ASSERT_STATUS(nt_svc_NtCreateMutant(&m, 0x1F0003, &oa, 0), STATUS_OBJECT_TYPE_MISMATCH);
+    ASSERT(m == SYNC_SENTINEL);
+    PASS();
+}
+
+TEST(create_semaphore_name_held_by_event) {
+    reset_ob();
+    UNICODE_STRING us;
+    make_us(&us, "\\BaseNamedObjects\\ExtSemOverEv", wbuf1, sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, OBJ_CASE_INSENSITIVE);
+    HANDLE ev = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&ev, 0x1F0003, &oa, NotificationEvent, 0), STATUS_SUCCESS);
+    HANDLE s = SYNC_SENTINEL;
+    ASSERT_STATUS(nt_svc_NtCreateSemaphore(&s, 0x1F0003, &oa, 1, 2), STATUS_OBJECT_TYPE_MISMATCH);
+    ASSERT(s == SYNC_SENTINEL);
+    PASS();
+}
+
+TEST(create_timer_name_held_by_event) {
+    reset_ob();
+    UNICODE_STRING us;
+    make_us(&us, "\\BaseNamedObjects\\ExtTimOverEv", wbuf1, sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, OBJ_CASE_INSENSITIVE);
+    HANDLE ev = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&ev, 0x1F0003, &oa, NotificationEvent, 0), STATUS_SUCCESS);
+    HANDLE t = SYNC_SENTINEL;
+    ASSERT_STATUS(t_create_timer(&t, 0x1F0003, &oa, NotificationTimer), STATUS_OBJECT_TYPE_MISMATCH);
+    ASSERT(t == SYNC_SENTINEL);
+    PASS();
+}
+
+/* The shared holder helper, same type: a valid handle with NAME_COLLISION, and
+ * closing it returns every allocation (the leak tracker). */
+TEST(holder_after_collision_same_type_leaves_no_leak) {
+    reset_ob();
+    UNICODE_STRING us;
+    make_us(&us, "\\BaseNamedObjects\\ExtHolderMut", wbuf1, sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, OBJ_CASE_INSENSITIVE);
+    HANDLE holder = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateMutant(&holder, 0x1F0003, &oa, 0), STATUS_SUCCESS);
+    long before = atomic_load(&kshim_alloc_count);
+    for (int i = 0; i < 25; i++) {
+        HANDLE h = SYNC_SENTINEL;
+        ASSERT_STATUS(ObOpenNamedHolderAfterCollision(&nt_mutant_type, &oa, 0x1F0003, kshim_current_process(), &h),
+                      STATUS_OBJECT_NAME_COLLISION);
+        ASSERT(h != NULL && h != SYNC_SENTINEL);
+        ASSERT_STATUS(ObCloseHandle(kshim_current_process(), h), STATUS_SUCCESS);
+    }
+    ASSERT(atomic_load(&kshim_alloc_count) == before);
+    PASS();
+}
+
+/* ------------------------------------------------------------------ */
 /* NtSetTimer / NtCancelTimer                                           */
 /* ------------------------------------------------------------------ */
 TEST(set_timer_fires_and_reports_previous) {
@@ -446,6 +519,19 @@ static NTSTATUS t_wait_keyed(HANDLE h, void *key, LARGE_INTEGER *to) {
 }
 static NTSTATUS t_release_keyed(HANDLE h, void *key, LARGE_INTEGER *to) {
     return nt_svc_NtReleaseKeyedEvent((ULONG_PTR)h, (ULONG_PTR)key, 0, (ULONG_PTR)to, 0, 0, 0, 0, 0, 0, 0, 0);
+}
+
+TEST(keyed_create_name_held_by_event) {
+    reset_ob();
+    UNICODE_STRING us;
+    make_us(&us, "\\BaseNamedObjects\\ExtKeyOverEv", wbuf1, sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, OBJ_CASE_INSENSITIVE);
+    HANDLE ev = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&ev, 0x1F0003, &oa, NotificationEvent, 0), STATUS_SUCCESS);
+    HANDLE k = SYNC_SENTINEL;
+    ASSERT_STATUS(t_create_keyed(&k, 0x1F0003, &oa, 0), STATUS_OBJECT_TYPE_MISMATCH);
+    ASSERT(k == SYNC_SENTINEL);
+    PASS();
 }
 
 TEST(keyed_create_and_open) {
@@ -692,6 +778,10 @@ int main(void) {
     RUN(open_timer_bad_arguments);
     RUN(open_timer_type_mismatch);
     RUN(create_event_name_held_by_mutant);
+    RUN(create_mutant_name_held_by_event);
+    RUN(create_semaphore_name_held_by_event);
+    RUN(create_timer_name_held_by_event);
+    RUN(holder_after_collision_same_type_leaves_no_leak);
     RUN(set_timer_fires_and_reports_previous);
     RUN(set_timer_int64_min_due_does_not_fire);
     RUN(set_timer_bad_arguments);
@@ -710,6 +800,7 @@ int main(void) {
     RUN(signal_and_wait_mutant_release);
     RUN(signal_and_wait_bad_objects);
     RUN(signal_and_wait_checks_rights);
+    RUN(keyed_create_name_held_by_event);
     RUN(keyed_create_and_open);
     RUN(keyed_wait_times_out);
     RUN(keyed_event_checks_rights);

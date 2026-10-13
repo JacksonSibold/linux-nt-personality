@@ -15,7 +15,7 @@ with open(out_def, 'w') as out:
         out.write(f"    {name}\n")
         out.write(f"    {zw}={name}\n")
     # Ldr*
-    for exp in ["LdrLoadDll", "LdrUnloadDll", "LdrGetDllHandle", "LdrGetProcedureAddress",
+    for exp in ["LdrLoadDll", "LdrUnloadDll", "LdrGetDllHandle", "LdrGetProcedureAddress", "LdrAddRefDll",
                 "LdrInitializeThunk"]:
         out.write(f"    {exp}\n")
     # Rtl*
@@ -38,4 +38,7 @@ with open(out_def, 'w') as out:
     out.write(f"    _DllMainCRTStartup\n")
     out.write(f"    DllMainCRTStartup\n")
 
-print(f"Generated {out_def} with {len(entries)*2 + 30} exports")
+# Count the export lines actually written, so the printed total cannot drift
+with open(out_def) as check:
+    written = sum(1 for line in check if line.startswith("    "))
+print(f"Generated {out_def} with {written} exports")

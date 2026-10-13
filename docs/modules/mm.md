@@ -21,8 +21,8 @@ Manager state and maintenance:
 Memory services (native-style signatures, bodies in `mm.c`):
 
 - `NtAllocateVirtualMemory` (`mm.c:839`), `NtFreeVirtualMemory` (`:1146`), `NtProtectVirtualMemory` (`:1288`), `NtQueryVirtualMemory` (`:1402`), `NtReadVirtualMemory` and `NtWriteVirtualMemory` (`:1583`, `:1596`) through the copy helper `ntmm_transfer` (`:1545`), `NtFlushVirtualMemory` (`:1634`) and `NtAllocateVirtualMemoryEx` (`:1683`).
-- `NtFlushVirtualMemory` accepts only the current-process pseudo-handle. Any other process returns `STATUS_NOT_SUPPORTED`.
-- `NtAllocateVirtualMemoryEx` is current-process only. With no extended parameters it calls `NtAllocateVirtualMemory`. The `MemExtendedParameterAddressRequirements` entry (`MEM_ADDRESS_REQUIREMENTS`: lowest start, highest end, alignment) places a reserved region in `[Lowest, Highest)` at the requested alignment, bottom up or with `MEM_TOP_DOWN`. The base must be NULL and the call must reserve, else `STATUS_INVALID_PARAMETER`. A zero Highest means no upper bound. Other parameter types, and arrays longer than `MEM_EXT_MAX_COUNT` (16), are `STATUS_NOT_SUPPORTED`. An unknown or reserved entry is `STATUS_INVALID_PARAMETER`.
+- `NtFlushVirtualMemory` resolves its process handle like the allocation services: the pseudo-handle or the current process is `g_nt_mm`, and any other process needs `PROCESS_VM_OPERATION` (ADR 0073).
+- `NtAllocateVirtualMemoryEx` resolves its process handle as `NtAllocateVirtualMemory` does. With no extended parameters it calls `NtAllocateVirtualMemory`. The `MemExtendedParameterAddressRequirements` entry (`MEM_ADDRESS_REQUIREMENTS`: lowest start, highest end, alignment) places a reserved region in `[Lowest, Highest)` at the requested alignment, bottom up or with `MEM_TOP_DOWN`. The base must be NULL and the call must reserve, else `STATUS_INVALID_PARAMETER`. A zero Highest means no upper bound. Other parameter types, and arrays longer than `MEM_EXT_MAX_COUNT` (16), are `STATUS_NOT_SUPPORTED`. An unknown or reserved entry is `STATUS_INVALID_PARAMETER`.
 - Extended-parameter types, the `MEM_EXTENDED_PARAMETER` record and `MEM_ADDRESS_REQUIREMENTS` are in `mm_ext.h`, which `mm.h` includes. In the kernel, `ntmm_ext_copy_in` copies the array and each requirements record in once, so the native functions never read user memory. `dispatch.c` calls it for `NtAllocateVirtualMemoryEx`, and `mm.c` calls it for the section wrappers.
 - `NtMmHandleGuardFault(PVOID Address)` (`mm.c:1698`) - simulation hook for first access to a guarded page. It returns `STATUS_GUARD_PAGE_VIOLATION` and clears the guard bit, or `STATUS_ACCESS_VIOLATION` for an uncommitted address. It has no caller in `src/` or `arch/` except `mm_test.c`.
 
@@ -64,7 +64,37 @@ Constants in the header: `NTMM_ALLOC_GRANULARITY` (0x10000), `NTMM_PAGE_SIZE` (4
 - `struct nt_section` (`mm.h`) - the body of a `Section` object: `attributes` (SEC_* flags, plus `SEC_FILE` for a file section and `SEC_IMAGE` for an image one), `size`, `page_protection`, `is_file`, the backing (`struct kshim_section_backing`: `fd`, `mem`, `size`, and `file` in the kernel build), and `image`, a `struct ip_plan *` that only an image section sets. The kernel build always leaves `image` NULL.
 - The object type is `nt_section_type` (`mm.c:1749`, named `"Section"`). Its delete callback `nt_section_delete` closes the backing: the host fd, or the kernel `struct file` reference (`fput`), and frees the plan. The type is registered by the first create or open that needs it (`ObRegisterObjectType` at `mm.c:1863`, `:1981`, `:2028`), not at object-manager init.
 - A view that a VAD maps holds one object reference (`nt_section_ref` and `nt_section_unref`).
-- The global `g_nt_mm` is the process-wide manager instance used by the services.
+- The global `g_nt_mm` is the address space of the current process. Each `nt_eprocess` names its own `struct nt_mm` in `aspace`, created on the first service that names that process (ADR 0073). See Address spaces below.
+
+## Address spaces (ADR 0073)
+
+Each `nt_eprocess` may own a `struct nt_mm` (`aspace`, with `aspace_free`). The
+current process uses the global `g_nt_mm` and leaves `aspace` NULL. `ntmm_space_acquire`
+resolves a process handle to its space (`mm.c`, before the service bodies):
+
+- The pseudo-handle, `NULL`, and a handle to the current process resolve to
+  `g_nt_mm` with no object lookup. Their behaviour is unchanged.
+- Any other handle goes through `ObReferenceObjectByHandle`, which checks the
+  granted access. Each service asks for one right: `PROCESS_VM_OPERATION` for
+  allocate, free, protect, lock, unlock, flush, map and unmap; `PROCESS_VM_READ`
+  for read; `PROCESS_VM_WRITE` and `PROCESS_VM_OPERATION` for write;
+  `PROCESS_QUERY_INFORMATION` for query. The object's reference is held until
+  `ntmm_space_release`.
+- In the userspace shim, a foreign process gets an arena on first use:
+  `NTMM_ARENA_SIZE` (64 MiB), reserved once and committed piecewise. The space's
+  `low_addr` and `high_addr` bound the placement (one 64 KiB granule is kept free at
+  each end). A caller-chosen base outside the interior is refused, since the host
+  mapping there would replace memory the process does not own.
+- An arena reserve is a no-op, because the range is already committed PROT_NONE.
+  A decommit unmaps the range, so a later commit returns zeroed pages. Teardown
+  (`ntmm_destroy`) frees the VADs, which drop their section references, and then
+  releases the whole arena with one `kshim_munmap`.
+- `ObDestroyProcessObject` calls `aspace_free` when it is set. The object layer
+  does not link against `mm.c`.
+- The kernel build returns `STATUS_NOT_SUPPORTED` for a foreign process, after the
+  access check.
+
+Tests: `test_foreign_*` and `test_cross_process_read_write` in `mm_test.c`.
 
 ## Invariants and locking (as implemented)
 
@@ -91,4 +121,5 @@ Constants in the header: `NTMM_ALLOC_GRANULARITY` (0x10000), `NTMM_PAGE_SIZE` (4
 - The userspace VAD list and the kernel rb-tree are separate code paths. `ntmm_check_invariants` is the only shared check.
 - The host shim cannot map a file, so a host file view is a copy filled at map time (`kshim_section_map_file`). Shared writable views are written back on flush and on unmap. Copy-on-write views are never written back, so two views of one section are not coherent on the host until a flush. The kernel build maps the file's pages with `vm_mmap`, so its views share the page cache.
 - File sections do not support execute protections or `SEC_RESERVE`. An anonymous section is zero-filled memory, not file contents.
-- Extended parameters are honoured only where listed above. NUMA nodes, partition and physical handles, attribute flags other than zero, placeholders and image-view placement are `STATUS_NOT_SUPPORTED`. The address-requirements bounds are checked against the VAD map, not against the host's own mappings. A host `mmap` at a chosen address can still fail, and the map then returns `STATUS_NO_MEMORY`.- One address space: `ProcessHandle` is ignored by the section and allocation paths, which use `g_nt_mm`. Every process shares one VAD list.
+- Extended parameters are honoured only where listed above. NUMA nodes, partition and physical handles, attribute flags other than zero, placeholders and image-view placement are `STATUS_NOT_SUPPORTED`. The address-requirements bounds are checked against the VAD map, not against the host's own mappings. A host `mmap` at a chosen address can still fail, and the map then returns `STATUS_NO_MEMORY`.
+- Kernel build: a foreign process handle is `STATUS_NOT_SUPPORTED`, because only the current task's mm is reachable there. The userspace shim gives each foreign process its own arena (see Address spaces below).

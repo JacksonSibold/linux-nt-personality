@@ -1,0 +1,11 @@
+{
+  "probe": "probe_peloader",
+  "windows_build": "26200.9457",
+  "windows_version": "10.0.26200",
+  "arch": "x64",
+  "results": [
+    {"path":"C:/Windows/System32/notepad.exe","sec_image_accept":true,"sec_image_error":0,"sec_image_error_hex":"0x00000000","loadlibrary_accept":true,"loadlibrary_error":0,"loadlibrary_error_hex":"0x00000000","is_exe":true,"bin_type":6,"windows_accept":true},
+    {"path":"C:/Windows/System32/kernel32.dll","sec_image_accept":true,"sec_image_error":0,"sec_image_error_hex":"0x00000000","loadlibrary_accept":true,"loadlibrary_error":0,"loadlibrary_error_hex":"0x00000000","is_exe":false,"bin_type":0,"windows_accept":true},
+    {"path":"C:/Windows/System32/ntdll.dll","sec_image_accept":true,"sec_image_error":0,"sec_image_error_hex":"0x00000000","loadlibrary_accept":true,"loadlibrary_error":0,"loadlibrary_error_hex":"0x00000000","is_exe":false,"bin_type":0,"windows_accept":true}
+  ]
+}

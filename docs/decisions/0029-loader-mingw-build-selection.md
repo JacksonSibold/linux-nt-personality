@@ -1,6 +1,6 @@
 # 0029: MinGW build compiles only loader stubs (LDR-1)
 
-Status: Proposed. Recorded only, not implemented. Needs VM: the fix changes what the real ntdll build links, and nothing in this repository can build or run that target.
+Status: Implemented in 10f42c8 (LDR-1). The MinGW build compiles the real loader: `LDR_USE_POSIX` (ldr.c) selects the platform layer, and the stub block is gone. Host-verified: `make -C src/ntdll check` links `ntdll.dll` with `--no-undefined`, 372 names match the `.def`, and `tests/ntdll-host/check_ldr_stub.sh` reports the real `LdrLoadDll` (115 instructions). Not verified: the DLL has not been run. Win32 `LoadLibrary` still fails, because `kernel32.c` passes a NULL context (K32-4, still open and a prerequisite of the end-to-end path).
 Finding: `docs/review/ntdll.md` LDR-1 (High).
 Date: 2026-10-12
 
@@ -51,3 +51,16 @@ This is not a small or local change, and the NT side cannot be verified without 
 
 - The ntdll link recipe is not in this repository, so the claim that the MinGW build compiles only the stubs was checked by reading the `#ifndef` structure, not by a build.
 - The NT syscall wrappers in `nt_syscalls.h` were not checked for the calls the `__MINGW32__` helpers need.
+
+## Outcome (10f42c8)
+
+- Option 2 was not taken as written. The platform layer is selected in one file by `LDR_USE_POSIX` rather than split into `ldr_core.c`, `ldr_nt.c` and `ldr_host.c`. The NT-syscall helpers (`ldr_read_file`, `ldr_alloc_image`, `ldr_file_exists`, `ldr_free_image`) that already existed under `__MINGW32__` are now the MinGW layer.
+- The pure parts are in `src/ntdll/ldr_sched.h` with host tests in `tests/ntdll-host/test_ldr_sched.c`: name normalisation, search order, API-set line parsing, the ordinal parser, reference counts, the forwarder depth limit and the attach result rule.
+- The MinGW build needed three things the POSIX build never did: the `PACCESS_MASK` and `GENERIC_MAPPING` types (355ad0c, the build was already failing), `src/loader/pe_parse.c` in the link (with `PE_FREESTANDING`, so its diagnostics do not use `stderr`), and no `munmap`, `fopen`/`fgets`, `strtoul` or `sscanf` in the loader body (the freestanding runtime has none of them).
+- Still open: `ldr_alloc_image` commits anonymous memory and copies the image. It does not use `NtCreateSection` with `SEC_IMAGE` and `NtMapViewOfSection`, which the design also names. That needs the personality kernel to verify.
+
+## Needs the Linux guest or a running personality (not verified in this repository)
+
+- The POSIX layer (`LDR_USE_POSIX`=1) was checked only with `gcc -fsyntax-only` against stub `sys/mman.h`. It was not linked or run. `src/ntdll/ldr_test.c` (the POSIX conformance test with MinGW fixtures) has not been run.
+- Running the MinGW `ntdll.dll`, the NT file and image helpers (`NtCreateFile`, `NtReadFile`, `NtAllocateVirtualMemory`), and `LdrLoadDll` against real DLLs.
+- The Windows Application Control policy blocks freshly built exes on this host, so no built PE is run here.

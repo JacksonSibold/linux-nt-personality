@@ -10,7 +10,7 @@ These DLLs are the Win32 surface that programs import. Each shim turns a Win32 c
 ## Layout
 
 - `kernel32.c` (about 500 lines): file I/O, virtual memory, module loading (via `Ldr*`), heap, critical sections, TLS, synchronization, temp paths, file mapping, timing.
-- `kernelbase.c`: a stub DLL with one dummy export. Its real surface is in `kernelbase.def`, which forwards 22 names to `kernel32` (for example `CreateFileW=kernel32.CreateFileW`). Forwards are resolved at load time by the loader, which is a stub in this build (LDR-1).
+- `kernelbase.c`: a stub DLL with one dummy export. Its real surface is in `kernelbase.def`, which forwards 22 names, plus the module APIs, to `kernel32` (for example `CreateFileW=kernel32.CreateFileW`). Forwards are resolved at load time by the loader, which is compiled (LDR-1 fixed in 10f42c8). The module forwards use the process loader context (K32-4, fixed in 1e013ac); whether they run is not verified.
 - `user32.c`: `wsprintf` family only.
 - `advapi32.c`: registry stubs.
 - `msvcrt.c`: the C runtime export surface (`malloc`, `printf`, `sprintf`, `_initterm`, `exit`, startup helpers). Heap calls go to kernel32's heap.
@@ -26,7 +26,7 @@ These DLLs are the Win32 surface that programs import. Each shim turns a Win32 c
 
 **Memory.** `VirtualAlloc` maps the protection constant to the NT value and calls `NtAllocateVirtualMemory`. `VirtualFree` calls `NtFreeVirtualMemory`. `VirtualQuery` calls `NtQueryVirtualMemory` with class 0.
 
-**Modules.** `LoadLibraryW` and `LoadLibraryA` call `LdrLoadDll`. `GetModuleHandle*` calls `LdrGetDllHandle`. `GetProcAddress` calls `LdrGetProcedureAddress`. All of them pass a NULL loader context (K32-4).
+**Modules.** The module APIs are listed in the Module APIs section below. They call `LdrLoadDll`, `LdrGetDllHandle`, `LdrGetProcedureAddress`, `LdrUnloadDll` and `LdrAddRefDll` with the process loader context (K32-4, fixed in 1e013ac).
 
 **Heap.** `HeapAlloc` is a bump allocator over a 1 MiB static array. `HeapFree` does nothing. `HeapReAlloc` returns NULL. `HeapSize` returns 0.
 
@@ -58,13 +58,29 @@ These DLLs are the Win32 surface that programs import. Each shim turns a Win32 c
 
 **user32.** `wsprintfW` expands `%s %d %i %u %x %X %c %%` into a caller buffer with no size limit, as the Win32 function does. `wsprintfA` expands only `%s %d %%`, and copies other conversions literally. `%s` in `wsprintfW` reads a narrow string (U32-1).
 
+## Module APIs (K32-4)
+
+Functions: `LoadLibraryA/W`, `LoadLibraryExA/W`, `FreeLibrary`, `GetModuleHandleA/W`, `GetModuleHandleExA/W`, `GetModuleFileNameA/W`, `GetProcAddress`, `DisableThreadLibraryCalls`. The argument rules, flag checks, name normalisation (drops the directory, adds `.dll` when there is no extension), ANSI and wide conversion, the GetModuleFileName truncation rule and the NTSTATUS to Win32 error mapping are pure functions in `src/ntdll/k32_module_pure.h`. `tests/ntdll-host/test_k32_module_pure.c` checks them, and cross-checks the error mapping against `RtlNtStatusToDosError`.
+
+Handles: a Win32 `HMODULE` is the image base (`LDR_DATA_TABLE_ENTRY.DllBase`). The loader handle is the entry address. kernel32 converts between them by walking `PEB.Ldr`. The main executable's handle is `PEB.ImageBaseAddress`; it is not in the loader list.
+
+Context: `LdrInitializeThunk` creates the loader context and publishes it at `PEB.SparePointers[0]` (`LDR_PEB_CONTEXT_SLOT`, `ldr.h`). The slot is a personality convention; the PEB tail is not verified against Windows.
+
+Error policy: `ERROR_CALL_NOT_IMPLEMENTED` for `DONT_RESOLVE_DLL_REFERENCES` (the loader always runs DllMain). `ERROR_INVALID_PARAMETER` for unknown flag bits. `ERROR_FILENAME_EXCED_RANGE` for a name of 260 characters or more. Successful calls leave the last-error value unchanged, as Win32 does. The module-specific status mapping is in `k32_module_status_to_error`; anything else goes to `RtlNtStatusToDosError`.
+
+**Verified by host tests and build checks:** the pure helpers (`test_k32_module_pure`, 31 cases); the export set and `LdrLoadDll` not being the stub (`make -C src/ntdll check`); `kernel32.c` compiles with `gcc -fsyntax-only` for the MinGW target.
+
+**Needs the running personality (not verified):** `LdrInitializeThunk` runs before the first module call; `LoadLibraryA("kernel32.dll")` returns a non-NULL handle; by-name and by-ordinal `GetProcAddress` both resolve; forwarders resolve through the loader; `GetModuleFileNameW` returns the DLL path; `FreeLibrary` pairs with `LoadLibrary` and the reference count; `GetModuleHandleEx(FROM_ADDRESS)` finds the module; `GetLastError` is per thread (it reads `TEB.LastErrorValue`); the PEB has room for the slot.
+
+**Open (not fixed here):** the main executable's exports are not in the loader list, so `GetProcAddress` on the main module fails. `DisableThreadLibraryCalls` stores the flag, but no thread notifications are sent (LDR-3). A directory in a `LoadLibrary` name is a search override only. ANSI conversion is Latin-1, not a code page. The kernel32 list walks read `PEB.Ldr` without the loader lock. `STATUS_DLL_INIT_FAILED` maps to 1114 here, but `ntstatus_to_dos.c` has no row for it (K32-18).
+
 ## Known gaps (see docs/review/ntdll.md)
 
-- The loader context is NULL for every module call (K32-4), so the module functions cannot succeed in this build (LDR-1).
+- The module functions use the process loader context (K32-4, fixed in 7d00ac6 and 1e013ac). Their run-time behaviour is not verified; see Module APIs.
 - `VirtualProtect` ignores its protection argument (K32-1), and `TlsAlloc` always returns slot 0 (K32-2). Both break callers that rely on them.
 - `CreateFileW` swaps the CREATE_NEW and CREATE_ALWAYS dispositions (K32-3).
 - `WaitForSingleObject` never waits (K32-5).
 - `HeapAlloc` checks its size after rounding (K32-6).
 - Most of the table above is placeholder code. Programs that use these calls will misbehave silently, not fail.
-- `kernelbase.def` forwards 22 names that resolve only through the loader (LDR-1).
+- `kernelbase.def` forwards 22 names plus the module APIs. They resolve through the loader, which is compiled (LDR-1 fixed in 10f42c8). Whether they run is not verified (see Module APIs).
 - `DllMain` in each shim returns TRUE and does nothing. The shim DLLs have no initialisation.

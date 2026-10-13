@@ -137,7 +137,7 @@ class RenderTests(unittest.TestCase):
 
     def test_markdown_has_table_header_and_readme_note(self):
         md = criteria_report.render_markdown(self.rows, self.summary)
-        self.assertIn("| ID | Area | Description | Tier | Dependency | Status |", md)
+        self.assertIn("| ID | Area | Description | Tier | Dependency | Status | Evidence | Owner |", md)
         self.assertIn("**3 of 423**", md)
 
     def test_json_round_trips(self):
@@ -186,9 +186,37 @@ class RealDataTests(unittest.TestCase):
     def test_generated_doc_is_current(self):
         readme = criteria_report.read_readme_count(REPO / "README.md")
         summary = criteria_report.summarize(self.rows, readme)
-        expected = criteria_report.render_markdown(self.rows, summary)
+        owners = criteria_report.load_gated_owners()
+        expected = criteria_report.render_markdown(self.rows, summary, owners)
         self.assertTrue(DOC.exists(), "docs/status/CRITERIA.md missing; regenerate it")
         self.assertEqual(DOC.read_text(encoding="utf-8"), expected)
+
+
+class GatedOwnerTests(unittest.TestCase):
+    """The owner column comes only from the DoD section 3.1 register."""
+
+    def test_every_gated_criterion_has_an_owner(self):
+        owners = criteria_report.load_gated_owners()
+        criteria = criteria_report.load_criteria(CRITERIA)
+        gated = [c["id"] for c in criteria if c["dependency_class"] == "EXT-GATED"]
+        self.assertEqual([g for g in gated if not owners.get(g)], [])
+
+    def test_owner_is_last_column_of_register_row(self):
+        owners = criteria_report.load_gated_owners()
+        self.assertEqual(owners["DOD-AC-A002"], "Valve")
+
+    def test_non_gated_rows_show_dash_owner(self):
+        row = {"id": "DOD-AA-A001", "area": "AA", "description": "x", "tier": "P0",
+               "dependency_class": "SELF", "status": "unknown"}
+        md = criteria_report.render_markdown(
+            [row], criteria_report.summarize([row], None), {"DOD-AA-A001": "Nobody"})
+        self.assertIn("| DOD-AA-A001 | AA | x | P0 | SELF | unknown | none recorded | - |", md)
+
+    def test_missing_register_entry_renders_empty_owner(self):
+        row = {"id": "DOD-AA-A001", "area": "AA", "description": "x", "tier": "P0",
+               "dependency_class": "EXT-GATED", "status": "unknown"}
+        md = criteria_report.render_markdown([row], criteria_report.summarize([row], None), {})
+        self.assertIn("| DOD-AA-A001 | AA | x | P0 | EXT-GATED | unknown | none recorded |  |", md)
 
 
 if __name__ == "__main__":

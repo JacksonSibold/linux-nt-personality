@@ -12,8 +12,20 @@
 #include "ldr.h"
 #include "pe_bounds.h"
 #include "ldr_pure.h"
+#include "ldr_sched.h"
 
-#ifndef __MINGW32__
+/* LDR_USE_POSIX selects the POSIX host layer (mmap, open, pthread): the Linux
+ * test build (ldr_test.c) and any non-MinGW build. The Windows-target build
+ * (__MINGW32__) uses the NT-syscall helpers and never runs PE code on the
+ * host. LDR_HOST_POSIX gets the host layer back for a MinGW build (testing
+ * only). Decision 0029, review LDR-1. */
+#if !defined(__MINGW32__) || defined(LDR_HOST_POSIX)
+#define LDR_USE_POSIX 1
+#else
+#define LDR_USE_POSIX 0
+#endif
+
+#if LDR_USE_POSIX
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -25,7 +37,7 @@
 #include <unistd.h>
 #endif
 
-#ifdef __MINGW32__
+#if !LDR_USE_POSIX
 /* Freestanding NT implementation for ntdll.dll - no POSIX, no imports, use NT syscalls */
 #include <string.h>
 #include <stdlib.h>
@@ -81,7 +93,6 @@ static inline int pthread_equal(pthread_t a, pthread_t b){ return a==b; }
 #define O_BINARY 0
 #endif
 
-#ifndef __MINGW32__
 #ifndef RemoveTailList
 static inline PLIST_ENTRY ldr_RemoveTailList(PLIST_ENTRY h) {
     PLIST_ENTRY e = h->Blink;
@@ -167,6 +178,11 @@ struct winldr_ctx {
     ldr_tls_callback_hook_t tls_callback_hook;
     void *tls_callback_user;
 
+    /* 1 in the Windows-target build: DllMain and TLS callbacks are called
+     * through their function pointers (decision 0031). 0 on the host, where
+     * PE code cannot run. */
+    int run_entry_points;
+
     /* Init log for tests */
     winldr_init_log_entry_t *init_log;
     size_t init_log_count;
@@ -192,6 +208,8 @@ struct winldr_ctx {
 
 static void ldr_lock_acquire(winldr_ctx_t *ctx);
 static void ldr_lock_release(winldr_ctx_t *ctx);
+static void ldr_free_image(void *p, size_t size);
+static int ldr_read_file(const char *path, u8 **out_data, size_t *out_size);
 static ldr_module_t *ldr_lookup_by_name(winldr_ctx_t *ctx, const char *name);
 static NTSTATUS ldr_load_dll_internal(winldr_ctx_t *ctx,
                                       const char *search_path,
@@ -398,6 +416,7 @@ winldr_ctx_t *winldr_ctx_create(void)
     InitializeListHead(&ctx->ldr_data.InInitializationOrderModuleList);
     ctx->ldr_data.Length = sizeof(ctx->ldr_data);
     ctx->ldr_data.Initialized = 1;
+    ctx->run_entry_points = LDR_USE_POSIX ? 0 : 1;
 
     for (int i = 0; i < LDR_HASH_BUCKETS; ++i)
         InitializeListHead(&ctx->module_hash[i]);
@@ -463,7 +482,7 @@ void winldr_ctx_destroy(winldr_ctx_t *ctx)
             ldr_process_detach(ctx, m);
         if (m->entry.FullDllName.Buffer) free(m->entry.FullDllName.Buffer);
         if (m->entry.BaseDllName.Buffer) free(m->entry.BaseDllName.Buffer);
-        if (m->image) munmap(m->image, m->image_size);
+        if (m->image) ldr_free_image(m->image, m->image_size);
         free(m->file_data);
         free(m);
     }
@@ -548,18 +567,24 @@ NTSTATUS winldr_load_apiset_schema(winldr_ctx_t *ctx, const char *path)
     ldr_free_apiset(ctx);
 
     if (path) {
-        FILE *f = fopen(path, "r");
-        if (f) {
-            char line[512];
-            while (fgets(line, sizeof(line), f)) {
-                char *p = strchr(line, '#');
-                if (p) *p = '\0';
-                char virt[256] = {0}, host[256] = {0};
-                if (sscanf(line, "%255s %255s", virt, host) == 2) {
-                    ldr_add_apiset(ctx, virt, host);
+        u8 *data = NULL;
+        size_t size = 0;
+        if (ldr_read_file(path, &data, &size) == 0) {
+            size_t pos = 0;
+            while (pos < size) {
+                char line[512];
+                char virt[256], host[256];
+                size_t n = 0;
+                while (pos < size && data[pos] != '\n') {
+                    if (n + 1 < sizeof(line)) line[n++] = (char)data[pos];
+                    ++pos;
                 }
+                if (pos < size) ++pos;      /* skip the newline */
+                line[n] = '\0';
+                if (ldr_apiset_parse_line(line, virt, sizeof(virt), host, sizeof(host)))
+                    ldr_add_apiset(ctx, virt, host);
             }
-            fclose(f);
+            free(data);
         }
     }
 
@@ -622,7 +647,7 @@ const char *winldr_apiset_resolve(winldr_ctx_t *ctx, const char *virtual_name)
 /* File helpers                                                               */
 /* -------------------------------------------------------------------------- */
 
-#ifdef __MINGW32__
+#if !LDR_USE_POSIX
 static int ldr_read_file(const char *path, u8 **out_data, size_t *out_size)
 {
     WCHAR wpath[1024];
@@ -1146,7 +1171,7 @@ static NTSTATUS ldr_resolve_export(winldr_ctx_t *ctx,
     char target_name[256];
     if (target[0] == '#') {
         target_by_ordinal = 1;
-        target_ord = (WORD)strtoul(target + 1, NULL, 10);
+        target_ord = (WORD)ldr_parse_decimal(target + 1);
     } else {
         strncpy(target_name, target, sizeof(target_name) - 1);
         target_name[sizeof(target_name) - 1] = '\0';
@@ -1485,6 +1510,29 @@ NTSTATUS ldr_resolve_delay_imports(winldr_ctx_t *ctx, HMODULE module)
 /* DllMain / TLS callback orchestration                                       */
 /* -------------------------------------------------------------------------- */
 
+/* Calls one TLS callback in the image. Only the Windows-target build reaches
+ * this (ctx->run_entry_points); the host build never runs PE code. */
+static void ldr_call_tls_callback(ldr_module_t *mod, PIMAGE_TLS_CALLBACK cb, ULONG reason)
+{
+#if LDR_USE_POSIX
+    (void)mod; (void)cb; (void)reason;
+#else
+    cb((PVOID)mod->image, reason, NULL);
+#endif
+}
+
+/* Calls DllMain (the image entry point) and returns its BOOL result as 0 or 1. */
+static int ldr_call_dll_entry(ldr_module_t *mod, ULONG reason)
+{
+#if LDR_USE_POSIX
+    (void)mod; (void)reason;
+    return 1;
+#else
+    DllMain_t entry = (DllMain_t)(ULONG_PTR)mod->entry.EntryPoint;
+    return entry((HINSTANCE)mod->image, (DWORD)reason, NULL) != 0;
+#endif
+}
+
 static void ldr_run_tls_callbacks(winldr_ctx_t *ctx, ldr_module_t *mod, ULONG reason)
 {
     if (!mod->has_tls || mod->datafile) return;
@@ -1511,20 +1559,27 @@ static void ldr_run_tls_callbacks(winldr_ctx_t *ctx, ldr_module_t *mod, ULONG re
         if (ctx->tls_callback_hook)
             ctx->tls_callback_hook(ctx, &mod->entry, reason, NULL, cb,
                                    ctx->tls_callback_user);
+        if (ctx->run_entry_points) ldr_call_tls_callback(mod, cb, reason);
     }
 }
 
-static void ldr_run_dll_main(winldr_ctx_t *ctx, ldr_module_t *mod, ULONG reason)
+/* Returns 1 when DllMain succeeded or was not run, 0 when it returned FALSE. */
+static int ldr_run_dll_main(winldr_ctx_t *ctx, ldr_module_t *mod, ULONG reason)
 {
-    if (mod->datafile) return;
+    if (mod->datafile) return 1;
 
     ldr_log_call(ctx, mod, reason, 0, 0);
     if (ctx->dll_main_hook)
         ctx->dll_main_hook(ctx, &mod->entry, reason, NULL, ctx->dll_main_user);
+
+    if (!ctx->run_entry_points || !mod->entry.EntryPoint) return 1;
+    return ldr_call_dll_entry(mod, reason);
 }
 
 static NTSTATUS ldr_process_attach(winldr_ctx_t *ctx, ldr_module_t *mod)
 {
+    int ok;
+
     if (mod->attached || mod->datafile) return STATUS_SUCCESS;
 
     /* Detect re-entry on the init stack (cycle). */
@@ -1537,18 +1592,23 @@ static NTSTATUS ldr_process_attach(winldr_ctx_t *ctx, ldr_module_t *mod)
         return STATUS_INSUFFICIENT_RESOURCES;
     ctx->init_stack[ctx->init_stack_depth++] = mod;
 
+    /* Windows order: TLS callbacks, then DllMain(hinst, DLL_PROCESS_ATTACH). */
     ldr_run_tls_callbacks(ctx, mod, DLL_PROCESS_ATTACH);
-    ldr_run_dll_main(ctx, mod, DLL_PROCESS_ATTACH);
-    mod->attached = 1;
+    ok = ldr_run_dll_main(ctx, mod, DLL_PROCESS_ATTACH);
 
     --ctx->init_stack_depth;
+    if (!ldr_attach_result_ok(DLL_PROCESS_ATTACH, ok)) return STATUS_DLL_INIT_FAILED;
+    mod->attached = 1;
     return STATUS_SUCCESS;
 }
 
 static NTSTATUS ldr_process_detach(winldr_ctx_t *ctx, ldr_module_t *mod)
 {
     if (!mod->attached || mod->datafile) return STATUS_SUCCESS;
+
+    /* Reverse of attach: DllMain first, then the TLS callbacks. */
     ldr_run_dll_main(ctx, mod, DLL_PROCESS_DETACH);
+    ldr_run_tls_callbacks(ctx, mod, DLL_PROCESS_DETACH);
     mod->attached = 0;
     return STATUS_SUCCESS;
 }
@@ -1567,7 +1627,7 @@ static int ldr_is_known_dll(winldr_ctx_t *ctx, const char *name)
 
 static int ldr_try_path(char *out, size_t outsz, const char *dir, const char *name)
 {
-#ifdef __MINGW32__
+#if !LDR_USE_POSIX
     size_t dlen = strlen(dir);
     size_t nlen = strlen(name);
     if (dlen + 1 + nlen + 1 > outsz) return 0;
@@ -1582,6 +1642,8 @@ static int ldr_try_path(char *out, size_t outsz, const char *dir, const char *na
 #endif
 }
 
+#define LDR_SEARCH_MAX_DIRS 64
+
 static NTSTATUS ldr_find_dll_path(winldr_ctx_t *ctx,
                                   const char *search_path,
                                   const char *name,
@@ -1589,45 +1651,37 @@ static NTSTATUS ldr_find_dll_path(winldr_ctx_t *ctx,
                                   size_t outsz)
 {
     char lower[256];
-    strncpy(lower, name, sizeof(lower) - 1);
-    lower[sizeof(lower) - 1] = '\0';
-    ldr_str_to_lower(lower);
-    if (!ldr_ends_with_dll(lower)) {
-        strncat(lower, ".dll", sizeof(lower) - strlen(lower) - 1);
+    const char *dirs[LDR_SEARCH_MAX_DIRS];
+
+    if (!ldr_dll_normalize(name, lower, sizeof(lower))) return STATUS_DLL_NOT_FOUND;
+
+    /* Search order (ldr_search_dirs): override, System32 for known DLLs,
+     * application directory, System32, PATH entries, then the working
+     * directory. */
+    size_t n = ldr_search_dirs(search_path && search_path[0] ? search_path : NULL,
+                               ldr_is_known_dll(ctx, lower),
+                               ctx->exe_dir, ctx->system32_dir,
+                               (const char *const *)ctx->path_dirs, ctx->path_count,
+                               dirs, LDR_SEARCH_MAX_DIRS);
+    for (size_t i = 0; i < n; ++i) {
+        if (ldr_try_path(out, outsz, dirs[i], lower)) return STATUS_SUCCESS;
     }
-
-    /* 1. Search path override. */
-    if (search_path && search_path[0]) {
-        if (ldr_try_path(out, outsz, search_path, lower)) return STATUS_SUCCESS;
-    }
-
-    /* 2. Known DLLs -> system32. */
-    if (ldr_is_known_dll(ctx, lower) && ctx->system32_dir) {
-        if (ldr_try_path(out, outsz, ctx->system32_dir, lower))
-            return STATUS_SUCCESS;
-    }
-
-    /* 3. Executable directory. */
-    if (ctx->exe_dir) {
-        if (ldr_try_path(out, outsz, ctx->exe_dir, lower)) return STATUS_SUCCESS;
-    }
-
-    /* 4. System32. */
-    if (ctx->system32_dir) {
-        if (ldr_try_path(out, outsz, ctx->system32_dir, lower))
-            return STATUS_SUCCESS;
-    }
-
-    /* 5. PATH. */
-    for (size_t i = 0; i < ctx->path_count; ++i) {
-        if (ldr_try_path(out, outsz, ctx->path_dirs[i], lower))
-            return STATUS_SUCCESS;
-    }
-
-    /* 6. Current working directory as last resort. */
-    if (ldr_try_path(out, outsz, ".", lower)) return STATUS_SUCCESS;
-
     return STATUS_DLL_NOT_FOUND;
+}
+
+/* Removes a module that failed to load and frees what it owns. The module is
+ * in the load and hash lists only (not yet in the init-order list). Dependencies
+ * it loaded are not released yet. */
+static void ldr_discard_module(ldr_module_t *mod)
+{
+    RemoveEntryList(&mod->entry.InLoadOrderLinks);
+    RemoveEntryList(&mod->entry.InMemoryOrderLinks);
+    RemoveEntryList(&mod->entry.HashLinks);
+    if (mod->entry.FullDllName.Buffer) free(mod->entry.FullDllName.Buffer);
+    if (mod->entry.BaseDllName.Buffer) free(mod->entry.BaseDllName.Buffer);
+    ldr_free_image(mod->image, mod->image_size);
+    free(mod->file_data);
+    free(mod);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1697,8 +1751,14 @@ static NTSTATUS ldr_load_dll_internal(winldr_ctx_t *ctx,
     mod->loading = 0;
 
     /* Run attach.  Dependencies were loaded recursively so their attach ran first. */
-    if (!mod->datafile)
-        ldr_process_attach(ctx, mod);
+    if (!mod->datafile) {
+        s = ldr_process_attach(ctx, mod);
+        if (!NT_SUCCESS(s)) {
+            /* DllMain returned FALSE (decision 0031): undo the load. */
+            ldr_discard_module(mod);
+            return s;
+        }
+    }
 
     /* Insert into initialization-order list *after* successful attach. */
     InsertTailList(&ctx->ldr_data.InInitializationOrderModuleList,
@@ -1740,6 +1800,24 @@ NTSTATUS LdrGetDllHandle(winldr_ctx_t *ctx, const WCHAR *name, HMODULE *out)
     if (m) *out = (HMODULE)&m->entry;
     ldr_lock_release(ctx);
     return s;
+}
+
+NTSTATUS LdrAddRefDll(winldr_ctx_t *ctx, ULONG flags, HMODULE module)
+{
+    if (!ctx || !module) return STATUS_INVALID_PARAMETER;
+    if (flags & ~(ULONG)LDR_DLL_PIN) return STATUS_INVALID_PARAMETER;
+
+    ldr_module_t *mod = (ldr_module_t *)((char *)module - offsetof(ldr_module_t, entry));
+
+    ldr_lock_acquire(ctx);
+    if (flags & LDR_DLL_PIN) {
+        mod->pinned = 1;
+    } else {
+        /* Saturates at 0xFFFF (ldr_sched.h); the module is then never freed. */
+        ldr_ref_inc(&mod->entry.LoadCount);
+    }
+    ldr_lock_release(ctx);
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS LdrUnloadDll(winldr_ctx_t *ctx, HMODULE module)
@@ -1822,29 +1900,3 @@ NTSTATUS LdrGetProcedureAddress(winldr_ctx_t *ctx,
     free(n);
     return s;
 }
-#else
-/* Freestanding minimal Ldr for ntdll.dll - no POSIX, no imports */
-#include <string.h>
-#undef DUMMYUNIONNAME
-#undef DUMMYSTRUCTNAME
-NTSTATUS LdrLoadDll(winldr_ctx_t *ctx, const WCHAR *path, ULONG flags, const WCHAR *name, HMODULE *out) { (void)ctx;(void)path;(void)flags;(void)name;(void)out; return STATUS_NOT_SUPPORTED; }
-NTSTATUS LdrUnloadDll(winldr_ctx_t *ctx, HMODULE mod) { (void)ctx;(void)mod; return STATUS_SUCCESS; }
-NTSTATUS LdrGetDllHandle(winldr_ctx_t *ctx, const WCHAR *name, HMODULE *out) { (void)ctx;(void)name;(void)out; return STATUS_DLL_NOT_FOUND; }
-NTSTATUS LdrGetProcedureAddress(winldr_ctx_t *ctx, HMODULE mod, const ANSI_STRING *name, WORD ord, FARPROC *out) { (void)ctx;(void)mod;(void)name;(void)ord;(void)out; return STATUS_PROCEDURE_NOT_FOUND; }
-NTSTATUS ldr_resolve_delay_imports(winldr_ctx_t *ctx, HMODULE mod) { (void)ctx;(void)mod; return STATUS_SUCCESS; }
-winldr_ctx_t *winldr_ctx_create(void) { return NULL; }
-void winldr_ctx_destroy(winldr_ctx_t *ctx) { (void)ctx; }
-PPEB_LDR_DATA winldr_peb_ldr(winldr_ctx_t *ctx) { (void)ctx; return NULL; }
-void winldr_set_dll_main_hook(winldr_ctx_t *ctx, ldr_dll_main_hook_t hook, void *user) { (void)ctx;(void)hook;(void)user; }
-void winldr_set_tls_callback_hook(winldr_ctx_t *ctx, ldr_tls_callback_hook_t hook, void *user) { (void)ctx;(void)hook;(void)user; }
-void winldr_set_exe_dir(winldr_ctx_t *ctx, const char *path) { (void)ctx;(void)path; }
-void winldr_set_system32_dir(winldr_ctx_t *ctx, const char *path) { (void)ctx;(void)path; }
-void winldr_register_known_dll(winldr_ctx_t *ctx, const char *name) { (void)ctx;(void)name; }
-NTSTATUS winldr_load_apiset_schema(winldr_ctx_t *ctx, const char *path) { (void)ctx;(void)path; return STATUS_SUCCESS; }
-const char *winldr_apiset_resolve(winldr_ctx_t *ctx, const char *name) { (void)ctx;(void)name; return NULL; }
-PLDR_DATA_TABLE_ENTRY winldr_first_module(winldr_ctx_t *ctx, int order) { (void)ctx;(void)order; return NULL; }
-PLDR_DATA_TABLE_ENTRY winldr_next_module(winldr_ctx_t *ctx, PLDR_DATA_TABLE_ENTRY cur, int order) { (void)ctx;(void)cur;(void)order; return NULL; }
-PLDR_DATA_TABLE_ENTRY winldr_find_module(winldr_ctx_t *ctx, const char *name) { (void)ctx;(void)name; return NULL; }
-const winldr_init_log_entry_t *winldr_get_init_log(winldr_ctx_t *ctx, size_t *count) { if(count) *count=0; return NULL; }
-void winldr_clear_init_log(winldr_ctx_t *ctx) { (void)ctx; }
-#endif

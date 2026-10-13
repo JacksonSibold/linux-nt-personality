@@ -762,8 +762,9 @@ static inline struct nt_ethread *ntio_current_ethread(void) { return kshim_curre
 
 /* NtTestAlert delivers queued user APCs, then reports a pending alert on the
  * current thread: STATUS_ALERTED once (the alert is consumed), else SUCCESS.
- * NtAlertThread, NtAlertThreadByThreadId and NtAlertResumeThread set the flag
- * and live in proc_thread.c. */
+ * NtAlertThread and NtAlertResumeThread set the flag. NtAlertThreadByThreadId
+ * sets the separate by-thread-id token instead (sync.h), which NtTestAlert does
+ * not see. Both live in proc_thread.c. */
 NTSTATUS nt_svc_NtTestAlert(void)
 {
 	NTSTATUS st = STATUS_SUCCESS;

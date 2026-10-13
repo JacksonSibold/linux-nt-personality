@@ -1,0 +1,60 @@
+{
+  "probe": "probe_process_thread",
+  "windows_build": "26200.9457",
+  "windows_version": "10.0.26200",
+  "arch": "x64",
+  "teb_peb": {"teb":"0xE63FBD4000","peb":"0xE63FBD3000","teb_peb":"0xE63FBD3000","teb_peb_match":true},
+  "process_info": [
+    {"class":0,"name":"ProcessBasicInformation","ntstatus":-1073741820,"ntstatus_hex":"0xC0000004","retLen":3735928559,"small_buffer_4":{"ntstatus":-1073741820,"hex":"0xC0000004","retLen":0}},
+    {"class":1,"name":"ProcessQuotaLimits","ntstatus":-1073741820,"ntstatus_hex":"0xC0000004","retLen":3735928559},
+    {"class":2,"name":"ProcessIoCounters","ntstatus":-1073741820,"ntstatus_hex":"0xC0000004","retLen":3735928559},
+    {"class":6,"name":"ProcessDebugPort","ntstatus":-1073741821,"ntstatus_hex":"0xC0000003","retLen":3735928559},
+    {"class":7,"name":"ProcessExceptionPort","ntstatus":-1073741820,"ntstatus_hex":"0xC0000004","retLen":3735928559},
+    {"class":8,"name":"ProcessAccessToken","ntstatus":-1073741821,"ntstatus_hex":"0xC0000003","retLen":3735928559},
+    {"class":10,"name":"ProcessWow64Information","ntstatus":-1073741822,"ntstatus_hex":"0xC0000002","retLen":3735928559},
+    {"class":25,"name":"ProcessTimes","ntstatus":-1073741821,"ntstatus_hex":"0xC0000003","retLen":3735928559},
+    {"class":26,"name":"ProcessWow64Information_dup","ntstatus":-1073741820,"ntstatus_hex":"0xC0000004","retLen":3735928559},
+    {"class":27,"name":"ProcessImageFileName","ntstatus":0,"ntstatus_hex":"0x00000000","retLen":188,"image_name":"\\Device\\HarddiskVolume3\\Users\\<user>\\repos\\golden-out\\build\\probe_process_thread.exe"},
+    {"class":29,"name":"ProcessBreakOnTermination","ntstatus":-1073741820,"ntstatus_hex":"0xC0000004","retLen":3735928559},
+    {"class":30,"name":"ProcessDebugObjectHandle","ntstatus":-1073741820,"ntstatus_hex":"0xC0000004","retLen":3735928559},
+    {"class":9999,"name":"BogusClass","ntstatus":-1073741821,"ntstatus_hex":"0xC0000003","retLen":3735928559}
+  ],
+  "process_basic_size_probe": [
+    {"len":0,"ntstatus":-1073741820,"hex":"0xC0000004","retLen":0},
+    {"len":4,"ntstatus":-1073741820,"hex":"0xC0000004","retLen":0},
+    {"len":48,"ntstatus":0,"hex":"0x00000000","retLen":48},
+    {"len":49,"ntstatus":-1073741820,"hex":"0xC0000004","retLen":0},
+    {"len":1024,"ntstatus":-1073741820,"hex":"0xC0000004","retLen":0}
+  ],
+  "thread_info": [
+    {"class":0,"name":"ThreadBasicInformation","ntstatus":-1073741820,"hex":"0xC0000004","retLen":0,"small_buffer_4":{"ntstatus":-1073741820,"hex":"0xC0000004","retLen":0}},
+    {"class":1,"name":"ThreadTimes","ntstatus":-1073741820,"hex":"0xC0000004","retLen":0},
+    {"class":2,"name":"ThreadPriority","ntstatus":-1073741821,"hex":"0xC0000003","retLen":0},
+    {"class":5,"name":"ThreadQuerySetWin32StartAddress","ntstatus":-1073741821,"hex":"0xC0000003","retLen":0},
+    {"class":9,"name":"ThreadHideFromDebugger","ntstatus":-1073741820,"hex":"0xC0000004","retLen":0},
+    {"class":9999,"name":"Bogus","ntstatus":-1073741821,"hex":"0xC0000003","retLen":0}
+  ],
+  "thread_basic_size_probe": [
+    {"len":0,"ntstatus":-1073741820,"hex":"0xC0000004","retLen":0},
+    {"len":4,"ntstatus":-1073741820,"hex":"0xC0000004","retLen":0},
+    {"len":48,"ntstatus":0,"hex":"0x00000000","retLen":48},
+    {"len":49,"ntstatus":-1073741820,"hex":"0xC0000004","retLen":0},
+    {"len":512,"ntstatus":-1073741820,"hex":"0xC0000004","retLen":0}
+  ],
+  "suspend_resume": {
+    "nt_suspend1":{"ntstatus":0,"hex":"0x00000000","prev":0},
+    "nt_suspend2":{"ntstatus":0,"hex":"0x00000000","prev":1},
+    "win32_suspend1":0,"win32_suspend2":1,
+    "nt_resume1":{"ntstatus":0,"hex":"0x00000000","prev":2},
+    "nt_resume2":{"ntstatus":0,"hex":"0x00000000","prev":1},
+    "win32_resume1":2,"win32_resume2":1,
+    "self_suspend_result":57005,"self_suspend_err":0
+  },
+  "priorities": {"initial":0,"after_high":2,"after_normal":0,"proc_class":32,"set_high_success":true,"set_normal_success":true},
+  "exit_codes": {
+    "thread_before_wait":259,"thread_after":777,
+    "process_child_before":259,"process_child_after":42,"child_create_success":true,
+    "current_process_exit":259,
+    "ntqip_before_hex":"0x00000000","ntqip_after_hex":"0x00000000"
+  }
+}

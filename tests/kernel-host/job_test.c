@@ -152,6 +152,49 @@ TEST(named_create_and_open)
     PASS();
 }
 
+/* A job name held by an event: the job create gets OBJECT_TYPE_MISMATCH and
+ * leaves the caller's handle untouched. A second job of the same name gets
+ * the existing job's handle with NAME_COLLISION (the SYNC-3 policy). */
+NTSTATUS nt_svc_NtCreateEvent(PHANDLE EventHandle, ACCESS_MASK DesiredAccess,
+                              POBJECT_ATTRIBUTES ObjectAttributes,
+                              ULONG EventType, BOOLEAN InitialState);
+
+TEST(job_name_held_by_event_and_same_type_collision)
+{
+    WCHAR nb[64];
+    UNICODE_STRING us;
+    OBJECT_ATTRIBUTES oa;
+    HANDLE ev = NULL;
+    HANDLE jm = (HANDLE)(ULONG_PTR)0x5E171E1;
+    HANDLE j1 = NULL;
+    HANDLE j2 = (HANDLE)(ULONG_PTR)0x5E171E1;
+    long before;
+
+    make_us(&us, nb, 64, "\\BaseNamedObjects\\JobOverEv");
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(oa);
+    oa.ObjectName = &us;
+
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&ev, JOB_OBJECT_ALL_ACCESS, &oa, 0 /* NotificationEvent */, 0),
+                  STATUS_SUCCESS);
+    before = allocs();
+    ASSERT_STATUS(nt_svc_NtCreateJobObject(&jm, JOB_OBJECT_ALL_ACCESS, &oa), STATUS_OBJECT_TYPE_MISMATCH);
+    ASSERT(jm == (HANDLE)(ULONG_PTR)0x5E171E1);
+    ASSERT(allocs() == before);
+    ASSERT_STATUS(ObCloseHandle(g_cur, ev), STATUS_SUCCESS);
+
+    make_us(&us, nb, 64, "\\BaseNamedObjects\\JobSameType");
+    oa.ObjectName = &us;
+    ASSERT_STATUS(nt_svc_NtCreateJobObject(&j1, JOB_OBJECT_ALL_ACCESS, &oa), STATUS_SUCCESS);
+    before = allocs();
+    ASSERT_STATUS(nt_svc_NtCreateJobObject(&j2, JOB_OBJECT_ALL_ACCESS, &oa), STATUS_OBJECT_NAME_COLLISION);
+    ASSERT(j2 != NULL && j2 != (HANDLE)(ULONG_PTR)0x5E171E1);
+    ASSERT_STATUS(ObCloseHandle(g_cur, j2), STATUS_SUCCESS);
+    ASSERT(allocs() == before);
+    ASSERT_STATUS(ObCloseHandle(g_cur, j1), STATUS_SUCCESS);
+    PASS();
+}
+
 TEST(access_masks_enforced)
 {
     HANDLE jq = job_create(JOB_OBJECT_QUERY);
@@ -393,6 +436,7 @@ int main(void)
 
     RUN(create_and_null_pointer);
     RUN(named_create_and_open);
+    RUN(job_name_held_by_event_and_same_type_collision);
     RUN(access_masks_enforced);
     RUN(assign_is_exclusive);
     RUN(accounting_and_pid_list);

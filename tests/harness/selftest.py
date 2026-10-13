@@ -1023,6 +1023,7 @@ def test_file_missing_is_error_not_unimplemented(tmp: Path) -> None:
 
 def test_freshness_missing_manifest_is_fail(tmp: Path) -> None:
     """GG3: deleting .ntpers_build.* must be FAIL, not warning/pass (delete bypass closed)."""
+    require_wsl()
     import subprocess as sp, sys as _sys, pathlib as pl, os, shutil
     root = pl.Path(__file__).resolve().parents[2]
     freshness = root / "vm" / "freshness.sh"
@@ -1066,6 +1067,7 @@ def test_freshness_missing_manifest_is_fail(tmp: Path) -> None:
 
 def test_freshness_write_without_token_is_refused(tmp: Path) -> None:
     """GG3: `freshness.sh write` without NTPERS_ALLOW_WRITE must be refused (write bypass closed)."""
+    require_wsl()
     import subprocess as sp, pathlib as pl
     root = pl.Path(__file__).resolve().parents[2]
     freshness = root / "vm" / "freshness.sh"
@@ -1087,6 +1089,7 @@ def test_freshness_write_without_token_is_refused(tmp: Path) -> None:
 
 def test_freshness_write_without_rebuild_is_refused(tmp: Path) -> None:
     """GG3: `freshness.sh write` on dirty tree without rebuild must be refused (makes dirty look clean)."""
+    require_wsl()
     import subprocess as sp, pathlib as pl, os, time
     root = pl.Path(__file__).resolve().parents[2]
     freshness = root / "vm" / "freshness.sh"
@@ -1675,6 +1678,47 @@ def test_mutation_volume_claim_generalises(tmp: Path) -> None:
                 seed.unlink()
         except: pass
 
+class SkipTest(Exception):
+    """A test whose precondition is absent on this host. main() reports SKIP with the reason."""
+
+
+def wsl_ubuntu_check() -> str | None:
+    """Return None when the Ubuntu WSL distro can run commands, else the reason it cannot.
+
+    On non-Windows hosts the freshness scripts run under bash directly, so
+    there is nothing to check and None is returned.
+    """
+    import platform as _pf
+    if _pf.system() != "Windows":
+        return None
+    exe = shutil.which("wsl")
+    if exe is None:
+        return "wsl.exe not found on PATH"
+    try:
+        proc = subprocess.run([exe, "-d", "Ubuntu", "--", "true"], capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"wsl -d Ubuntu could not run: {exc}"
+    if proc.returncode != 0:
+        return f"WSL distro Ubuntu unavailable (wsl exit {proc.returncode}; WSL is not installed or has no Ubuntu distro)"
+    return None
+
+
+def require_wsl() -> None:
+    """Raise SkipTest, with the reason, when the WSL distro the freshness tests need is missing."""
+    reason = wsl_ubuntu_check()
+    if reason is not None:
+        raise SkipTest(f"WSL required, not available: {reason}")
+
+
+def _run(test, tmp: Path, skipped: list) -> None:
+    """Run one test; a SkipTest is recorded with its reason, any other exception fails the run."""
+    try:
+        test(tmp)
+    except SkipTest as exc:
+        skipped.append((test.__name__, str(exc)))
+        print(f"  [SKIP] {test.__name__}: {exc}")
+
+
 def main() -> int:
     print("Running DoD harness self-tests...")
     print(f"Harness path: {HARNESS}")
@@ -1688,54 +1732,58 @@ def main() -> int:
         print(proc.stderr, file=sys.stderr)
         return 1
 
+    skipped: list = []
     with tempfile.TemporaryDirectory(prefix="dodrun-selftest-") as td:
         tmp = Path(td)
 
-        test_unregistered_is_unimplemented(tmp)
-        test_gated_without_evidence_is_gated(tmp)
-        test_gated_with_evidence_can_pass(tmp)
-        test_crashing_test_is_error(tmp)
-        test_hanging_test_is_timeout(tmp)
-        test_regression_exits_nonzero(tmp)
-        test_timeout_ignores_stale_file(tmp)
-        test_wrong_run_id_is_rejected(tmp)
-        test_missing_result_is_error_not_pass(tmp)
-        test_positive_control_canary(tmp)
-        test_dualrun_wrapper_staleness_and_run_id(tmp)
-        test_dualrun_wrapper_volume_and_build(tmp)
-        test_no_fabricated_volume(tmp)
-        test_evidence_bundle_integrity(tmp)
-        test_exception_not_swallowed(tmp)
-        test_lint_integrity_policy(tmp)
-        test_lint_integrity_measured(tmp)
-        test_golden_integrity_corrupt(tmp)
-        test_golden_integrity_build_mismatch(tmp)
-        test_golden_integrity_volume_mismatch(tmp)
-        test_golden_integrity_stale(tmp)
-        test_golden_integrity_sentinel_intentional(tmp)
-        test_vacuous_comparison_not_pass(tmp)
-        test_normalization_does_not_mask_real_diff(tmp)
-        test_volume_must_be_observed_not_claimed(tmp)
-        test_evidence_bundle_hash_must_cover_all_files(tmp)
-        test_file_missing_is_error_not_unimplemented(tmp)
-        test_freshness_missing_manifest_is_fail(tmp)
-        test_freshness_write_without_token_is_refused(tmp)
-        test_freshness_write_without_rebuild_is_refused(tmp)
-        test_initramfs_staleness_is_fail(tmp)
-        test_dll_staleness_is_fail(tmp)
-        test_verifier_path_enforces_freshness(tmp)
-        test_artifact_identity_stamping(tmp)
-        test_golden_resolution_without_symlink(tmp)
+        _run(test_unregistered_is_unimplemented, tmp, skipped)
+        _run(test_gated_without_evidence_is_gated, tmp, skipped)
+        _run(test_gated_with_evidence_can_pass, tmp, skipped)
+        _run(test_crashing_test_is_error, tmp, skipped)
+        _run(test_hanging_test_is_timeout, tmp, skipped)
+        _run(test_regression_exits_nonzero, tmp, skipped)
+        _run(test_timeout_ignores_stale_file, tmp, skipped)
+        _run(test_wrong_run_id_is_rejected, tmp, skipped)
+        _run(test_missing_result_is_error_not_pass, tmp, skipped)
+        _run(test_positive_control_canary, tmp, skipped)
+        _run(test_dualrun_wrapper_staleness_and_run_id, tmp, skipped)
+        _run(test_dualrun_wrapper_volume_and_build, tmp, skipped)
+        _run(test_no_fabricated_volume, tmp, skipped)
+        _run(test_evidence_bundle_integrity, tmp, skipped)
+        _run(test_exception_not_swallowed, tmp, skipped)
+        _run(test_lint_integrity_policy, tmp, skipped)
+        _run(test_lint_integrity_measured, tmp, skipped)
+        _run(test_golden_integrity_corrupt, tmp, skipped)
+        _run(test_golden_integrity_build_mismatch, tmp, skipped)
+        _run(test_golden_integrity_volume_mismatch, tmp, skipped)
+        _run(test_golden_integrity_stale, tmp, skipped)
+        _run(test_golden_integrity_sentinel_intentional, tmp, skipped)
+        _run(test_vacuous_comparison_not_pass, tmp, skipped)
+        _run(test_normalization_does_not_mask_real_diff, tmp, skipped)
+        _run(test_volume_must_be_observed_not_claimed, tmp, skipped)
+        _run(test_evidence_bundle_hash_must_cover_all_files, tmp, skipped)
+        _run(test_file_missing_is_error_not_unimplemented, tmp, skipped)
+        _run(test_freshness_missing_manifest_is_fail, tmp, skipped)
+        _run(test_freshness_write_without_token_is_refused, tmp, skipped)
+        _run(test_freshness_write_without_rebuild_is_refused, tmp, skipped)
+        _run(test_initramfs_staleness_is_fail, tmp, skipped)
+        _run(test_dll_staleness_is_fail, tmp, skipped)
+        _run(test_verifier_path_enforces_freshness, tmp, skipped)
+        _run(test_artifact_identity_stamping, tmp, skipped)
+        _run(test_golden_resolution_without_symlink, tmp, skipped)
         # HH3 mutation tests - property-level
-        test_mutation_hardcoded_cause_generalises(tmp)
-        test_mutation_stale_result_generalises(tmp)
-        test_mutation_fabricated_measurement_generalises(tmp)
-        test_mutation_integrity_claim_generalises(tmp)
-        test_mutation_vacuous_generalises(tmp)
-        test_mutation_normalization_generalises(tmp)
-        test_mutation_volume_claim_generalises(tmp)
+        _run(test_mutation_hardcoded_cause_generalises, tmp, skipped)
+        _run(test_mutation_stale_result_generalises, tmp, skipped)
+        _run(test_mutation_fabricated_measurement_generalises, tmp, skipped)
+        _run(test_mutation_integrity_claim_generalises, tmp, skipped)
+        _run(test_mutation_vacuous_generalises, tmp, skipped)
+        _run(test_mutation_normalization_generalises, tmp, skipped)
+        _run(test_mutation_volume_claim_generalises, tmp, skipped)
 
-    print("\nAll harness self-tests passed. (42 tests)")
+    total = 42
+    print(f"\nHarness self-tests: {total - len(skipped)} passed, {len(skipped)} skipped; each SKIP names the precondition that is absent.")
+    for name, reason in skipped:
+        print(f"  SKIP {name}: {reason}")
     return 0
 
 

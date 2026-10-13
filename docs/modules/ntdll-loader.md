@@ -1,7 +1,7 @@
 # Module: ntdll-loader (user-mode PE loader, `winldr`)
 
-Sources: `src/ntdll/ldr.c`, `src/ntdll/ldr.h`
-Tests: `src/ntdll/ldr_test.c` (Linux build only; not run in this review)
+Sources: `src/ntdll/ldr.c`, `src/ntdll/ldr.h`, `src/ntdll/ldr_pure.h` (IAT and TLS address logic), `src/ntdll/ldr_sched.h` (init order, reference counts, names, search order, API-set lines, the attach result rule)
+Tests: `tests/ntdll-host/test_ldr_pure.c` and `test_ldr_sched.c` (host, run by `make -C tests/ntdll-host test`); `src/ntdll/ldr_test.c` (Linux build only; not run here); `tests/ntdll-host/check_ldr_stub.sh` (build check, run by `make -C src/ntdll check`)
 Related: `ntdll-startup.md` (the separate loader used by `LdrInitializeThunk` in the MinGW build), `src/loader/pe_parse.c` (PE parser used by this module), `docs/review/ntdll.md` (findings cited below).
 
 ## Purpose
@@ -10,12 +10,12 @@ Related: `ntdll-startup.md` (the separate loader used by `LdrInitializeThunk` in
 
 ## Build reality
 
-The file has two very different builds, selected by `__MINGW32__`:
+The whole implementation is compiled in both builds. The platform layer is chosen by `LDR_USE_POSIX` (defined in `ldr.c`):
 
-- **Non-MinGW (Linux test build).** `ldr.c:82` to `ldr.c:1784` is the full implementation. It uses POSIX `open`, `mmap` and `pthread_mutex`. This is what `ldr_test.c` exercises.
-- **MinGW (the ntdll target).** The whole implementation is excluded. Only the stubs at `ldr.c:1784-1809` are compiled. `LdrLoadDll` returns `STATUS_NOT_SUPPORTED`, `LdrGetDllHandle` returns `STATUS_DLL_NOT_FOUND`, and `winldr_ctx_create` returns NULL. The NT-syscall helpers (`ldr_read_file`, `ldr_alloc_image` under `__MINGW32__`) are dead code. See LDR-1.
+- **POSIX host layer** (`LDR_USE_POSIX`=1: any non-MinGW build, or a MinGW build with `LDR_HOST_POSIX`). POSIX `open`, `mmap` and `pthread_mutex`. This is what `ldr_test.c` exercises. Not run in this repository; the MinGW host build cannot compile it (no `sys/mman.h`), so it was only syntax-checked with stub headers.
+- **NT layer** (`__MINGW32__`, the ntdll target). Spin-lock shims, `ldr_read_file` and `ldr_file_exists` through `NtCreateFile` and `NtReadFile`, and `ldr_alloc_image` and `ldr_free_image` through `NtAllocateVirtualMemory`. `winldr_ctx_create` sets `run_entry_points`, so DllMain and TLS callbacks are called through their function pointers. The image is committed and copied, not mapped with `SEC_IMAGE` (open).
 
-The rest of this page describes the Linux build, because that is the only build where the code runs.
+The MinGW build links `src/loader/pe_parse.c` with `PE_FREESTANDING`. Its diagnostics do not use `stderr`. See LDR-1 and LDR-3 for what is still open.
 
 ## Public API (ldr.h)
 
@@ -34,11 +34,11 @@ The rest of this page describes the Linux build, because that is the only build 
 
 ## Behaviour as implemented (Linux build)
 
-- **Lookup order** (`ldr_find_dll_path`): search path override, known DLL to system32, executable directory, system32, PATH entries, then the working directory. The name gets `.dll` appended when missing.
+- **Lookup order** (`ldr_find_dll_path`, using `ldr_dll_normalize` and `ldr_search_dirs`): search path override, known DLL to system32, executable directory, system32, PATH entries, then the working directory. The name is lower-cased and gets `.dll` appended when missing. Names with a path separator or a drive colon are rejected.
 - **Load** (`ldr_load_dll_internal`): check the hash table, then the init stack for a cycle, then find and map the file, insert into the lists and hash *before* resolving imports so cycles resolve to the module being loaded, resolve imports (recursively loading dependencies), resolve delay imports, then run attach.
 - **Mapping** (`ldr_map_and_load`): read the file, `pe_context_init` and `pe_validate`, reserve `image_size` rounded to the section alignment, copy headers and sections, apply relocations as a delta from the preferred base.
 - **Exports** (`ldr_resolve_export`): by ordinal (`ordinal - Base`) or by name (a linear scan of `AddressOfNames`). Forwarders (`DLL.Name` or `DLL.#ord`) recurse up to depth 32.
-- **API sets**: a built-in table of `api-ms-win-*` names mapped to `kernelbase.dll` or `ntdll.dll`, plus an optional text schema (`winldr_load_apiset_schema`). The schema file is ignored in the MinGW build.
+- **API sets**: a built-in table of `api-ms-win-*` names mapped to `kernelbase.dll` or `ntdll.dll`, plus an optional text schema (`winldr_load_apiset_schema`). The schema file is read in both builds (the MinGW build through `ldr_read_file`, not yet run), and the built-in fallback is always added.
 - **Reference counts**: `LoadCount` is incremented on each load. `LdrUnloadDll` decrements it and frees the module at zero, after running process detach. Modules are not reference-checked against importers.
 
 ## Invariants and locking
@@ -48,9 +48,9 @@ The rest of this page describes the Linux build, because that is the only build 
 
 ## Known gaps and defects (see docs/review/ntdll.md)
 
-- **Not built for the target** (LDR-1). The MinGW build has only stubs.
+- **Built for the target** (LDR-1, fixed in 10f42c8). The MinGW build compiles the real loader. Win32 callers now use the process loader context published in the PEB (K32-4, fixed in 7d00ac6 and 1e013ac). The run-time behaviour of `LoadLibrary` is not verified on the personality (see `ntdll-win32.md`). `LdrAddRefDll` adds or pins a reference for `GetModuleHandleEx`.
 - **Import patch uses a file offset** (LDR-2). `pe_rva_to_offset` returns a file offset, but the patch writes to the mapped image. The IAT is not patched wherever raw and virtual layout differ.
-- **No DllMain and no TLS callbacks run** (LDR-3). Only the test hooks are called. `EntryPoint` is never called.
+- **DllMain and TLS callbacks** (LDR-3, partly fixed). The MinGW build calls them through function pointers; FALSE from attach fails the load (`STATUS_DLL_INIT_FAILED`). Still open: the dependencies of a failed module are not released, and the attach order is still the recursion order, not `ldr_sched_attach_order`. The host never runs them.
 - **TLS table read at the preferred-base VA** (LDR-4).
 - **Relocation and section copy are not bounded by the image** (LDR-5, LDR-6).
 - **Export names match case-insensitively** (LDR-7). Windows is case-sensitive.

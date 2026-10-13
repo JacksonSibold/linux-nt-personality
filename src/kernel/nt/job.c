@@ -134,7 +134,9 @@ static ULONG job_prune_exited(struct nt_job *job)
         next = pos->next;
         if (!job_proc_terminated(m->proc)) continue;
         list_del(&m->link);
+        spin_lock(&m->proc->lock);
         m->proc->job = NULL;
+        spin_unlock(&m->proc->lock);
         job->removed_terminated++;
         kfree(m);
         n++;
@@ -152,25 +154,42 @@ static void job_release_membership_refs(struct nt_object_header *hdr, ULONG n)
 void nt_job_remove_process(struct nt_eprocess *proc)
 {
     struct nt_job *job;
-    struct job_member *m;
+    struct job_member *m = NULL;
     struct nt_object_header *job_hdr;
     if (!proc) return;
+
+    /* proc->job is read under proc->lock. While it is set, the membership
+     * reference on the job is held, so a temporary reference taken here keeps
+     * the job alive once the locks are dropped. */
+    spin_lock(&proc->lock);
     job = proc->job;
+    job_hdr = job ? job->hdr : NULL;
+    if (job_hdr) ObReferenceObject(job_hdr);
+    spin_unlock(&proc->lock);
     if (!job) return;
 
     spin_lock(&job->lock);
-    m = job_find_member(job, proc);
-    if (m) {
-        if (job_proc_terminated(proc)) job->removed_terminated++;
-        list_del(&m->link);
+    spin_lock(&proc->lock);
+    /* A prune on another thread may already have removed this membership and
+     * dropped its reference. Only a membership removed here drops one. */
+    if (proc->job == job) {
+        m = job_find_member(job, proc);
+        if (m) {
+            if (proc->terminated) job->removed_terminated++;
+            list_del(&m->link);
+        }
+        proc->job = NULL;
     }
-    proc->job = NULL;
-    job_hdr = job->hdr;
+    spin_unlock(&proc->lock);
     spin_unlock(&job->lock);
 
-    if (m) kfree(m);
-    /* Drop the membership reference taken by the assign service. */
-    if (job_hdr) ObDereferenceObject(job_hdr);
+    if (m) {
+        kfree(m);
+        /* Drop the membership reference taken by the assign service. */
+        ObDereferenceObject(job_hdr);
+    }
+    /* Drop the temporary reference taken above. */
+    ObDereferenceObject(job_hdr);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -231,6 +250,8 @@ static NTSTATUS job_create_core(PHANDLE JobHandle, ACCESS_MASK DesiredAccess,
     job->hdr = hdr;
     st = ObInsertObject(hdr, ObjectAttributes, DesiredAccess, cur, JobHandle);
     ObDereferenceObject(hdr);
+    if (st == STATUS_OBJECT_NAME_COLLISION)
+        return ObOpenNamedHolderAfterCollision(&nt_job_type, ObjectAttributes, DesiredAccess, cur, JobHandle);
     return st;
 }
 
@@ -278,13 +299,21 @@ static NTSTATUS job_assign_core(HANDLE JobHandle, HANDLE ProcessHandle)
     }
     m->proc = proc;
 
+    /* Lock order: job lock, then process lock. proc->job is checked and set
+     * under the process lock too, so two assigns to different jobs cannot both
+     * succeed. */
     spin_lock(&job->lock);
-    terminated = job_proc_terminated(proc);
+    spin_lock(&proc->lock);
+    terminated = proc->terminated;
     if (proc->job) {
         /* Already in a job (this one or another). Nested jobs are not supported. */
         st = STATUS_ACCESS_DENIED;
     } else if (terminated) {
         st = STATUS_PROCESS_IS_TERMINATING;
+    } else if (atomic64_read(&jh->handle_count) == 0) {
+        /* The last handle to the job has closed. Its kill pass (KILL_ON_JOB_CLOSE)
+         * may already have run, so a member added now would never be killed. */
+        st = STATUS_INVALID_HANDLE;
     } else {
         ObReferenceObject(jh);
         list_add_tail(&m->link, &job->members);
@@ -293,6 +322,7 @@ static NTSTATUS job_assign_core(HANDLE JobHandle, HANDLE ProcessHandle)
         st = STATUS_SUCCESS;
         m = NULL;   /* now owned by the job */
     }
+    spin_unlock(&proc->lock);
     spin_unlock(&job->lock);
 
 out:
@@ -522,12 +552,13 @@ NTSTATUS nt_svc_NtCreateJobObject(unsigned long a0, unsigned long a1, unsigned l
     st = ObCopyObjectAttributesFromUser((POBJECT_ATTRIBUTES)a2, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
     if (!NT_SUCCESS(st)) return st;
     st = job_create_core(&h, (ACCESS_MASK)a1, oa);
-    if (!NT_SUCCESS(st)) return st;
+    /* NAME_COLLISION comes with the holder's handle (ObOpenNamedHolderAfterCollision). */
+    if (!NT_SUCCESS(st) && st != STATUS_OBJECT_NAME_COLLISION) return st;
     if (copy_to_user(JobHandle, &h, sizeof(h))) {
         ObCloseHandle(kshim_current_process(), h);
         return STATUS_ACCESS_VIOLATION;
     }
-    return STATUS_SUCCESS;
+    return st;
 }
 
 NTSTATUS nt_svc_NtOpenJobObject(unsigned long a0, unsigned long a1, unsigned long a2,

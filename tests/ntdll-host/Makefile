@@ -15,6 +15,9 @@
 #   test_msvcrt_policy    msvcrt calloc size overflow check (msvcrt_policy.h)
 #   test_pe_bounds        PE section and relocation range checks (pe_bounds.h)
 #   test_ldr_pure         loader IAT slot writes and TLS callback table reads (ldr_pure.h)
+#   test_ldr_sched        loader init order, refcounts, search order, names, attach result (ldr_sched.h)
+#   test_k32_module_pure  Win32 module API helpers: conversion, flags, names, errors (k32_module_pure.h)
+#   test_k32_io_pure      std handles, ReadFile/WriteFile status, console mode and text (k32_io_pure.h)
 #
 # SANITIZE=auto (default) enables -fsanitize=address,undefined only when a
 # probe program both links and runs with it. The MSYS2 UCRT64 gcc on the
@@ -76,7 +79,7 @@ endif
 CPPFLAGS := -I$(SRC) -I$(LOADER)
 CFLAGS   := -std=c11 -g $(OPT_LEVEL) -Wall -Wextra -Werror $(COV_FLAGS) $(SAN_FLAGS)
 
-TESTS    := test_ntstatus_to_dos test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure
+TESTS    := test_ntstatus_to_dos test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure test_ldr_sched test_k32_module_pure test_k32_io_pure test_k32_file_pure
 TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 
 # test_pe_bounds is build-only on this host: Windows Application Control blocks
@@ -114,6 +117,23 @@ $(OUT)/test_msvcrt_policy$(EXE_SUFFIX): test_msvcrt_policy.c minitest.h $(SRC)/m
 
 # Header-only range checks (src/ntdll/pe_bounds.h).
 $(OUT)/test_pe_bounds$(EXE_SUFFIX): test_pe_bounds.c minitest.h $(SRC)/pe_bounds.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only loader helpers (src/ntdll/ldr_sched.h, used by ldr.c).
+$(OUT)/test_ldr_sched$(EXE_SUFFIX): test_ldr_sched.c minitest.h $(SRC)/ldr_sched.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only Win32 module helpers (src/ntdll/k32_module_pure.h, used by kernel32.c).
+# Includes ntstatus_to_dos.c for the RtlNtStatusToDosError cross-check.
+$(OUT)/test_k32_module_pure$(EXE_SUFFIX): test_k32_module_pure.c minitest.h $(SRC)/k32_module_pure.h $(SRC)/ntstatus_to_dos.c $(SRC)/ntstatus.h $(SRC)/nt_types.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only file helpers: access, disposition, path conversion (src/ntdll/k32_file_pure.h, used by kernel32.c).
+$(OUT)/test_k32_file_pure$(EXE_SUFFIX): test_k32_file_pure.c minitest.h $(SRC)/k32_file_pure.h $(SRC)/nt_types.h $(SRC)/ntstatus.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only handle, console and I/O status helpers (src/ntdll/k32_io_pure.h, used by kernel32.c).
+$(OUT)/test_k32_io_pure$(EXE_SUFFIX): test_k32_io_pure.c minitest.h $(SRC)/k32_io_pure.h $(SRC)/k32_module_pure.h $(SRC)/nt_types.h $(SRC)/ntstatus.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
 
 # Header-only loader address translation (src/ntdll/ldr_pure.h, used by ldr.c).

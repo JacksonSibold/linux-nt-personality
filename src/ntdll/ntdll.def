@@ -346,6 +346,7 @@ EXPORTS
     LdrUnloadDll
     LdrGetDllHandle
     LdrGetProcedureAddress
+    LdrAddRefDll
     LdrInitializeThunk
     RtlNtStatusToDosError
     RtlGetVersion

@@ -12,14 +12,14 @@ Status: findings marked `Fixed in <sha>` were fixed in this branch, with a faili
 | Severity | Count |
 |---|---|
 | High | 20 |
-| Medium | 24 |
+| Medium | 25 |
 | Low | 22 |
 | Info | 8 |
-| **Total** | **74** |
+| **Total** | **75** |
 
-Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium). Win32 shim pass (branch `haiku/ntdllfix`): K32-1, K32-2, K32-3 and K32-5 (High) fixed. CRT-1 (High) partly fixed (1f334ce), and CRT-3 (High) fixed (1224d00); the CRT-1 export removal needs owner. Bounds pass (branch `haiku/bounds`): MAIN-1 (74b4a14), MAIN-2 (e7f8b2b), LDR-5 (5045b9c) and LDR-6 (d6007f6) fixed with `src/ntdll/pe_bounds.h`; K32-7 (d2d36fe) fixed. Loader pass (branch `haiku/ldrfix`): LDR-2 (a18c03e) and LDR-4 (bef4d79) are fixed, with the address logic in `src/ntdll/ldr_pure.h` and host tests in `test_ldr_pure`. LDR-1 and LDR-3 (High) have design records 0029 and 0031 and are not implemented; each records why (needs VM). Records 0030 and 0032 are marked implemented. `docs/decisions/INDEX.md` lists 0029 to 0032. The MAIN-2 test binary `test_pe_bounds` is build-only on this host (see MAIN-1), so its test cases have not been run here.
+Win32 module pass (branch `haiku/k32ctx`): K32-4 (High) fixed in 7d00ac6 and 1e013ac. The pure helpers are in `src/ntdll/k32_module_pure.h` with host tests in `test_k32_module_pure` (failing first in 54bafe8). K32-18 (Medium) is open: the NTSTATUS table has no row for `STATUS_DLL_INIT_FAILED`. Fixed in this pass: NTS-1 (High), RT-1 (High), EXC-1 (High), UNW-1 (Medium). Win32 shim pass (branch `haiku/ntdllfix`): K32-1, K32-2, K32-3 and K32-5 (High) fixed. CRT-1 (High) partly fixed (1f334ce), and CRT-3 (High) fixed (1224d00); the CRT-1 export removal needs owner. Bounds pass (branch `haiku/bounds`): MAIN-1 (74b4a14), MAIN-2 (e7f8b2b), LDR-5 (5045b9c) and LDR-6 (d6007f6) fixed with `src/ntdll/pe_bounds.h`; K32-7 (d2d36fe) fixed. Loader pass (branch `haiku/ldrfix`): LDR-2 (a18c03e) and LDR-4 (bef4d79) are fixed, with the address logic in `src/ntdll/ldr_pure.h` and host tests in `test_ldr_pure`. LDR-1 (High) is fixed in 10f42c8 (design 0029): the MinGW build compiles the real loader, and the stub block is gone. LDR-3 (High) is partly fixed in 10f42c8 (design 0031): DllMain and TLS callbacks are called in the MinGW build, a FALSE from attach fails the load, and detach runs DllMain then the TLS callbacks; releasing a failed module's dependencies is open. Records 0030 and 0032 are marked implemented. The MinGW build also failed to compile before this pass (`PGENERIC_MAPPING`, `PACCESS_MASK` undefined, fixed in 355ad0c). `docs/decisions/INDEX.md` lists 0029 to 0032. The MAIN-2 test binary `test_pe_bounds` is build-only on this host (see MAIN-1), so its test cases have not been run here.
 
-The most important point is LDR-1. The real ntdll (MinGW) build compiles only stubs for `LdrLoadDll`, `LdrGetDllHandle` and `LdrGetProcedureAddress`, so every Win32 `LoadLibrary`, `GetModuleHandle` and `GetProcAddress` call fails. The loader code that would do the work is excluded by a preprocessor branch and is never built for the MinGW target. The findings in the loader are therefore mainly about code that runs in the Linux test build, or that would run once LDR-1 is fixed.
+The most important point was LDR-1, now fixed in the build. Win32 `LoadLibrary`, `GetModuleHandle` and `GetProcAddress` passed a NULL loader context in `kernel32.c` (K32-4), which is now fixed (see below); they are checked by host tests and build checks only. Nothing here has run the MinGW DLL: the Windows Application Control policy blocks fresh binaries on this host, so the Win32 module path is verified by host tests and build checks only.
 
 ## Medium and Low status (branch `haiku/lows-ntdll`)
 
@@ -79,10 +79,10 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 
 ### Loader (`ldr.c`, `ldr.h`)
 
-### LDR-1 [High] MinGW build compiles only stubs for the loader API (Design recorded in eed4379, not implemented: needs VM)
-- Record: `docs/decisions/0029-loader-mingw-build-selection.md`. Recommended split (`ldr_core.c`, `ldr_nt.c`, `ldr_host.c`) is not small and cannot be verified without the NT kernel.
+### LDR-1 [High] MinGW build compiles only stubs for the loader API (Fixed in 10f42c8; design 0029; run needs VM)
+- Record: `docs/decisions/0029-loader-mingw-build-selection.md`. Fix: `LDR_USE_POSIX` selects the platform layer, the MinGW build compiles the NT-syscall helpers and the full loader, and the stub block is removed. `make -C src/ntdll check` links with `--no-undefined` and `check_ldr_stub.sh` passes. Not run: the DLL, and the NT file and image helpers against a live kernel (`NtCreateSection` with `SEC_IMAGE` is not used yet; the image is committed and copied).
 - `src/ntdll/ldr.c:82` opens `#ifndef __MINGW32__`, which contains the whole implementation. `ldr.c:1784` is the matching `#else`, and lines 1784-1809 are stubs. Under `__MINGW32__`, `LdrLoadDll` returns `STATUS_NOT_SUPPORTED` (`ldr.c:1789`), `LdrGetDllHandle` returns `STATUS_DLL_NOT_FOUND` (`ldr.c:1791`), `winldr_ctx_create` returns NULL (`ldr.c:1794`). The `__MINGW32__` file-helper branches at `ldr.c:623-818` and `ldr.c:1541-1553` are inside the excluded block, so they are dead code for the target.
-- Callers in `kernel32.c` (lines 225, 247, 263, 271) pass a NULL context, which is a second failure (K32-4).
+- Callers in `kernel32.c` (lines 225, 247, 263, 271) pass a NULL context, which is a second failure (K32-4, fixed in 1e013ac).
 - Fix: split the platform choice so the NT-syscall implementation is compiled for `__MINGW32__` and the POSIX one only for host tests. Create one process-wide loader context at startup.
 
 ### LDR-2 [High] Import address table patched at a file offset, not an RVA (Fixed in a18c03e; design in dff91e1; host test `test_ldr_pure`)
@@ -90,8 +90,8 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 - `ldr.c:1326` computes `iat_off` with `pe_rva_to_offset(FirstThunk)`, and `pe_rva_to_offset` returns a file offset (`src/loader/pe_parse.c:730-766`). `ldr.c:1358` then writes `memcpy(mod->image + iat_slot_off, ...)`, where `mod->image` is the RVA-laid-out image. The IAT is therefore not patched wherever file and virtual layout differ, and the write lands on unrelated bytes. The delay-import path has the same mix at `ldr.c:1428` and `ldr.c:1456`.
 - Fix: keep the RVA (`FirstThunk + t * 8`) and write to `mod->image + rva`. Read thunks from the file with the file offset, as now.
 
-### LDR-3 [High] DllMain and TLS callbacks are never called (Design recorded in b2c2913, not implemented: needs VM)
-- Record: `docs/decisions/0031-loader-dllmain-tls-order.md`. Executing PE code is impossible in the Linux build; the hook return type must change to test failure paths.
+### LDR-3 [High] DllMain and TLS callbacks are never called (Partly fixed in 10f42c8; design 0031; run needs VM)
+- Record: `docs/decisions/0031-loader-dllmain-tls-order.md`. Fixed: the MinGW build calls TLS callbacks, then DllMain with `DLL_PROCESS_ATTACH`, through function pointers; FALSE from attach returns `STATUS_DLL_INIT_FAILED` and removes the module; detach calls DllMain then the TLS callbacks. Open: the observer hooks stay `void` (the host cannot run entry points); dependencies of a failed module are not released.
 - `ldr.c:1491-1499` (`ldr_run_dll_main`) only calls the optional test hook. `ldr.c:1467-1486` (`ldr_run_tls_callbacks`) only logs and calls the hook. `mod->entry.EntryPoint` is set at `ldr.c:944` and never called anywhere in the file.
 - Effect: no DLL initialisation runs in the Linux build, and none is planned for the MinGW build (LDR-1).
 - Fix: call each TLS callback, then `DllMain(hinst, DLL_PROCESS_ATTACH, NULL)`, in the documented order. Keep the hook as an extra observer for tests.
@@ -319,10 +319,13 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 - Effect: CREATE_NEW opens an existing file instead of failing, and CREATE_ALWAYS fails on an existing file.
 - Fix: CREATE_NEW to 2, CREATE_ALWAYS to 5.
 
-### K32-4 [High] Every loader call passes a NULL context
-- `kernel32.c:225` (`LdrGetProcedureAddress`), `:247` and `:263` (`LdrGetDllHandle`), `:271` (`LdrLoadDll`) all pass `NULL` as the context. The loader rejects a NULL context (`ldr.c` `LdrLoadDll`, `LdrGetProcedureAddress`). In the MinGW build the stubs fail regardless (LDR-1).
-- Effect: `GetProcAddress`, `GetModuleHandle*`, `LoadLibrary*` cannot succeed.
-- Fix: a process-wide loader context, created during startup.
+### K32-4 [High] Every loader call passes a NULL context (Fixed in 7d00ac6 and 1e013ac; host test `test_k32_module_pure`; run needs VM)
+- Was: `kernel32.c:225` (`LdrGetProcedureAddress`), `:247` and `:263` (`LdrGetDllHandle`), `:271` (`LdrLoadDll`) all passed `NULL` as the context. The loader rejects a NULL context (`ldr.c` `LdrLoadDll`, `LdrGetProcedureAddress`).
+- Fix applied: `LdrInitializeThunk` creates one loader context before any module call, sets the application directory from the image path and System32, sets `PEB.Ldr` to its module list, and publishes the context in `PEB.SparePointers[0]` (`LDR_PEB_CONTEXT_SLOT` in `ldr.h`, 7d00ac6). Every module call in `kernel32.c` reads that context (1e013ac). `LdrAddRefDll` (new export) adds or pins a reference under the loader lock for `GetModuleHandleEx`.
+- Also fixed in the same change: a Win32 `HMODULE` is the image base, and the loader handle is the entry address, so kernel32 converts between them by walking `PEB.Ldr`. `GetProcAddress` always passed ordinal 0; it now passes the ordinal. `GetModuleHandle(NULL)` no longer returns a fixed fallback address. `LoadLibrary*` returns `ERROR_FILENAME_EXCED_RANGE` for a long name instead of truncating it.
+- Checked here: `test_k32_module_pure` (31 cases, failing first in 54bafe8, header in 1f4a5f6), all ntdll host tests, the unit suite, `make -C src/ntdll check` (373 exports, `LdrLoadDll` is not the stub), and `gcc -fsyntax-only` of `kernel32.c`.
+- Needs the running personality: `LdrInitializeThunk` runs before the first module call; `LoadLibraryA("kernel32.dll")` returns a non-NULL `HMODULE`; `GetProcAddress` resolves by name and by ordinal, and a forwarder resolves through the loader; `GetModuleFileNameW` returns the DLL path; `FreeLibrary` pairs with `LoadLibrary`; `GetModuleHandleEx(FROM_ADDRESS)` on a function in the DLL returns that DLL; the PEB tail that holds `SparePointers` is large enough (the kernel builds the PEB).
+- Open, not fixed here: the main executable is not in the loader list, so `GetProcAddress` on the main module fails (`FROM_ADDRESS` works on the main image by range). `DisableThreadLibraryCalls` records the flag, but nothing sends thread notifications (LDR-3). A directory in a `LoadLibrary` name is only a search override, so a full path outside the search list can fail. ANSI conversion is one byte to one WCHAR (Latin-1), not a code page. The kernel32 list walks read `PEB.Ldr` without the loader lock, so a walk can race a concurrent load or unload.
 
 ### K32-5 [High] WaitForSingleObject returns success without waiting (reproduced; Fixed in a2fa151)
 - Test: `tests/ntdll-host/test_win32_policy.c`, `wait_timeout_conversion` and `wait_result_mapping`. Both failed before the fix.
@@ -378,6 +381,11 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 ### K32-17 [Info] Placeholder return values
 - `kernel32.c:363-365`: `GetExitCodeProcess` and `GetExitCodeThread` return 0 and TRUE for any handle. `GetPriorityClass` returns a constant.
 - Fix: return real values, or fail.
+
+### K32-18 [Medium] RtlNtStatusToDosError has no row for STATUS_DLL_INIT_FAILED (Open; the module path overrides it)
+- `ntstatus_to_dos.c` has no entry for `0xC00001BA`, so the status falls back to 317 (`ERROR_MR_MID_NOT_FOUND`). Win32 reports `ERROR_DLL_INIT_FAILED` (1114). `k32_module_pure.h` maps the status to 1114 for module calls, and `test_k32_module_pure` leaves it out of the table cross-check.
+- Effect: any other caller of `RtlNtStatusToDosError` gets 317 for a failed DllMain.
+- Fix: add the row to `ntstatus_to_dos.c` with a golden test, then drop the override in `k32_module_status_to_error`.
 
 ### Win32 shim: user32 (`user32.c`) and advapi32 (`advapi32.c`)
 

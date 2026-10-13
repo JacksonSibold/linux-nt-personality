@@ -30,6 +30,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 CRITERIA_PATH = REPO / "tests" / "conformance" / "criteria.json"
 README_PATH = REPO / "README.md"
+DOD_DOC_PATH = REPO / "docs" / "phase0" / "DEFINITION-OF-DONE.md"
+NO_EVIDENCE = "none recorded"
 
 REQUIRED_FIELDS = ("id", "domain", "tier", "dependency_class", "criterion", "status")
 PLACEHOLDER_STATUSES = {"", "not_implemented"}
@@ -62,6 +64,31 @@ def read_readme_count(path=README_PATH):
     if not m:
         return None
     return {"passing": int(m.group(1)), "total": int(m.group(2)), "source": "README.md"}
+
+
+GATED_ID_RE = re.compile(r"`(DOD-[A-Z]+-[AB]\d{3})`")
+
+
+def load_gated_owners(path=DOD_DOC_PATH):
+    """Map each criterion ID in the DoD section 3.1 EXT-GATED register to its controlling party.
+
+    Only the register table is read: rows from the heading "### §3.1" to the next
+    level-2 heading. The owner is the table's last column.
+    """
+    owners = {}
+    in_register = False
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        if line.startswith("### §3.1"):
+            in_register = True
+            continue
+        if in_register and line.startswith("## "):
+            break
+        if in_register and line.startswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) >= 3:
+                for cid in GATED_ID_RE.findall(cells[0]):
+                    owners[cid] = cells[-1]
+    return owners
 
 
 def status_of(entry):
@@ -102,7 +129,8 @@ def md_cell(text):
     return str(text).replace("|", "\\|")
 
 
-def render_markdown(rows, summary):
+def render_markdown(rows, summary, owners=None):
+    owners = owners or {}
     readme = summary["readme_passing"]
     lines = [
         "# Conformance criteria status",
@@ -124,12 +152,17 @@ def render_markdown(rows, summary):
     lines += ["", "| Tier | Count |", "|---|---|"]
     lines += [f"| {md_cell(k)} | {v} |" for k, v in summary["tier_counts"].items()]
     lines += ["", "## Criteria", "",
-              "| ID | Area | Description | Tier | Dependency | Status |",
-              "|---|---|---|---|---|---|"]
+              "| ID | Area | Description | Tier | Dependency | Status | Evidence | Owner |",
+              "|---|---|---|---|---|---|---|---|"]
     for r in rows:
+        if r["dependency_class"] == "EXT-GATED":
+            owner = owners.get(r["id"], "")
+        else:
+            owner = "-"
         lines.append("| " + " | ".join([
             md_cell(r["id"]), md_cell(r["area"]), md_cell(r["description"]),
             md_cell(r["tier"]), md_cell(r["dependency_class"]), md_cell(r["status"]),
+            md_cell(NO_EVIDENCE), md_cell(owner),
         ]) + " |")
     return "\n".join(lines) + "\n"
 
@@ -229,7 +262,7 @@ def main(argv=None):
     if args.json:
         text = render_json(rows, summary)
     elif args.markdown:
-        text = render_markdown(rows, summary)
+        text = render_markdown(rows, summary, load_gated_owners(DOD_DOC_PATH))
     else:
         text = render_text(rows, summary)
 

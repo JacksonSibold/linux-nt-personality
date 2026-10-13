@@ -1,9 +1,36 @@
 LIBRARY kernel32
 EXPORTS
     GetStdHandle
+    SetStdHandle
     WriteFile
     ReadFile
+    WriteConsoleA
+    WriteConsoleW
+    ReadConsoleA
+    ReadConsoleW
+    GetConsoleMode
+    SetConsoleMode
+    GetConsoleCP
+    GetConsoleOutputCP
+    SetConsoleCP
+    SetConsoleOutputCP
+    GetFileType
     CreateFileW
+    CreateFileA
+    DeleteFileA
+    DeleteFileW
+    CreateDirectoryA
+    CreateDirectoryW
+    RemoveDirectoryA
+    RemoveDirectoryW
+    GetFileAttributesA
+    GetFileAttributesW
+    GetFileSize
+    GetFileSizeEx
+    SetFilePointer
+    SetFilePointerEx
+    SetEndOfFile
+    FlushFileBuffers
     CloseHandle
     ExitProcess
     GetLastError
@@ -14,6 +41,16 @@ EXPORTS
     GetProcAddress
     LoadLibraryW
     LoadLibraryA
+    GetModuleHandleA
+    GetModuleHandleW
+    GetModuleHandleExA
+    GetModuleHandleExW
+    GetModuleFileNameA
+    GetModuleFileNameW
+    FreeLibrary
+    LoadLibraryExA
+    LoadLibraryExW
+    DisableThreadLibraryCalls
     HeapAlloc
     HeapFree
     GetProcessHeap

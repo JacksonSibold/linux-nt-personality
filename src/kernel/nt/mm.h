@@ -275,11 +275,38 @@ struct nt_mm {
 #endif
     ULONG_PTR       highest_vad;
     struct nt_lock_range *locks; /* locked page runs, see struct nt_lock_range */
+    /* The range this space may place regions in. The global space uses
+     * NTMM_LOW_ADDRESS..NTMM_HIGH_ADDRESS. A foreign process's space uses the
+     * interior of its host arena (ADR 0073). */
+    ULONG_PTR       low_addr;
+    ULONG_PTR       high_addr;
+    /* Host arena of a foreign process (userspace shim only). arena_size is zero
+     * for the global space and for any space in the kernel build. */
+    ULONG_PTR       arena_base;
+    SIZE_T          arena_size;
 };
 
 /* -------------------------------------------------------------------------- */
 /* API                                                                        */
 /* -------------------------------------------------------------------------- */
+
+/* Process access rights that the memory services check on a process handle
+ * (ADR 0073). Values as in winnt.h. */
+#ifndef PROCESS_VM_OPERATION
+#define PROCESS_VM_OPERATION        0x0008UL
+#endif
+#ifndef PROCESS_VM_READ
+#define PROCESS_VM_READ             0x0010UL
+#endif
+#ifndef PROCESS_VM_WRITE
+#define PROCESS_VM_WRITE            0x0020UL
+#endif
+#ifndef PROCESS_QUERY_INFORMATION
+#define PROCESS_QUERY_INFORMATION   0x0400UL
+#endif
+#ifndef PROCESS_ALL_ACCESS
+#define PROCESS_ALL_ACCESS          0x001FFFFFUL
+#endif
 
 extern struct nt_mm g_nt_mm;
 extern int g_nt_mm_initialized;

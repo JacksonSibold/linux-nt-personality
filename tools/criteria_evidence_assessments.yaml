@@ -1,0 +1,205 @@
+# Reviewed evidence assessments for Definition-of-Done criteria.
+#
+# Written by reading each criterion's text (tests/conformance/criteria.json) and the
+# cited test sources. Read by tools/criteria_evidence_map.py, which checks the
+# mechanical rules (cited paths exist, PARTIAL names what is missing, FULL is not
+# on a criterion that needs a golden corpus, guest or hardware).
+#
+# harness_result is copied from a real `python tests/harness/dodrun.py` run; it is
+# never set by hand to PASS. A verdict here is not a harness result.
+#
+# Fields: verdict (FULL|PARTIAL|NONE), candidates (paths), missing (PARTIAL only),
+#         reasoning, harness_result.
+
+DOD-SEC-A008:
+  verdict: PARTIAL
+  candidates:
+    - tests/unit/test_docs_lint.py
+    - tools/docs_lint.py
+  missing: >-
+    (1) the Windows-update-signed kernel out-of-scope declaration is not asserted:
+    check_policy_doc (tools/docs_lint.py lines 108-127) tests only PatchGuard (line 119)
+    and Secure Kernel (line 122), so deleting the Windows-update bullet in
+    docs/policy/INTEGRITY-POLICY.md line 26 would not fail any test;
+    (2) "auto-checked by doc-lint in CI" is not met: .github/workflows/ci.yml runs
+    update_doc_counts and check_doc_links, not docs_lint;
+    (3) the affirmation scan (is_claim, tools/docs_lint.py) exempts any sentence that
+    contains a qualifier word such as "not" or "no" anywhere, so a claim sentence with
+    such a word is not caught.
+  reasoning: >-
+    The criterion needs the policy document to declare PatchGuard, Secure Kernel and
+    Windows-update-signed kernels out of scope, and needs no public text to affirm them,
+    with the check run in CI. test_docs_lint.py covers the first two declarations
+    (test_patchguard_not_declared_out_of_scope_is_a_violation, line 87) and the
+    affirmation rule (test_affirmed_signed_kernel_is_a_violation, line 102;
+    test_affirmed_patchguard_support_is_a_violation). test_clean_tree_has_no_violations
+    (line 75) and test_real_repository_has_zero_violations (line 130) run the lint on the
+    real tree, which currently reports 0 violations. This is a real check, but it does
+    not assert the third declaration and is not wired into CI.
+  harness_result: >-
+    Registered as command docs_lint.py --policy --criterion DOD-SEC-A008. The dodrun subset
+    run refused at the lint gate (2 golden-corpus violations); no criterion executed, so no
+    harness PASS. Direct run: "DOD-SEC-A008: 0 violation(s)", exit 0.
+
+DOD-DRV-B003:
+  verdict: PARTIAL
+  candidates:
+    - tools/docs_lint.py
+  missing: >-
+    (1) docs/policy/CLAIM-BOUNDARY.md does not exist, so the required statement
+    "No third-party NT .sys executes" cannot be found (lint_drv_b003 reports
+    "claim-boundary document is missing" on the real tree); (2) lint_drv_b003 is not in
+    the RULES dict (tools/docs_lint.py line 193), so `--criterion DOD-DRV-B003` exits 2
+    with "no policy rule set", although the module docstring lists it; (3) no unit test
+    calls lint_drv_b003; (4) the capability-matrix part of the criterion is owned by
+    DOD-EVI-B006, not this rule.
+  reasoning: >-
+    The criterion asks for a claim-boundary statement in public docs, an API-subset and
+    device-class rule for "hardware support" wording, and a doc-lint that fails on gated
+    driver claims. lint_drv_b003 (tools/docs_lint.py line 144) implements the second and
+    third parts with real logic (DRV_TOPIC scan and the hardware-support check). It has no
+    test, is unwired, and fails on the first part because the boundary document is absent.
+    Writing that document to clear the lint would not be evidence of the criterion, so it
+    was not written here.
+  harness_result: >-
+    Not registered (no FULL verdict). Selected in the subset dodrun run: refused at the
+    lint gate, no criterion executed. Direct call of lint_drv_b003 on the real tree: 1
+    violation (boundary document missing).
+
+DOD-EVI-B006:
+  verdict: NONE
+  candidates:
+    - tools/docs_lint.py
+  missing: >-
+    The criterion requires a public capability matrix auto-generated from criteria.json
+    and the results database. No generator exists. lint_evi_b006 (line 163) is unwired
+    (not in RULES) and rejects every row of docs/status/CRITERIA.md: its table has 7
+    cells per row, the rule requires 8 (line 174), giving 425 violations on the real
+    tree. It also has no test.
+  reasoning: >-
+    The only evidence is a lint whose column layout does not match the matrix it is meant
+    to check, so it cannot show that the matrix is generated or that unlinked claims are
+    rejected. The check is not in CI. NONE is the verdict the evidence supports.
+  harness_result: >-
+    Not registered. Selected in the subset dodrun run: refused at the lint gate, no
+    criterion executed.
+
+DOD-DLL-A003:
+  verdict: NONE
+  candidates: []
+  reasoning: >-
+    Needs an application launched on the personality with app-local copies of api-ms-*
+    and core DLLs and a payload check. No test in tests/ or tools/ does this. The word
+    KnownDlls appears in src/kernel/nt/object.c and in docs only. Host-side unit tests of
+    the parser cannot show loader behavior.
+  harness_result: Not registered. Subset run refused at the lint gate.
+
+DOD-DLL-A006:
+  verdict: NONE
+  candidates: []
+  reasoning: >-
+    Needs LdrRegisterDllNotification to stream notifications during corpus launches and
+    an external cross-check against mapped regions. LdrRegisterDllNotification appears in
+    no source file under src/ or tests/ (only in criteria.json, thresholds.json and the
+    differential golden probes). Nothing implemented or run here matches this.
+  harness_result: Not registered. Subset run refused at the lint gate.
+
+DOD-AC-A005:
+  verdict: NONE
+  candidates: []
+  reasoning: >-
+    Needs a canary that calls the 28 version-bearing APIs and compares the results to an
+    osidentity.json policy table. No such policy file exists in the repository (only
+    vm/initramfs.identity.json, which is unrelated), and no canary exists. RtlGetVersion
+    (src/ntdll/ntdll_main.c line 804) is implemented but no test asserts its output
+    against any policy table.
+  harness_result: Not registered. Subset run refused at the lint gate.
+
+DOD-AC-B001:
+  verdict: NONE
+  candidates: []
+  reasoning: >-
+    Needs an exact-equality canary over all identity-bearing sources against
+    os-identity-policy.json. That file does not exist, and no canary runs. The same gap as
+    DOD-AC-A005.
+  harness_result: Not registered. Subset run refused at the lint gate.
+
+DOD-AC-A003:
+  verdict: NONE
+  candidates: []
+  reasoning: >-
+    Needs five real titles with user-mode-only integrity checks to run offline on the
+    personality, with the AC SDK log showing the checks ran and passed. No title corpus or
+    AC log exists in the repository.
+  harness_result: Not registered. Subset run refused at the lint gate.
+
+DOD-AC-B002:
+  verdict: NONE
+  candidates: []
+  reasoning: >-
+    The same requirement as DOD-AC-A003 (five titles, scripted gameplay, AC log evidence).
+    Nothing in the repository runs a title.
+  harness_result: Not registered. Subset run refused at the lint gate.
+
+DOD-API-A003:
+  verdict: NONE
+  candidates: []
+  reasoning: >-
+    Needs a gaps.json generated from api-surface and a smoke app that calls every gap in
+    sequence and checks the error codes. gaps.json is not in the repository, and no test
+    calls the unimplemented-API set. test_ntstatus_to_dos.c line 45 maps
+    STATUS_NOT_IMPLEMENTED in a static table, which is not a fail-safe run.
+  harness_result: Not registered. Subset run refused at the lint gate.
+
+DOD-API-B003:
+  verdict: NONE
+  candidates: []
+  reasoning: >-
+    The same gap as DOD-API-A003 (gaps.json absent, no harness calls every gap). The
+    criterion also requires a published gap list, which does not exist.
+  harness_result: Not registered. Subset run refused at the lint gate.
+
+DOD-API-B004:
+  verdict: NONE
+  candidates: []
+  reasoning: >-
+    Needs an instrumented core750 build and a release run on the personality, with at
+    least 98% of the core750 functions executed. The core750 list is absent. Coverage
+    tools in the repository (tools/c_coverage.sh, tools/coverage_report.py) measure host
+    test runs, not a personality release run, and the denominator is not defined here.
+  harness_result: Not registered. Subset run refused at the lint gate.
+
+DOD-MEM-A007:
+  verdict: PARTIAL
+  candidates:
+    - tests/kernel-host/stress_section_test.c
+  missing: >-
+    (1) volume: the default is 4096 operations (main, line 333), not 10^8; (2) the
+    cycles run on threads, not multiple processes; (3) no private RSS plateau or slope is
+    measured, only allocation counts and handle counts; (4) no 12-hour nightly soak exists.
+  reasoning: >-
+    The test drives mixed alloc, map, view, unmap and close operations across threads and
+    checks at the end that the allocation count returns to the baseline (line 416,
+    STRESS_CHECK(end_allocs == base_allocs)) and that the handle table is empty (line 407).
+    That is leak accounting for the same operation mix, so it is the part of the criterion
+    it covers. It does not measure the RSS plateau, the slope threshold or the volume.
+  harness_result: Not registered. Subset run refused at the lint gate.
+
+DOD-PE-A011:
+  verdict: NONE
+  candidates: []
+  reasoning: >-
+    Needs an unhandled exception to produce a minidump read by cdb.exe or dotnet-dump,
+    with a 20-symbol stack walk. No minidump writer exists in src/ or tests/. The stack
+    walk in tests/ntdll-host/test_except_pure.c works on in-process frames, not on a dump.
+  harness_result: Not registered. Subset run refused at the lint gate.
+
+DOD-NT-A008:
+  verdict: NONE
+  candidates: []
+  reasoning: >-
+    Needs CreateFileMapping on a running EXE with write-sharing contention, a MoveFileEx
+    over a running image that must fail with ERROR_ACCESS_DENIED, and page-fault accounting
+    in /proc/pid/stat. None of these runs in the repository. tests/ntdll-host/test_ldr_pure.c
+    checks image-section layout in pure user space, which is a different property.
+  harness_result: Not registered. Subset run refused at the lint gate.

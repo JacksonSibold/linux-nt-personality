@@ -13,8 +13,8 @@ Counts are the finding headings (`### ID [Severity] Title`) in each report, by s
 | PE exec loader and test shim | [kernel-fs.md](kernel-fs.md) | 5 | 7 | 9 | 3 |
 | NT personality (dispatch, VM, I/O, processes, services) | [arch-x86-nt.md](arch-x86-nt.md) | 14 | 24 | 24 | 1 |
 | NT kernel objects, handles, registry, sync, security, VM, I/O, IOCP, processes, dispatch (`src/kernel/nt`) | [kernel-nt.md](kernel-nt.md) | 9 | 12 | 20 | 1 |
-| NT user-mode runtime: loader, startup, unwind, exception dispatch, C runtime, Win32 shims, NTSTATUS mapping (`src/ntdll`, base `7e75069`) | [ntdll.md](ntdll.md) | 20 | 24 | 22 | 8 |
-| **Total** | | **50** | **72** | **84** | **14** |
+| NT user-mode runtime: loader, startup, unwind, exception dispatch, C runtime, Win32 shims, NTSTATUS mapping (`src/ntdll`, base `7e75069`) | [ntdll.md](ntdll.md) | 20 | 25 | 22 | 8 |
+| **Total** | | **50** | **73** | **84** | **14** |
 
 The Summary table inside [kernel-nt.md](kernel-nt.md) (8, 9, 19, 1) was written before the C-, T-, K- and some other findings were added. It disagrees with the 42 headings in that report (9, 12, 20, 1). The headings are counted here. Correcting the report's own summary table is left to the author of that report.
 
@@ -28,10 +28,10 @@ Each finding is classified from its recorded status: the `**Status:**` line unde
 | [kernel-fs.md](kernel-fs.md) | 24 | 16 | 1 | 4 | 0 | 3 |
 | [arch-x86-nt.md](arch-x86-nt.md) | 63 | 33 | 3 | 17 | 3 | 7 |
 | [kernel-nt.md](kernel-nt.md) | 42 | 11 | 2 | 4 | 2 | 23 |
-| [ntdll.md](ntdll.md) | 74 | 42 | 5 | 15 | 0 | 12 |
-| **Total** | **220** | **113** | **11** | **41** | **7** | **48** |
+| [ntdll.md](ntdll.md) | 75 | 43 | 5 | 15 | 0 | 12 |
+| **Total** | **221** | **114** | **11** | **41** | **7** | **48** |
 
-The rows add to the severity total above (220). Per report, the `Fixed`, `Partly`, `Blocked`, `No change` and `Open` columns add to the findings column.
+The rows add to the severity total above (221). Per report, the `Fixed`, `Partly`, `Blocked`, `No change` and `Open` columns add to the findings column.
 
 Where the status and the decision record disagree, the report is the source for this table, and the disagreement is listed in [OWNER-DECISIONS.md](../OWNER-DECISIONS.md). One case: the arch report marks `B-1` as blocked, while [decision record 0027](../decisions/0027-arch-kernel-stubs-file.md) is `Fixed` in `974db57`.
 

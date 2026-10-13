@@ -45,6 +45,7 @@ Unknown limit flag bits (outside `JOB_OBJECT_LIMIT_VALID_FLAGS`) are `STATUS_INV
 
 - A process belongs to at most one job. Assigning a process that is already in a job (the same job or another) is `STATUS_ACCESS_DENIED`. Nested jobs are not supported.
 - Assigning a process that has already exited is `STATUS_PROCESS_IS_TERMINATING`.
+- Assigning through a job whose last handle has closed is `STATUS_INVALID_HANDLE`. The assign checks the handle count under the job lock, so it cannot add a member after the KILL_ON_JOB_CLOSE pass.
 - Each member holds a reference on the job, so the job outlives its members. The job is freed when the last handle and the last member reference are gone.
 - Membership ends in one of two ways. `nt_job_remove_process` runs at the top of `ObDestroyProcessObject`, before any teardown, so the job drops the process before its handles close. An exited member is also pruned (see below).
 

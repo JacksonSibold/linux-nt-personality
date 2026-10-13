@@ -5,6 +5,7 @@
 # Step 2 (optional):  shellcheck, only when it is on PATH.  Findings are
 #                     filtered by SHELLCHECK_SEVERITY (default: error) so the
 #                     gate stays stable; use "warning" or "style" for more.
+# Step 3 (hard gate when python3 is on PATH): tools/ntpers_kpatch.py --selftest.
 #
 # Usage:
 #   bash vm/lint.sh
@@ -62,6 +63,17 @@ if command -v shellcheck >/dev/null 2>&1; then
     fi
 else
     echo "lint: shellcheck not on PATH, skipping (bash -n checks still ran)"
+fi
+
+# Step 3 (hard gate when python3 is present): the kernel-tree edit tool's own
+# primitive tests. The full unit suite covers the rest.
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1; then
+    echo "=== lint: tools/ntpers_kpatch.py --selftest ==="
+    if ! python3 "$ROOT/tools/ntpers_kpatch.py" --selftest; then
+        fail=1
+    fi
+else
+    echo "lint: no working python3 on PATH, skipping ntpers_kpatch selftest"
 fi
 
 if [[ $fail -ne 0 ]]; then

@@ -2572,6 +2572,8 @@ static NTSTATUS timer_create_internal(struct nt_eprocess *proc, ACCESS_MASK acce
     timer_object_init(t, timer_type == NotificationTimer);
     st = ObInsertObject(hdr, oa, access, proc, out);
     ObDereferenceObject(hdr);
+    if (st == STATUS_OBJECT_NAME_COLLISION)
+        return ObOpenNamedHolderAfterCollision(&nt_timer_type, oa, access, proc, out);
     return st;
 }
 
@@ -2930,6 +2932,8 @@ static NTSTATUS keyed_create_internal(struct nt_eprocess *proc, ACCESS_MASK acce
     keyed_object_init(k);
     st = ObInsertObject(hdr, oa, access, proc, out);
     ObDereferenceObject(hdr);
+    if (st == STATUS_OBJECT_NAME_COLLISION)
+        return ObOpenNamedHolderAfterCollision(&nt_keyed_event_type, oa, access, proc, out);
     return st;
 }
 

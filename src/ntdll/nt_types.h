@@ -143,6 +143,19 @@ NT_STATIC_ASSERT(sizeof(ULONG_PTR) == sizeof(PVOID), "ULONG_PTR and PVOID must m
 /* -------------------------------------------------------------------------- */
 
 typedef ULONG ACCESS_MASK;
+typedef ACCESS_MASK *PACCESS_MASK;
+
+/* GENERIC_MAPPING (access rights mapped per generic right). Used by the
+ * NtAccessCheckAndAuditAlarm prototype in syscall_table.def (MinGW build). */
+#ifndef NT_GENERIC_MAPPING_DEFINED
+#define NT_GENERIC_MAPPING_DEFINED 1
+typedef struct _GENERIC_MAPPING {
+    ACCESS_MASK GenericRead;
+    ACCESS_MASK GenericWrite;
+    ACCESS_MASK GenericExecute;
+    ACCESS_MASK GenericAll;
+} GENERIC_MAPPING, *PGENERIC_MAPPING;
+#endif
 
 /* -------------------------------------------------------------------------- */
 /* Forward declarations for recursive types                                   */

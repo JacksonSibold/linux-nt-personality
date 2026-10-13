@@ -1,0 +1,18 @@
+{
+  "probe": "probe_exception",
+  "windows_build": "26200.9457",
+  "windows_version": "10.0.26200",
+  "arch": "x64",
+  "tests": [
+    {"name":"av_read","exception_code":3221225477,"hex":"0xC0000005","num_params":2,"info0":0,"info1":0,"rip":"0x7FF78D55195A","order":["veh","after_longjmp"],"has_rec":true},
+    {"name":"av_write","exception_code":3221225477,"hex":"0xC0000005","num_params":2,"info0":1,"info1":0,"rip":"0x7FF78D5517FA","order":["veh","after_longjmp"],"has_rec":true},
+    {"name":"av_execute","exception_code":3221225477,"hex":"0xC0000005","num_params":2,"info0":8,"info1":0,"rip":"0x0","order":["veh","after_longjmp"],"has_rec":true},
+    {"name":"div0","exception_code":3221225620,"hex":"0xC0000094","num_params":0,"info0":0,"info1":0,"rip":"0x7FF78D551AEC","order":["veh","after_longjmp"],"has_rec":true},
+    {"name":"breakpoint","exception_code":2147483651,"hex":"0x80000003","num_params":1,"info0":0,"info1":0,"rip":"0x7FF78D55175A","order":["veh","after_longjmp"],"has_rec":true},
+    {"name":"guard_page","exception_code":2147483649,"hex":"0x80000001","num_params":2,"info0":1,"info1":1984281513984,"rip":"0x7FF78D55154C","order":["veh","after_longjmp"],"has_rec":true},
+    {"name":"stack_overflow_sim","exception_code":0,"hex":"0x00000000","num_params":0,"info0":0,"info1":0,"rip":"0x0","order":[],"has_rec":false}
+  ],
+  "veh_order_note": "veh should be first before any frame handlers (no SEH frames in this probe, so order is veh -> veh_continue only on ContinueExecution)",
+  "context_check": {"MxCsr":"0x1F80","Rip":"0x7FF78D55154C"},
+  "done": true
+}

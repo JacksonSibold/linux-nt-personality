@@ -29,6 +29,12 @@ GOLDEN_ROOT = ROOT / "tests/differential/golden"
 POLICY_PATH = ROOT / "tests/differential/dualrun_policy.json"
 PROBE_DIR = ROOT / "tests/differential/probes"
 
+# Explicit opt-in dev mode (not a policy change). Unset, the checker is strict:
+# only the pinned build is accepted. Set to a build that differs from the pin,
+# the checker accepts golden/windows-<build>/ only when that build is the host
+# build and the directory declares host-captured provenance.
+OPT_IN_ENV = "NTPERS_GOLDEN_BUILD"
+
 # --- Golden resolution helpers (symlink-independent, reproducible) ---
 _VERSION_RE = re.compile(r"^\d+(\.\d+)+$")
 
@@ -165,6 +171,40 @@ def resolve_golden_dir(pinned_build: str) -> Path | None:
     print(f"WARN: using newest golden dir {newest} (pinned {pinned_build} missing, latest missing)", file=sys.stderr)
     return newest
 
+def host_captured_override_error(build: str, host_build: str, d: Path) -> str | None:
+    """Return None when d is an accepted host-captured golden for build, else the reason.
+
+    Used only when OPT_IN_ENV names a build that differs from the pin. The
+    build must be the running host build, the directory must be
+    windows-<build>, version.json must declare oracle host-captured with
+    windows_build == build, and manifest.json must record the same build as
+    its capture host.
+    """
+    if build != host_build:
+        return f"{build} is not the host build {host_build} (goldens must be captured on the host)"
+    if d.name != f"windows-{build}":
+        return f"expected directory windows-{build}, got {d.name}"
+    if not d.is_dir():
+        return f"no directory {d}"
+    try:
+        version = json.loads((d / "version.json").read_text(encoding="utf-8-sig"))
+    except Exception as e:
+        return f"version.json unreadable in {d}: {e}"
+    if version.get("oracle") != "host-captured":
+        return f"version.json in {d} does not declare oracle host-captured"
+    if version.get("windows_build") != build:
+        return f"version.json windows_build {version.get('windows_build')} != {build}"
+    try:
+        manifest = json.loads((d / "manifest.json").read_text(encoding="utf-8-sig"))
+    except Exception as e:
+        return f"manifest.json unreadable in {d}: {e}"
+    if not str(manifest.get("schema", "")).startswith("ntpers-golden-manifest/"):
+        return f"manifest.json in {d} has no ntpers-golden-manifest schema"
+    host = manifest.get("host") or {}
+    if host.get("build") != build:
+        return f"manifest.json host.build {host.get('build')} != {build}"
+    return None
+
 def get_host_build() -> str:
     try:
         import winreg
@@ -268,8 +308,20 @@ def check_golden_integrity() -> int:
         print(f"WARN: policy pinned build {pinned_build} != host {host_build} - goldens must be regenerated on host build, else dualrun will fail build guard", file=sys.stderr)
         # Do not fail yet, but goldens themselves must match host, so next checks will fail
 
-    # Resolve golden build dir: pinned -> latest symlink/dir -> newest version (numeric sort), verified
-    golden_build_dir = resolve_golden_dir(pinned_build)
+    # Build the goldens are checked against. Strict unless OPT_IN_ENV names another build.
+    expected_build = pinned_build
+    override = os.environ.get(OPT_IN_ENV, "").strip()
+    if override and override != pinned_build:
+        golden_build_dir = GOLDEN_ROOT / f"windows-{override}"
+        err = host_captured_override_error(override, host_build, golden_build_dir)
+        if err:
+            print(f"FAIL: {OPT_IN_ENV}={override} rejected: {err}", file=sys.stderr)
+            return 1
+        print(f"WARN: {OPT_IN_ENV}={override} opt-in dev mode: accepting host-captured golden {golden_build_dir} (policy pin stays {pinned_build})", file=sys.stderr)
+        expected_build = override
+    else:
+        # Resolve golden build dir: pinned -> latest symlink/dir -> newest version (numeric sort), verified
+        golden_build_dir = resolve_golden_dir(pinned_build)
     if golden_build_dir is None or not golden_build_dir.exists():
         print(f"FAIL: unable to resolve golden build directory for pinned {pinned_build} under {GOLDEN_ROOT}", file=sys.stderr)
         return 1
@@ -285,8 +337,8 @@ def check_golden_integrity() -> int:
             v_build = version_data.get("windows_build")
             if v_build and v_build != host_build:
                 violations.append(f"version.json windows_build {v_build} != host {host_build} (stale golden build)")
-            if v_build and v_build != pinned_build:
-                violations.append(f"version.json windows_build {v_build} != policy pinned {pinned_build}")
+            if v_build and v_build != expected_build:
+                violations.append(f"version.json windows_build {v_build} != policy pinned {expected_build}")
         except Exception as e:
             violations.append(f"version.json corrupt: {e}")
     else:
@@ -325,8 +377,8 @@ def check_golden_integrity() -> int:
             violations.append(f"{probe}: missing windows_build in golden")
         elif wb != host_build:
             violations.append(f"{probe}: golden windows_build {wb} != host {host_build} (build drift - regenerated golden required, see two-target rule)")
-        elif wb != pinned_build:
-            violations.append(f"{probe}: golden windows_build {wb} != policy pinned {pinned_build}")
+        elif wb != expected_build:
+            violations.append(f"{probe}: golden windows_build {wb} != policy pinned {expected_build}")
         # Check windows_version arch present
         if not data.get("windows_version"):
             violations.append(f"{probe}: missing windows_version")

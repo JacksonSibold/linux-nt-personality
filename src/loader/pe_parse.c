@@ -16,6 +16,15 @@
 #include <stdarg.h>
 #endif
 
+/* PE_FREESTANDING (the ntdll MinGW build) has no hosted stdio: the MinGW
+ * stderr macro calls __acrt_iob_func, which the freestanding runtime does
+ * not provide. The runtime fprintf ignores its stream argument. */
+#ifdef PE_FREESTANDING
+#define PE_ERR_STREAM ((FILE *)0)
+#else
+#define PE_ERR_STREAM stderr
+#endif
+
 /* -------------------------------------------------------------------------- */
 /* Diagnostic buffer — records which validation failed and with what values   */
 /* -------------------------------------------------------------------------- */
@@ -48,7 +57,7 @@ static void pe_diag_set(const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(pe_diag_buf, sizeof(pe_diag_buf), fmt, ap);
     va_end(ap);
-    fprintf(stderr, "pe_validate: %s\n", pe_diag_buf);
+    fprintf(PE_ERR_STREAM, "pe_validate: %s\n", pe_diag_buf);
 }
 #define PE_FAIL(code, fmt, ...) do { pe_diag_set(fmt, ##__VA_ARGS__); return (code); } while (0)
 #endif
@@ -459,7 +468,7 @@ pe_status_t pe_validate(pe_context_t *ctx)
 #ifdef __KERNEL__
         pr_info("pe_validate: SizeOfHeaders 0x%x not FileAlignment-aligned (FileAlign 0x%x) — tolerated (Windows accepts)\n", opt.SizeOfHeaders, opt.FileAlignment);
 #else
-        fprintf(stderr, "pe_validate: SizeOfHeaders 0x%x not FileAlignment-aligned (FileAlign 0x%x) — tolerated\n", opt.SizeOfHeaders, opt.FileAlignment);
+        fprintf(PE_ERR_STREAM, "pe_validate: SizeOfHeaders 0x%x not FileAlignment-aligned (FileAlign 0x%x) — tolerated\n", opt.SizeOfHeaders, opt.FileAlignment);
 #endif
     }
 
@@ -578,7 +587,7 @@ pe_status_t pe_validate(pe_context_t *ctx)
 #ifdef __KERNEL__
             pr_info("pe_validate: SizeOfImage 0x%x > aligned_highest 0x%x (highest 0x%x) slack 0x%x — tolerated (Windows allows larger)\n", opt.SizeOfImage, aligned_highest, highest, slack);
 #else
-            fprintf(stderr, "pe_validate: SizeOfImage 0x%x > aligned_highest 0x%x (highest 0x%x) slack 0x%x — tolerated\n", opt.SizeOfImage, aligned_highest, highest, slack);
+            fprintf(PE_ERR_STREAM, "pe_validate: SizeOfImage 0x%x > aligned_highest 0x%x (highest 0x%x) slack 0x%x — tolerated\n", opt.SizeOfImage, aligned_highest, highest, slack);
 #endif
         }
     }

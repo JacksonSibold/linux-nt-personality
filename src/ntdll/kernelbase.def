@@ -15,6 +15,16 @@ EXPORTS
     GetProcAddress=kernel32.GetProcAddress
     LoadLibraryA=kernel32.LoadLibraryA
     LoadLibraryW=kernel32.LoadLibraryW
+    GetModuleHandleA=kernel32.GetModuleHandleA
+    GetModuleHandleW=kernel32.GetModuleHandleW
+    GetModuleHandleExA=kernel32.GetModuleHandleExA
+    GetModuleHandleExW=kernel32.GetModuleHandleExW
+    GetModuleFileNameA=kernel32.GetModuleFileNameA
+    GetModuleFileNameW=kernel32.GetModuleFileNameW
+    FreeLibrary=kernel32.FreeLibrary
+    LoadLibraryExA=kernel32.LoadLibraryExA
+    LoadLibraryExW=kernel32.LoadLibraryExW
+    DisableThreadLibraryCalls=kernel32.DisableThreadLibraryCalls
     HeapAlloc=kernel32.HeapAlloc
     HeapFree=kernel32.HeapFree
     GetProcessHeap=kernel32.GetProcessHeap

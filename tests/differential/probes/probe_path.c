@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <wchar.h>
+#include "ntpers_probe_root.h"
 
 typedef NTSTATUS (NTAPI *PFN_NtCreateFile)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
 typedef NTSTATUS (NTAPI *PFN_NtClose)(HANDLE);
@@ -36,6 +38,26 @@ static void init_us(UNICODE_STRING *us, wchar_t *buf, const wchar_t *s){
 }
 #define WCOPY(dst, src) { int _i=0; while(src[_i]){dst[_i]=src[_i]; _i++;} dst[_i]=0; }
 
+/* Prefix table. Built from the root in main: the real table is used for the
+   NtCreateFile call, the "<root>" table for the printed nt_path, so the output
+   carries no user or machine path. Index 6 and 7 are UNC (opt-in). */
+#define PFX_LEN (MAX_PATH+64)
+static wchar_t g_pfx_real[8][PFX_LEN], g_pfx_disp[8][PFX_LEN];
+static const wchar_t *g_pfx_real_p[8], *g_pfx_disp_p[8];
+static const wchar_t **g_cur_prefixes = g_pfx_real_p;
+
+static void build_prefixes(wchar_t out[8][PFX_LEN], const wchar_t **ptrs, const wchar_t *root, const wchar_t *nodrive){
+    _snwprintf(out[0], PFX_LEN-1, L"\\??\\%ls\\probe_path_direct\\", root);
+    _snwprintf(out[1], PFX_LEN-1, L"\\\\?\\%ls\\probe_path_direct\\", root);
+    _snwprintf(out[2], PFX_LEN-1, L"\\Device\\HarddiskVolume3%ls\\probe_path_direct\\", nodrive);
+    _snwprintf(out[3], PFX_LEN-1, L"%ls\\probe_path_direct\\", root);
+    _snwprintf(out[4], PFX_LEN-1, L"%ls\\probe_path_direct\\", nodrive);
+    _snwprintf(out[5], PFX_LEN-1, L"");
+    _snwprintf(out[6], PFX_LEN-1, L"\\\\?\\UNC\\server\\share\\tmp\\probe_path_direct\\");
+    _snwprintf(out[7], PFX_LEN-1, L"\\\\server\\share\\tmp\\probe_path_direct\\");
+    for(int i=0;i<8;i++){ out[i][PFX_LEN-1]=0; ptrs[i]=out[i]; }
+}
+
 static void gen_path(int idx, wchar_t *out, int *out_is_relative){
     unsigned int h = (unsigned int)idx * 2654435761u;
     int prefix_idx = h % 8; h /= 8;
@@ -45,16 +67,7 @@ static void gen_path(int idx, wchar_t *out, int *out_is_relative){
     int comp_len_idx = h % 5; h /= 5;
     int embed_idx = h % 4; h /= 4;
     int case_idx = h % 2;
-    const wchar_t *prefixes[8] = {
-        L"\\??\\C:\\tmp\\probe_path_direct\\",
-        L"\\\\?\\C:\\tmp\\probe_path_direct\\",
-        L"\\Device\\HarddiskVolume3\\tmp\\probe_path_direct\\",
-        L"C:\\tmp\\probe_path_direct\\",
-        L"\\tmp\\probe_path_direct\\",
-        L"",
-        L"\\\\?\\UNC\\server\\share\\tmp\\probe_path_direct\\",
-        L"\\\\server\\share\\tmp\\probe_path_direct\\"
-    };
+    const wchar_t **prefixes = g_cur_prefixes;
     const wchar_t *reserved_names[8] = { L"", L"CON", L"PRN", L"AUX", L"NUL", L"COM1", L"LPT1", L"CON.txt" };
     const wchar_t *trailing_suf[8] = { L"", L".", L" ", L" .", L". ", L"..", L"...", L"   " };
     const wchar_t *sep_str[4] = { L"\\", L"/", L"\\\\", L"\\/" };
@@ -115,7 +128,17 @@ static void gen_path(int idx, wchar_t *out, int *out_is_relative){
     out[o]=0;
 }
 
-int main(){
+int main(int argc, char **argv){
+    if(!resolve_root(argc, argv)){ fprintf(stderr, "probe_path: --root must be a local absolute path (X:\\dir), not UNC\n"); return 2; }
+    int unc_ok = allow_unc();
+    {
+        wchar_t wroot[MAX_PATH], wnd[MAX_PATH];
+        MultiByteToWideChar(CP_ACP, 0, g_root, -1, wroot, MAX_PATH);
+        MultiByteToWideChar(CP_ACP, 0, g_root+2, -1, wnd, MAX_PATH);
+        build_prefixes(g_pfx_real, g_pfx_real_p, wroot, wnd);
+        build_prefixes(g_pfx_disp, g_pfx_disp_p, L"<root>", L"<root>");
+        g_cur_prefixes = g_pfx_real_p;
+    }
     setvbuf(stdout, NULL, _IONBF, 0);
     print_build_header("probe_path");
     HMODULE ntdll = GetModuleHandleA("ntdll.dll");
@@ -123,7 +146,7 @@ int main(){
     PFN_NtClose pNtClose = (PFN_NtClose)GetProcAddress(ntdll,"NtClose");
     PFN_RtlNtStatusToDosError pRtl = (PFN_RtlNtStatusToDosError)GetProcAddress(ntdll,"RtlNtStatusToDosError");
 
-    char tmpRootA[MAX_PATH]; GetTempPathA(sizeof(tmpRootA), tmpRootA);
+    char tmpRootA[MAX_PATH]; snprintf(tmpRootA, sizeof(tmpRootA), "%s\\", g_root);
     char testDirA[MAX_PATH];
     snprintf(testDirA, sizeof(testDirA), "%sntpers_path_%lu", tmpRootA, GetCurrentProcessId());
     CreateDirectoryA(testDirA, NULL);
@@ -150,6 +173,13 @@ int main(){
     for(int idx=0; idx<N; idx++){
         wchar_t wpath[1024]; int is_rel=0;
         gen_path(idx, wpath, &is_rel);
+        if(((unsigned int)idx * 2654435761u) % 8 >= 6 && !unc_ok){   /* prefixes 6, 7: UNC, opt-in */
+            if(idx!=0) printf(",\n");
+            printf("    {\"idx\":%d,\"skipped\":\"unc\"}", idx);
+            continue;
+        }
+        wchar_t dpath[1024]; int dis_rel=0;
+        g_cur_prefixes = g_pfx_disp_p; gen_path(idx, dpath, &dis_rel); g_cur_prefixes = g_pfx_real_p;
         wchar_t ubuf[1024]; UNICODE_STRING us; OBJECT_ATTRIBUTES oa; IO_STATUS_BLOCK iosb; HANDLE h=NULL;
         init_us(&us, ubuf, wpath);
         HANDLE root = is_rel ? hDir : NULL;
@@ -160,7 +190,7 @@ int main(){
         if(h && st==0) pNtClose(h);
         if(idx!=0) printf(",\n");
         printf("    {\"idx\":%d,\"desc\":\"gen_%d\",\"nt_path\":\"", idx, idx);
-        for(const wchar_t *p=wpath;*p;p++){ if(*p=='\"') printf("\\\""); else if(*p=='\\') printf("\\\\"); else if(*p<0x20) printf("\\u%04x",(unsigned)*p); else printf("%lc", *p); }
+        for(const wchar_t *p=dpath;*p;p++){ if(*p=='\"') printf("\\\""); else if(*p=='\\') printf("\\\\"); else if(*p<0x20) printf("\\u%04x",(unsigned)*p); else printf("%lc", *p); }
         printf("\",\"rel\":%s,\"ntstatus\":%ld,\"hex\":\"0x%08lX\",\"dos\":%lu,\"iosb_info\":%llu,\"handle_valid\":%s}", is_rel?"true":"false", (long)st,(unsigned long)(uint32_t)st,(unsigned long)dos,(unsigned long long)iosb.Information, hv?"true":"false");
     }
     printf("\n  ],\n");

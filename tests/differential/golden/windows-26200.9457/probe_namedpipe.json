@@ -1,0 +1,23 @@
+{
+  "probe": "probe_namedpipe",
+  "windows_build": "26200.9457",
+  "windows_version": "10.0.26200",
+  "arch": "x64",
+  "pipe_name": "\\\\.\\pipe\\ntpers_probe_976_730505312",
+  "create_message": {"handle_valid":true,"err":0},
+  "create_byte": {"handle_valid":true,"err":0},
+  "client_connect_message": {"handle_valid":true,"err":0},
+  "write_message": {"success":true,"written":16,"err":0},
+  "peek": {"success":true,"avail":16,"err":0},
+  "read_message": {"success":true,"read":16,"err":0,"data":"HelloPipeMessage"},
+  "partial_read_message": {"success":false,"read":5,"err":234,"expected_234":true},
+  "zero_write": {"success":true,"written":0,"err":234},
+  "transact": {"note":"skipped for hang safety, covered by wait/max"},
+  "impersonate": {"success":false,"err":1368},
+  "disconnect": {"success":false,"err":233},
+  "byte_partial": {"success":true,"read":5,"err":0,"more_data":false},
+  "byte_remaining": {"read":10},
+  "wait_nonexistent": {"success":false,"err":2,"elapsed":0},
+  "max_instances": {"first_valid":true,"second_valid":false,"second_err":231},
+  "done": true
+}

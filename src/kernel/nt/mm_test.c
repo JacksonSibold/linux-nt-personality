@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 #include <time.h>
 #include <unistd.h>
 #include <assert.h>
@@ -522,6 +523,13 @@ static int test_lock_virtual_memory(void) {
     ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 0) == STATUS_INVALID_PARAMETER, "maptype 0");
     ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 3) == STATUS_INVALID_PARAMETER, "maptype 3");
     ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 2) == STATUS_PRIVILEGE_NOT_HELD, "map_system privilege");
+    /* An unaligned range rounds out to whole pages: [base+100, base+100+4096)
+     * covers both pages, so both are locked and the region comes back whole. */
+    lb = (PVOID)((char *)base + 100); ls = 4096;
+    ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "lock unaligned range");
+    ASSERT(lb == base && ls == size, "unaligned lock returns the page range");
+    lb = base; ls = size;
+    ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "unlock unaligned range");
     /* Lock both pages, twice: idempotent, base and size come back page-aligned */
     lb = base; ls = size;
     ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "lock range");
@@ -557,6 +565,14 @@ static int test_lock_virtual_memory(void) {
     /* Releasing the allocation drops the lock too */
     db = base; dsz = 0;
     ASSERT(NtFreeVirtualMemory((HANDLE)-1, &db, &dsz, MEM_RELEASE) == STATUS_SUCCESS, "release");
+    /* The release must have dropped the runs: the same range, committed again
+     * at the same base, is not locked */
+    db = base; dsz = size;
+    ASSERT(NtAllocateVirtualMemory((HANDLE)-1, &db, 0, &dsz, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE) == STATUS_SUCCESS, "recommit after release");
+    lb = base; ls = size;
+    ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_NOT_LOCKED, "release dropped the lock");
+    db = base; dsz = 0;
+    ASSERT(NtFreeVirtualMemory((HANDLE)-1, &db, &dsz, MEM_RELEASE) == STATUS_SUCCESS, "release again");
     return 1;
 }
 
@@ -1332,6 +1348,57 @@ static int test_section_wrong_type_rejected(void) {
     return 1;
 }
 
+/* A section name held by an object of another type: NtCreateSection gets
+ * OBJECT_TYPE_MISMATCH and leaves the caller's handle at its sentinel. */
+static NTSTATUS mm_section_oa(OBJECT_ATTRIBUTES *oa, UNICODE_STRING *us, const WCHAR *name) {
+    us->Buffer = (WCHAR *)name;
+    us->Length = (USHORT)(wcslen(name) * sizeof(WCHAR));
+    us->MaximumLength = us->Length;
+    memset(oa, 0, sizeof(*oa));
+    oa->Length = sizeof(*oa);
+    oa->ObjectName = us;
+    return STATUS_SUCCESS;
+}
+
+static int test_section_name_held_by_other_type(void) {
+    static const WCHAR name[] = L"\\BaseNamedObjects\\SecOverTest";
+    struct nt_object_header *hdr = NULL;
+    void *body = NULL;
+    OBJECT_ATTRIBUTES oa; UNICODE_STRING us;
+    mm_section_oa(&oa, &us, name);
+    NTSTATUS st = ObCreateObject(&nt_test_type, NULL, sizeof(struct nt_test_body), &hdr, &body);
+    ASSERT(st == STATUS_SUCCESS, "create holder 0x%lx", (unsigned long)st);
+    HANDLE holder = NULL;
+    st = ObInsertObject(hdr, &oa, SECTION_ALL_ACCESS, g_mm_proc, &holder);
+    ObDereferenceObject(hdr);
+    ASSERT(st == STATUS_SUCCESS, "insert holder 0x%lx", (unsigned long)st);
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE sec = (HANDLE)(ULONG_PTR)0x5E171E1;
+    st = NtCreateSection(&sec, SECTION_ALL_ACCESS, &oa, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_OBJECT_TYPE_MISMATCH, "section over other type 0x%lx", (unsigned long)st);
+    ASSERT(sec == (HANDLE)(ULONG_PTR)0x5E171E1, "section handle written on failure");
+    ASSERT(ObCloseHandle(g_mm_proc, holder) == STATUS_SUCCESS, "close holder");
+    return 1;
+}
+
+/* Same type: the second named section gets the holder's handle with
+ * NAME_COLLISION (the SYNC-3 policy). */
+static int test_section_same_type_collision_reopens(void) {
+    static const WCHAR name[] = L"\\BaseNamedObjects\\SecSameType";
+    OBJECT_ATTRIBUTES oa; UNICODE_STRING us;
+    mm_section_oa(&oa, &us, name);
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE first = NULL, second = (HANDLE)(ULONG_PTR)0x5E171E1;
+    NTSTATUS st = NtCreateSection(&first, SECTION_ALL_ACCESS, &oa, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "first named section 0x%lx", (unsigned long)st);
+    st = NtCreateSection(&second, SECTION_ALL_ACCESS, &oa, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_OBJECT_NAME_COLLISION, "second named section 0x%lx", (unsigned long)st);
+    ASSERT(second != NULL && second != (HANDLE)(ULONG_PTR)0x5E171E1, "no holder handle");
+    ASSERT(ObCloseHandle(g_mm_proc, second) == STATUS_SUCCESS, "close second");
+    ASSERT(ObCloseHandle(g_mm_proc, first) == STATUS_SUCCESS, "close first");
+    return 1;
+}
+
 static int test_section_closed_handle_rejected(void) {
     HANDLE h = NULL;
     NTSTATUS st = mm_make_section(&h, SECTION_ALL_ACCESS, PAGE_READWRITE, 0x2000);
@@ -1994,13 +2061,13 @@ static int test_rw_virtual_memory(void) {
     st = NtWriteVirtualMemory((HANDLE)-1, base, src, 16, &n);
     ASSERT(st == STATUS_PARTIAL_COPY && n == 0, "ro write st 0x%lx n %zu", (unsigned long)st, (size_t)n);
 
-    /* Another process handle is not supported; the output count is untouched. */
+    /* A handle that names no process is refused; the output count is untouched. */
     n = 0xdead;
     st = NtReadVirtualMemory((HANDLE)0x1234, base, dst, 16, &n);
-    ASSERT(st == STATUS_NOT_SUPPORTED, "other process read st 0x%lx", (unsigned long)st);
+    ASSERT(st == STATUS_INVALID_HANDLE, "unknown process read st 0x%lx", (unsigned long)st);
     ASSERT(n == 0xdead, "other process read touched count");
     st = NtWriteVirtualMemory((HANDLE)0x1234, base, src, 16, &n);
-    ASSERT(st == STATUS_NOT_SUPPORTED, "other process write st 0x%lx", (unsigned long)st);
+    ASSERT(st == STATUS_INVALID_HANDLE, "unknown process write st 0x%lx", (unsigned long)st);
 
     /* An address range that wraps past the top of the address space is refused. */
     n = 0;
@@ -2011,7 +2078,8 @@ static int test_rw_virtual_memory(void) {
 }
 
 /* NtFlushVirtualMemory: the range is page-rounded, must be committed, and the
- * IoStatus reports the flushed length. Only the current process is supported. */
+ * IoStatus reports the flushed length. A foreign process's space is flushed the
+ * same way (see test_foreign_flush_and_ex). */
 static int test_flush_virtual_memory(void) {
     PVOID base = NULL;
     SIZE_T size = 0x20000;
@@ -2063,7 +2131,7 @@ static int test_flush_virtual_memory(void) {
     ASSERT(st == STATUS_INVALID_PARAMETER, "null base 0x%lx", (unsigned long)st);
     fbase = base; fsize = 0x1000;
     st = NtFlushVirtualMemory((HANDLE)0x1234, &fbase, &fsize, &iosb);
-    ASSERT(st == STATUS_NOT_SUPPORTED, "other process 0x%lx", (unsigned long)st);
+    ASSERT(st == STATUS_INVALID_HANDLE, "unknown process flush 0x%lx", (unsigned long)st);
     ntmm_reset(); /* release VADs: last test */
     return 1;
 }
@@ -2078,7 +2146,7 @@ static MEM_EXTENDED_PARAMETER mk_ext(ULONG type, ULONG64 value) {
 
 /* NtAllocateVirtualMemoryEx: without extended parameters it is
  * NtAllocateVirtualMemory. Extended parameters (NUMA, address requirements)
- * are not supported, and other process handles are STATUS_NOT_SUPPORTED. */
+ * are not supported. A handle that names no process is STATUS_INVALID_HANDLE. */
 static int test_allocate_ex(void) {
     PVOID base = NULL;
     SIZE_T size = 0x1000;
@@ -2101,11 +2169,11 @@ static int test_allocate_ex(void) {
     ASSERT(st == STATUS_NOT_SUPPORTED, "ext param status 0x%lx", (unsigned long)st);
     ASSERT(b2 == NULL, "ext param base untouched");
 
-    /* Another process handle is refused. */
+    /* A handle that names no process is refused. */
     b2 = NULL;
     st = NtAllocateVirtualMemoryEx((HANDLE)0x1234, &b2, &s2, MEM_RESERVE, PAGE_READWRITE, NULL, 0);
-    ASSERT(st == STATUS_NOT_SUPPORTED, "other process status 0x%lx", (unsigned long)st);
-    ASSERT(b2 == NULL, "other process base untouched");
+    ASSERT(st == STATUS_INVALID_HANDLE, "unknown process status 0x%lx", (unsigned long)st);
+    ASSERT(b2 == NULL, "unknown process base untouched");
     ntmm_reset(); /* release VADs: last test */
     return 1;
 }
@@ -2626,9 +2694,262 @@ static int test_allocate_ex_requirements(void) {
     ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &ep, MEM_EXT_MAX_COUNT + 1)
            == STATUS_NOT_SUPPORTED, "count over max");
     ASSERT(NtAllocateVirtualMemoryEx((HANDLE)0x1234, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &ep, 1)
-           == STATUS_NOT_SUPPORTED, "other process refused");
+           == STATUS_INVALID_HANDLE, "unknown process refused");
 
     ntmm_reset();
+    return 1;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Per-process address spaces (ADR 0073)                                      */
+/* -------------------------------------------------------------------------- */
+
+/* Creates a process object. When h is non-NULL, a handle to it with the given
+ * access is inserted into g_mm_proc's table. */
+static struct nt_eprocess *mm_make_proc(ULONG pid, const char *name, HANDLE *h, ACCESS_MASK access) {
+    struct nt_eprocess *p = NULL;
+    if (ObCreateProcessObject(&p, pid, name) != STATUS_SUCCESS || !p) return NULL;
+    if (h) {
+        *h = NULL;
+        if (ObInsertObject(p->obj, NULL, access, g_mm_proc, h) != STATUS_SUCCESS || !*h) {
+            ObDestroyProcessObject(p);
+            return NULL;
+        }
+    }
+    return p;
+}
+
+static int mm_global_free_at(PVOID addr) {
+    MEMORY_BASIC_INFORMATION mbi;
+    SIZE_T ret = 0;
+    NTSTATUS st = NtQueryVirtualMemory((HANDLE)-1, addr, MemoryBasicInformation, &mbi, sizeof(mbi), &ret);
+    return st == STATUS_SUCCESS && mbi.State == MEM_FREE;
+}
+
+/* A region allocated through a process handle lives in that process's space:
+ * the handle sees it, the pseudo-handle does not, and the global VAD map stays
+ * clean. Protect and release also go through the handle. */
+static int test_foreign_space_alloc_query_free(void) {
+    HANDLE h = NULL;
+    struct nt_eprocess *p = mm_make_proc(4343, "mmfor", &h, PROCESS_ALL_ACCESS);
+    ASSERT(p && h, "make foreign process");
+
+    PVOID base = NULL;
+    SIZE_T size = 0x20000;
+    NTSTATUS st = NtAllocateVirtualMemory(h, &base, 0, &size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS && base && size == 0x20000, "foreign alloc 0x%lx", (unsigned long)st);
+    ASSERT(mm_global_free_at(base), "global space sees the foreign allocation");
+
+    MEMORY_BASIC_INFORMATION mbi;
+    SIZE_T ret = 0;
+    st = NtQueryVirtualMemory(h, base, MemoryBasicInformation, &mbi, sizeof(mbi), &ret);
+    ASSERT(st == STATUS_SUCCESS && mbi.State == MEM_COMMIT && mbi.AllocationBase == base,
+           "foreign query 0x%lx state 0x%lx", (unsigned long)st, (unsigned long)mbi.State);
+    *(volatile unsigned char *)base = 0x5a;
+
+    PVOID pb = base;
+    SIZE_T ps = 0x1000;
+    ULONG old = 0;
+    st = NtProtectVirtualMemory(h, &pb, &ps, PAGE_READONLY, &old);
+    ASSERT(st == STATUS_SUCCESS && old == PAGE_READWRITE, "foreign protect 0x%lx old 0x%lx",
+           (unsigned long)st, (unsigned long)old);
+
+    PVOID rb = base;
+    SIZE_T rs = 0;
+    st = NtFreeVirtualMemory(h, &rb, &rs, MEM_RELEASE);
+    ASSERT(st == STATUS_SUCCESS, "foreign release 0x%lx", (unsigned long)st);
+    st = NtQueryVirtualMemory(h, base, MemoryBasicInformation, &mbi, sizeof(mbi), &ret);
+    ASSERT(st == STATUS_SUCCESS && mbi.State == MEM_FREE, "foreign region free after release");
+    ASSERT(ntmm_check_invariants(&g_nt_mm), "global invariants after foreign ops");
+
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "close foreign handle");
+    ObDestroyProcessObject(p);
+    return 1;
+}
+
+/* Handles carry the access the service needs. A handle with only
+ * PROCESS_VM_READ can read but not allocate, write, free or query. */
+static int test_foreign_access_rights(void) {
+    HANDLE hfull = NULL, hro = NULL;
+    struct nt_eprocess *p = mm_make_proc(4344, "mmacl", &hfull, PROCESS_ALL_ACCESS);
+    ASSERT(p && hfull, "make foreign process");
+    ASSERT(ObInsertObject(p->obj, NULL, PROCESS_VM_READ, g_mm_proc, &hro) == STATUS_SUCCESS && hro,
+           "insert read-only handle");
+
+    PVOID base = NULL;
+    SIZE_T size = 0x1000;
+    NTSTATUS st = NtAllocateVirtualMemory(hfull, &base, 0, &size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "alloc via full handle 0x%lx", (unsigned long)st);
+    unsigned char pat[16];
+    for (int i = 0; i < 16; i++) pat[i] = (unsigned char)(0xA0 + i);
+    SIZE_T n = 0;
+    st = NtWriteVirtualMemory(hfull, base, pat, sizeof(pat), &n);
+    ASSERT(st == STATUS_SUCCESS && n == sizeof(pat), "write via full handle 0x%lx", (unsigned long)st);
+
+    unsigned char got[16] = {0};
+    st = NtReadVirtualMemory(hro, base, got, sizeof(got), &n);
+    ASSERT(st == STATUS_SUCCESS && n == sizeof(got) && memcmp(got, pat, sizeof(pat)) == 0,
+           "read via read-only handle 0x%lx", (unsigned long)st);
+
+    PVOID b2 = NULL;
+    SIZE_T s2 = 0x1000;
+    st = NtAllocateVirtualMemory(hro, &b2, 0, &s2, MEM_RESERVE, PAGE_READWRITE);
+    ASSERT(st == STATUS_ACCESS_DENIED, "alloc via read-only handle 0x%lx", (unsigned long)st);
+
+    st = NtWriteVirtualMemory(hro, base, pat, sizeof(pat), &n);
+    ASSERT(st == STATUS_ACCESS_DENIED, "write via read-only handle 0x%lx", (unsigned long)st);
+
+    MEMORY_BASIC_INFORMATION mbi;
+    SIZE_T ret = 0;
+    st = NtQueryVirtualMemory(hro, base, MemoryBasicInformation, &mbi, sizeof(mbi), &ret);
+    ASSERT(st == STATUS_ACCESS_DENIED, "query via read-only handle 0x%lx", (unsigned long)st);
+
+    PVOID fb = base;
+    SIZE_T fs = 0;
+    st = NtFreeVirtualMemory(hro, &fb, &fs, MEM_RELEASE);
+    ASSERT(st == STATUS_ACCESS_DENIED, "free via read-only handle 0x%lx", (unsigned long)st);
+
+    PVOID fb2 = base;
+    SIZE_T fs2 = 0;
+    st = NtFreeVirtualMemory(hfull, &fb2, &fs2, MEM_RELEASE);
+    ASSERT(st == STATUS_SUCCESS, "release via full handle 0x%lx", (unsigned long)st);
+
+    ASSERT(ObCloseHandle(g_mm_proc, hro) == STATUS_SUCCESS, "close ro");
+    ASSERT(ObCloseHandle(g_mm_proc, hfull) == STATUS_SUCCESS, "close full");
+    ObDestroyProcessObject(p);
+    return 1;
+}
+
+/* Cross-process copies go between the two spaces. Bytes written through the
+ * foreign handle appear in the foreign space and nowhere in the global one. */
+static int test_cross_process_read_write(void) {
+    HANDLE h = NULL;
+    struct nt_eprocess *p = mm_make_proc(4345, "mmrw", &h, PROCESS_ALL_ACCESS);
+    ASSERT(p && h, "make foreign process");
+    PVOID base = NULL;
+    SIZE_T size = 0x2000;
+    NTSTATUS st = NtAllocateVirtualMemory(h, &base, 0, &size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "alloc 0x%lx", (unsigned long)st);
+
+    unsigned char src[300], dst[300];
+    for (int i = 0; i < 300; i++) src[i] = (unsigned char)(i * 13 + 5);
+    SIZE_T n = 0;
+    st = NtWriteVirtualMemory(h, (unsigned char *)base + 0x10, src, sizeof(src), &n);
+    ASSERT(st == STATUS_SUCCESS && n == sizeof(src), "cross write 0x%lx n %zu", (unsigned long)st, (size_t)n);
+    ASSERT(memcmp((unsigned char *)base + 0x10, src, sizeof(src)) == 0, "bytes landed in arena");
+
+    memset(dst, 0, sizeof(dst));
+    st = NtReadVirtualMemory(h, (unsigned char *)base + 0x10, dst, sizeof(dst), &n);
+    ASSERT(st == STATUS_SUCCESS && n == sizeof(dst) && memcmp(dst, src, sizeof(src)) == 0,
+           "cross read 0x%lx n %zu", (unsigned long)st, (size_t)n);
+
+    /* The same address in the global space is not mapped, so a copy there
+     * moves nothing. */
+    SIZE_T gn = 99;
+    st = NtReadVirtualMemory((HANDLE)-1, (unsigned char *)base + 0x10, dst, sizeof(dst), &gn);
+    ASSERT(st != STATUS_SUCCESS && gn == 0, "global read of foreign address 0x%lx n %zu", (unsigned long)st, (size_t)gn);
+
+    /* Copy running off the end of the foreign region: partial copy. */
+    SIZE_T tail = 0;
+    st = NtReadVirtualMemory(h, (unsigned char *)base + 0x2000 - 4, dst, 16, &tail);
+    ASSERT(st == STATUS_PARTIAL_COPY && tail == 4, "tail read 0x%lx n %zu", (unsigned long)st, (size_t)tail);
+
+    PVOID rb = base; SIZE_T rs = 0;
+    ASSERT(NtFreeVirtualMemory(h, &rb, &rs, MEM_RELEASE) == STATUS_SUCCESS, "free");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "close");
+    ObDestroyProcessObject(p);
+    return 1;
+}
+
+/* A section maps into a foreign space through the target handle. The view is
+ * in that space, unmaps through the same handle, and the global space never
+ * sees it. */
+static int test_foreign_section_map(void) {
+    HANDLE h = NULL;
+    struct nt_eprocess *p = mm_make_proc(4346, "mmsec", &h, PROCESS_ALL_ACCESS);
+    ASSERT(p && h, "make foreign process");
+    HANDLE sec = NULL;
+    NTSTATUS st = mm_make_section(&sec, SECTION_ALL_ACCESS, PAGE_READWRITE, 0x10000);
+    ASSERT(st == STATUS_SUCCESS && sec, "make section 0x%lx", (unsigned long)st);
+
+    LARGE_INTEGER off; off.QuadPart = 0;
+    PVOID base = NULL; SIZE_T vs = 0;
+    st = NtMapViewOfSection(sec, h, &base, 0, 0, &off, &vs, 0, 0, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS && base && vs == 0x10000, "map into foreign 0x%lx", (unsigned long)st);
+    ASSERT(mm_global_free_at(base), "global space sees the foreign view");
+
+    unsigned char zero[16] = {0}, got[16];
+    memset(got, 0xff, sizeof(got));
+    SIZE_T n = 0;
+    st = NtReadVirtualMemory(h, base, got, sizeof(got), &n);
+    ASSERT(st == STATUS_SUCCESS && n == sizeof(got) && memcmp(got, zero, sizeof(zero)) == 0,
+           "read foreign view 0x%lx", (unsigned long)st);
+
+    ASSERT(NtUnmapViewOfSection(h, base) == STATUS_SUCCESS, "unmap foreign view");
+    ASSERT(NtUnmapViewOfSection(h, base) == STATUS_NOT_MAPPED_VIEW, "unmap twice");
+
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close section");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "close process handle");
+    ObDestroyProcessObject(p);
+    return 1;
+}
+
+/* Destroying a process frees its whole space: its VADs, its arena and the
+ * section references its views held. The allocation counter returns to where
+ * it was before the process existed. */
+static int test_foreign_destroy_frees_space(void) {
+    extern _Atomic long kshim_alloc_count;
+    HANDLE sec = NULL;
+    NTSTATUS st = mm_make_section(&sec, SECTION_ALL_ACCESS, PAGE_READWRITE, 0x10000);
+    ASSERT(st == STATUS_SUCCESS && sec, "make section 0x%lx", (unsigned long)st);
+    long before = atomic_load(&kshim_alloc_count);
+
+    HANDLE h = NULL;
+    struct nt_eprocess *p = mm_make_proc(4347, "mmdie", &h, PROCESS_ALL_ACCESS);
+    ASSERT(p && h, "make foreign process");
+    PVOID a = NULL; SIZE_T as = 0x3000;
+    ASSERT(NtAllocateVirtualMemory(h, &a, 0, &as, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE) == STATUS_SUCCESS, "alloc");
+    PVOID b = NULL; SIZE_T bs = 0x1000;
+    ASSERT(NtAllocateVirtualMemory(h, &b, 0, &bs, MEM_RESERVE, PAGE_READWRITE) == STATUS_SUCCESS, "reserve");
+    LARGE_INTEGER off; off.QuadPart = 0;
+    PVOID v = NULL; SIZE_T vs = 0;
+    ASSERT(NtMapViewOfSection(sec, h, &v, 0, 0, &off, &vs, 0, 0, PAGE_READWRITE) == STATUS_SUCCESS, "map");
+
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "close process handle");
+    ObDestroyProcessObject(p);
+
+    ASSERT(atomic_load(&kshim_alloc_count) == before, "space teardown leaked %ld",
+           atomic_load(&kshim_alloc_count) - before);
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close section after process gone");
+    return 1;
+}
+
+/* A handle that is not in the table is refused, and no base is written. */
+static int test_foreign_forged_handle(void) {
+    PVOID base = NULL;
+    SIZE_T size = 0x1000;
+    NTSTATUS st = NtAllocateVirtualMemory((HANDLE)0x1234, &base, 0, &size, MEM_RESERVE, PAGE_READWRITE);
+    ASSERT(st == STATUS_INVALID_HANDLE, "forged handle 0x%lx", (unsigned long)st);
+    ASSERT(base == NULL, "forged handle wrote a base");
+    return 1;
+}
+
+/* Flush and NtAllocateVirtualMemoryEx also take a process handle now. */
+static int test_foreign_flush_and_ex(void) {
+    HANDLE h = NULL;
+    struct nt_eprocess *p = mm_make_proc(4348, "mmflx", &h, PROCESS_ALL_ACCESS);
+    ASSERT(p && h, "make foreign process");
+    PVOID base = NULL; SIZE_T size = 0x2000;
+    NTSTATUS st = NtAllocateVirtualMemoryEx(h, &base, &size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS && base, "ex alloc via foreign 0x%lx", (unsigned long)st);
+    IO_STATUS_BLOCK iosb;
+    PVOID fb = base; SIZE_T fs = 0x1000;
+    st = NtFlushVirtualMemory(h, &fb, &fs, &iosb);
+    ASSERT(st == STATUS_SUCCESS, "flush via foreign 0x%lx", (unsigned long)st);
+    PVOID rb = base; SIZE_T rs = 0;
+    ASSERT(NtFreeVirtualMemory(h, &rb, &rs, MEM_RELEASE) == STATUS_SUCCESS, "free");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "close");
+    ObDestroyProcessObject(p);
     return 1;
 }
 
@@ -2641,6 +2962,8 @@ int main(void) {
     RUN_TEST(test_section_handle_is_object);
     RUN_TEST(test_section_forged_handle_rejected);
     RUN_TEST(test_section_wrong_type_rejected);
+    RUN_TEST(test_section_name_held_by_other_type);
+    RUN_TEST(test_section_same_type_collision_reopens);
     RUN_TEST(test_section_closed_handle_rejected);
     RUN_TEST(test_section_access_mask);
     RUN_TEST(test_section_lifetime);
@@ -2700,6 +3023,13 @@ int main(void) {
     RUN_TEST(test_map_ex);
     RUN_TEST(test_unmap_ex);
     RUN_TEST(test_allocate_ex_requirements);
+    RUN_TEST(test_foreign_space_alloc_query_free);
+    RUN_TEST(test_foreign_access_rights);
+    RUN_TEST(test_cross_process_read_write);
+    RUN_TEST(test_foreign_section_map);
+    RUN_TEST(test_foreign_destroy_frees_space);
+    RUN_TEST(test_foreign_forged_handle);
+    RUN_TEST(test_foreign_flush_and_ex);
     ntmm_reset();
     ObDestroyProcessObject(g_mm_proc);
     ObCleanupObjectManager();

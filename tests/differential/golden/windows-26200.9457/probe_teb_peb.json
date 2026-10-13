@@ -1,0 +1,38 @@
+{
+  "probe": "probe_teb_peb",
+  "windows_build": "26200.9457",
+  "windows_version": "10.0.26200",
+  "arch": "x64",
+  "teb": "0x57E9965000",
+  "peb": "0x57E9964000",
+  "gs_checks": [
+    {"field":"ExceptionList","offset":"0x0","gs_value":"0x0","mem_value":"0x0","match":true},
+    {"field":"StackBase","offset":"0x8","gs_value":"0x57E9C00000","mem_value":"0x57E9C00000","match":true},
+    {"field":"StackLimit","offset":"0x10","gs_value":"0x57E9BFC000","mem_value":"0x57E9BFC000","match":true},
+    {"field":"Self","offset":"0x30","gs_value":"0x57E9965000","mem_value":"0x57E9965000","match":true},
+    {"field":"ArbitraryUserPointer","offset":"0x28","gs_value":"0x0","mem_value":"0x0","match":true},
+    {"field":"ThreadLocalStoragePointer","offset":"0x58","gs_value":"0x1D757A3B920","mem_value":"0x1D757A3B920","match":true},
+    {"field":"ProcessEnvironmentBlock","offset":"0x60","gs_value":"0x57E9964000","mem_value":"0x57E9964000","match":true},
+    {"field":"LastErrorValue","offset":"0x68","gs_value":"0x0","mem_value":"0x0","match":true},
+    {"field":"TlsSlots","offset":"0x1480","gs_value":"0x0","mem_value":"0x0","match":true}
+  ],
+  "teb_raw": {
+    "StackBase":"0x57E9C00000","StackLimit":"0x57E9BFC000","Self":"0x57E9965000","Self_matches_TEB":true,
+    "DeallocationStack_at_0x1478":"0x57E9A00000",
+    "TlsSlots_0":"0x0","TlsSlots_ptr":"0x57E9966480"
+  },
+  "peb_checks": [
+    {"field":"BeingDebugged","offset":"0x02","mem_value":0,"is_debugger_present":false,"valid":true},
+    {"field":"ImageBaseAddress","offset":"0x10","mem_value":"0x7FF7B1B60000","GetModuleHandle(NULL)":"0x7FF7B1B60000","match":true},
+    {"field":"Ldr","offset":"0x18","mem_value":"0x7FFF55612880","non_null":true},
+    {"field":"ProcessParameters","offset":"0x20","mem_value":"0x1D757A3A540","non_null":true},
+    {"field":"ProcessHeap","offset":"0x30","mem_value":"0x1D757A30000","non_null":true},
+    {"field":"ApiSetMap","offset":"0x68","mem_value":"0x1D757810000","non_null":true},
+    {"field":"NtGlobalFlag","offset":"0xBC","mem_value":"0x0"},
+    {"field":"OSMajorVersion","offset":"0x118","mem_value":10},
+    {"field":"OSMinorVersion","offset":"0x11C","mem_value":0},
+    {"field":"OSBuildNumber","offset":"0x120","mem_value":26200}
+  ],
+  "last_error_gs_test": {"set":"0x12345678","gs_read":"0x12345678","getlasterror":305419896,"match":true},
+  "context_offsets": {"ContextFlags_expected":"0x30","MxCsr_expected":"0x34","Rax_expected":"0x78","Rip_expected":"0xF8"}
+}

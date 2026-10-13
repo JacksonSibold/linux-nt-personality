@@ -27,6 +27,7 @@ typedef struct { ULONGLONG QuadPart; } LARGE_INTEGER;
 #include <windows.h>
 #include <winternl.h>
 #include <stdio.h>
+#include "ntpers_probe_root.h"
 #endif
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
 #define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004L)
@@ -153,7 +154,12 @@ static void do_probe(void){
     // Create file handles via NtCreateFile under C:\\tmp
     // Ensure C:\\tmp exists: we use NtCreateFile for file; dir must exist. Assume /tmp exists.
     WCHAR wtmp[512];
+#ifdef NTPERS_VM
     const char *ntpath1="\\??\\C:\\tmp\\probe_hdl_direct.tmp";
+#else
+    char ntpath1[MAX_PATH+64];
+    snprintf(ntpath1, sizeof ntpath1, "\\??\\%s\\probe_hdl_direct.tmp", g_root);
+#endif
     int l1=0; while(ntpath1[l1]) l1++;
     for(int i=0;i<l1;i++) wtmp[i]=(WCHAR)ntpath1[i]; wtmp[l1]=0;
     UNICODE_STRING us1; us1.Length=l1*2; us1.MaximumLength=us1.Length+2; us1.Buffer=wtmp;
@@ -170,6 +176,7 @@ static void do_probe(void){
     // File2 with share read only (like third file)
     NTSTATUS st3=NtCreateFile(&hFile2, GENERIC_READ, &oa1, &ios, &alloc, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT|FILE_NON_DIRECTORY_FILE,0,0);
     // If file creation failed, try alternative path \??\C:\Windows\Temp\probe_hdl.tmp
+#ifdef NTPERS_VM
     if(st1!=STATUS_SUCCESS){
         const char *alt="\\??\\C:\\Windows\\Temp\\probe_hdl_direct.tmp";
         int la=0; while(alt[la]) la++;
@@ -181,6 +188,7 @@ static void do_probe(void){
             st3=NtCreateFile(&hFile2, GENERIC_READ, &oa1, &ios, &alloc, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT|FILE_NON_DIRECTORY_FILE,0,0);
         }
     }
+#endif
     // Store statuses for JSON debug
     NTSTATUS dbg_st1=st1, dbg_st2=st2, dbg_st3=st3, dbg_ste=ste, dbg_stm=stm;
     // Ensure fallback: if event/mutant failed, keep handle 0
@@ -314,15 +322,20 @@ static void do_probe(void){
         fwrite(json,1,jpos,stdout); fflush(stdout);
     }
 #endif
+#ifdef NTPERS_VM
     write_file_nt("\\??\\mnt\\share\\.dodresult\\probe_handles.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_handles.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_handles_direct.json", json, jpos);
+#endif
     // Cleanup handles
     if(h1) NtClose(h1);
     if(h2) NtClose(h2);
     if(hEvent) NtClose(hEvent);
     if(hMutant) NtClose(hMutant);
     if(hFile2) NtClose(hFile2);
+#ifndef NTPERS_VM
+    DeleteFileA(ntpath1+4);   /* strip the \??\ prefix: Win32 path of the probe file */
+#endif
     NtTerminateProcess(NtCurrentProcess(), 0);
     __asm__ volatile("mov $60, %%eax; mov $0, %%edi; syscall" ::: "rax","rdi");
     while(1){}
@@ -335,7 +348,10 @@ void _start(void){
     while(1){}
 }
 #else
-int main(void){
+int main(int argc, char **argv){
+    if(!resolve_root(argc, argv)){ fprintf(stderr, "probe_handles_direct: --root must be a local absolute path (X:\\dir), not UNC\n"); return 2; }
+    { char p[MAX_PATH+64]; snprintf(p, sizeof p, "%s\\probe_hdl_direct.tmp", g_root);
+      if(!path_absent(p)){ fprintf(stderr, "probe_handles_direct: scratch file already exists, refusing to delete it\n"); return 2; } }
     init_ntdll();
     do_probe();
     return 0;

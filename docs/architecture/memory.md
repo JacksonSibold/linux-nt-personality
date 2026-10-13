@@ -26,7 +26,7 @@ flowchart LR
   `NtProtectVirtualMemory` does. `nt_vad_split` cuts a run at a page boundary.
 - Granularity is 64 KiB for a reservation (`NTMM_ALLOC_GRANULARITY`) and 4 KiB
   for a page-level operation (`NTMM_PAGE_SIZE`).
-- The one address space is a global `g_nt_mm`. See the gaps below.
+- Each process has its own address space (ADR 0073). The current process's space is the global `g_nt_mm`. A foreign process's space is a `struct nt_mm` on its `nt_eprocess` (`aspace`), created the first time a service names that process. See the gaps below.
 
 ## NtAllocateVirtualMemory
 
@@ -142,11 +142,14 @@ what the loader mapped, as well as what the NT calls mapped. See
 - `NtReadVirtualMemory` and `NtWriteVirtualMemory` copy within the caller's own
   address space, a page at a time, and stop at the first byte that is not
   committed or has the wrong protection (`STATUS_PARTIAL_COPY`, with the count
-  moved so far). Writes to `PAGE_READONLY` fail. A `ProcessHandle` other than
-  `NtCurrentProcess` gives `STATUS_NOT_SUPPORTED`.
+  moved so far). Writes to `PAGE_READONLY` fail. `ProcessHandle` names the source
+  (read) or target (write) space. The pseudo-handle, and a handle to the current
+  process, are `g_nt_mm`. A foreign handle needs `PROCESS_VM_READ` (write:
+  `PROCESS_VM_WRITE` and `PROCESS_VM_OPERATION`), else `STATUS_ACCESS_DENIED`. The
+  copy runs between the two spaces, which are host arenas in the userspace shim.
 - `NtFlushVirtualMemory` checks that the page-rounded range is committed and
-  reports it flushed. Nothing is written back: there is no file backing yet. Only
-  the current-process handle is accepted (`mm.c:1605`).
+  reports it flushed. Nothing is written back: there is no file backing yet. The
+  handle names the space, as for the allocation services (`PROCESS_VM_OPERATION`).
 - `NtAllocateVirtualMemoryEx` is `NtAllocateVirtualMemory` when no extended
   parameters are given. An address-requirements entry places a reserved region
   in `[Lowest, Highest)` at the requested alignment (base NULL, reserve only).
@@ -165,9 +168,14 @@ what the loader mapped, as well as what the NT calls mapped. See
 
 ## Gaps
 
-- **One address space.** `NtAllocateVirtualMemory`, `NtMapViewOfSection` and
-  the other calls ignore `ProcessHandle` and use `g_nt_mm`. Every process
-  shares the same VAD list.
+- **Kernel build: one address space.** The real mm is bound to the current task,
+  so a foreign process handle returns `STATUS_NOT_SUPPORTED` there. The userspace
+  shim gives each foreign process its own host arena (ADR 0073). A per-process
+  `mm_struct` (`mm_alloc` and `switch_mm`) is the next step, with process-creation
+  milestone M6.
+- **Global space and arenas can collide.** The global space picks addresses from
+  the VAD map and does not know the arenas. A global allocation at an address that
+  an arena occupies fails with `STATUS_NO_MEMORY`.
 - **Guard pages are not enforced.** `NtMmHandleGuardFault` has no caller in
   `src` or `arch` (only `mm_test.c` calls it). `kshim_install_guard_handler`
   is a no-op in `kshim.c`.

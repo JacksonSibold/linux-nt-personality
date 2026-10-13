@@ -20,7 +20,7 @@ it, three implementation options, and a plan. The decision is recorded in
   `NtCreateUserProcess` builds a thread on a dummy entry address. Neither
   creates a PE image. Neither is a model for the kernel path.
 - The main blockers are: no kernel `SEC_IMAGE` sections (the userspace build has them, see P1), one global
-  address space and VAD table, one global file-handle table, an empty
+  kernel address space and VAD table (the userspace shim has one per process, see P3), one global file-handle table, an empty
   `ProcessParameters`, and a process object that is created lazily for the
   first task.
 
@@ -323,12 +323,17 @@ Each prerequisite lists the findings or decisions that already cover it.
   [0022](../decisions/0022-arch-global-file-handle-table.md) (global file handle
   table, open). A child must not see a handle the parent did not mark for
   inheritance.
-- **P3. One address space and VAD table per process.** `mm.c` has one global
-  `g_nt_mm` and the process handle argument is ignored (see
-  [memory.md](memory.md) and [overview.md](overview.md#known-gaps)). A child task
-  needs its own VAD table. Related: [0020](../decisions/0020-arch-global-vad-table.md)
-  (one global VAD table, open) and [0005](../decisions/0005-vad-commit-rollback.md)
-  (VAD rollback, blocked).
+- **P3. One address space and VAD table per process.** Partly done (ADR 0073).
+  Each `nt_eprocess` owns a `struct nt_mm` (created on first use). The memory
+  services resolve `ProcessHandle` through the object manager with access checks,
+  and cross-process reads and writes copy between spaces. In the userspace shim a
+  foreign space is a host arena. The kernel build still has one real mm, bound to
+  the current task, and returns `STATUS_NOT_SUPPORTED` for a foreign process. A
+  child task needs its own real address space there (a per-process `mm_struct`)
+  before a loader can map into it. See [memory.md](memory.md),
+  [mm.md](../modules/mm.md) and [0073](../decisions/0073-per-process-address-space.md).
+  Related: [0020](../decisions/0020-arch-global-vad-table.md) (one global VAD table,
+  open) and [0005](../decisions/0005-vad-commit-rollback.md) (VAD rollback, blocked).
 - **P4. Process and thread access checks.** `NtOpenProcess` and `NtOpenThread`
   do not check access, and a zero `DesiredAccess` grants `0x1FFFFF`. A creator
   would hand out handles with these rights. Related:

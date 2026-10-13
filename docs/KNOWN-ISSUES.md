@@ -11,17 +11,17 @@ record. Decisions the owner must make are listed in
 research prototype (see the top-level [README](../README.md)).
 
 Status as of 2026-10-12. The fixes were not built in a kernel tree and were not
-run there. On 2026-10-12 the unit suite passed (<!-- counts:unit_tests:begin -->546<!-- counts:unit_tests:end --> `test_` functions in <!-- counts:unit_modules:begin -->26<!-- counts:unit_modules:end --> modules).
+run there. On 2026-10-12 the unit suite passed (<!-- counts:unit_tests:begin -->665<!-- counts:unit_tests:end --> `test_` functions in <!-- counts:unit_modules:begin -->32<!-- counts:unit_modules:end --> modules).
 The syntax check passed 36 of 41 files at the last audit pass
 ([tests/syntax/README.md](../tests/syntax/README.md)). Decision records and their
 status are indexed in [docs/decisions/INDEX.md](decisions/INDEX.md).
 
-The review found <!-- counts:review_findings:begin -->220<!-- counts:review_findings:end --> findings
+The review found <!-- counts:review_findings:begin -->221<!-- counts:review_findings:end --> findings
 (<!-- counts:review_high:begin -->50<!-- counts:review_high:end --> high,
-<!-- counts:review_medium:begin -->72<!-- counts:review_medium:end --> medium,
+<!-- counts:review_medium:begin -->73<!-- counts:review_medium:end --> medium,
 <!-- counts:review_low:begin -->84<!-- counts:review_low:end --> low and
 <!-- counts:review_info:begin -->14<!-- counts:review_info:end --> info).
-Of these, <!-- counts:fix_fixed:begin -->113<!-- counts:fix_fixed:end --> are fixed,
+Of these, <!-- counts:fix_fixed:begin -->114<!-- counts:fix_fixed:end --> are fixed,
 <!-- counts:fix_partly:begin -->11<!-- counts:fix_partly:end --> are partly fixed,
 <!-- counts:fix_blocked:begin -->41<!-- counts:fix_blocked:end --> are blocked on an owner decision,
 <!-- counts:fix_no_change:begin -->7<!-- counts:fix_no_change:end --> were checked and are not defects, and
@@ -276,9 +276,9 @@ Other high-priority items:
   and [0007](decisions/0007-file-handle-ownership.md) (OD-04).
 - `FILE_SUPERSEDE` deletes the existing file before the open can succeed (arch
   IO-5). Blocked: record [0024](decisions/0024-arch-supersede-unlink-order.md) (OD-06).
-- The MinGW build compiles only loader stubs (ntdll LDR-1). Open: record
+- The MinGW build compiled only loader stubs (ntdll LDR-1, fixed in 10f42c8). Win32 module calls now use the process loader context (K32-4, fixed in 7d00ac6 and 1e013ac); running them needs the personality. Record
   [0029](decisions/0029-loader-mingw-build-selection.md) (OD-17).
-- DllMain and TLS callbacks are never called (ntdll LDR-3). Open: record
+- DllMain and TLS callbacks were never called (ntdll LDR-3). Partly fixed in 10f42c8: they run in the MinGW build. Open: failed-module dependency release and running the DLL. Record
   [0031](decisions/0031-loader-dllmain-tls-order.md) (OD-18).
 - `RtlUnwindEx` runs no unwind handlers and does not transfer control (ntdll
   UNW-2). Open; needs the second-pass design (OD-19).

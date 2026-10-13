@@ -1,6 +1,6 @@
 # 0031: DllMain and TLS callbacks never run (LDR-3)
 
-Status: Proposed. Recorded only, not implemented. Needs VM: running a PE entry point or TLS callback requires PE code to execute, which the Linux build cannot do. The ordering and failure logic can be tested on the host once the hook type can report a result (see Test plan).
+Status: Partly implemented in 10f42c8 (LDR-3). The MinGW build calls TLS callbacks, then `DllMain(hinst, DLL_PROCESS_ATTACH, NULL)`, through their function pointers (`ctx->run_entry_points`). A FALSE from attach returns `STATUS_DLL_INIT_FAILED` and removes the module. Detach calls `DllMain`, then the TLS callbacks. Host-tested: the attach result rule (`ldr_attach_result_ok`, `test_ldr_sched`). Needs VM: that PE code runs, and the failure path on a real image (the Linux build never calls entry points, by design).
 Finding: `docs/review/ntdll.md` LDR-3 (High).
 Date: 2026-10-12
 
@@ -54,3 +54,9 @@ This needs the MinGW build (0029) to exist before it can run, so the code is onl
 
 - The Windows order (TLS callbacks before `DllMain`) is taken from the PE/COFF and Windows loader behaviour as commonly documented. It was not checked against the current spec text in this review.
 - The unwind on attach failure was not traced through all paths, including `ldr_unload_internal`. It needs review when implemented.
+
+## Outcome (10f42c8)
+
+- Hook type unchanged. The observer hooks stay `void`, so `ldr_test.c` is unchanged. The result is the `DllMain` return value, which the host cannot exercise, because `run_entry_points` is 0 on the host.
+- Not done: releasing the dependencies a failed module loaded (their `LoadCount` stays raised). The same gap exists on the old resolve-imports failure path.
+- Ordering: `ldr.c` still attaches by recursion (dependencies first). `ldr_sched_attach_order` is tested in `test_ldr_sched` but is not called from `ldr.c` yet.

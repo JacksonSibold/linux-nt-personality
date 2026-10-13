@@ -20,6 +20,7 @@ typedef struct { ULONGLONG QuadPart; } LARGE_INTEGER;
 #include <windows.h>
 #include <winternl.h>
 #include <stdio.h>
+#include "ntpers_probe_root.h"
 #endif
 #define STATUS_SUCCESS 0
 #define FILE_SUPERSEDE 0
@@ -38,6 +39,14 @@ typedef struct { ULONGLONG QuadPart; } LARGE_INTEGER;
 #define MEM_COMMIT 0x1000
 #define MEM_RESERVE 0x2000
 #define PAGE_READWRITE 0x04
+#ifdef NTPERS_VM
+#define NTPERS_TMP_NT "\\??\\C:\\tmp\\probe_ntstatus.tmp"
+#define NTPERS_NONEXIST_NT "\\??\\C:\\tmp\\nonexistent_98765.tmp"
+#else
+static char g_tmp_nt[MAX_PATH+64], g_nonexist_nt[MAX_PATH+64];
+#define NTPERS_TMP_NT g_tmp_nt
+#define NTPERS_NONEXIST_NT g_nonexist_nt
+#endif
 #ifdef NTPERS_VM
 __asm__(".text\n"
 ".globl NtCreateFile\nNtCreateFile: mov %rcx, %r10; mov $0x55, %eax; syscall; ret\n"
@@ -685,7 +694,7 @@ static void do_probe(void){
  j_add("  ],\n");
  j_add("  \"real_syscall_cases\": [\n");
  // Create temp file
- WCHAR wtmp[512]; const char *p="\\??\\C:\\tmp\\probe_ntstatus.tmp"; int l=0; while(p[l]) l++; for(int i=0;i<l;i++) wtmp[i]=(WCHAR)p[i]; wtmp[l]=0;
+ WCHAR wtmp[512]; const char *p=NTPERS_TMP_NT; int l=0; while(p[l]) l++; for(int i=0;i<l;i++) wtmp[i]=(WCHAR)p[i]; wtmp[l]=0;
  UNICODE_STRING us; us.Length=l*2; us.MaximumLength=us.Length+2; us.Buffer=wtmp;
  OBJECT_ATTRIBUTES oa; oa.Length=sizeof(oa); oa.RootDirectory=0; oa.ObjectName=&us; oa.Attributes=0x40; oa.SecurityDescriptor=0; oa.SecurityQualityOfService=0;
  HANDLE h=0; IO_STATUS_BLOCK ios; LARGE_INTEGER alloc; alloc.QuadPart=0;
@@ -707,13 +716,13 @@ static void do_probe(void){
    for(int cls=0; cls<60; cls++){ for(int bi=0; bi<3; bi++){ ULONG bs[]={0,4,64}; NTSTATUS sy=NtQuerySystemInformation(cls,sbuf,bs[bi],&rl); if(!first) j_add(",\n"); first=0; j_add("    {\"api\":\"NtQuerySystemInformation\",\"class\":"); {char t[32]; u64_dec(t,cls); j_add(t);} j_add(",\"buffer_len\":"); {char t[32]; u64_dec(t,bs[bi]); j_add(t);} j_add(",\"ntstatus\":"); {char t[32]; i64_dec(t,(long long)(long)sy); j_add(t);} j_add(",\"ntstatus_hex\":\""); {char t[12]; u32_hex(t,sy); j_add(t);} j_add("\"}"); add_distinct(sy); } }
    // File create variations
    {
-     WCHAR w1[512]; const char *pp="\\??\\C:\\tmp\\nonexistent_98765.tmp"; int ll=0; while(pp[ll]) ll++; for(int i=0;i<ll;i++) w1[i]=(WCHAR)pp[i]; w1[ll]=0;
+     WCHAR w1[512]; const char *pp=NTPERS_NONEXIST_NT; int ll=0; while(pp[ll]) ll++; for(int i=0;i<ll;i++) w1[i]=(WCHAR)pp[i]; w1[ll]=0;
      UNICODE_STRING u1; u1.Length=ll*2; u1.MaximumLength=u1.Length+2; u1.Buffer=w1;
      OBJECT_ATTRIBUTES o1; o1.Length=sizeof(o1); o1.RootDirectory=0; o1.ObjectName=&u1; o1.Attributes=0x40; o1.SecurityDescriptor=0; o1.SecurityQualityOfService=0;
      HANDLE hh=0; IO_STATUS_BLOCK iob; NTSTATUS s2=NtCreateFile(&hh,0x120089,&o1,&iob,&alloc,0x80,3,1,0x40,0,0); if(!first) j_add(",\n"); first=0; j_add("    {\"api\":\"NtCreateFile(nonexistent)\",\"ntstatus\":"); {char t[32]; i64_dec(t,(long long)(long)s2); j_add(t);} j_add(",\"ntstatus_hex\":\""); {char t[12]; u32_hex(t,s2); j_add(t);} j_add("\"}"); add_distinct(s2); if(s2==0) NtClose(hh);
    }
    {
-     WCHAR w1[512]; const char *pp="\\??\\C:\\tmp\\probe_ntstatus.tmp"; int ll=0; while(pp[ll]) ll++; for(int i=0;i<ll;i++) w1[i]=(WCHAR)pp[i]; w1[ll]=0;
+     WCHAR w1[512]; const char *pp=NTPERS_TMP_NT; int ll=0; while(pp[ll]) ll++; for(int i=0;i<ll;i++) w1[i]=(WCHAR)pp[i]; w1[ll]=0;
      UNICODE_STRING u1; u1.Length=ll*2; u1.MaximumLength=u1.Length+2; u1.Buffer=w1;
      OBJECT_ATTRIBUTES o1; o1.Length=sizeof(o1); o1.RootDirectory=0; o1.ObjectName=&u1; o1.Attributes=0x40; o1.SecurityDescriptor=0; o1.SecurityQualityOfService=0;
      HANDLE hh=0; IO_STATUS_BLOCK iob; NTSTATUS s2=NtCreateFile(&hh,0x120089,&o1,&iob,&alloc,0x80,3,99,0,0,0); if(!first) j_add(",\n"); first=0; j_add("    {\"api\":\"NtCreateFile(invalid_disposition)\",\"ntstatus\":"); {char t[32]; i64_dec(t,(long long)(long)s2); j_add(t);} j_add(",\"ntstatus_hex\":\""); {char t[12]; u32_hex(t,s2); j_add(t);} j_add("\"}"); add_distinct(s2); if(s2==0) NtClose(hh);
@@ -748,10 +757,15 @@ static void do_probe(void){
 #ifndef NTPERS_VM
  { fwrite(json,1,jpos,stdout); fflush(stdout); }
 #endif
+#ifdef NTPERS_VM
  write_file_nt("\\??\\mnt\\share\\.dodresult\\probe_ntstatus.json",json,jpos);
  write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_ntstatus.json",json,jpos);
  write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_ntstatus_direct.json",json,jpos);
  write_file_nt("\\??\\C:\\tmp\\probe_ntstatus_direct.json",json,jpos);
+#endif
+#ifndef NTPERS_VM
+ DeleteFileA(g_tmp_nt+4);   /* scratch file, closed above; strip the \??\ prefix */
+#endif
  NtTerminateProcess(NtCurrentProcess(),0);
 #ifdef NTPERS_VM
  __asm__ volatile("mov $60, %%eax; mov $0, %%edi; syscall" ::: "rax","rdi");
@@ -761,5 +775,11 @@ static void do_probe(void){
 #ifdef NTPERS_VM
 void _start(void){ __asm__ volatile("sub $128, %rsp"); do_probe(); __asm__ volatile("mov $60, %%eax; mov $0, %%edi; syscall" ::: "rax","rdi"); while(1){} }
 #else
-int main(void){ init_ntdll(); do_probe(); return 0; }
+int main(int argc, char **argv){
+ if(!resolve_root(argc,argv)){ fprintf(stderr,"probe_ntstatus_direct: --root must be a local absolute path (X:\\dir), not UNC\n"); return 2; }
+ snprintf(g_tmp_nt, sizeof g_tmp_nt, "\\??\\%s\\probe_ntstatus.tmp", g_root);
+ snprintf(g_nonexist_nt, sizeof g_nonexist_nt, "\\??\\%s\\nonexistent_98765.tmp", g_root);
+ if(!path_absent(g_tmp_nt+4)){ fprintf(stderr,"probe_ntstatus_direct: scratch file already exists, refusing to delete it\n"); return 2; }
+ init_ntdll(); do_probe(); return 0;
+}
 #endif

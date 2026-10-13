@@ -64,3 +64,6 @@ jobs:
           python tools/criteria_trace.py --selftest
           python tools/criteria_trace.py --markdown --out docs/status/TRACEABILITY.md
           git diff --exit-code -- docs/status/TRACEABILITY.md
+
+      - name: Criteria roadmap is current
+        run: python tools/criteria_roadmap.py --selftest && python tools/criteria_roadmap.py --markdown --out docs/status/CRITERIA-ROADMAP.md && git diff --exit-code -- docs/status/CRITERIA-ROADMAP.md

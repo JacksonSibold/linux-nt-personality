@@ -11,7 +11,7 @@ Severity: High / Medium / Low / Info. "Latent" means the defect is real in the c
 | Severity | Count |
 |---|---|
 | High | 8 |
-| Medium | 9 |
+| Medium | 10 |
 | Low | 19 |
 | Info | 1 |
 
@@ -331,7 +331,30 @@ Six programs were added to `make stress`, each run with 16 workers and seeds 1 t
 - Root cause: `nt_create_event_internal` (`src/kernel/nt/nt_obj.c`) looks the name up by type, then inserts. When the insert returned `STATUS_OBJECT_NAME_COLLISION` (another creator took the name between the two steps, or another type holds it), the path returned that status without setting its handle. `nt_svc_NtCreateEvent` then copied the caller's uninitialised `HANDLE` back. The garbage value entered the worker's handle list and was closed, which invalidated handles other workers held.
 - Fixed in `af69b86`: on collision the holder is reopened by type. An event gives a valid handle with `NAME_COLLISION`. A different type gives `OBJECT_TYPE_MISMATCH` and no handle. Regression: `create_event_name_held_by_mutant` in `src/kernel/nt/sync_extra_test.c`. It reaches the same branch deterministically and returned `NAME_COLLISION` before the fix.
 - Verified after the fix: `stress_sync_test` seeds 1 to 20 at 16 workers pass with and without poison (40 of 40). `sync_test` and `sync_extra_test` pass.
-- Same pattern, not changed: the mutant and semaphore create paths in `nt_obj.c` and the timer create path in `sync.c` also reach a collision without setting their handle. The mutant and semaphore wrappers copy the uninitialised value back on `NAME_COLLISION`. The stress test does not name mutants or semaphores, so it does not reach them. Open as a follow-up.
+- Same pattern, not changed: the mutant and semaphore create paths in `nt_obj.c` and the timer create path in `sync.c` also reach a collision without setting their handle. The mutant and semaphore wrappers copy the uninitialised value back on `NAME_COLLISION`. The stress test does not name mutants or semaphores, so it does not reach them. Addressed by SYNC-4 below.
+
+### SYNC-4 [Medium] Named creates over a name held by another type copy a NULL or indeterminate handle (fixed 9a820c3, 0665665, 55e09ec, 085787b; open items below)
+
+- Audit scope: every `ObInsertObject` caller in `src/kernel/nt` (`git grep -n ObInsertObject`). The SYNC-3 defect was an uninitialised `HANDLE` copied out on `STATUS_OBJECT_NAME_COLLISION`. The mutant and semaphore creators had the same defect. Timer and keyed event copied a NULL handle. Job, port and sections returned no handle on a collision.
+- Per site:
+  - `nt_obj.c` mutant and semaphore (`nt_create_mutant_internal`, `nt_create_semaphore_internal`): the wrapper copied an uninitialised `HANDLE` back. Fixed in `9a820c3`.
+  - `sync.c` timer (`timer_create_internal`) and keyed event (`keyed_create_internal`): the wrapper copied NULL back on collision. Fixed in `9a820c3`.
+  - `job.c` `job_create_core`: no handle on collision, and the kernel-ABI wrapper dropped the holder. Fixed in `0665665`.
+  - `mm.c` file, image and anonymous section paths: the caller's pointer is written only on success, so no garbage, but no holder handle. Fixed in `55e09ec`.
+  - `port.c` `port_insert_handle` (named `NtCreatePort`): no handle on collision. Fixed in `085787b`. Connection and server ports are unnamed and cannot collide.
+  - `security.c` `ObCreateTokenHandle`: token objects are unnamed, so no collision. Sentinel test in `fde9417`, no code change.
+  - `object.c` `ObInsertOrOpenNamedObject` (directory and symlink): no handle on a collision without `OBJ_OPENIF`, and the output is never written. Sentinel test in `82efea5`, no code change. Open item 1.
+  - `registry.c` `ObInsertObject` sites at `:496`, `:554` and `:825` pass NULL or a local that is never copied out. The site at `:895` (top-level key) returns a collision with no handle. Open item 2.
+- Policy, now in `ObOpenNamedHolderAfterCollision` (`object.c`, declared in `object.h`): a collision reopens the holder by the creator's type. Same type gives a valid handle and `STATUS_OBJECT_NAME_COLLISION`, the same status the lookup path already returns. Another type gives `STATUS_OBJECT_TYPE_MISMATCH` and no handle. The output is written only when a handle is returned. The event fix from SYNC-3 now uses this helper. The request described the event policy as `NAME_EXISTS`. The code and the tests use `NAME_COLLISION`, so that is what was kept.
+- Regression tests, each failing before its fix with `NAME_COLLISION` where `OBJECT_TYPE_MISMATCH` is expected, and with no holder handle where one is expected:
+  - `sync_extra_test.c`: `create_mutant_name_held_by_event`, `create_semaphore_name_held_by_event`, `create_timer_name_held_by_event`, `keyed_create_name_held_by_event`. Also `holder_after_collision_same_type_leaves_no_leak`: 25 same-type holder reopens with the allocation tracker unchanged.
+  - `job_test.c`: `job_name_held_by_event_and_same_type_collision`.
+  - `mm_test.c`: `test_section_name_held_by_other_type`, `test_section_same_type_collision_reopens`.
+  - `port_test.c`: `port_name_held_by_event`, `port_same_type_collision_reopens`.
+- Open items:
+  1. Directory and symlink keep "no handle without `OBJ_OPENIF`" (`object_extra_test.c` pins it). This does not match the holder policy above. Decide which one is correct before changing it.
+  2. Registry top-level key (`registry.c:895`). A generic object held at `\Registry\ExtTopHolder` did not produce a collision in the host harness: `NtCreateKey` returned success. The policy change was reverted because it had no failing test. Reach it, then apply the helper.
+- Verified after the last commit: `make -C tests/kernel-host check-quick` passes every program (`handle_edge_test` returned 126 once from the Windows Application Control block and passed on the next run). `tools/check_syscall_tables.py` parity holds for 171 services. `tests/syntax/check.sh`: 38 passed, 5 failed, all in files this change does not touch (`dispatch.c`, `kshim.c`, `binfmt_pe.c`, `binfmt_pe_test.c`, `arch/x86/nt/dispatch.c`), 493 warnings, each touched file at the 4 warnings its shared headers give. `python -I -m unittest discover tests/unit`: 546 run, OK (skipped 1). `tools/update_doc_counts.py --write`: counts already current.
 
 ### Confirmed, no change
 

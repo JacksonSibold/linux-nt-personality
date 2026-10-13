@@ -574,6 +574,32 @@ static void dbg_print(const char *msg) {
     if (len) NtWriteFile(h, NULL, NULL, NULL, &ios, (PVOID)msg, (ULONG)len, NULL, NULL);
 }
 
+/* K32-4: one loader context per process, created before any module call and
+ * published in the PEB (ldr.h, LDR_PEB_CONTEXT_SLOT). The application directory
+ * is the image path's directory. System32 is the fixed personality location. */
+static void ldr_publish_process_context(PPEB peb)
+{
+    winldr_ctx_t *ctx = winldr_ctx_create();
+    if (!ctx) { NtTerminateProcess((HANDLE)(intptr_t)-1, STATUS_NO_MEMORY); while (1) {} }
+    winldr_set_system32_dir(ctx, "C:/Windows/System32");
+    if (peb->ProcessParameters && peb->ProcessParameters->ImagePathName.Buffer) {
+        const UNICODE_STRING *ip = &peb->ProcessParameters->ImagePathName;
+        size_t n = ip->Length / sizeof(WCHAR), sep = 0;
+        for (size_t i = 0; i < n; ++i)
+            if (ip->Buffer[i] == '\\' || ip->Buffer[i] == '/') sep = i;
+        char dirbuf[512];
+        size_t k = 0;
+        for (size_t i = 0; i < sep && k + 1 < sizeof(dirbuf); ++i) {
+            WCHAR c = ip->Buffer[i];
+            dirbuf[k++] = (c == '\\') ? '/' : (c <= 0x7F ? (char)c : '?');
+        }
+        dirbuf[k] = 0;
+        if (k) winldr_set_exe_dir(ctx, dirbuf);
+    }
+    peb->Ldr = winldr_peb_ldr(ctx);
+    LDR_PEB_CONTEXT_SLOT(peb) = ctx;
+}
+
 void NTAPI LdrInitializeThunk(void) {
     dbg_print("LdrInitializeThunk: enter\n");
     PTEB teb;
@@ -581,6 +607,7 @@ void NTAPI LdrInitializeThunk(void) {
     PPEB peb = teb->ProcessEnvironmentBlock;
     void *image_base = peb->ImageBaseAddress;
     dbg_print("LdrInitializeThunk: got PEB\n");
+    ldr_publish_process_context(peb);
     if (!image_base) { NtTerminateProcess((HANDLE)-1, 1); while(1){} }
     unsigned char *base = (unsigned char*)image_base;
     // Validate EXE

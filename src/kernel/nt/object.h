@@ -80,6 +80,7 @@ struct nt_ethread;
 struct nt_handle_table;
 struct nt_job;
 struct nt_debug_obj;
+struct nt_mm;
 
 /* -------------------------------------------------------------------------- */
 /* Object type callbacks                                                      */
@@ -248,6 +249,18 @@ NTSTATUS ObInsertObject(struct nt_object_header *obj,
                          struct nt_eprocess *proc,
                          PHANDLE out_handle);
 
+/* Named-create collision policy (SYNC-3). Call when ObInsertObject returned
+ * STATUS_OBJECT_NAME_COLLISION: the name was taken after the caller's lookup,
+ * or another creator holds it. The holder is opened by obj's type. Same type:
+ * a valid handle in *out_handle and STATUS_OBJECT_NAME_COLLISION. Another type:
+ * STATUS_OBJECT_TYPE_MISMATCH and no handle. *out_handle is written only with
+ * a handle. Callers pass the inserted object's type and the same attributes. */
+NTSTATUS ObOpenNamedHolderAfterCollision(struct nt_object_type *type,
+                                         POBJECT_ATTRIBUTES attrs,
+                                         ACCESS_MASK access,
+                                         struct nt_eprocess *proc,
+                                         PHANDLE out_handle);
+
 void     ObReferenceObject(struct nt_object_header *obj);
 void     ObDereferenceObject(struct nt_object_header *obj);
 
@@ -380,6 +393,13 @@ struct nt_eprocess {
     /* Debug object attachment (debugobj.c). NULL when no debugger is attached.
      * Set and cleared under the debug object lock and proc->lock. */
     struct nt_debug_obj     *debug_obj;
+    /* Address space of a foreign process (mm.c, ADR 0073). NULL until a memory
+     * service first names the process; the current process uses the global
+     * space and leaves this NULL. aspace_free tears the space down in
+     * ObDestroyProcessObject, so object.c does not link against the memory
+     * manager. */
+    struct nt_mm            *aspace;
+    void                   (*aspace_free)(struct nt_mm *mm);
 };
 
 struct nt_ethread {

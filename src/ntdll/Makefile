@@ -2,7 +2,9 @@
 #
 #   make -C src/ntdll            build out/ntdll.dll (and out/ntdll.def)
 #   make -C src/ntdll check      build, then compare exports with the .def
-#                                (tests/ntdll-host/check_exports.sh; build-only)
+#                                (tests/ntdll-host/check_exports.sh) and check
+#                                that LdrLoadDll is not the stub
+#                                (tests/ntdll-host/check_ldr_stub.sh); build-only
 #   make -C src/ntdll clean      remove out/
 #
 # make does not import TMP from the MSYS2 shell on the development machine;
@@ -67,13 +69,17 @@ STUBS_S   := $(ROOT)/build/generated_stubs.S
 # needs to be (ldr.c: real loader only in the non-MinGW build, stubs here).
 C_SRCS := ntdll_main.c ldr.c except.c unwind.c ntdll_runtime.c ntstatus_to_dos.c
 
-CPPFLAGS := -I$(SRC) -I$(ROOT)/src/loader
+CPPFLAGS := -I$(SRC) -I$(ROOT)/src/loader -DPE_FREESTANDING
 CFLAGS   := -std=c11 -O2 -Wall -Wextra -ffreestanding -fno-builtin \
             -fno-tree-loop-distribute-patterns -fno-stack-protector
 LDFLAGS  := -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined
 LDLIBS   := -lgcc
 
-OBJS := $(addprefix $(OUT)/,$(C_SRCS:.c=.o)) $(OUT)/generated_stubs.o
+# PE parser shared with the host tests (src/loader). ldr.c calls pe_* for
+# the module headers; without it the link leaves them undefined.
+LOADER_PE := $(ROOT)/src/loader/pe_parse.c
+
+OBJS := $(addprefix $(OUT)/,$(C_SRCS:.c=.o)) $(OUT)/generated_stubs.o $(OUT)/pe_parse.o
 
 .PHONY: all check clean
 
@@ -83,6 +89,9 @@ $(OUT)/ntdll.def: $(DEF_GEN) $(SYSCALLS) | $(OUT)
 	$(PYTHON) "$(DEF_GEN)" "$(SYSCALLS)" "$@"
 
 $(OUT)/%.o: $(SRC)/%.c | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(OUT)/pe_parse.o: $(LOADER_PE) | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
 $(OUT)/generated_stubs.o: $(STUBS_S) | $(OUT)
@@ -95,6 +104,7 @@ $(OUT)/ntdll.dll: $(OBJS) $(OUT)/ntdll.def
 # is never loaded or run). Not wired into CI.
 check: $(OUT)/ntdll.dll $(OUT)/ntdll.def
 	$(ROOT)/tests/ntdll-host/check_exports.sh $(OUT)/ntdll.dll $(OUT)/ntdll.def
+	$(ROOT)/tests/ntdll-host/check_ldr_stub.sh $(OUT)/ntdll.dll
 
 $(OUT):
 	mkdir -p $(OUT)

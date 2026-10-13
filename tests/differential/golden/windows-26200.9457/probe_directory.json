@@ -1,0 +1,18 @@
+{
+  "probe": "probe_directory",
+  "windows_build": "26200.9457",
+  "windows_version": "10.0.26200",
+  "arch": "x64",
+  "test_dir": "C:\\Users\\<user>\\AppData\\Local\\Temp\\ntpers_dir_21836",
+  "nt_open_dir": {"ntstatus":0,"hex":"0x00000000","dos":0},
+  "file_as_dir": {"hex":"0xC0000103","dos":267},
+  "query_tests": [
+    {"class":1,"name":"FileDirectoryInformation","first_hex":"0x00000000","first_count":7,"second_hex":"0x80000006","restart_hex":"0x00000000","single_hex":"0x00000000","single2_hex":"0x00000000","small_hex":"0xC0000004","null_hex":"0xC0000004","wild_hex":"0x00000000","wild_count":3,"invalid_hex":"0xC0000008"},
+    {"class":2,"name":"FileFullDirectoryInformation","first_hex":"0x00000000","first_count":7,"second_hex":"0x80000006","restart_hex":"0x00000000","single_hex":"0x00000000","single2_hex":"0x00000000","small_hex":"0xC0000004","null_hex":"0xC0000004","wild_hex":"0x00000000","wild_count":3,"invalid_hex":"0xC0000008"},
+    {"class":3,"name":"FileBothDirectoryInformation","first_hex":"0x00000000","first_count":7,"second_hex":"0x80000006","restart_hex":"0x00000000","single_hex":"0x00000000","single2_hex":"0x00000000","small_hex":"0xC0000004","null_hex":"0xC0000004","wild_hex":"0x00000000","wild_count":3,"invalid_hex":"0xC0000008"},
+    {"class":12,"name":"FileNamesInformation","first_hex":"0x00000000","first_count":7,"second_hex":"0x80000006","restart_hex":"0x00000000","single_hex":"0x00000000","single2_hex":"0x00000000","small_hex":"0xC0000004","null_hex":"0xC0000004","wild_hex":"0x00000000","wild_count":3,"invalid_hex":"0xC0000008"}
+  ],
+  "win32_find": {"pattern":"C:\\Users\\<user>\\AppData\\Local\\Temp\\ntpers_dir_21836\\*","count":7},
+  "empty_dir": {"open_hex":"0x00000000","query_hex":"0x00000000"},
+  "done": true
+}

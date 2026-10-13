@@ -439,28 +439,28 @@ static int ntmm_range_free(struct nt_mm *mm, ULONG_PTR start, ULONG_PTR end) {
 }
 
 static ULONG_PTR ntmm_find_hole_bottom_up(struct nt_mm *mm, ULONG_PTR size, ULONG_PTR align) {
-    ULONG_PTR candidate = ntmm_round_up(NTMM_LOW_ADDRESS, align);
+    ULONG_PTR candidate = ntmm_round_up(mm->low_addr, align);
     struct nt_vad *cur = mm->vad_head;
     while (cur) {
         if (candidate + size <= cur->start) return candidate;
         if (candidate < cur->end) candidate = ntmm_round_up(cur->end, align);
-        if (candidate + size > NTMM_HIGH_ADDRESS) return 0;
+        if (candidate + size > mm->high_addr) return 0;
         cur = cur->list_next;
     }
-    if (candidate + size <= NTMM_HIGH_ADDRESS) return candidate;
+    if (candidate + size <= mm->high_addr) return candidate;
     return 0;
 }
 
 static ULONG_PTR ntmm_find_hole_top_down(struct nt_mm *mm, ULONG_PTR size, ULONG_PTR align) {
     ULONG_PTR candidate;
     if (mm->vad_head == NULL) {
-        candidate = ntmm_round_down(NTMM_HIGH_ADDRESS - size, align);
-        if (candidate < NTMM_LOW_ADDRESS) return 0;
+        candidate = ntmm_round_down(mm->high_addr - size, align);
+        if (candidate < mm->low_addr) return 0;
         return candidate;
     }
     /* Start from high */
-    candidate = ntmm_round_down(NTMM_HIGH_ADDRESS - size, align);
-    while (candidate >= NTMM_LOW_ADDRESS) {
+    candidate = ntmm_round_down(mm->high_addr - size, align);
+    while (candidate >= mm->low_addr) {
         if (ntmm_range_free(mm, candidate, candidate + size)) return candidate;
         struct nt_vad *vad = nt_vad_find(mm, candidate);
         if (vad) {
@@ -474,7 +474,7 @@ static ULONG_PTR ntmm_find_hole_top_down(struct nt_mm *mm, ULONG_PTR size, ULONG
                 candidate -= align;
             }
         }
-        if (candidate > NTMM_HIGH_ADDRESS) break;
+        if (candidate > mm->high_addr) break;
     }
     return 0;
 }
@@ -672,7 +672,7 @@ static int ntmm_range_free(struct nt_mm *mm, ULONG_PTR start, ULONG_PTR end)
 
 static ULONG_PTR ntmm_find_hole_bottom_up(struct nt_mm *mm, ULONG_PTR size, ULONG_PTR align)
 {
-    ULONG_PTR candidate = (NTMM_LOW_ADDRESS + align - 1) & ~(align - 1);
+    ULONG_PTR candidate = (mm->low_addr + align - 1) & ~(align - 1);
     struct rb_node *n = rb_first(&mm->vad_root);
     while (n) {
         struct nt_vad *cur = rb_entry(n, struct nt_vad, rb);
@@ -680,11 +680,11 @@ static ULONG_PTR ntmm_find_hole_bottom_up(struct nt_mm *mm, ULONG_PTR size, ULON
             return candidate;
         if (candidate < cur->end)
             candidate = (cur->end + align - 1) & ~(align - 1);
-        if (candidate + size > NTMM_HIGH_ADDRESS)
+        if (candidate + size > mm->high_addr)
             return 0;
         n = rb_next(n);
     }
-    if (candidate + size <= NTMM_HIGH_ADDRESS)
+    if (candidate + size <= mm->high_addr)
         return candidate;
     return 0;
 }
@@ -693,12 +693,12 @@ static ULONG_PTR ntmm_find_hole_top_down(struct nt_mm *mm, ULONG_PTR size, ULONG
 {
     ULONG_PTR candidate;
     if (RB_EMPTY_ROOT(&mm->vad_root)) {
-        candidate = (NTMM_HIGH_ADDRESS - size) & ~(align - 1);
-        if (candidate < NTMM_LOW_ADDRESS) return 0;
+        candidate = (mm->high_addr - size) & ~(align - 1);
+        if (candidate < mm->low_addr) return 0;
         return candidate;
     }
-    candidate = (NTMM_HIGH_ADDRESS - size) & ~(align - 1);
-    while (candidate >= NTMM_LOW_ADDRESS) {
+    candidate = (mm->high_addr - size) & ~(align - 1);
+    while (candidate >= mm->low_addr) {
         if (ntmm_range_free(mm, candidate, candidate + size))
             return candidate;
         struct nt_vad *vad = nt_vad_find(mm, candidate);
@@ -714,7 +714,7 @@ static ULONG_PTR ntmm_find_hole_top_down(struct nt_mm *mm, ULONG_PTR size, ULONG
                 candidate -= align;
             }
         }
-        if (candidate > NTMM_HIGH_ADDRESS) break;
+        if (candidate > mm->high_addr) break;
     }
     return 0;
 }
@@ -809,6 +809,9 @@ static int ntmm_align_up_checked(ULONG_PTR x, ULONG_PTR align, ULONG_PTR *out) {
 static ULONG_PTR ntmm_find_hole_in(struct nt_mm *mm, ULONG_PTR size, ULONG_PTR align,
                                    ULONG_PTR low, ULONG_PTR high, int top_down) {
     ULONG_PTR cand;
+    /* The request is clamped to the space: an arena has its own interior. */
+    if (low < mm->low_addr) low = mm->low_addr;
+    if (high > mm->high_addr) high = mm->high_addr;
     if (size == 0 || high < low || size > high - low) return 0;
     if (!top_down) {
         if (!ntmm_align_up_checked(low, align, &cand)) return 0;
@@ -1038,6 +1041,10 @@ NTSTATUS ntmm_init(struct nt_mm *mm) {
 #endif
     mm->highest_vad = NTMM_LOW_ADDRESS;
     mm->locks = NULL;
+    mm->low_addr = NTMM_LOW_ADDRESS;
+    mm->high_addr = NTMM_HIGH_ADDRESS;
+    mm->arena_base = 0;
+    mm->arena_size = 0;
     return STATUS_SUCCESS;
 }
 
@@ -1047,7 +1054,8 @@ void ntmm_destroy(struct nt_mm *mm) {
     struct nt_vad *cur = mm->vad_head;
     while (cur) {
         struct nt_vad *next = cur->list_next;
-        if (cur->state != MEM_FREE) {
+        /* An arena is released as one range below, not per VAD. */
+        if (!mm->arena_size && cur->state != MEM_FREE) {
             kshim_munmap((void *)cur->start, (size_t)(cur->end - cur->start));
         }
         nt_vad_free(cur);
@@ -1056,6 +1064,10 @@ void ntmm_destroy(struct nt_mm *mm) {
     mm->vad_head = NULL;
     mm->vad_root.rb_node = NULL;
     mm->highest_vad = NTMM_LOW_ADDRESS;
+    if (mm->arena_size) {
+        kshim_munmap((void *)mm->arena_base, (size_t)mm->arena_size);
+        mm->arena_size = 0;
+    }
 #else
     struct rb_node *n = rb_first(&mm->vad_root);
     while (n) {
@@ -1120,14 +1132,161 @@ int ntmm_check_invariants(struct nt_mm *mm) {
 /* NtAllocateVirtualMemory                                                    */
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* Address spaces per process (ADR 0073)                                      */
+/* -------------------------------------------------------------------------- */
+
+/* Size of a foreign process's host arena (userspace shim). The arena is one
+ * reservation; regions are carved from its interior, which keeps one 64 KiB
+ * granule free at each end, so no region can cover the whole reservation and a
+ * sub-range unmap can never release it. 64 MiB is enough for the tests and the
+ * loader's first images; a larger need is a constant change here. */
+#define NTMM_ARENA_SIZE ((SIZE_T)64 * 1024 * 1024)
+
+/* A resolved address space. hdr holds one reference on the process object,
+ * dropped by ntmm_space_release. It is NULL for the global space. */
+struct ntmm_space_ref {
+    struct nt_mm            *mm;
+    struct nt_object_header *hdr;
+};
+
+/* Whether [base, base + size) may be used in mm. The global space takes any
+ * address the VAD map accepts. An arena takes only its own interior: a host
+ * mapping outside it would replace memory the process does not own. */
+static int ntmm_in_space(const struct nt_mm *mm, ULONG_PTR base, SIZE_T size) {
+    if (!mm->arena_size) return 1;
+    if (base < mm->low_addr || base > mm->high_addr) return 0;
+    return size <= mm->high_addr - base;
+}
+
+/* Host reserve for a region. The global space reserves the range with
+ * MAP_FIXED_NOREPLACE. An arena is reserved already (committed PROT_NONE), so
+ * the reserve is a no-op there and the commit that follows does the work. */
+static void *ntmm_host_reserve(struct nt_mm *mm, void *addr, size_t size) {
+#ifndef __KERNEL__
+    if (mm->arena_size) return addr;
+#else
+    (void)mm;
+#endif
+    return kshim_mmap_reserve(addr, size);
+}
+
+/* Host decommit for a region. A global space keeps its committed pages (it
+ * writes PROT_NONE). An arena unmaps the range, which decommits it, so a later
+ * commit returns zeroed pages as NT requires. */
+static void ntmm_host_decommit(struct nt_mm *mm, ULONG_PTR base, SIZE_T size) {
+#ifndef __KERNEL__
+    if (mm->arena_size) {
+        kshim_munmap((void *)base, (size_t)size);
+        return;
+    }
+#endif
+    (void)mm;
+    kshim_mmap_commit((void *)base, (size_t)size, PROT_NONE);
+}
+
+static NTSTATUS ntmm_global_space(struct ntmm_space_ref *ref) {
+    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
+    ref->mm = &g_nt_mm;
+    return STATUS_SUCCESS;
+}
+
+#ifndef __KERNEL__
+/* Creates the space of a foreign process on first use: a host arena and the
+ * VAD map that carves it. Serialised, because two services can race here. */
+static pthread_mutex_t ntmm_space_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void ntmm_space_free_cb(struct nt_mm *mm) {
+    ntmm_destroy(mm);
+    kfree(mm);
+}
+
+static NTSTATUS ntmm_proc_space(struct nt_eprocess *p, struct nt_mm **out) {
+    struct nt_mm *mm;
+    void *arena;
+    ULONG_PTR raw, arena_end;
+    pthread_mutex_lock(&ntmm_space_mutex);
+    if (!p->aspace) {
+        mm = (struct nt_mm *)kzalloc(sizeof(*mm), GFP_KERNEL);
+        arena = mm ? kshim_mmap_reserve(NULL, NTMM_ARENA_SIZE) : NULL;
+        if (!arena) {
+            if (mm) kfree(mm);
+            pthread_mutex_unlock(&ntmm_space_mutex);
+            return STATUS_NO_MEMORY;
+        }
+        ntmm_init(mm);
+        raw = (ULONG_PTR)arena;
+        arena_end = raw + NTMM_ARENA_SIZE;
+        mm->arena_base = raw;
+        mm->arena_size = NTMM_ARENA_SIZE;
+        mm->low_addr = ntmm_round_up(raw, NTMM_ALLOC_GRANULARITY) + NTMM_ALLOC_GRANULARITY;
+        mm->high_addr = ntmm_round_down(arena_end, NTMM_ALLOC_GRANULARITY) - NTMM_ALLOC_GRANULARITY;
+        p->aspace = mm;
+        p->aspace_free = ntmm_space_free_cb;
+    }
+    *out = p->aspace;
+    pthread_mutex_unlock(&ntmm_space_mutex);
+    return STATUS_SUCCESS;
+}
+#endif
+
+/* Resolves ProcessHandle to the address space it names, checking that the
+ * handle grants access. The pseudo-handle (and NULL, as before) is the global
+ * space, with no object lookup. A handle to the current process is also the
+ * global space. A foreign process has its own space: in the host shim that is
+ * an arena, and the kernel build refuses it (STATUS_NOT_SUPPORTED), because only
+ * the current task's mm is reachable there. On success the caller must call
+ * ntmm_space_release. */
+static NTSTATUS ntmm_space_acquire(HANDLE ProcessHandle, ACCESS_MASK access,
+                                   struct ntmm_space_ref *ref) {
+    struct nt_eprocess *cur = kshim_current_process();
+    struct nt_object_header *hdr = NULL;
+    struct nt_eprocess *target;
+    NTSTATUS st;
+    ref->mm = NULL;
+    ref->hdr = NULL;
+    if (ProcessHandle == NtCurrentProcess() || ProcessHandle == NULL)
+        return ntmm_global_space(ref);
+    if (!cur) return STATUS_INVALID_HANDLE;
+    st = ObReferenceObjectByHandle(cur, ProcessHandle, &nt_process_type, KernelMode,
+                                   access, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    target = ObFindProcessByHeader(hdr);
+    if (!target) {
+        ObDereferenceObject(hdr);
+        return STATUS_INVALID_HANDLE;
+    }
+    if (target == cur) {
+        ObDereferenceObject(hdr);
+        return ntmm_global_space(ref);
+    }
+#ifdef __KERNEL__
+    ObDereferenceObject(hdr);
+    return STATUS_NOT_SUPPORTED;
+#else
+    st = ntmm_proc_space(target, &ref->mm);
+    if (!NT_SUCCESS(st)) {
+        ObDereferenceObject(hdr);
+        return st;
+    }
+    ref->hdr = hdr;
+    return STATUS_SUCCESS;
+#endif
+}
+
+static void ntmm_space_release(struct ntmm_space_ref *ref) {
+    if (ref->hdr) ObDereferenceObject(ref->hdr);
+    ref->hdr = NULL;
+    ref->mm = NULL;
+}
+
 /* Allocator core. req, when not NULL, places a reserved region with address
  * requirements (see NtAllocateVirtualMemoryEx); the caller has already checked
  * that the base is NULL and that the call reserves. */
-static NTSTATUS ntmm_alloc_core(HANDLE ProcessHandle, PVOID *BaseAddress,
+static NTSTATUS ntmm_alloc_core(struct nt_mm *mm, PVOID *BaseAddress,
                                 ULONG_PTR ZeroBits, PSIZE_T RegionSize,
                                 ULONG AllocationType, ULONG Protect,
                                 const struct nt_addr_req *req) {
-    struct nt_mm *mm = &g_nt_mm;
     NTSTATUS status = STATUS_SUCCESS;
     ULONG_PTR req_base = 0, actual_base = 0, actual_end = 0;
     SIZE_T req_size = 0;
@@ -1137,11 +1296,9 @@ static NTSTATUS ntmm_alloc_core(HANDLE ProcessHandle, PVOID *BaseAddress,
     int do_reset = (AllocationType & MEM_RESET) != 0;
     int write_watch = (AllocationType & MEM_WRITE_WATCH) != 0;
 
-    (void)ProcessHandle;
     (void)ZeroBits;
 
     if (!BaseAddress || !RegionSize) return STATUS_INVALID_PARAMETER;
-    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
     if (do_reset) {
         if (reserve || commit) return STATUS_INVALID_PARAMETER;
         req_base = (ULONG_PTR)*BaseAddress;
@@ -1212,6 +1369,10 @@ static NTSTATUS ntmm_alloc_core(HANDLE ProcessHandle, PVOID *BaseAddress,
             if (actual_base == 0) { status = STATUS_NO_MEMORY; goto out_unlock; }
         } else {
             actual_base = req_base;
+            if (!ntmm_in_space(mm, actual_base, req_size)) {
+                status = STATUS_CONFLICTING_ADDRESSES;
+                goto out_unlock;
+            }
             if (!ntmm_range_free(mm, actual_base, actual_base + req_size)) {
                 status = STATUS_CONFLICTING_ADDRESSES;
                 goto out_unlock;
@@ -1227,7 +1388,7 @@ static NTSTATUS ntmm_alloc_core(HANDLE ProcessHandle, PVOID *BaseAddress,
         nt_list_insert(mm, vad);
         ntmm_unlock(mm);
 
-        if (kshim_mmap_reserve((void *)actual_base, (size_t)req_size) == NULL) {
+        if (ntmm_host_reserve(mm, (void *)actual_base, (size_t)req_size) == NULL) {
             ntmm_lock(mm);
             nt_list_remove(mm, vad);
             ntmm_unlock(mm);
@@ -1268,7 +1429,7 @@ static NTSTATUS ntmm_alloc_core(HANDLE ProcessHandle, PVOID *BaseAddress,
         vad->guard = (Protect & PAGE_GUARD) ? 1 : 0;
         nt_list_insert(mm, vad);
         ntmm_unlock(mm);
-        if (kshim_mmap_reserve((void *)actual_base, (size_t)req_size) == NULL ||
+        if (ntmm_host_reserve(mm, (void *)actual_base, (size_t)req_size) == NULL ||
             kshim_mmap_commit((void *)actual_base, (size_t)req_size, ntmm_prot_to_linux(Protect)) != 0) {
             ntmm_lock(mm);
             nt_list_remove(mm, vad);
@@ -1436,23 +1597,24 @@ out_unlock:
 NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
                                  ULONG_PTR ZeroBits, PSIZE_T RegionSize,
                                  ULONG AllocationType, ULONG Protect) {
-    return ntmm_alloc_core(ProcessHandle, BaseAddress, ZeroBits, RegionSize,
-                           AllocationType, Protect, NULL);
+    struct ntmm_space_ref ref;
+    NTSTATUS st = ntmm_space_acquire(ProcessHandle, PROCESS_VM_OPERATION, &ref);
+    if (!NT_SUCCESS(st)) return st;
+    st = ntmm_alloc_core(ref.mm, BaseAddress, ZeroBits, RegionSize, AllocationType, Protect, NULL);
+    ntmm_space_release(&ref);
+    return st;
 }
 
-NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
+static NTSTATUS NtFreeVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
                              PSIZE_T RegionSize, ULONG FreeType) {
-    struct nt_mm *mm = &g_nt_mm;
     NTSTATUS status = STATUS_SUCCESS;
     ULONG_PTR base = 0;
     SIZE_T size = 0;
-    (void)ProcessHandle;
     if (!BaseAddress || !RegionSize) return STATUS_INVALID_PARAMETER;
     if ((FreeType & ~(MEM_DECOMMIT | MEM_RELEASE)) != 0 ||
         (FreeType & (MEM_DECOMMIT | MEM_RELEASE)) == 0 ||
         ((FreeType & MEM_DECOMMIT) && (FreeType & MEM_RELEASE)))
         return STATUS_INVALID_PARAMETER;
-    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
     base = (ULONG_PTR)*BaseAddress;
     size = *RegionSize;
 
@@ -1577,21 +1739,29 @@ NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
      * Shim fallback: kshim_mmap_commit with PROT_NONE -> decommit.
      */
 #endif
-    kshim_mmap_commit((void *)base, (size_t)size, PROT_NONE);
+    ntmm_host_decommit(mm, base, size);
     return status;
+}
+
+NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
+                             PSIZE_T RegionSize, ULONG FreeType) {
+    struct ntmm_space_ref ref;
+    NTSTATUS st = ntmm_space_acquire(ProcessHandle, PROCESS_VM_OPERATION, &ref);
+    if (!NT_SUCCESS(st)) return st;
+    st = NtFreeVirtualMemory_in(ref.mm, BaseAddress, RegionSize, FreeType);
+    ntmm_space_release(&ref);
+    return st;
 }
 
 /* -------------------------------------------------------------------------- */
 /* NtProtectVirtualMemory                                                     */
 /* -------------------------------------------------------------------------- */
 
-NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
+static NTSTATUS NtProtectVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
                                 PSIZE_T RegionSize, ULONG NewProtect,
                                 PULONG OldProtect) {
-    struct nt_mm *mm = &g_nt_mm;
     ULONG_PTR base;
     SIZE_T size;
-    (void)ProcessHandle;
     // Proper path handles MEM_IMAGE | MEM_PRIVATE | MEM_MAPPED uniformly.
     // Previous bypass for 0x140000000 hid the real bug where VAD for
     // .idata was PAGE_READONLY and NtProtect failed due to missing
@@ -1603,7 +1773,6 @@ NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     // writable window on .idata and then restore READONLY.
     if (!BaseAddress || !RegionSize || !OldProtect) return STATUS_INVALID_PARAMETER;
     if (!ntmm_protection_valid(NewProtect)) return STATUS_INVALID_PAGE_PROTECTION;
-    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
     base = (ULONG_PTR)*BaseAddress;
     size = *RegionSize;
     base = ntmm_round_down(base, NTMM_PAGE_SIZE);
@@ -1664,28 +1833,44 @@ NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     return STATUS_SUCCESS;
 }
 
+NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
+                                PSIZE_T RegionSize, ULONG NewProtect,
+                                PULONG OldProtect) {
+    struct ntmm_space_ref ref;
+    NTSTATUS st = ntmm_space_acquire(ProcessHandle, PROCESS_VM_OPERATION, &ref);
+    if (!NT_SUCCESS(st)) return st;
+    st = NtProtectVirtualMemory_in(ref.mm, BaseAddress, RegionSize, NewProtect, OldProtect);
+    ntmm_space_release(&ref);
+    return st;
+}
+
 /* -------------------------------------------------------------------------- */
 /* NtLockVirtualMemory and NtUnlockVirtualMemory                              */
 /* -------------------------------------------------------------------------- */
 
 /* Common argument rules. BaseAddress and RegionSize are required and non-zero
  * in size. MapType is NTMM_MAP_PROCESS or NTMM_MAP_SYSTEM, else
- * STATUS_INVALID_PARAMETER. The range is rounded out to whole pages, as in
- * NtProtectVirtualMemory, with the same overflow checks. */
+ * STATUS_INVALID_PARAMETER. The range [BaseAddress, BaseAddress + RegionSize)
+ * is rounded out to whole pages, so the in-page offset of BaseAddress counts
+ * toward the size. A range or rounding that wraps is refused. */
 static NTSTATUS ntmm_lock_args(PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType,
                                ULONG_PTR *base_out, ULONG_PTR *end_out) {
-    ULONG_PTR base;
+    ULONG_PTR start, raw_end, end;
     SIZE_T size;
     if (!BaseAddress || !RegionSize) return STATUS_INVALID_PARAMETER;
     if (MapType != NTMM_MAP_PROCESS && MapType != NTMM_MAP_SYSTEM) return STATUS_INVALID_PARAMETER;
-    base = ntmm_round_down((ULONG_PTR)*BaseAddress, NTMM_PAGE_SIZE);
+    start = (ULONG_PTR)*BaseAddress;
     size = *RegionSize;
     if (size == 0) return STATUS_INVALID_PARAMETER;
-    if (base > ~(ULONG_PTR)0 - NTMM_PAGE_SIZE || size > (SIZE_T)(~(ULONG_PTR)0 - NTMM_PAGE_SIZE - base)) return STATUS_INVALID_PARAMETER;
-    size = (SIZE_T)ntmm_round_up(size, NTMM_PAGE_SIZE);
-    if ((ULONG_PTR)size > (ULONG_PTR)-1 - base) return STATUS_INVALID_PARAMETER;
-    *base_out = base;
-    *end_out = base + size;
+    /* The byte range [start, start + size) must not wrap, and rounding its end
+     * out to a page must not wrap either. The page round-up covers the in-page
+     * offset of start, so the last byte of the range is always locked. */
+    if (size > (SIZE_T)(~(ULONG_PTR)0 - start)) return STATUS_INVALID_PARAMETER;
+    raw_end = start + (ULONG_PTR)size;
+    end = ntmm_round_up(raw_end, NTMM_PAGE_SIZE);
+    if (end < raw_end) return STATUS_INVALID_PARAMETER;
+    *base_out = ntmm_round_down(start, NTMM_PAGE_SIZE);
+    *end_out = end;
     return STATUS_SUCCESS;
 }
 
@@ -1702,18 +1887,15 @@ static NTSTATUS ntmm_lock_args(PVOID *BaseAddress, PSIZE_T RegionSize, ULONG Map
  *
  * Kernel build: the page-lock primitive is not wired into the kernel, so the
  * arguments are checked and then STATUS_NOT_SUPPORTED is returned. */
-NTSTATUS NtLockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType) {
-    struct nt_mm *mm = &g_nt_mm;
+static NTSTATUS NtLockVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType) {
     ULONG_PTR base = 0, end = 0;
     NTSTATUS st;
-    (void)ProcessHandle;
     st = ntmm_lock_args(BaseAddress, RegionSize, MapType, &base, &end);
     if (!NT_SUCCESS(st)) return st;
 #ifdef __KERNEL__
     return STATUS_NOT_SUPPORTED;
 #else
     if (MapType == NTMM_MAP_SYSTEM && !nt_lock_privilege_held()) return STATUS_PRIVILEGE_NOT_HELD;
-    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
     ntmm_lock(mm);
     if (!ntmm_range_committed(mm, base, end)) { ntmm_unlock(mm); return STATUS_NOT_COMMITTED; }
     if (nt_lock_has_other_type(mm, base, end, (ULONG)MapType)) { ntmm_unlock(mm); return STATUS_INVALID_PARAMETER; }
@@ -1726,17 +1908,24 @@ NTSTATUS NtLockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T R
 #endif
 }
 
+NTSTATUS NtLockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType) {
+    struct ntmm_space_ref ref;
+    NTSTATUS st = ntmm_space_acquire(ProcessHandle, PROCESS_VM_OPERATION, &ref);
+    if (!NT_SUCCESS(st)) return st;
+    st = NtLockVirtualMemory_in(ref.mm, BaseAddress, RegionSize, MapType);
+    ntmm_space_release(&ref);
+    return st;
+}
+
 /* NtUnlockVirtualMemory(ProcessHandle, BaseAddress, RegionSize, MapType).
  * Every page of the range must be locked with MapType, else STATUS_NOT_LOCKED
  * and nothing changes. The host locks are released for those pages, and the
  * runs are cut back. Unlike a host lock count, a page locked by two calls is
  * unlocked by one unlock call. Kernel build: STATUS_NOT_SUPPORTED, as for the
  * lock. */
-NTSTATUS NtUnlockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType) {
-    struct nt_mm *mm = &g_nt_mm;
+static NTSTATUS NtUnlockVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType) {
     ULONG_PTR base = 0, end = 0;
     NTSTATUS st;
-    (void)ProcessHandle;
     st = ntmm_lock_args(BaseAddress, RegionSize, MapType, &base, &end);
     if (!NT_SUCCESS(st)) return st;
 #ifdef __KERNEL__
@@ -1744,7 +1933,6 @@ NTSTATUS NtUnlockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T
 #else
     struct nt_lock_range *spare = NULL;
     struct nt_lock_range *r;
-    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
     ntmm_lock(mm);
     if (!nt_lock_covered(mm, base, end, (ULONG)MapType)) { ntmm_unlock(mm); return STATUS_NOT_LOCKED; }
     if (nt_lock_needs_split(mm, base, end)) {
@@ -1767,6 +1955,15 @@ NTSTATUS NtUnlockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T
 #endif
 }
 
+NTSTATUS NtUnlockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType) {
+    struct ntmm_space_ref ref;
+    NTSTATUS st = ntmm_space_acquire(ProcessHandle, PROCESS_VM_OPERATION, &ref);
+    if (!NT_SUCCESS(st)) return st;
+    st = NtUnlockVirtualMemory_in(ref.mm, BaseAddress, RegionSize, MapType);
+    ntmm_space_release(&ref);
+    return st;
+}
+
 /* -------------------------------------------------------------------------- */
 /* NtQueryVirtualMemory                                                       */
 /* -------------------------------------------------------------------------- */
@@ -1774,13 +1971,11 @@ NTSTATUS NtUnlockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T
 /* MemoryRegionInformation: the VAD that holds addr. Like MemoryBasicInformation
  * this reports one VAD, not a coalesced region. Free addresses are
  * STATUS_INVALID_ADDRESS (NT has no region for them). */
-static NTSTATUS ntmm_query_region(PVOID BaseAddress, PVOID MemoryInformation,
+static NTSTATUS ntmm_query_region(struct nt_mm *mm, PVOID BaseAddress, PVOID MemoryInformation,
                                   SIZE_T MemoryInformationLength, PSIZE_T ReturnLength) {
-    struct nt_mm *mm = &g_nt_mm;
     PMEMORY_REGION_INFORMATION info = (PMEMORY_REGION_INFORMATION)MemoryInformation;
     ULONG_PTR addr = (ULONG_PTR)BaseAddress;
     if (!info || MemoryInformationLength < sizeof(*info)) return STATUS_INFO_LENGTH_MISMATCH;
-    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
     ntmm_lock(mm);
     struct nt_vad *vad = nt_vad_find(mm, addr);
     if (!vad) {
@@ -1802,17 +1997,15 @@ static NTSTATUS ntmm_query_region(PVOID BaseAddress, PVOID MemoryInformation,
     return STATUS_SUCCESS;
 }
 
-NTSTATUS NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
+static NTSTATUS NtQueryVirtualMemory_in(struct nt_mm *mm, PVOID BaseAddress,
                               ULONG MemoryInformationClass,
                               PVOID MemoryInformation,
                               SIZE_T MemoryInformationLength,
                               PSIZE_T ReturnLength) {
-    struct nt_mm *mm = &g_nt_mm;
     PMEMORY_BASIC_INFORMATION mbi = (PMEMORY_BASIC_INFORMATION)MemoryInformation;
     ULONG_PTR addr = (ULONG_PTR)BaseAddress;
-    (void)ProcessHandle;
     if (MemoryInformationClass == MemoryRegionInformation)
-        return ntmm_query_region(BaseAddress, MemoryInformation, MemoryInformationLength, ReturnLength);
+        return ntmm_query_region(mm, BaseAddress, MemoryInformation, MemoryInformationLength, ReturnLength);
     /* Working-set and mapped-file-name classes need a model this manager does
      * not keep (no per-page residency, no file names). Known but unsupported. */
     if (MemoryInformationClass == MemoryWorkingSetInformation ||
@@ -1821,14 +2014,13 @@ NTSTATUS NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
         return STATUS_NOT_SUPPORTED;
     if (MemoryInformationClass != MemoryBasicInformation) return STATUS_INVALID_INFO_CLASS;
     if (!mbi || MemoryInformationLength < sizeof(*mbi)) return STATUS_INFO_LENGTH_MISMATCH;
-    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
     ntmm_lock(mm);
     struct nt_vad *vad = nt_vad_find(mm, addr);
     if (!vad) {
         struct nt_vad *next = nt_vad_find_ge(mm, addr);
-        ULONG_PTR region_end = next ? next->start : NTMM_HIGH_ADDRESS;
+        ULONG_PTR region_end = next ? next->start : mm->high_addr;
         /* Find previous VAD to get region_start */
-        ULONG_PTR region_start = NTMM_LOW_ADDRESS;
+        ULONG_PTR region_start = mm->low_addr;
 #ifndef __KERNEL__
         struct nt_vad *cur = mm->vad_head;
         while (cur) {
@@ -1846,7 +2038,7 @@ NTSTATUS NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
         }
 #endif
         if (region_start > addr) region_start = addr; /* Should not happen */
-        if (addr >= NTMM_HIGH_ADDRESS) {
+        if (addr >= mm->high_addr) {
             mbi->BaseAddress = (PVOID)addr;
             mbi->AllocationBase = NULL;
             mbi->AllocationProtect = 0;
@@ -1900,6 +2092,19 @@ NTSTATUS NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
     return STATUS_SUCCESS;
 }
 
+NTSTATUS NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
+                              ULONG MemoryInformationClass,
+                              PVOID MemoryInformation,
+                              SIZE_T MemoryInformationLength,
+                              PSIZE_T ReturnLength) {
+    struct ntmm_space_ref ref;
+    NTSTATUS st = ntmm_space_acquire(ProcessHandle, PROCESS_QUERY_INFORMATION, &ref);
+    if (!NT_SUCCESS(st)) return st;
+    st = NtQueryVirtualMemory_in(ref.mm, BaseAddress, MemoryInformationClass, MemoryInformation, MemoryInformationLength, ReturnLength);
+    ntmm_space_release(&ref);
+    return st;
+}
+
 /* -------------------------------------------------------------------------- */
 /* NtReadVirtualMemory / NtWriteVirtualMemory (current process only)          */
 /* -------------------------------------------------------------------------- */
@@ -1928,10 +2133,8 @@ static int ntmm_access_ok(ULONG protect, int write) {
 /* Length of the run at addr (at most want bytes) that is committed and has an
  * access the caller needs. Zero when the first byte is not accessible. The
  * lock is dropped before the copy, so a concurrent unmap can race with it. */
-static SIZE_T ntmm_access_run(ULONG_PTR addr, SIZE_T want, int write) {
-    struct nt_mm *mm = &g_nt_mm;
+static SIZE_T ntmm_access_run(struct nt_mm *mm, ULONG_PTR addr, SIZE_T want, int write) {
     SIZE_T run = 0;
-    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
     ntmm_lock(mm);
     struct nt_vad *vad = nt_vad_find(mm, addr);
     if (vad && vad->state == MEM_COMMIT && ntmm_access_ok(vad->protect, write)) {
@@ -1945,7 +2148,7 @@ static SIZE_T ntmm_access_run(ULONG_PTR addr, SIZE_T want, int write) {
 /* Copies up to size bytes between the target range and the caller's buffer,
  * a page at a time through a kernel bounce buffer. *done is the number of
  * bytes moved before the first inaccessible byte or fault. */
-static NTSTATUS ntmm_transfer(ULONG_PTR addr, PVOID user, SIZE_T size, SIZE_T *done, int write) {
+static NTSTATUS ntmm_transfer(struct nt_mm *mm, ULONG_PTR addr, PVOID user, SIZE_T size, SIZE_T *done, int write) {
     unsigned char *kbuf;
     SIZE_T off = 0;
     SIZE_T req = size;
@@ -1967,7 +2170,7 @@ static NTSTATUS ntmm_transfer(ULONG_PTR addr, PVOID user, SIZE_T size, SIZE_T *d
         SIZE_T run;
         unsigned char *ubuf = (unsigned char *)user + off;
         if (want > NTMM_PAGE_SIZE) want = NTMM_PAGE_SIZE;
-        run = ntmm_access_run(cur, want, write);
+        run = ntmm_access_run(mm, cur, want, write);
         if (run == 0) break;
         if (write) {
             if (ntmm_user_read(kbuf, ubuf, run)) break;
@@ -1987,11 +2190,11 @@ NTSTATUS NtReadVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
                              PVOID Buffer, SIZE_T BufferSize,
                              PSIZE_T NumberOfBytesRead) {
     SIZE_T done = 0;
-    NTSTATUS st;
-    /* Only the current process: one global address space, no process handle
-     * lookup for other processes yet. */
-    if (ProcessHandle != (HANDLE)-1) return STATUS_NOT_SUPPORTED;
-    st = ntmm_transfer((ULONG_PTR)BaseAddress, Buffer, BufferSize, &done, 0);
+    struct ntmm_space_ref ref;
+    NTSTATUS st = ntmm_space_acquire(ProcessHandle, PROCESS_VM_READ, &ref);
+    if (!NT_SUCCESS(st)) return st;
+    st = ntmm_transfer(ref.mm, (ULONG_PTR)BaseAddress, Buffer, BufferSize, &done, 0);
+    ntmm_space_release(&ref);
     if (NumberOfBytesRead) *NumberOfBytesRead = done;
     return st;
 }
@@ -2000,9 +2203,11 @@ NTSTATUS NtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
                               PVOID Buffer, SIZE_T BufferSize,
                               PSIZE_T NumberOfBytesWritten) {
     SIZE_T done = 0;
-    NTSTATUS st;
-    if (ProcessHandle != (HANDLE)-1) return STATUS_NOT_SUPPORTED;
-    st = ntmm_transfer((ULONG_PTR)BaseAddress, Buffer, BufferSize, &done, 1);
+    struct ntmm_space_ref ref;
+    NTSTATUS st = ntmm_space_acquire(ProcessHandle, PROCESS_VM_WRITE | PROCESS_VM_OPERATION, &ref);
+    if (!NT_SUCCESS(st)) return st;
+    st = ntmm_transfer(ref.mm, (ULONG_PTR)BaseAddress, Buffer, BufferSize, &done, 1);
+    ntmm_space_release(&ref);
     if (NumberOfBytesWritten) *NumberOfBytesWritten = done;
     return st;
 }
@@ -2034,12 +2239,10 @@ static void nt_view_writeback(const struct nt_vad *vad, ULONG_PTR from, ULONG_PT
  * writable file views back (nt_view_writeback). The range is page-rounded, as NT
  * does. Every byte must sit in a committed VAD: no VAD is STATUS_INVALID_ADDRESS,
  * a reserved one is STATUS_NOT_COMMITTED. */
-NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
+static NTSTATUS NtFlushVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
                               PSIZE_T RegionSize, PIO_STATUS_BLOCK IoStatus) {
-    struct nt_mm *mm = &g_nt_mm;
     ULONG_PTR start, end, cur;
     NTSTATUS st = STATUS_SUCCESS;
-    if (ProcessHandle != (HANDLE)-1) return STATUS_NOT_SUPPORTED;
     if (!BaseAddress || !RegionSize || !IoStatus) return STATUS_INVALID_PARAMETER;
     ULONG_PTR req = (ULONG_PTR)*BaseAddress;
     SIZE_T size = *RegionSize;
@@ -2048,7 +2251,6 @@ NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     if (req > ~(ULONG_PTR)0 - NTMM_PAGE_SIZE || size > (SIZE_T)(~(ULONG_PTR)0 - NTMM_PAGE_SIZE - req)) return STATUS_INVALID_PARAMETER;
     start = ntmm_round_down(req, NTMM_PAGE_SIZE);
     end = ntmm_round_up(req + size, NTMM_PAGE_SIZE);
-    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
     ntmm_lock(mm);
     for (cur = start; cur < end; ) {
         struct nt_vad *vad = nt_vad_find(mm, cur);
@@ -2074,6 +2276,16 @@ NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     return st;
 }
 
+NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
+                              PSIZE_T RegionSize, PIO_STATUS_BLOCK IoStatus) {
+    struct ntmm_space_ref ref;
+    NTSTATUS st = ntmm_space_acquire(ProcessHandle, PROCESS_VM_OPERATION, &ref);
+    if (!NT_SUCCESS(st)) return st;
+    st = NtFlushVirtualMemory_in(ref.mm, BaseAddress, RegionSize, IoStatus);
+    ntmm_space_release(&ref);
+    return st;
+}
+
 /* -------------------------------------------------------------------------- */
 /* NtAllocateVirtualMemoryEx                                                  */
 /* -------------------------------------------------------------------------- */
@@ -2082,17 +2294,17 @@ NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
  * requirements entry places a reserved region inside [Lowest, Highest) at the
  * requested alignment (see ntmm_parse_addr_req). The base must then be NULL,
  * and the call must reserve. Other parameter types are STATUS_NOT_SUPPORTED
- * (no NUMA or partition placement here). Other process handles are refused
- * here, unlike NtAllocateVirtualMemory, which still ignores ProcessHandle
- * (known gap). */
+ * (no NUMA or partition placement here). The process handle is resolved as in
+ * NtAllocateVirtualMemory (ntmm_space_acquire), so a foreign process gets its
+ * own space. */
 NTSTATUS NtAllocateVirtualMemoryEx(HANDLE ProcessHandle, PVOID *BaseAddress,
                                    PSIZE_T RegionSize, ULONG AllocationType,
                                    ULONG PageProtection, PVOID ExtendedParameters,
                                    ULONG ExtendedParameterCount) {
     struct nt_addr_req req;
     NTSTATUS st;
+    struct ntmm_space_ref ref;
     req.present = 0;
-    if (ProcessHandle != (HANDLE)-1) return STATUS_NOT_SUPPORTED;
     if (ExtendedParameterCount != 0) {
         if (!ExtendedParameters) return STATUS_INVALID_PARAMETER;
         if (ExtendedParameterCount > MEM_EXT_MAX_COUNT) return STATUS_NOT_SUPPORTED;
@@ -2105,8 +2317,12 @@ NTSTATUS NtAllocateVirtualMemoryEx(HANDLE ProcessHandle, PVOID *BaseAddress,
         if (*BaseAddress != NULL) return STATUS_INVALID_PARAMETER;
         if (!(AllocationType & MEM_RESERVE)) return STATUS_INVALID_PARAMETER;
     }
-    return ntmm_alloc_core(ProcessHandle, BaseAddress, 0, RegionSize, AllocationType,
-                           PageProtection, req.present ? &req : NULL);
+    st = ntmm_space_acquire(ProcessHandle, PROCESS_VM_OPERATION, &ref);
+    if (!NT_SUCCESS(st)) return st;
+    st = ntmm_alloc_core(ref.mm, BaseAddress, 0, RegionSize, AllocationType,
+                         PageProtection, req.present ? &req : NULL);
+    ntmm_space_release(&ref);
+    return st;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2295,6 +2511,9 @@ static NTSTATUS nt_create_file_section(PHANDLE SectionHandle, ACCESS_MASK Desire
     if (NT_SUCCESS(st))
         st = ObInsertObject(hdr, ObjectAttributes, DesiredAccess, kshim_current_process(), SectionHandle);
     ObDereferenceObject(hdr);
+    if (st == STATUS_OBJECT_NAME_COLLISION)
+        st = ObOpenNamedHolderAfterCollision(&nt_section_type, ObjectAttributes, DesiredAccess,
+                                             kshim_current_process(), SectionHandle);
 out_put:
     ntio_file_put(file);
     return st;
@@ -2411,6 +2630,9 @@ static NTSTATUS nt_create_image_section(PHANDLE SectionHandle, ACCESS_MASK Desir
     if (NT_SUCCESS(st))
         st = ObInsertObject(hdr, ObjectAttributes, DesiredAccess, kshim_current_process(), SectionHandle);
     ObDereferenceObject(hdr);
+    if (st == STATUS_OBJECT_NAME_COLLISION)
+        st = ObOpenNamedHolderAfterCollision(&nt_section_type, ObjectAttributes, DesiredAccess,
+                                             kshim_current_process(), SectionHandle);
 
 out_plan:
     if (plan) kfree(plan);
@@ -2462,6 +2684,9 @@ NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
      * reference leaves the handle as the only owner. On failure the object is freed. */
     st = ObInsertObject(hdr, ObjectAttributes, DesiredAccess, kshim_current_process(), SectionHandle);
     ObDereferenceObject(hdr);
+    if (st == STATUS_OBJECT_NAME_COLLISION)
+        st = ObOpenNamedHolderAfterCollision(&nt_section_type, ObjectAttributes, DesiredAccess,
+                                             kshim_current_process(), SectionHandle);
     return st;
 }
 
@@ -2580,9 +2805,8 @@ static NTSTATUS nt_image_relocate(ULONG_PTR base, const struct ip_plan *plan) {
  * takes its final protection, and the map returns STATUS_IMAGE_NOT_AT_BASE. A
  * RELOCS_STRIPPED or non-relocatable image cannot move, so it fails with
  * STATUS_CONFLICTING_ADDRESSES. */
-static NTSTATUS nt_map_image_view(struct nt_section *sec, PVOID *BaseAddress,
+static NTSTATUS nt_map_image_view(struct nt_mm *mm, struct nt_section *sec, PVOID *BaseAddress,
                                   PLARGE_INTEGER SectionOffset, PSIZE_T ViewSize) {
-    struct nt_mm *mm = &g_nt_mm;
     const struct ip_plan *plan = sec->image;
     struct nt_vad *ins[IP_MAX_SECTIONS + 1];
     ULONG_PTR base, size;
@@ -2594,12 +2818,11 @@ static NTSTATUS nt_map_image_view(struct nt_section *sec, PVOID *BaseAddress,
     if (SectionOffset && SectionOffset->QuadPart != 0) return STATUS_INVALID_PARAMETER;
     size = (ULONG_PTR)plan->size_of_image;
     if (*ViewSize != 0 && *ViewSize < size) return STATUS_INVALID_VIEW_SIZE;
-    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
 
     ntmm_lock(mm);
     if (*BaseAddress == NULL) {
         base = (ULONG_PTR)plan->preferred_base;
-        if (!ntmm_range_free(mm, base, base + size)) {
+        if (!ntmm_in_space(mm, base, size) || !ntmm_range_free(mm, base, base + size)) {
             base = ntmm_find_hole_bottom_up(mm, size, NTMM_ALLOC_GRANULARITY);
             if (base == 0) { ntmm_unlock(mm); return STATUS_NO_MEMORY; }
         }
@@ -2609,6 +2832,7 @@ static NTSTATUS nt_map_image_view(struct nt_section *sec, PVOID *BaseAddress,
             ntmm_unlock(mm);
             return STATUS_INVALID_PARAMETER;
         }
+        if (!ntmm_in_space(mm, base, size)) { ntmm_unlock(mm); return STATUS_CONFLICTING_ADDRESSES; }
         if (!ntmm_range_free(mm, base, base + size)) { ntmm_unlock(mm); return STATUS_CONFLICTING_ADDRESSES; }
     }
     if ((u64)base != plan->preferred_base) {
@@ -2700,11 +2924,10 @@ static NTSTATUS nt_map_image_view(struct nt_section *sec, PVOID *BaseAddress,
 #endif
 
 /* Maps a view of an open section. The caller holds a reference to sec. */
-static NTSTATUS nt_map_view_of_section(struct nt_section *sec, PVOID *BaseAddress,
+static NTSTATUS nt_map_view_of_section(struct nt_mm *mm, struct nt_section *sec, PVOID *BaseAddress,
                                        PLARGE_INTEGER SectionOffset, PSIZE_T ViewSize,
                                        ULONG AllocationType, ULONG Win32Protect,
                                        const struct nt_addr_req *req) {
-    struct nt_mm *mm = &g_nt_mm;
     ULONG_PTR offset = 0, base = 0, actual_size = 0;
     int commit;
     int placed = req && req->present;
@@ -2713,7 +2936,7 @@ static NTSTATUS nt_map_view_of_section(struct nt_section *sec, PVOID *BaseAddres
      * is not the data allocator's, so address requirements are refused for it. */
     if (sec->attributes & SEC_IMAGE) {
         if (placed) return STATUS_NOT_SUPPORTED;
-        return nt_map_image_view(sec, BaseAddress, SectionOffset, ViewSize);
+        return nt_map_image_view(mm, sec, BaseAddress, SectionOffset, ViewSize);
     }
 #endif
     if (SectionOffset) offset = (ULONG_PTR)SectionOffset->QuadPart;
@@ -2734,7 +2957,6 @@ static NTSTATUS nt_map_view_of_section(struct nt_section *sec, PVOID *BaseAddres
         actual_size = (ULONG_PTR)ntmm_round_up(*ViewSize, NTMM_PAGE_SIZE);
     }
     if (actual_size > sec->size - offset) return STATUS_INVALID_VIEW_SIZE;
-    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
     commit = (sec->attributes & SEC_COMMIT) || (AllocationType & MEM_COMMIT);
     if (sec->attributes & SEC_RESERVE) commit = 0;
     ntmm_lock(mm);
@@ -2746,6 +2968,7 @@ static NTSTATUS nt_map_view_of_section(struct nt_section *sec, PVOID *BaseAddres
         if (base == 0) { ntmm_unlock(mm); return STATUS_NO_MEMORY; }
     } else {
         base = ntmm_round_down((ULONG_PTR)*BaseAddress, NTMM_ALLOC_GRANULARITY);
+        if (!ntmm_in_space(mm, base, actual_size)) { ntmm_unlock(mm); return STATUS_CONFLICTING_ADDRESSES; }
         if (!ntmm_range_free(mm, base, base + actual_size)) { ntmm_unlock(mm); return STATUS_CONFLICTING_ADDRESSES; }
     }
     ULONG type = (sec->attributes & SEC_IMAGE) ? MEM_IMAGE : MEM_MAPPED;
@@ -2784,8 +3007,8 @@ NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                             PSIZE_T ViewSize, ULONG InheritDisposition,
                             ULONG AllocationType, ULONG Win32Protect) {
     struct nt_object_header *hdr = NULL;
+    struct ntmm_space_ref ref;
     NTSTATUS st;
-    (void)ProcessHandle;
     (void)ZeroBits;
     (void)InheritDisposition;
     (void)CommitSize;
@@ -2793,12 +3016,18 @@ NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
     if (!ntmm_protection_valid(Win32Protect)) return STATUS_INVALID_PAGE_PROTECTION;
     /* ADR 0001: the handle must name a live section with the access the view
      * needs. The lookup reference is dropped after mapping; the VAD keeps its own. */
+    st = ntmm_space_acquire(ProcessHandle, PROCESS_VM_OPERATION, &ref);
+    if (!NT_SUCCESS(st)) return st;
     st = ObReferenceObjectByHandle(kshim_current_process(), SectionHandle, &nt_section_type,
                                    UserMode, nt_section_map_access(Win32Protect), &hdr, NULL);
-    if (!NT_SUCCESS(st)) return st;
-    st = nt_map_view_of_section((struct nt_section *)nt_object_body(hdr), BaseAddress,
+    if (!NT_SUCCESS(st)) {
+        ntmm_space_release(&ref);
+        return st;
+    }
+    st = nt_map_view_of_section(ref.mm, (struct nt_section *)nt_object_body(hdr), BaseAddress,
                                 SectionOffset, ViewSize, AllocationType, Win32Protect, NULL);
     ObDereferenceObject(hdr);
+    ntmm_space_release(&ref);
     return st;
 }
 
@@ -2816,8 +3045,8 @@ NTSTATUS NtUnmapViewOfSectionEx(HANDLE ProcessHandle, PVOID BaseAddress, ULONG F
 /* NtMapViewOfSectionEx. With no parameters it is NtMapViewOfSection. The
  * address requirements place the view in [Lowest, Highest) at the requested
  * alignment. The base must then be NULL, because the allocator chooses it. A
- * placeholder replacement is STATUS_NOT_SUPPORTED. The process handle is
- * ignored here, as in NtMapViewOfSection. */
+ * placeholder replacement is STATUS_NOT_SUPPORTED. The process handle names
+ * the target space, as in NtMapViewOfSection. */
 NTSTATUS NtMapViewOfSectionEx(HANDLE SectionHandle, HANDLE ProcessHandle,
                               PVOID *BaseAddress, PLARGE_INTEGER SectionOffset,
                               PSIZE_T ViewSize, ULONG AllocationType,
@@ -2825,8 +3054,8 @@ NTSTATUS NtMapViewOfSectionEx(HANDLE SectionHandle, HANDLE ProcessHandle,
                               ULONG ExtendedParameterCount) {
     struct nt_object_header *hdr = NULL;
     struct nt_addr_req req;
+    struct ntmm_space_ref ref;
     NTSTATUS st;
-    (void)ProcessHandle;
     req.present = 0;
     if (!BaseAddress || !ViewSize) return STATUS_INVALID_PARAMETER;
     if (AllocationType & MEM_REPLACE_PLACEHOLDER) return STATUS_NOT_SUPPORTED;
@@ -2839,21 +3068,24 @@ NTSTATUS NtMapViewOfSectionEx(HANDLE SectionHandle, HANDLE ProcessHandle,
         if (!NT_SUCCESS(st)) return st;
     }
     if (req.present && *BaseAddress != NULL) return STATUS_INVALID_PARAMETER;
+    st = ntmm_space_acquire(ProcessHandle, PROCESS_VM_OPERATION, &ref);
+    if (!NT_SUCCESS(st)) return st;
     st = ObReferenceObjectByHandle(kshim_current_process(), SectionHandle, &nt_section_type,
                                    UserMode, nt_section_map_access(PageProtection), &hdr, NULL);
-    if (!NT_SUCCESS(st)) return st;
-    st = nt_map_view_of_section((struct nt_section *)nt_object_body(hdr), BaseAddress,
+    if (!NT_SUCCESS(st)) {
+        ntmm_space_release(&ref);
+        return st;
+    }
+    st = nt_map_view_of_section(ref.mm, (struct nt_section *)nt_object_body(hdr), BaseAddress,
                                 SectionOffset, ViewSize, AllocationType, PageProtection,
                                 req.present ? &req : NULL);
     ObDereferenceObject(hdr);
+    ntmm_space_release(&ref);
     return st;
 }
 
-NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
-    struct nt_mm *mm = &g_nt_mm;
+static NTSTATUS NtUnmapViewOfSection_in(struct nt_mm *mm, PVOID BaseAddress) {
     ULONG_PTR base = (ULONG_PTR)BaseAddress;
-    (void)ProcessHandle;
-    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
     ntmm_lock(mm);
     struct nt_vad *vad = nt_vad_find(mm, base);
     if (!vad) { ntmm_unlock(mm); return STATUS_NOT_MAPPED_VIEW; }
@@ -2907,6 +3139,15 @@ NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
     ntmm_unlock(mm);
 #endif
     return STATUS_SUCCESS;
+}
+
+NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
+    struct ntmm_space_ref ref;
+    NTSTATUS st = ntmm_space_acquire(ProcessHandle, PROCESS_VM_OPERATION, &ref);
+    if (!NT_SUCCESS(st)) return st;
+    st = NtUnmapViewOfSection_in(ref.mm, BaseAddress);
+    ntmm_space_release(&ref);
+    return st;
 }
 
 NTSTATUS ntmm_add_region(ULONG_PTR base, SIZE_T size, ULONG protect, ULONG type, ULONG_PTR alloc_base)

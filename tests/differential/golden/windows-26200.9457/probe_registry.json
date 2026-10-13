@@ -1,0 +1,54 @@
+{
+  "probe": "probe_registry",
+  "windows_build": "26200.9457",
+  "windows_version": "10.0.26200",
+  "arch": "x64",
+  "test_key": "SOFTWARE\\ntpers_probe_18168_731346250",
+  "reg_create": {"lasterror":0,"disp":1,"disp_str":"NEW"},
+  "reg_create_second": {"lasterror":0,"disp":2},
+  "value_sets": [
+    {"name":"Val_SZ","type":1,"len":6,"lasterror":0},
+    {"name":"Val_EXPAND","type":2,"len":17,"lasterror":0},
+    {"name":"Val_BINARY","type":3,"len":4,"lasterror":0},
+    {"name":"Val_DWORD","type":4,"len":4,"lasterror":0},
+    {"name":"Val_QWORD","type":11,"len":8,"lasterror":0},
+    {"name":"Val_MULTI","type":7,"len":8,"lasterror":0},
+    {"name":"Val_NONE","type":0,"len":7,"lasterror":0},
+    {"name":"Val_EMPTY_SZ","type":1,"len":1,"lasterror":0},
+    {"name":"Val_EMPTY_BINARY","type":3,"len":0,"lasterror":0}
+  ],
+  "embed_nul_set": {"lasterror":0},
+  "big_1MB_set": {"len":1048576,"lasterror":0},
+  "value_queries_win32": [
+    {"name":"Val_SZ","lasterror":0,"type":1,"cb":6},
+    {"name":"Val_EXPAND","lasterror":0,"type":2,"cb":17},
+    {"name":"Val_BINARY","lasterror":0,"type":3,"cb":4},
+    {"name":"Val_DWORD","lasterror":0,"type":4,"cb":4},
+    {"name":"Val_QWORD","lasterror":0,"type":11,"cb":8},
+    {"name":"Val_MULTI","lasterror":0,"type":7,"cb":8},
+    {"name":"Val_NONE","lasterror":0,"type":0,"cb":7},
+    {"name":"Val_EMPTY_SZ","lasterror":0,"type":1,"cb":1},
+    {"name":"Val_EMPTY_BINARY","lasterror":0,"type":3,"cb":0}
+  ],
+  "embed_nul_query": {"lasterror":0,"type":1,"cb":9,"bytes":[104,105,0,116]},
+  "missing_value_query": {"lasterror":2},
+  "nt_open": {"machine_hex":"0x00000000","machine_dos":0,"user_hex":"0x00000000"},
+  "nt_query_key": [
+    {"class":0,"ntstatus":0,"hex":"0x00000000","retLen":72,"small_hex":"0xC0000023","small_retLen":72},
+    {"class":1,"ntstatus":0,"hex":"0x00000000","retLen":80,"small_hex":"0xC0000023","small_retLen":80},
+    {"class":2,"ntstatus":0,"hex":"0x00000000","retLen":44,"small_hex":"0xC0000023","small_retLen":44},
+    {"class":3,"ntstatus":0,"hex":"0x00000000","retLen":202,"small_hex":"0x80000005","small_retLen":202}
+  ],
+  "nt_query_value": [
+    {"value":"ProductName","ntstatus":-1073741772,"hex":"0xC0000034","retLen":0,"small_hex":"0xC0000034","small_retLen":0},
+    {"value":"NoSuchValue123","hex":"0xC0000034","dos":2},
+    {"value":"ProductName_zero_len","hex":"0xC0000034","retLen":0}
+  ],
+  "nt_enumerate": {
+    "key_idx0_hex":"0x00000000","key_idx0_retLen":30,
+    "key_big_idx_hex":"0x8000001A"
+  },
+  "access_check": {"ro_lasterror":0,"rw_lasterror":5},
+  "wow64": {"32_lasterror":0,"64_lasterror":0},
+  "delete_verify": {"open_after_delete_lasterror":2}
+}

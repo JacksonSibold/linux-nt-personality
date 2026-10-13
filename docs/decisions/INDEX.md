@@ -9,7 +9,7 @@ Status values:
 - **no-change**: the record is accepted and no code change is needed.
 - **open**: the record is proposed and not implemented.
 
-Snapshot: 2026-10-12, `HEAD` at the time this index was written. 72 records: 14 fixed, 16 open, 41 blocked, 1 no-change.
+Snapshot: 2026-10-12, `HEAD` at the time this index was written. 73 records: 15 fixed, 16 open, 41 blocked, 1 no-change.
 
 | Record | Title | Status | Finding | Commit |
 |---|---|---|---|---|
@@ -41,9 +41,9 @@ Snapshot: 2026-10-12, `HEAD` at the time this index was written. 72 records: 14 
 | [0026](0026-arch-teb-kernel-heap.md) | TEB is kernel heap memory and is used as the GS base | open | arch P-2 (High) | |
 | [0027](0027-arch-kernel-stubs-file.md) | kernel_stubs.c is not C and breaks the build | fixed | arch B-1 (High) | 974db57 |
 | [0028](0028-binfmt-pe-test-missing-helpers.md) | binfmt_pe_test.c calls helpers that are not defined anywhere | open | kernel-fs T-1, T-2 (Medium) | |
-| [0029](0029-loader-mingw-build-selection.md) | MinGW build compiles only loader stubs | open | ntdll LDR-1 (High) | |
+| [0029](0029-loader-mingw-build-selection.md) | MinGW build compiles only loader stubs | fixed | ntdll LDR-1 (High) | 10f42c8 |
 | [0030](0030-loader-iat-rva-patch.md) | IAT slot writes use a file offset, not an RVA | fixed | ntdll LDR-2 (High) | a18c03e |
-| [0031](0031-loader-dllmain-tls-order.md) | DllMain and TLS callbacks are never called | open | ntdll LDR-3 (High) | |
+| [0031](0031-loader-dllmain-tls-order.md) | DllMain and TLS callbacks are never called | open | ntdll LDR-3 (High) | 10f42c8 (partly) |
 | [0032](0032-loader-tls-callback-table-rva.md) | TLS callback table read at its preferred-base address | fixed | ntdll LDR-4 (High) | bef4d79 |
 | [0033](0033-kernel-exclusive-open-atomicity.md) | Exclusive-open check is not atomic with handle creation | blocked | kernel-nt O-2 (Low) | |
 | [0034](0034-kernel-timeout-pointer-provenance.md) | timeout_to_jiffies dereferences non-user pointers | blocked | kernel-nt SYNC-2 (Low) | |
@@ -85,6 +85,7 @@ Snapshot: 2026-10-12, `HEAD` at the time this index was written. 72 records: 14 
 | [0070](0070-ntdll-file-mapping.md) | File mappings return a fake handle | blocked | ntdll K32-12 (Medium) | |
 | [0071](0071-ntdll-registry-backend.md) | Registry functions always report "not found" | blocked | ntdll ADV-1 (Low) | |
 | [0072](0072-kernel-nt-lpc-ports.md) | LPC ports (NtCreatePort family) are not implemented | fixed | none (service gap) | fa370b1 |
+| [0073](0073-per-process-address-space.md) | Per-process address spaces for the memory manager | fixed | none (design gap) | 021e475 |
 
 ## Notes
 

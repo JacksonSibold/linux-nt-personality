@@ -29,6 +29,8 @@ typedef struct { ULONGLONG QuadPart; } LARGE_INTEGER;
 #include <windows.h>
 #include <winternl.h>
 #include <stdio.h>
+#include <wchar.h>
+#include "ntpers_probe_root.h"
 #endif
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
 #define STATUS_OBJECT_NAME_INVALID ((NTSTATUS)0xC0000033L)
@@ -196,6 +198,68 @@ static NTSTATUS nt_create_file(const WCHAR *wstr, const char *content){
     }
     return st;
 }
+/* Windows build only: scratch names and the prefix table come from the root.
+   The VM build keeps its literal names (NT_* below expand to the same text). */
+#ifdef NTPERS_VM
+#define PRINT_PATH wpath
+#define NT_DIR L"\\??\\C:\\tmp\\probe_path_direct"
+#define NT_SUBDIR L"\\??\\C:\\tmp\\probe_path_direct\\subdir"
+#define NT_FILE L"\\??\\C:\\tmp\\probe_path_direct\\CaSeTeSt.TXT"
+#define NT_INNER L"\\??\\C:\\tmp\\probe_path_direct\\subdir\\inner.txt"
+#define NT_SUBDIR_C "\\??\\C:\\tmp\\probe_path_direct\\subdir"
+#else
+#define PRINT_PATH dpath
+#define PFX_LEN (MAX_PATH+64)
+static wchar_t g_wroot[MAX_PATH];
+static wchar_t g_nt_dir[PFX_LEN], g_nt_subdir[PFX_LEN], g_nt_file[PFX_LEN], g_nt_inner[PFX_LEN];
+static char g_nt_subdir_c[PFX_LEN];
+#define NT_DIR g_nt_dir
+#define NT_SUBDIR g_nt_subdir
+#define NT_FILE g_nt_file
+#define NT_INNER g_nt_inner
+#define NT_SUBDIR_C g_nt_subdir_c
+static wchar_t g_pfx_real[8][PFX_LEN], g_pfx_disp[8][PFX_LEN];
+static const wchar_t *g_pfx_real_p[8], *g_pfx_disp_p[8];
+static const wchar_t **g_cur_prefixes = g_pfx_real_p;
+static int g_unc_ok = 0;
+
+static void build_prefixes(wchar_t out[8][PFX_LEN], const wchar_t **ptrs, const wchar_t *root, const wchar_t *nodrive){
+    _snwprintf(out[0], PFX_LEN-1, L"\\??\\%ls\\probe_path_direct\\", root);
+    _snwprintf(out[1], PFX_LEN-1, L"\\\\?\\%ls\\probe_path_direct\\", root);
+    _snwprintf(out[2], PFX_LEN-1, L"\\Device\\HarddiskVolume3%ls\\probe_path_direct\\", nodrive);
+    _snwprintf(out[3], PFX_LEN-1, L"%ls\\probe_path_direct\\", root);
+    _snwprintf(out[4], PFX_LEN-1, L"%ls\\probe_path_direct\\", nodrive);
+    _snwprintf(out[5], PFX_LEN-1, L"");
+    _snwprintf(out[6], PFX_LEN-1, L"\\\\?\\UNC\\server\\share\\tmp\\probe_path_direct\\");
+    _snwprintf(out[7], PFX_LEN-1, L"\\\\server\\share\\tmp\\probe_path_direct\\");
+    for(int i=0;i<8;i++){ out[i][PFX_LEN-1]=0; ptrs[i]=out[i]; }
+}
+
+static void build_nt_names(const wchar_t *wroot){
+    _snwprintf(g_nt_dir, PFX_LEN-1, L"\\??\\%ls\\probe_path_direct", wroot);
+    _snwprintf(g_nt_subdir, PFX_LEN-1, L"\\??\\%ls\\probe_path_direct\\subdir", wroot);
+    _snwprintf(g_nt_file, PFX_LEN-1, L"\\??\\%ls\\probe_path_direct\\CaSeTeSt.TXT", wroot);
+    _snwprintf(g_nt_inner, PFX_LEN-1, L"\\??\\%ls\\probe_path_direct\\subdir\\inner.txt", wroot);
+    snprintf(g_nt_subdir_c, PFX_LEN, "\\??\\%s\\probe_path_direct\\subdir", g_root);
+    g_nt_dir[PFX_LEN-1]=0; g_nt_subdir[PFX_LEN-1]=0; g_nt_file[PFX_LEN-1]=0; g_nt_inner[PFX_LEN-1]=0;
+}
+
+/* Delete everything do_probe creates under the root, children first. */
+static void cleanup_win(void){
+    char p[MAX_PATH+64];
+    wchar_t w[1024], longname[300];
+    for(int i=0;i<255;i++) longname[i]=L'a';
+    longname[255]=0;
+    _snwprintf(w, 1023, L"\\\\?\\%ls\\probe_path_direct\\subdir\\%ls", g_wroot, longname);
+    w[1023]=0;
+    DeleteFileW(w);                         /* the 255-character file made by create255 */
+    snprintf(p, sizeof p, "%s\\probe_path_direct\\subdir\\inner.txt", g_root); DeleteFileA(p);
+    snprintf(p, sizeof p, "%s\\probe_path_direct\\CaSeTeSt.TXT", g_root); DeleteFileA(p);
+    snprintf(p, sizeof p, "%s\\probe_path_direct\\subdir", g_root); RemoveDirectoryA(p);
+    snprintf(p, sizeof p, "%s\\probe_path_direct", g_root); RemoveDirectoryA(p);
+}
+#endif
+
 // deterministic path generator for 10000 cases
 static void gen_path(int idx, WCHAR *out, int *out_is_relative){
     // Use idx as seed for deterministic pseudo-random covering all dimensions
@@ -208,6 +272,7 @@ static void gen_path(int idx, WCHAR *out, int *out_is_relative){
     int embed_idx = h % 4; h /= 4;
     int case_idx = h % 2;
     // prefix table
+#ifdef NTPERS_VM
     static const WCHAR *prefixes[8] = {
         L"\\??\\C:\\tmp\\probe_path_direct\\",
         L"\\\\?\\C:\\tmp\\probe_path_direct\\",
@@ -218,6 +283,9 @@ static void gen_path(int idx, WCHAR *out, int *out_is_relative){
         L"\\\\?\\UNC\\server\\share\\tmp\\probe_path_direct\\",
         L"\\\\server\\share\\tmp\\probe_path_direct\\"
     };
+#else
+    const WCHAR **prefixes = g_cur_prefixes;
+#endif
     static const WCHAR *reserved_names[8] = { L"", L"CON", L"PRN", L"AUX", L"NUL", L"COM1", L"LPT1", L"CON.txt" };
     static const WCHAR *trailing_suf[8] = { L"", L".", L" ", L" .", L". ", L"..", L"...", L"   " };
     static const WCHAR *sep_str[4] = { L"\\", L"/", L"\\\\", L"\\/" };
@@ -319,11 +387,11 @@ static void do_probe(void){
     NTSTATUS ast = NtAllocateVirtualMemory(NtCurrentProcess(), &base, 0, &sz, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
     if(ast!=STATUS_SUCCESS) NtTerminateProcess(NtCurrentProcess(), 1);
     json=(char*)base; jpos=0;
-    NTSTATUS st_dir = nt_create_dir(L"\\??\\C:\\tmp\\probe_path_direct");
-    NTSTATUS st_sub = nt_create_dir(L"\\??\\C:\\tmp\\probe_path_direct\\subdir");
-    NTSTATUS st_file = nt_create_file(L"\\??\\C:\\tmp\\probe_path_direct\\CaSeTeSt.TXT", "hello");
-    NTSTATUS st_inner = nt_create_file(L"\\??\\C:\\tmp\\probe_path_direct\\subdir\\inner.txt", NULL);
-    WCHAR wtmp1[512]; const char *tmpPath1="\\??\\C:\\tmp\\probe_path_direct\\subdir";
+    NTSTATUS st_dir = nt_create_dir(NT_DIR);
+    NTSTATUS st_sub = nt_create_dir(NT_SUBDIR);
+    NTSTATUS st_file = nt_create_file(NT_FILE, "hello");
+    NTSTATUS st_inner = nt_create_file(NT_INNER, NULL);
+    WCHAR wtmp1[512]; const char *tmpPath1=NT_SUBDIR_C;
     int l1=0; while(tmpPath1[l1]) l1++;
     for(int i=0;i<l1;i++) wtmp1[i]=(WCHAR)tmpPath1[i]; wtmp1[l1]=0;
     UNICODE_STRING usTmp1; usTmp1.Length=l1*2; usTmp1.MaximumLength=usTmp1.Length+2; usTmp1.Buffer=wtmp1;
@@ -352,13 +420,22 @@ static void do_probe(void){
     for(int idx=0; idx<N; idx++){
         WCHAR wpath[4096]; int is_rel=0;
         gen_path(idx, wpath, &is_rel);
+#ifndef NTPERS_VM
+        if(((unsigned int)idx * 2654435761u) % 8 >= 6 && !g_unc_ok){   /* prefixes 6, 7: UNC, opt-in */
+            if(idx!=0) j_add(",\n");
+            j_add("    {\"idx\":"); j_add_u64(idx); j_add(",\"skipped\":\"unc\"}");
+            continue;
+        }
+        WCHAR dpath[4096]; int dis_rel=0;
+        g_cur_prefixes = g_pfx_disp_p; gen_path(idx, dpath, &dis_rel); g_cur_prefixes = g_pfx_real_p;
+#endif
         HANDLE root = is_rel ? hSubdir : 0;
         // For UNC prefix that is not relative but should still be tested as absolute, keep root 0
         int hv=0; ULONGLONG info=0; ULONG dos=0;
         NTSTATUS st = test_nt_path(wpath, root, &hv, &info, &dos);
         if(idx!=0) j_add(",\n");
         j_add("    {\"idx\":"); j_add_u64(idx); j_add(",\"desc\":\"gen_"); j_add_u64(idx); j_add("\",\"nt_path\":\"");
-        for(const WCHAR *p=wpath;*p;p++){ if(*p=='\"'){j_add("\\\"");} else if(*p=='\\'){j_add("\\\\");} else if(*p<0x20){ char tmp2[10]; tmp2[0]='\\'; tmp2[1]='u'; tmp2[2]='0'; tmp2[3]='0'; tmp2[4]='0'; tmp2[5]='0'+(*p); tmp2[6]=0; j_add(tmp2);} else { char c=(char)*p; char s[2]={c,0}; j_add(s);} }
+        for(const WCHAR *p=PRINT_PATH;*p;p++){ if(*p=='\"'){j_add("\\\"");} else if(*p=='\\'){j_add("\\\\");} else if(*p<0x20){ char tmp2[10]; tmp2[0]='\\'; tmp2[1]='u'; tmp2[2]='0'; tmp2[3]='0'; tmp2[4]='0'; tmp2[5]='0'+(*p); tmp2[6]=0; j_add(tmp2);} else { char c=(char)*p; char s[2]={c,0}; j_add(s);} }
         j_add("\",\"rel\":"); j_add(is_rel?"true":"false");
         j_add(",\"ntstatus\":"); { char tmp[32]; long v=(long)st; if(v<0){ tmp[0]='-'; int p2=1; unsigned long uv= (unsigned long)(-v); char rev[32]; int rp=0; if(uv==0) rev[rp++]='0'; while(uv>0){rev[rp++]='0'+(uv%10); uv/=10;} for(int k=0;k<rp;k++) tmp[1+k]=rev[rp-1-k]; tmp[1+rp]=0; j_add(tmp); } else { char rev[32]; int rp=0; unsigned long uv=v; if(uv==0) rev[rp++]='0'; while(uv>0){rev[rp++]='0'+(uv%10); uv/=10;} for(int k=0;k<rp;k++) tmp[k]=rev[rp-1-k]; tmp[rp]=0; j_add(tmp); } }
         j_add(",\"hex\":\""); j_add_hex32(st); j_add("\",\"dos\":"); j_add_u64(dos); j_add(",\"iosb_info\":"); j_add_u64(info); j_add(",\"handle_valid\":"); j_add(hv?"true":"false"); j_add("}");
@@ -435,13 +512,18 @@ static void do_probe(void){
         fwrite(json,1,jpos,stdout); fflush(stdout);
     }
 #endif
+#ifdef NTPERS_VM
     write_file_nt("\\??\\mnt\\share\\.dodresult\\probe_path.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_path.json", json, jpos);
     write_file_nt("\\??\\mnt\\share\\.dodresult\\dualrun_vm_probe_path_direct.json", json, jpos);
     write_file_nt(NTPERS_STAGE_NT "\\probe_direct_win.json", json, jpos);
     write_file_nt(NTPERS_STAGE_NT "\\probe_path_direct.json", json, jpos);
     write_file_nt(NTPERS_STAGE_NT "\\probe_path.json", json, jpos);
+#endif
     if(hSubdir) NtClose(hSubdir);
+#ifndef NTPERS_VM
+    cleanup_win();
+#endif
     NtTerminateProcess(NtCurrentProcess(),0);
 #ifdef NTPERS_VM
     __asm__ volatile("mov $60, %%eax; mov $0, %%edi; syscall" ::: "rax","rdi");
@@ -456,7 +538,20 @@ void _start(void){
     while(1){}
 }
 #else
-int main(void){
+int main(int argc, char **argv){
+    if(!resolve_root(argc, argv)){ fprintf(stderr, "probe_path_direct: --root must be a local absolute path (X:\\dir), not UNC\n"); return 2; }
+    { char p[MAX_PATH+64]; snprintf(p, sizeof p, "%s\\probe_path_direct", g_root);
+      if(!path_absent(p)){ fprintf(stderr, "probe_path_direct: scratch directory already exists, refusing to delete it\n"); return 2; } }
+    g_unc_ok = allow_unc();
+    {
+        wchar_t wnd[MAX_PATH];
+        MultiByteToWideChar(CP_ACP, 0, g_root, -1, g_wroot, MAX_PATH);
+        MultiByteToWideChar(CP_ACP, 0, g_root+2, -1, wnd, MAX_PATH);
+        build_prefixes(g_pfx_real, g_pfx_real_p, g_wroot, wnd);
+        build_prefixes(g_pfx_disp, g_pfx_disp_p, L"<root>", L"<root>");
+        g_cur_prefixes = g_pfx_real_p;
+        build_nt_names(g_wroot);
+    }
     init_ntdll();
     do_probe();
     return 0;

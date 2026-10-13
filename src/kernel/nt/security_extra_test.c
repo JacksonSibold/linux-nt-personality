@@ -136,6 +136,28 @@ TEST(token_object_handle_lifecycle)
     PASS();
 }
 
+/* A failing token handle create leaves the caller's output at its sentinel and
+ * takes no token reference. A token object is unnamed, so ObInsertObject has no
+ * name collision to report here. */
+TEST(token_create_failure_leaves_output)
+{
+    struct nt_eprocess *p = make_current_process("tok_fail_out");
+    ASSERT(p != NULL);
+    ACCESS_TOKEN *tok = make_user_token("S-1-5-21-1-2-3-1002");
+    ASSERT(tok != NULL);
+    LONG refs = tok->ref_count;
+    HANDLE sentinel = (HANDLE)(ULONG_PTR)0x5E171E1;
+
+    HANDLE h = sentinel;
+    ASSERT_STATUS(ObCreateTokenHandle(p, NULL, T_QUERY, 0, &h), STATUS_INVALID_PARAMETER);
+    ASSERT(h == sentinel);
+    h = sentinel;
+    ASSERT_STATUS(ObCreateTokenHandle(p, tok, T_QUERY, 0x80, &h), STATUS_INVALID_PARAMETER);
+    ASSERT(h == sentinel);
+    ASSERT(tok->ref_count == refs);
+    PASS();
+}
+
 TEST(token_object_outlives_creator)
 {
     struct nt_eprocess *p = make_current_process("tok_outlive");
@@ -1786,6 +1808,7 @@ int main(void)
     printf("security extra tests starting\n");
     ObInitObjectManager();
     RUN(token_object_handle_lifecycle);
+    RUN(token_create_failure_leaves_output);
     RUN(token_object_outlives_creator);
     RUN(process_default_primary_token);
     RUN(process_token_released_on_destroy);

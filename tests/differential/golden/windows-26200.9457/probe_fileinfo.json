@@ -1,0 +1,51 @@
+{
+  "probe": "probe_fileinfo",
+  "windows_build": "26200.9457",
+  "windows_version": "10.0.26200",
+  "arch": "x64",
+  "nt_open": {"hex":"0x00000000","dos":0},
+  "query": [
+    {"class":4,"name":"FileBasicInformation","full_hex":"0x00000000","full_info":40,"small_hex":"0xC0000004","small_ret":0,"zero_hex":"0xC0000004","trunc8_hex":"0xC0000004"},
+    {"class":5,"name":"FileStandardInformation","full_hex":"0x00000000","full_info":24,"small_hex":"0xC0000004","small_ret":0,"zero_hex":"0xC0000004","trunc8_hex":"0xC0000004"},
+    {"class":6,"name":"FileInternalInformation","full_hex":"0x00000000","full_info":8,"small_hex":"0xC0000004","small_ret":0,"zero_hex":"0xC0000004","trunc8_hex":"0x00000000"},
+    {"class":7,"name":"FileEaInformation","full_hex":"0x00000000","full_info":4,"small_hex":"0x00000000","small_ret":4,"zero_hex":"0xC0000004","trunc8_hex":"0x00000000"},
+    {"class":8,"name":"FileAccessInformation","full_hex":"0x00000000","full_info":4,"small_hex":"0x00000000","small_ret":4,"zero_hex":"0xC0000004","trunc8_hex":"0x00000000"},
+    {"class":9,"name":"FileNameInformation","full_hex":"0x00000000","full_info":120,"small_hex":"0xC0000004","small_ret":4,"zero_hex":"0xC0000004","trunc8_hex":"0x80000005"},
+    {"class":14,"name":"FilePositionInformation","full_hex":"0x00000000","full_info":8,"small_hex":"0xC0000004","small_ret":4,"zero_hex":"0xC0000004","trunc8_hex":"0x00000000"},
+    {"class":16,"name":"FileModeInformation","full_hex":"0x00000000","full_info":4,"small_hex":"0x00000000","small_ret":4,"zero_hex":"0xC0000004","trunc8_hex":"0x00000000"},
+    {"class":17,"name":"FileAlignmentInformation","full_hex":"0x00000000","full_info":4,"small_hex":"0x00000000","small_ret":4,"zero_hex":"0xC0000004","trunc8_hex":"0x00000000"},
+    {"class":18,"name":"FileAllInformation","full_hex":"0x00000000","full_info":216,"small_hex":"0xC0000004","small_ret":4,"zero_hex":"0xC0000004","trunc8_hex":"0xC0000004"},
+    {"class":22,"name":"FileStreamInformation","full_hex":"0x00000000","full_info":38,"small_hex":"0xC0000004","small_ret":4,"zero_hex":"0xC0000004","trunc8_hex":"0xC0000004"},
+    {"class":35,"name":"FileAttributeTagInformation","full_hex":"0x00000000","full_info":8,"small_hex":"0xC0000004","small_ret":4,"zero_hex":"0xC0000004","trunc8_hex":"0x00000000"},
+    {"class":12,"name":"FileAlternateNameInformation","full_hex":"0xC0000003","full_info":8,"small_hex":"0xC0000003","small_ret":4,"zero_hex":"0xC0000003","trunc8_hex":"0xC0000003"},
+    {"class":13,"name":"FileLinkInformation","full_hex":"0xC0000003","full_info":8,"small_hex":"0xC0000003","small_ret":4,"zero_hex":"0xC0000003","trunc8_hex":"0xC0000003"},
+    {"class":10,"name":"FilePipeInformation","full_hex":"0xC0000003","full_info":8,"small_hex":"0xC0000003","small_ret":4,"zero_hex":"0xC0000003","trunc8_hex":"0xC0000003"},
+    {"class":11,"name":"FilePipeLocalInformation","full_hex":"0xC0000003","full_info":8,"small_hex":"0xC0000003","small_ret":4,"zero_hex":"0xC0000003","trunc8_hex":"0xC0000003"},
+    {"class":19,"name":"FileDispositionInformation","full_hex":"0xC0000003","full_info":8,"small_hex":"0xC0000003","small_ret":4,"zero_hex":"0xC0000003","trunc8_hex":"0xC0000003"},
+    {"class":20,"name":"FileEndOfFileInformation","full_hex":"0xC0000003","full_info":8,"small_hex":"0xC0000003","small_ret":4,"zero_hex":"0xC0000003","trunc8_hex":"0xC0000003"},
+    {"class":28,"name":"FileCompressionInformation","full_hex":"0x00000000","full_info":16,"small_hex":"0xC0000004","small_ret":4,"zero_hex":"0xC0000004","trunc8_hex":"0xC0000004"},
+    {"class":33,"name":"FileNetworkOpenInformation","full_hex":"0xC000000D","full_info":0,"small_hex":"0xC0000004","small_ret":4,"zero_hex":"0xC0000004","trunc8_hex":"0xC0000004"}
+  ],
+  "volume_query": [
+    {"class":1,"name":"FileFsVolumeInformation","full_hex":"0x00000000","small_hex":"0xC0000004"},
+    {"class":2,"name":"FileFsLabelInformation","full_hex":"0xC0000003","small_hex":"0xC0000003"},
+    {"class":3,"name":"FileFsSizeInformation","full_hex":"0x00000000","small_hex":"0xC0000004"},
+    {"class":4,"name":"FileFsDeviceInformation","full_hex":"0x00000000","small_hex":"0xC0000004"},
+    {"class":5,"name":"FileFsAttributeInformation","full_hex":"0x00000000","small_hex":"0xC0000004"},
+    {"class":6,"name":"FileFsControlInformation","full_hex":"0x00000000","small_hex":"0xC0000004"},
+    {"class":7,"name":"FileFsFullSizeInformation","full_hex":"0x00000000","small_hex":"0xC0000004"},
+    {"class":8,"name":"FileFsObjectIdInformation","full_hex":"0x00000000","small_hex":"0xC0000004"}
+  ],
+  "set_info": [
+    {"name":"FilePositionInformation_set5","hex":"0x00000000"},
+    {"name":"FilePositionInformation_verify","hex":"0x00000000","pos":5},
+    {"name":"FileEndOfFileInformation_extend100","hex":"0x00000000"},
+    {"name":"FileBasicInformation_set","hex":"0x00000000"},
+    {"name":"BogusClass","hex":"0xC0000003"},
+    {"name":"FilePositionInformation_small2","hex":"0xC0000004"}
+  ],
+  "win32_filetime": {"creation_low":681811968,"creation_high":30785892,"write_low":681811968,"write_high":30785892},
+  "by_handle_info": {"size_low":100,"size_high":0,"attrs":128,"nLinks":1},
+  "invalid_handle": {"hex":"0xC0000008"},
+  "done": true
+}

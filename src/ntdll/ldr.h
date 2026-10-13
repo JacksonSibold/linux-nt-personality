@@ -178,6 +178,22 @@ NTSTATUS LdrGetProcedureAddress(winldr_ctx_t *ctx,
                                 WORD ordinal,
                                 FARPROC *out);
 
+/* Adds a reference to a loaded module (flags 0), or pins it (flags LDR_DLL_PIN).
+ * Used by GetModuleHandleEx. Takes the loader lock. */
+NTSTATUS LdrAddRefDll(winldr_ctx_t *ctx, ULONG flags, HMODULE module);
+
+/* Process loader context (K32-4). ntdll creates one context in LdrInitializeThunk
+ * and publishes it in the PEB, so kernel32 and the other shims pass the same
+ * context to the Ldr* calls. The slot is PEB.SparePointers[0]. That PEB tail is
+ * unverified (nt_types.h), so this is a personality convention, not a Windows
+ * one. */
+#define LDR_PEB_CONTEXT_SLOT(peb) ((peb)->SparePointers[0])
+
+static inline winldr_ctx_t *ldr_process_context(PPEB peb)
+{
+    return peb ? (winldr_ctx_t *)LDR_PEB_CONTEXT_SLOT(peb) : NULL;
+}
+
 /* Resolve all delay-load imports for a module (used by the helper and tests). */
 NTSTATUS ldr_resolve_delay_imports(winldr_ctx_t *ctx, HMODULE module);
 

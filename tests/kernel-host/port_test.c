@@ -5,7 +5,7 @@
  * the 256-byte message cap, double and unknown replies, connection refusal,
  * the connection queue cap, and an allocation-count leak check.
  *
- * Every test uses one connection port, "\LpcMain", created before the
+ * Every test uses one connection port, "\\LpcMain", created before the
  * allocation baseline. The object manager keeps a named object alive in its
  * directory after its last handle closes, so creating a new named port per test
  * would show up as a leak that is not the port code's. Only per-connection
@@ -455,6 +455,61 @@ TEST(connect_unknown_port)
  * The baseline includes the one named connection port and its directory entry. */
 static long g_alloc_base;
 
+/* A port name held by an event: NtCreatePort gets OBJECT_TYPE_MISMATCH and
+ * leaves the caller's handle untouched. A second port of the same name gets
+ * the holder's handle with NAME_COLLISION (the SYNC-3 policy). The holders are
+ * created before the baseline: named objects stay in the namespace. */
+NTSTATUS nt_svc_NtCreateEvent(PHANDLE EventHandle, ACCESS_MASK DesiredAccess,
+                              POBJECT_ATTRIBUTES ObjectAttributes,
+                              ULONG EventType, BOOLEAN InitialState);
+
+static HANDLE g_ev_holder, g_same_holder;
+
+static NTSTATUS create_event_named(const char *name, HANDLE *out)
+{
+    UNICODE_STRING us;
+    WCHAR buf[64];
+    size_t n = strlen(name);
+    for (size_t i = 0; i < n; i++) buf[i] = (WCHAR)(unsigned char)name[i];
+    us.Buffer = buf;
+    us.Length = (USHORT)(n * sizeof(WCHAR));
+    us.MaximumLength = us.Length;
+    OBJECT_ATTRIBUTES oa;
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(oa);
+    oa.ObjectName = &us;
+    return nt_svc_NtCreateEvent(out, 0x1F0003, &oa, 0, 0);
+}
+
+TEST(port_name_held_by_event)
+{
+    HANDLE p = (HANDLE)(ULONG_PTR)0x5E171E1;
+    UNICODE_STRING us;
+    WCHAR buf[64];
+    OBJECT_ATTRIBUTES oa;
+    const char *name = "\\LpcOverEv";
+    size_t n = strlen(name);
+    for (size_t i = 0; i < n; i++) buf[i] = (WCHAR)(unsigned char)name[i];
+    us.Buffer = buf;
+    us.Length = (USHORT)(n * sizeof(WCHAR));
+    us.MaximumLength = us.Length;
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(oa);
+    oa.ObjectName = &us;
+    ASSERT_STATUS(nt_svc_NtCreatePort(&p, &oa, 0, 256, 0), STATUS_OBJECT_TYPE_MISMATCH);
+    ASSERT(p == (HANDLE)(ULONG_PTR)0x5E171E1);
+    PASS();
+}
+
+TEST(port_same_type_collision_reopens)
+{
+    HANDLE p2 = (HANDLE)(ULONG_PTR)0x5E171E1;
+    ASSERT_STATUS(create_port("\\LpcSameType", 256, &p2), STATUS_OBJECT_NAME_COLLISION);
+    ASSERT(p2 != NULL && p2 != (HANDLE)(ULONG_PTR)0x5E171E1);
+    ASSERT_STATUS(ObCloseHandle(kshim_current_process(), p2), STATUS_SUCCESS);
+    PASS();
+}
+
 int main(void)
 {
     printf("port tests starting\n");
@@ -464,6 +519,8 @@ int main(void)
     /* The shared connection port and the process handle table exist before the baseline. */
     if (create_port(MAIN_PORT_NAME, 4096, &g_conn) != STATUS_SUCCESS) return 1;
     if (create_port("\\LpcClose", PORT_MAXIMUM_MESSAGE_LENGTH, &g_close) != STATUS_SUCCESS) return 1;
+    if (create_event_named("\\LpcOverEv", &g_ev_holder) != STATUS_SUCCESS) return 1;
+    if (create_port("\\LpcSameType", 256, &g_same_holder) != STATUS_SUCCESS) return 1;
     g_alloc_base = (long)atomic_load(&kshim_alloc_count);
 
     RUN(round_trip);
@@ -476,6 +533,8 @@ int main(void)
     RUN(connection_queue_cap);
     RUN(connection_port_close_refuses_queued);
     RUN(connect_unknown_port);
+    RUN(port_name_held_by_event);
+    RUN(port_same_type_collision_reopens);
 
     ObCloseHandle(g_proc, g_conn);
     long end = (long)atomic_load(&kshim_alloc_count);

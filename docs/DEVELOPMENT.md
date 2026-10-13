@@ -23,7 +23,7 @@ python tools/check_doc_links.py
 python tools/update_doc_counts.py --check
 ```
 
-- `tests/unit` holds <!-- counts:unit_modules:begin -->26<!-- counts:unit_modules:end --> test modules (<!-- counts:unit_tests:begin -->546<!-- counts:unit_tests:end --> `test_` functions). They cover the scripts in
+- `tests/unit` holds <!-- counts:unit_modules:begin -->32<!-- counts:unit_modules:end --> test modules (<!-- counts:unit_tests:begin -->665<!-- counts:unit_tests:end --> `test_` functions). They cover the scripts in
   `build/` (`fix_gsbase.py`, `fix_iosb.py`, `gen_ntdll_def.py`, `gen_stubs.py`,
   `merge_dod.py`, `validate_criteria.py`), `tools/` (`check_doc_links.py`, `check_repo.py`,
   `coverage_report.py`, `criteria_report.py`, `ntstatus_lookup.py`, `pe_info.py`,
@@ -121,8 +121,10 @@ make -C src/ntdll check    # also compares the DLL's exports with the .def
   freshly built binaries on the development machine.
 - `make` does not import `TMP` from the MSYS2 shell here. If the link fails with
   "Cannot create temporary file", pass `TMP=<dir>` on the command line.
-- The loader's MinGW build still links stubs (`LDR-1`, see
-  `docs/decisions/0029-loader-mingw-build-selection.md`).
+- The loader's MinGW build compiles the real loader (`LDR-1`, fixed in 10f42c8,
+  see `docs/decisions/0029-loader-mingw-build-selection.md`). Win32 module calls
+  use the process loader context published in the PEB (`K32-4`, fixed in
+  7d00ac6 and 1e013ac). Their run-time behaviour needs the personality.
 
 ## Paths and environment
 

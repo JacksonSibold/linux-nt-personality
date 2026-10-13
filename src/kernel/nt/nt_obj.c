@@ -301,30 +301,6 @@ void nt_handle_table_destroy_for_proc(struct nt_eprocess *proc)
 /* Object creation helpers                                                */
 /* ------------------------------------------------------------------ */
 
-/* ObInsertObject reported NAME_COLLISION after the lookup in
- * nt_create_event_internal missed: another creator took the name in between,
- * or the name is held by another type. Open the event that holds the name, so
- * the caller gets a valid handle with NAME_COLLISION, as the lookup path does.
- * If the name is not an event, return the lookup's status and no handle. */
-static NTSTATUS nt_open_event_after_collision(struct nt_eprocess *proc,
-                                              ACCESS_MASK desired_access,
-                                              POBJECT_ATTRIBUTES oa,
-                                              PHANDLE out_handle)
-{
-    struct nt_object_header *existing = NULL;
-    NTSTATUS st = ObReferenceObjectByName(oa->ObjectName, &nt_event_type, UserMode, desired_access, &existing);
-    if (!NT_SUCCESS(st)) return st;
-    ULONG hattr = 0;
-    if (oa->Attributes & OBJ_INHERIT) hattr |= OBJ_INHERIT;
-    if (oa->Attributes & OBJ_PROTECT_FROM_CLOSE) hattr |= OBJ_PROTECT_FROM_CLOSE;
-    HANDLE h = NULL;
-    st = ObCreateHandle(proc, existing, desired_access, hattr, &h);
-    ObDereferenceObject(existing);
-    if (!NT_SUCCESS(st)) return st;
-    *out_handle = h;
-    return STATUS_OBJECT_NAME_COLLISION;
-}
-
 static NTSTATUS nt_create_event_internal(struct nt_eprocess *proc,
                                          ACCESS_MASK desired_access,
                                          POBJECT_ATTRIBUTES oa,
@@ -369,7 +345,7 @@ static NTSTATUS nt_create_event_internal(struct nt_eprocess *proc,
     st = ObInsertObject(hdr, oa, desired_access, proc, out_handle);
     ObDereferenceObject(hdr);
     if (st == STATUS_OBJECT_NAME_COLLISION)
-        return nt_open_event_after_collision(proc, desired_access, oa, out_handle);
+        return ObOpenNamedHolderAfterCollision(&nt_event_type, oa, desired_access, proc, out_handle);
     if (!NT_SUCCESS(st)) return st;
     return STATUS_SUCCESS;
 }
@@ -428,23 +404,22 @@ static NTSTATUS nt_create_mutant_internal(struct nt_eprocess *proc,
 #endif
     }
     st = ObInsertObject(hdr, oa, desired_access, proc, out_handle);
-    if (!NT_SUCCESS(st)) {
-        if (initial_owner && m->owner) {
+    if (!NT_SUCCESS(st) && initial_owner && m->owner) {
 #ifndef __KERNEL__
-            pthread_mutex_lock(&m->owner->lock);
-            if (m->owned_entry.next) list_del(&m->owned_entry);
-            pthread_mutex_unlock(&m->owner->lock);
+        pthread_mutex_lock(&m->owner->lock);
+        if (m->owned_entry.next) list_del(&m->owned_entry);
+        pthread_mutex_unlock(&m->owner->lock);
 #else
-            unsigned long flags;
-            spin_lock_irqsave(&m->owner->lock, flags);
-            if (m->owned_entry.next) list_del(&m->owned_entry);
-            spin_unlock_irqrestore(&m->owner->lock, flags);
+        unsigned long flags;
+        spin_lock_irqsave(&m->owner->lock, flags);
+        if (m->owned_entry.next) list_del(&m->owned_entry);
+        spin_unlock_irqrestore(&m->owner->lock, flags);
 #endif
-        }
-        ObDereferenceObject(hdr);
-        return st;
     }
     ObDereferenceObject(hdr);
+    if (st == STATUS_OBJECT_NAME_COLLISION)
+        return ObOpenNamedHolderAfterCollision(&nt_mutant_type, oa, desired_access, proc, out_handle);
+    if (!NT_SUCCESS(st)) return st;
     return STATUS_SUCCESS;
 }
 
@@ -477,8 +452,10 @@ static NTSTATUS nt_create_semaphore_internal(struct nt_eprocess *proc,
     ntobj_header_init(&s->header, NT_OBJ_SEMAPHORE, initial_count, false);
     s->limit = maximum_count;
     st=ObInsertObject(hdr, oa, desired_access, proc, out_handle);
-    if (!NT_SUCCESS(st)) {ObDereferenceObject(hdr); return st;}
     ObDereferenceObject(hdr);
+    if (st == STATUS_OBJECT_NAME_COLLISION)
+        return ObOpenNamedHolderAfterCollision(&nt_semaphore_type, oa, desired_access, proc, out_handle);
+    if (!NT_SUCCESS(st)) return st;
     return STATUS_SUCCESS;
 }
 
@@ -499,7 +476,7 @@ NTSTATUS nt_svc_NtCreateEvent(PHANDLE EventHandle, ACCESS_MASK DesiredAccess,
     if (!proc) return STATUS_INVALID_PARAMETER;
     NTSTATUS st = nt_ensure_handle_table(proc);
     if (!NT_SUCCESS(st)) return st;
-    HANDLE h;
+    HANDLE h = NULL;
     st = nt_create_event_internal(proc, DesiredAccess, ObjectAttributes, EventType, InitialState, &h);
     if (NT_SUCCESS(st) || st==STATUS_OBJECT_NAME_COLLISION) {
         *EventHandle = h;
@@ -517,7 +494,7 @@ NTSTATUS nt_svc_NtOpenEvent(PHANDLE EventHandle, ACCESS_MASK DesiredAccess,
     if (!proc) return STATUS_INVALID_PARAMETER;
     NTSTATUS st = nt_ensure_handle_table(proc);
     if (!NT_SUCCESS(st)) return st;
-    HANDLE h;
+    HANDLE h = NULL;
     st = ObOpenObjectByName(ObjectAttributes, &nt_event_type, UserMode, DesiredAccess, proc, &h);
     if (NT_SUCCESS(st)) *EventHandle = h;
     return st;
@@ -532,7 +509,7 @@ NTSTATUS nt_svc_NtCreateMutant(PHANDLE MutantHandle, ACCESS_MASK DesiredAccess,
     if (!proc) return STATUS_INVALID_PARAMETER;
     NTSTATUS st = nt_ensure_handle_table(proc);
     if (!NT_SUCCESS(st)) return st;
-    HANDLE h;
+    HANDLE h = NULL;
     st = nt_create_mutant_internal(proc, DesiredAccess, ObjectAttributes, InitialOwner, &h);
     if (NT_SUCCESS(st) || st==STATUS_OBJECT_NAME_COLLISION) *MutantHandle = h;
     return st;
@@ -548,7 +525,7 @@ NTSTATUS nt_svc_NtOpenMutant(PHANDLE MutantHandle, ACCESS_MASK DesiredAccess,
     if (!proc) return STATUS_INVALID_PARAMETER;
     NTSTATUS st = nt_ensure_handle_table(proc);
     if (!NT_SUCCESS(st)) return st;
-    HANDLE h;
+    HANDLE h = NULL;
     st = ObOpenObjectByName(ObjectAttributes, &nt_mutant_type, UserMode, DesiredAccess, proc, &h);
     if (NT_SUCCESS(st)) *MutantHandle = h;
     return st;
@@ -564,7 +541,7 @@ NTSTATUS nt_svc_NtCreateSemaphore(PHANDLE SemaphoreHandle, ACCESS_MASK DesiredAc
     if (!proc) return STATUS_INVALID_PARAMETER;
     NTSTATUS st = nt_ensure_handle_table(proc);
     if (!NT_SUCCESS(st)) return st;
-    HANDLE h;
+    HANDLE h = NULL;
     st = nt_create_semaphore_internal(proc, DesiredAccess, ObjectAttributes, InitialCount, MaximumCount, &h);
     if (NT_SUCCESS(st) || st==STATUS_OBJECT_NAME_COLLISION) *SemaphoreHandle = h;
     return st;
@@ -580,7 +557,7 @@ NTSTATUS nt_svc_NtOpenSemaphore(PHANDLE SemaphoreHandle, ACCESS_MASK DesiredAcce
     if (!proc) return STATUS_INVALID_PARAMETER;
     NTSTATUS st = nt_ensure_handle_table(proc);
     if (!NT_SUCCESS(st)) return st;
-    HANDLE h;
+    HANDLE h = NULL;
     st = ObOpenObjectByName(ObjectAttributes, &nt_semaphore_type, UserMode, DesiredAccess, proc, &h);
     if (NT_SUCCESS(st)) *SemaphoreHandle = h;
     return st;
@@ -656,7 +633,7 @@ NTSTATUS nt_svc_NtCreateEvent(unsigned long a0, unsigned long a1, unsigned long 
 {
     PHANDLE EventHandle = (PHANDLE)a0; ACCESS_MASK DesiredAccess=(ACCESS_MASK)a1; POBJECT_ATTRIBUTES ObjectAttributes=(POBJECT_ATTRIBUTES)a2; ULONG EventType=(ULONG)a3; BOOLEAN InitialState=(BOOLEAN)a4;
     (void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
-    HANDLE h; OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256]; POBJECT_ATTRIBUTES oa=NULL; NTSTATUS st; struct nt_eprocess *proc;
+    HANDLE h = NULL; OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256]; POBJECT_ATTRIBUTES oa=NULL; NTSTATUS st; struct nt_eprocess *proc;
     if (!EventHandle || !access_ok(EventHandle,sizeof(*EventHandle))) return STATUS_ACCESS_VIOLATION;
     proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;
@@ -684,7 +661,7 @@ NTSTATUS nt_svc_NtCreateMutant(unsigned long a0, unsigned long a1, unsigned long
 {
     PHANDLE MutantHandle=(PHANDLE)a0; ACCESS_MASK DesiredAccess=(ACCESS_MASK)a1; POBJECT_ATTRIBUTES ObjectAttributes=(POBJECT_ATTRIBUTES)a2; BOOLEAN InitialOwner=(BOOLEAN)a3;
     (void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
-    HANDLE h; OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256]; POBJECT_ATTRIBUTES oa=NULL; NTSTATUS st; struct nt_eprocess *proc;
+    HANDLE h = NULL; OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256]; POBJECT_ATTRIBUTES oa=NULL; NTSTATUS st; struct nt_eprocess *proc;
     if(!MutantHandle||!access_ok(MutantHandle,sizeof(*MutantHandle))) return STATUS_ACCESS_VIOLATION;
     proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;
@@ -713,7 +690,7 @@ NTSTATUS nt_svc_NtCreateSemaphore(unsigned long a0, unsigned long a1, unsigned l
 {
     PHANDLE SemaphoreHandle=(PHANDLE)a0; ACCESS_MASK DesiredAccess=(ACCESS_MASK)a1; POBJECT_ATTRIBUTES ObjectAttributes=(POBJECT_ATTRIBUTES)a2; LONG InitialCount=(LONG)a3; LONG MaximumCount=(LONG)a4;
     (void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
-    HANDLE h; OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256]; POBJECT_ATTRIBUTES oa=NULL; NTSTATUS st; struct nt_eprocess *proc;
+    HANDLE h = NULL; OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256]; POBJECT_ATTRIBUTES oa=NULL; NTSTATUS st; struct nt_eprocess *proc;
     if(!SemaphoreHandle||!access_ok(SemaphoreHandle,sizeof(*SemaphoreHandle))) return STATUS_ACCESS_VIOLATION;
     proc=nt_get_current_eprocess(); if(!proc) return STATUS_INVALID_PARAMETER;
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;

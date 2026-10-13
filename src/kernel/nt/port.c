@@ -174,12 +174,16 @@ static NTSTATUS port_copy_name(PUNICODE_STRING src, UNICODE_STRING *dst, WCHAR *
 static NTSTATUS port_insert_handle(struct nt_eprocess *proc, struct nt_object_header *hdr,
                                    POBJECT_ATTRIBUTES oa, PHANDLE out)
 {
+    NTSTATUS st;
     if (!proc) return STATUS_INVALID_PARAMETER;
     if (!proc->handle_table) {
-        NTSTATUS st = ObCreateHandleTable(proc, &proc->handle_table);
+        st = ObCreateHandleTable(proc, &proc->handle_table);
         if (!NT_SUCCESS(st)) return st;
     }
-    return ObInsertObject(hdr, oa, PORT_ALL_ACCESS, proc, out);
+    st = ObInsertObject(hdr, oa, PORT_ALL_ACCESS, proc, out);
+    if (st == STATUS_OBJECT_NAME_COLLISION)
+        return ObOpenNamedHolderAfterCollision(hdr->type, oa, PORT_ALL_ACCESS, proc, out);
+    return st;
 }
 
 /* Creates a port object and its two events. The caller owns the creation reference. */
@@ -434,6 +438,7 @@ NTSTATUS nt_svc_NtCreatePort(PHANDLE PortHandle, POBJECT_ATTRIBUTES ObjectAttrib
     if (!NT_SUCCESS(st)) return st;
     st = port_insert_handle(proc, hdr, oa, &h);
     ObDereferenceObject(hdr); /* creation reference; the handle keeps the object */
+    if (st == STATUS_OBJECT_NAME_COLLISION) { *PortHandle = h; return st; }
     if (!NT_SUCCESS(st)) return st;
     *PortHandle = h;
     return STATUS_SUCCESS;

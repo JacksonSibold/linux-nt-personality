@@ -226,12 +226,15 @@ typedef struct _LUID {
 /* Generic mapping                                                            */
 /* -------------------------------------------------------------------------- */
 
+#ifndef NT_GENERIC_MAPPING_DEFINED /* ntdll/nt_types.h may already define it */
+#define NT_GENERIC_MAPPING_DEFINED 1
 typedef struct _GENERIC_MAPPING {
     ACCESS_MASK GenericRead;
     ACCESS_MASK GenericWrite;
     ACCESS_MASK GenericExecute;
     ACCESS_MASK GenericAll;
 } GENERIC_MAPPING;
+#endif
 
 /* -------------------------------------------------------------------------- */
 /* ACL / ACE                                                                  */

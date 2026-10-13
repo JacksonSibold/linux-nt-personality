@@ -20,9 +20,9 @@ Total criteria: 423
 | Class | Count |
 |---|---|
 | HAS-HOST-TEST | 12 |
-| HAS-HARNESS-ENTRY | 3 |
-| REFERENCED-IN-DOCS | 13 |
-| NO-EVIDENCE | 395 |
+| HAS-HARNESS-ENTRY | 6 |
+| REFERENCED-IN-DOCS | 15 |
+| NO-EVIDENCE | 390 |
 
 Results: unknown 423
 
@@ -30,16 +30,16 @@ Results: unknown 423
 
 | Tier | HAS-HOST-TEST | HAS-HARNESS-ENTRY | REFERENCED-IN-DOCS | NO-EVIDENCE | Total |
 |---|---|---|---|---|---|
-| P0 | 7 | 3 | 9 | 124 | 143 |
-| P1 | 2 | 0 | 4 | 169 | 175 |
+| P0 | 7 | 4 | 9 | 123 | 143 |
+| P1 | 2 | 2 | 4 | 167 | 175 |
 | P2 | 3 | 0 | 0 | 86 | 89 |
-| P3 | 0 | 0 | 0 | 16 | 16 |
+| P3 | 0 | 0 | 2 | 14 | 16 |
 
 ## By area
 
 | Area | HAS-HOST-TEST | HAS-HARNESS-ENTRY | REFERENCED-IN-DOCS | NO-EVIDENCE | Total |
 |---|---|---|---|---|---|
-| AC | 0 | 0 | 0 | 9 | 9 |
+| AC | 0 | 0 | 1 | 8 | 9 |
 | API | 0 | 0 | 2 | 10 | 12 |
 | ARCH | 2 | 3 | 0 | 9 | 14 |
 | AUD | 0 | 0 | 0 | 11 | 11 |
@@ -49,9 +49,9 @@ Results: unknown 423
 | DLL | 0 | 0 | 0 | 15 | 15 |
 | DOTNET | 0 | 0 | 0 | 13 | 13 |
 | DRM | 0 | 0 | 0 | 10 | 10 |
-| DRV | 0 | 0 | 0 | 10 | 10 |
+| DRV | 0 | 1 | 1 | 8 | 10 |
 | DX | 0 | 0 | 0 | 19 | 19 |
-| EVI | 0 | 0 | 0 | 6 | 6 |
+| EVI | 0 | 1 | 0 | 5 | 6 |
 | EXE | 0 | 0 | 0 | 16 | 16 |
 | FS | 0 | 0 | 0 | 22 | 22 |
 | GDK | 0 | 0 | 0 | 1 | 1 |
@@ -67,7 +67,7 @@ Results: unknown 423
 | PORT | 0 | 0 | 0 | 10 | 10 |
 | PROC | 0 | 0 | 0 | 19 | 19 |
 | REG | 0 | 0 | 0 | 12 | 12 |
-| SEC | 0 | 0 | 0 | 19 | 19 |
+| SEC | 0 | 1 | 0 | 18 | 19 |
 | SVC | 0 | 0 | 0 | 12 | 12 |
 | SYNC | 2 | 0 | 0 | 13 | 15 |
 | TELEM | 0 | 0 | 0 | 1 | 1 |
@@ -88,26 +88,25 @@ Ranked by distinct host-test and harness sources, then by doc sources, then ID.
 | 7 | DOD-SYNC-B007 | SYNC | P1 | HAS-HOST-TEST | 2 | 0 | `tests/kernel/guest/run_sync_wait64.sh`, `tests/kernel/src/sync_wait64.c` |
 | 8 | DOD-PE-A010 | PE | P2 | HAS-HOST-TEST | 1 | 2 | `tests/conformance/test_pe_parse.c`, `tests/harness/registry.yaml` (+1) |
 | 9 | DOD-PE-B010 | PE | P2 | HAS-HOST-TEST | 1 | 2 | `tests/conformance/test_pe_parse.c`, `tests/harness/registry.yaml` (+1) |
-| 10 | DOD-ARCH-B006 | ARCH | P1 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/provenance.py` |
-| 11 | DOD-GFX-B002 | GFX | P0 | HAS-HOST-TEST | 1 | 0 | `tests/harness/dualrun_wrapper.py` |
-| 12 | DOD-MEM-A001 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
-| 13 | DOD-MEM-B001 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
-| 14 | DOD-MEM-B002 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
-| 15 | DOD-PE-B001 | PE | P0 | HAS-HOST-TEST | 1 | 0 | `tests/conformance/test_pe_parse.c` |
-| 16 | DOD-NT-A003 | NT | P0 | REFERENCED-IN-DOCS | 0 | 2 | `tests/harness/registry.yaml`, `tests/unit/test_criteria_trace.py` |
-| 17 | DOD-NT-B004 | NT | P0 | REFERENCED-IN-DOCS | 0 | 2 | `tests/harness/registry.yaml`, `tests/unit/test_criteria_trace.py` |
-| 18 | DOD-API-A006 | API | P1 | REFERENCED-IN-DOCS | 0 | 1 | `tests/harness/registry.yaml` |
-| 19 | DOD-API-B005 | API | P1 | REFERENCED-IN-DOCS | 0 | 1 | `tests/harness/registry.yaml` |
-| 20 | DOD-NET-A001 | NET | P0 | REFERENCED-IN-DOCS | 0 | 1 | `tests/unit/test_merge_dod.py` |
+| 10 | DOD-SEC-A008 | SEC | P0 | HAS-HARNESS-ENTRY | 1 | 1 | `tests/harness/registry.yaml`, `tests/unit/test_docs_lint.py` |
+| 11 | DOD-ARCH-B006 | ARCH | P1 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/provenance.py` |
+| 12 | DOD-DRV-B003 | DRV | P1 | HAS-HARNESS-ENTRY | 1 | 0 | `tests/harness/registry.yaml` |
+| 13 | DOD-EVI-B006 | EVI | P1 | HAS-HARNESS-ENTRY | 1 | 0 | `tests/harness/registry.yaml` |
+| 14 | DOD-GFX-B002 | GFX | P0 | HAS-HOST-TEST | 1 | 0 | `tests/harness/dualrun_wrapper.py` |
+| 15 | DOD-MEM-A001 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
+| 16 | DOD-MEM-B001 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
+| 17 | DOD-MEM-B002 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
+| 18 | DOD-PE-B001 | PE | P0 | HAS-HOST-TEST | 1 | 0 | `tests/conformance/test_pe_parse.c` |
+| 19 | DOD-NT-A003 | NT | P0 | REFERENCED-IN-DOCS | 0 | 2 | `tests/harness/registry.yaml`, `tests/unit/test_criteria_trace.py` |
+| 20 | DOD-NT-B004 | NT | P0 | REFERENCED-IN-DOCS | 0 | 2 | `tests/harness/registry.yaml`, `tests/unit/test_criteria_trace.py` |
 
 ## NO-EVIDENCE criteria by area
 
-### AC (9)
+### AC (8)
 
 | ID | Tier | Dependency | Description |
 |---|---|---|---|
 | DOD-AC-A001 | P3 | EXT-GATED | Kernel anti-cheat titles (Vanguard, BattlEye, EasyAntiCheat) function end-to-end. |
-| DOD-AC-A002 | P3 | EXT-GATED | Join a live VAC-protected server. |
 | DOD-AC-A003 | P1 | EXT-RE | Titles using **user-mode-only** integrity checks run offline with the checks actually passing on us (measured: game reaches main menu without AC-failure dialog, and AC SDK trace log shows its checks executed and returned clean). |
 | DOD-AC-A004 | P2 | SELF | Self-hosted/offline multiplayer: 2 SUT instances + 1 Windows instance play a LAN-only title to scripted completion with byte-consistent game state (netcode parity). |
 | DOD-AC-A005 | P0 | SELF | Integrity policy (anti-spoof): automated audit proves no code path lies about OS identity beyond the declared, documented compatibility versioning (version-lies are a **gaming vector** for AC/DRM and must be policy-controlled, not ad hoc); canary app enumerates every version-bearing API (28 calls) and results are compared to `osidentity.json`. |
@@ -260,18 +259,16 @@ Ranked by distinct host-test and harness sources, then by doc sources, then ID.
 | DOD-DRM-B004 | P3 | EXT-GATED | `[P3]` PlayReady/protected media, store-DRM content. |
 | DOD-DRM-B005 | P0 | SELF | `[P0]` Graceful failure law: any gated feature path (activation, DRM, telemetry-dependent) fails with a documented, debuggable error to the app and a user-facing log — never a hang, silent stub, or false success; probed by running 20 known-gated apps. |
 
-### DRV (10)
+### DRV (8)
 
 | ID | Tier | Dependency | Description |
 |---|---|---|---|
-| DOD-DRV-A001 | P3 | EXT-GATED | Load/run a third-party **production-signed NT `.sys`** (e.g. a real printer/GPU filter driver). |
 | DOD-DRV-A002 | P1 | EXT-DOC | Our own NT-model kernel-mode components (the Personality's virtual device stack: device interfaces, bus, our test KMDF-style driver) load via our CA in test-signing mode; `SetupDiGetClassDevs`/`CM_*` enumeration and `CreateFile(\\.\ToasterDevice)` ioctl round-trips golden. |
 | DOD-DRV-A003 | P1 | EXT-DOC | PnP/power IRP semantics for our devices: surprise-removal mid-IO → documented error + no hang (10^4 cycles). |
 | DOD-DRV-A004 | P2 | SELF | GPU path: DX tests (DOD-DX-*) pass on Intel iGPU + AMD (mesa) + NVIDIA (proprietary Linux) — **Linux** kernel drivers, our D3D→Vulkan/GBM backend; no Windows GPU driver execution is required. |
 | DOD-DRV-A005 | P2 | EXT-RE | USB/HID class passthrough for INP/DC devices: virtualized host adapter (via Linux raw_hcd/usbip) enumerated through CM + GetDevices API set. |
 | DOD-DRV-B001 | P1 | EXT-DOC | `[P1]` Device enumeration truth: `SetupDi*`/`CM_*` over a scripted USB hub rig (virtual via raw-gadget/usbgip + physical fixtures): 5 device classes (HID, audio, storage, serial, webcam) enumerated with **field-accurate** VID/PID/class/capabilities cross-checked against `dodverify` bus-side capture; DeviceIoControl to our test device round-trips; `CM_Query_And_Remove_SubTree` documented behavior. |
 | DOD-DRV-B002 | P2 | EXT-DOC | `[P2]` WinUSB subset: WinUsb_*/libusb-backed transfers (control/bulk/interrupt) byte-exact against virtual USB devices; isochronous declared best-effort with measured loss table. |
-| DOD-DRV-B003 | P1 | SELF | `[P1]` Claim boundary: no third-party NT `.sys` executes; public docs + capability matrix state this; any "hardware support" claim must name the **API subset + device class** it covers; doc-lint fails release if a gated claim appears without §11 waiver. |
 | DOD-DRV-B004 | P1 | EXT-DOC | `[P1]` Our own device model: personality virtual device stack (bus, test device interfaces) loads under module signing; surprise-removal mid-IO → documented error + 0 hangs in 10^4 cycles. |
 | DOD-DRV-B005 | P3 | EXT-GATED | `[P3]` Load/run a production-signed vendor `.sys` (GPU/printer/filter drivers). |
 
@@ -299,7 +296,7 @@ Ranked by distinct host-test and harness sources, then by doc sources, then ID.
 | DOD-DX-B006 | P2 | EXT-DOC | `[P2]` DDraw legacy: SDK DDraw samples (blt/flip/clipper/palette) + Cave Story reach playable scripted segment with capture-proof; primary/back-buffer blits byte-equal golden. |
 | DOD-DX-B007 | P2 | EXT-DOC | `[P2]` DXGI multi-monitor/occlusion: fullscreen exclusive vs borderless on WM (documented failure codes when unavailable), monitor enumeration truthful vs `dodverify` display config, mode-change sequences. |
 
-### EVI (6)
+### EVI (5)
 
 | ID | Tier | Dependency | Description |
 |---|---|---|---|
@@ -308,7 +305,6 @@ Ranked by distinct host-test and harness sources, then by doc sources, then ID.
 | DOD-EVI-B003 | P0 | SELF | `[P0]` Corpus + seed integrity: every third-party binary pinned by sha256+license+source URL in `corpus.lock`; CI resolves by hash only; run-selection seed signed per release; canary corpus (≥10% of behavioral cases) authored/held by the audit board, never shipped to the delivery team, executed blind at release. |
 | DOD-EVI-B004 | P1 | SELF | `[P1]` No summary-only claims: all published percentages computed by `dodb gate` from per-case result DB exports attached to the release; human-written summary numbers that mismatch the export fail the release. |
 | DOD-EVI-B005 | P0 | SELF | `[P0]` Mutation campaign (the suite is also under audit): before release, the board injects 20 known regressions on a private branch (remove an ACL check, flip an NTSTATUS, stub a lock, fake a timer, drop a completion, lie in a caps query); each must turn ≥1 named criterion red; undetected mutations ⇒ the covering criteria FAIL until test-fixed, and the affected subsystem's DoD is held. |
-| DOD-EVI-B006 | P1 | SELF | `[P1]` Public capability matrix auto-generated from this file + results DB: every row shows ID, tier, verdict, evidence link; gated/deviation rows render with owner names; a CI text-lint fails any release/blog/marketing artifact claiming a row without a green signed bundle. |
 
 ### EXE (16)
 
@@ -589,7 +585,7 @@ Ranked by distinct host-test and harness sources, then by doc sources, then ID.
 | DOD-REG-B005 | P1 | EXT-RE | `[P1]` Change notifications: `RegNotifyChangeKeyValue` sync/event/thread-callback arms, recursive flag, filter flags, re-arming; 10^5-op deterministic producer → lossless/convergent stream per golden semantics. |
 | DOD-REG-B006 | P2 | EXT-DOC | `[P2]` Well-known content integrity: boot-time hives contain the documented setup keys corpus apps read (App Paths, CurrentVersion, Run/RunOnce consumed per doc — SVC-006 —, IFEO Debugger honored only from admin-writable ACL, CLSID store consistency with COM-004 activation); every key enumerated by a content-lint tool vs declared baseline (not freeform). |
 
-### SEC (19)
+### SEC (18)
 
 | ID | Tier | Dependency | Description |
 |---|---|---|---|
@@ -600,7 +596,6 @@ Ranked by distinct host-test and harness sources, then by doc sources, then ID.
 | DOD-SEC-A005 | P1 | EXT-DOC | Credential store ([MS-SCRD]-style public docs): CredWrite/CredRead target/type persistence + ACL ownership; event log: `ReportEvent` → `EvtQuery` round-trip incl. provider registration. |
 | DOD-SEC-A006 | P1 | EXT-DOC | AMSI: `AmsiScanBuffer`/string path dispatches to registered providers (lab mock provider receives exact buffer hashes); provider-fail policy semantics golden. |
 | DOD-SEC-A007 | P2 | EXT-DOC | AppContainer: capability SIDs, loopback exemption semantics, DACL-protected object isolation stress (100 AC'd processes mutual-access matrix). |
-| DOD-SEC-A008 | P0 | SELF | Integrity policy: the Personality never *claims* Windows-update-signed-kernel properties; Secure Kernel concepts (PatchGuard-like) declared out-of-scope in docs — criterion is honesty-of-documentation, auto-checked by doc-lint in CI. |
 | DOD-SEC-B001 | P0 | EXT-DOC | `[P0]` Tokens & impersonation: `OpenProcessToken/DuplicateTokenEx/AdjustTokenPrivileges` (partial-grant ERROR_NOT_ALL_ASSIGNED arm), `CreateProcessAsUser/WithLogonW`, `ImpersonateLoggedOnUser` per-thread + `RevertToSelf` + nested stack, child self-introspection (SID/groups/attrs) equals golden; created files carry the impersonating identity's owner (verified externally via Linux uid mapping table). |
 | DOD-SEC-B002 | P0 | EXT-DOC | `[P0]` ACL enforcement is mandatory and kernel-side on every object class (file, key, named event/section/pipe, process, service): 500-ACE matrix ≥40% negative arms; each enforcement correlated to an access-check tracepoint count from `dodverify` (a userspace pre-check fails both the tracepoint correlation and the bypass-probe); check-at-open semantics: ACE revoked while handle open → existing handle behavior matches golden (open-time check), reopen denied. |
 | DOD-SEC-B003 | P0 | EXT-RE | `[P0]` UAC model: admin account launches medium-IL filtered token by default; manifest requireAdministrator routes through real consent broker (harness auto-consents only via a documented test hook); elevated child writes system dir, standard child fails with golden ERROR; filter on/off matrix; `whoami`-equivalent self-introspection tool prints SID/attrs matching golden tables. |

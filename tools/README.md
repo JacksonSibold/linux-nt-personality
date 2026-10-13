@@ -193,6 +193,36 @@ sh tools/c_coverage.sh --no-run    # report from the existing counters
 Exit status: `0` all suites passed, `1` a suite or test failed (the report is
 still printed), `2` gcov missing or usage error.
 
+## ntpers_kpatch.py
+
+Applies every kernel-tree change the NT personality needs to a Linux 6.18
+source tree, as anchored edits. It replaces the patch step that fails on
+`src/kernel/patches/0001` and `0002` (BUILD-RECIPE G2, G3) and the inline
+wiring in `vm/rebuild_kdir.sh` (G5). It covers the file copies from
+`arch/x86/nt/`, the `src/kernel/nt/` files the NT Makefile reaches, the ntdll
+headers and `binfmt_pe.c`; the Kconfig, Kbuild and fs wiring; the
+`thread_info.h` flags, `task_struct` and `fork.c`; the `do_syscall_64` NT
+branch; the seccomp and audit arch change; and a boot-time caller for
+`nt_banner_init`.
+
+Every anchor must match exactly once in the current text of its file. A
+missing or ambiguous anchor, a bit already in use, or a missing file blocks
+the run and names the file and the BUILD-RECIPE gap. Nothing is written
+unless every edit applies. An edit that is still undecided is a `todo`, and
+the run stops on it (the `enter.c` hooks, G3, are the one todo today).
+
+```
+python3 tools/ntpers_kpatch.py --tree KDIR               # apply
+python3 tools/ntpers_kpatch.py --tree KDIR --check       # report each edit, change nothing
+python3 tools/ntpers_kpatch.py --tree KDIR --allow-todo  # apply, skipping todo edits only
+python3 tools/ntpers_kpatch.py --selftest                # primitive tests on a tiny fixture
+```
+
+`--check` prints one line per edit: `applied`, `applicable`, `blocked` or
+`todo`. Exit status: `0` applied (or a clean check), `1` a block or todo
+remains, `2` a usage error or `--tree` is not a kernel tree. Standard library
+only. The unit tests are in `tests/unit/test_ntpers_kpatch.py`.
+
 ## update_doc_counts.py
 
 Keeps the counts quoted in the docs equal to the repository. A count sits
@@ -247,6 +277,53 @@ python3 tools/criteria_trace.py --selftest       # built-in checks on synthetic 
 Exit status: `0` success, `1` an input cannot be read or the selftest fails,
 `2` usage error. CI regenerates `docs/status/TRACEABILITY.md` and fails when
 the committed file differs.
+
+## criteria_roadmap.py
+
+Plan for the 423 Definition-of-Done criteria, from `tests/conformance/criteria.json`,
+`thresholds.json`, the DoD register in `docs/phase0/DEFINITION-OF-DONE.md`, the
+registry and traceability classes (read through `criteria_trace.py`), and the status
+and decision documents. For each criterion it gives what it needs to pass (for
+example userspace, NT kernel, golden output, GUI, hardware), the repository work
+items it depends on, the blocker references (findings, decision records, owner
+decisions), an effort bucket (`S`, `M`, `L`, `XL` or `unknown`) with its reasoning,
+and a dependency-respecting order grouped into milestones `M-A` to `M-F`. Criteria
+that need a gated artifact or an out-of-scope component are listed separately.
+
+This is a plan, not a results report. No criterion is shown as passing. The
+work-item graph is curated; `--selftest` checks that every cited file, finding,
+decision record and owner decision exists.
+
+```
+python3 tools/criteria_roadmap.py                 # milestone counts
+python3 tools/criteria_roadmap.py --json          # every criterion and work item, JSON
+python3 tools/criteria_roadmap.py --markdown --out docs/status/CRITERIA-ROADMAP.md
+python3 tools/criteria_roadmap.py --selftest      # graph, effort rules, repository references
+```
+
+Exit status: `0` success, `1` the selftest fails or an input cannot be read, `2`
+usage error. CI regenerates `docs/status/CRITERIA-ROADMAP.md` and fails when the
+committed file differs.
+
+## docs_lint.py
+
+Documentation policy lint for the Definition-of-Done criteria. The check named by
+`dod docs-lint --policy` (DOD-SEC-A008) scans the claim surface (the root Markdown
+files, `docs/status/*.md` and `docs/policy/*.md`) for sentences that affirm
+PatchGuard, the Secure Kernel, VBS, HVCI or a Windows-update-signed kernel. A
+sentence with a negation or an out-of-scope qualifier is not a claim. It also
+checks that `docs/policy/INTEGRITY-POLICY.md` has its required sections, declares
+PatchGuard and the Secure Kernel out of scope, and cites only criterion IDs that
+exist in `tests/conformance/criteria.json`. The tool never edits a document.
+
+```
+python3 tools/docs_lint.py --policy --criterion DOD-SEC-A008
+python3 tools/docs_lint.py --policy --criterion DOD-SEC-A008 --root PATH   # synthetic tree
+```
+
+Exit status: `0` zero violations, `1` one or more violations, `2` usage error or an
+unreadable input. It is registered for `DOD-SEC-A008` in
+`tests/harness/registry.yaml`; the harness records its result only when dodrun runs.
 
 ## static_analyze.sh
 
