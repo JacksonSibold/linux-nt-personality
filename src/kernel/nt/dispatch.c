@@ -370,10 +370,18 @@ NTSTATUS nt_svc_NtAllocateVirtualMemoryEx(unsigned long a0, unsigned long a1, un
     NTSTATUS st = NtAllocateVirtualMemoryEx(ProcessHandle, &kbase, &ksize, AllocationType,
                                             PageProtection, ExtendedParameters, ExtendedParameterCount);
     if (st != STATUS_NOT_SUPPORTED) {
-        if (copy_to_user(BaseAddress, &kbase, sizeof(kbase)))
+        if (copy_to_user(BaseAddress, &kbase, sizeof(kbase)) ||
+            copy_to_user(RegionSize, &ksize, sizeof(ksize))) {
+            /* The caller cannot learn the address of a region it was given
+             * no way to name, so give the region back. MEM_RELEASE takes a
+             * zero size. */
+            if (NT_SUCCESS(st)) {
+                SIZE_T zero = 0;
+                PVOID rel = kbase;
+                (void)NtFreeVirtualMemory(ProcessHandle, &rel, &zero, MEM_RELEASE);
+            }
             return STATUS_ACCESS_VIOLATION;
-        if (copy_to_user(RegionSize, &ksize, sizeof(ksize)))
-            return STATUS_ACCESS_VIOLATION;
+        }
     }
     return st;
 }
