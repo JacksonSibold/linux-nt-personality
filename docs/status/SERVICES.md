@@ -39,13 +39,13 @@ hybrid, the first strong definition in file order decides the class.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 56 |
+| IMPLEMENTED | 57 |
 | STUB-NOT-IMPLEMENTED | 0 |
 | REFUSES | 0 |
 | WEAK-FALLBACK | 0 |
 | UNREACHABLE-WRAPPER-MISSING | 0 |
 | MISSING | 31 |
-| IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 77 |
+| IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 76 |
 | IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 3 |
 | REFUSES (userspace) / IMPLEMENTED (kernel) | 1 |
 | STUB-NOT-IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 3 |
@@ -55,7 +55,7 @@ hybrid, the first strong definition in file order decides the class.
 | Area | Total | IMPLEMENTED | STUB-NOT-IMPLEMENTED | REFUSES | WEAK-FALLBACK | UNREACHABLE-WRAPPER-MISSING | MISSING | hybrid |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | system | 10 | 2 | 0 | 0 | 0 | 0 | 0 | 8 |
-| process-thread | 43 | 7 | 0 | 0 | 0 | 0 | 15 | 21 |
+| process-thread | 43 | 8 | 0 | 0 | 0 | 0 | 15 | 20 |
 | memory | 19 | 8 | 0 | 0 | 0 | 0 | 5 | 6 |
 | io | 30 | 24 | 0 | 0 | 0 | 0 | 0 | 6 |
 | sync | 32 | 15 | 0 | 0 | 0 | 0 | 0 | 17 |
@@ -104,7 +104,7 @@ hybrid, the first strong definition in file order decides the class.
 | 0x016b | `NtQueueApcThreadEx` | 6 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
 | 0x01d8 | `NtWaitForAlertByThreadId` | 2 | MISSING |  |
 | 0x0019 | `NtQueryInformationProcess` | 5 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/proc_thread.c` |
-| 0x001c | `NtSetInformationProcess` | 4 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/proc_thread.c` |
+| 0x001c | `NtSetInformationProcess` | 4 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
 | 0x0025 | `NtQueryInformationThread` | 5 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/proc_thread.c` |
 | 0x000d | `NtSetInformationThread` | 4 | IMPLEMENTED | `src/kernel/nt/proc_thread.c` |
 | 0x012e | `NtOpenProcessToken` | 3 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
