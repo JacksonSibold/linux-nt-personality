@@ -32,6 +32,9 @@ NTSTATUS nt_svc_NtQueryTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR
 NTSTATUS nt_svc_NtSignalAndWaitForSingleObject(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
                                                ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
                                                ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
+NTSTATUS nt_svc_NtYieldExecution(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                  ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                  ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
 NTSTATUS nt_svc_NtCreateKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
                                    ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
                                    ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
@@ -448,6 +451,15 @@ TEST(keyed_release_wakes_waiter) {
     PASS();
 }
 
+/* ------------------------------------------------------------------ */
+/* NtYieldExecution                                                     */
+/* ------------------------------------------------------------------ */
+TEST(yield_execution_succeeds) {
+    reset_ob();
+    ASSERT_STATUS(nt_svc_NtYieldExecution(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), STATUS_SUCCESS);
+    PASS();
+}
+
 int main(void) {
     printf("sync extra tests starting\n");
     ObInitObjectManager();
@@ -469,6 +481,7 @@ int main(void) {
     RUN(keyed_create_and_open);
     RUN(keyed_wait_times_out);
     RUN(keyed_release_wakes_waiter);
+    RUN(yield_execution_succeeds);
     printf("sync extra tests: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) return 1;
     ObCleanupObjectManager();

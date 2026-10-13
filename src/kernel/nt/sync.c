@@ -36,6 +36,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #endif
 
@@ -2846,4 +2847,19 @@ NTSTATUS nt_svc_NtReleaseKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, UL
 {
     (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
     return keyed_event_op(a0, a1, a2, a3, false);
+}
+
+/* Give up the processor to another ready thread. Always reports success: sched_yield and
+ * cond_resched do not say whether a switch happened, so STATUS_NO_YIELD_PERFORMED is never returned. */
+NTSTATUS nt_svc_NtYieldExecution(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                 ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                 ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+#ifndef __KERNEL__
+    sched_yield();
+#else
+    cond_resched();
+#endif
+    return STATUS_SUCCESS;
 }
