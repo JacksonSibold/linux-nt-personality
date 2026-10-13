@@ -46,6 +46,8 @@
 #define MEM_LARGE_PAGES                 0x20000000UL
 #define MEM_PHYSICAL                    0x00400000UL
 #define MEM_REPLACE_PLACEHOLDER         0x00004000UL   /* NtMapViewOfSectionEx: refused */
+#define MEM_UNMAP_WITH_TRANSIENT_BOOST  0x00000001UL   /* NtUnmapViewOfSectionEx flag */
+#define MEM_PRESERVE_PLACEHOLDER        0x00000002UL   /* NtUnmapViewOfSectionEx: refused */
 
 #ifdef PAGE_NOACCESS
 #undef PAGE_NOACCESS
@@ -319,6 +321,7 @@ NTSTATUS NtMapViewOfSectionEx(HANDLE SectionHandle, HANDLE ProcessHandle,
                               ULONG PageProtection, PVOID ExtendedParameters,
                               ULONG ExtendedParameterCount);
 NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress);
+NTSTATUS NtUnmapViewOfSectionEx(HANDLE ProcessHandle, PVOID BaseAddress, ULONG Flags);
 
 /* Service entry points for the section services (nt_service_list.h). The
  * kernel build defines them in mm.c with the generic a0..a11 form that
@@ -348,6 +351,7 @@ NTSTATUS nt_svc_NtMapViewOfSectionEx(HANDLE SectionHandle, HANDLE ProcessHandle,
                                      ULONG PageProtection, PVOID ExtendedParameters,
                                      ULONG ExtendedParameterCount);
 NTSTATUS nt_svc_NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress);
+NTSTATUS nt_svc_NtUnmapViewOfSectionEx(HANDLE ProcessHandle, PVOID BaseAddress, ULONG Flags);
 NTSTATUS nt_svc_NtQuerySection(HANDLE SectionHandle, ULONG SectionInformationClass,
                                PVOID SectionInformation, SIZE_T SectionInformationLength,
                                PSIZE_T ReturnLength);

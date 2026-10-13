@@ -2774,6 +2774,17 @@ NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
     return st;
 }
 
+/* NtUnmapViewOfSectionEx. MEM_UNMAP_WITH_TRANSIENT_BOOST is a scheduling hint
+ * with no effect here. MEM_PRESERVE_PLACEHOLDER needs placeholder regions,
+ * which this manager does not have, so it is STATUS_NOT_SUPPORTED. Other bits
+ * are STATUS_INVALID_PARAMETER. */
+NTSTATUS NtUnmapViewOfSectionEx(HANDLE ProcessHandle, PVOID BaseAddress, ULONG Flags) {
+    if (Flags & ~(MEM_UNMAP_WITH_TRANSIENT_BOOST | MEM_PRESERVE_PLACEHOLDER))
+        return STATUS_INVALID_PARAMETER;
+    if (Flags & MEM_PRESERVE_PLACEHOLDER) return STATUS_NOT_SUPPORTED;
+    return NtUnmapViewOfSection(ProcessHandle, BaseAddress);
+}
+
 /* NtMapViewOfSectionEx. With no parameters it is NtMapViewOfSection. The
  * address requirements place the view in [Lowest, Highest) at the requested
  * alignment. The base must then be NULL, because the allocator chooses it. A
@@ -3079,6 +3090,10 @@ NTSTATUS nt_svc_NtMapViewOfSectionEx(HANDLE SectionHandle, HANDLE ProcessHandle,
                                 ExtendedParameters, ExtendedParameterCount);
 }
 
+NTSTATUS nt_svc_NtUnmapViewOfSectionEx(HANDLE ProcessHandle, PVOID BaseAddress, ULONG Flags) {
+    return NtUnmapViewOfSectionEx(ProcessHandle, BaseAddress, Flags);
+}
+
 NTSTATUS nt_svc_NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
     return NtUnmapViewOfSection(ProcessHandle, BaseAddress);
 }
@@ -3174,6 +3189,18 @@ NTSTATUS nt_svc_NtMapViewOfSectionEx(unsigned long a0, unsigned long a1, unsigne
         return STATUS_ACCESS_VIOLATION;
     }
     return st;
+}
+
+/* The base address and flags are values, not user pointers, so nothing is copied. */
+NTSTATUS nt_svc_NtUnmapViewOfSectionEx(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                       unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                       unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE ProcessHandle = (HANDLE)a0;
+    PVOID BaseAddress = (PVOID)a1;
+    ULONG Flags = (ULONG)a2;
+    (void)a3; (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    return NtUnmapViewOfSectionEx(ProcessHandle, BaseAddress, Flags);
 }
 
 /* The base address is a value, not a user pointer, so nothing is copied. */

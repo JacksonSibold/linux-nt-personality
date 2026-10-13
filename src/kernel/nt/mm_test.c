@@ -2492,6 +2492,49 @@ static int test_map_ex(void) {
     return 1;
 }
 
+/* ---- NtUnmapViewOfSectionEx ---- */
+
+/* The transient-boost flag unmaps as NtUnmapViewOfSection does. The preserve-
+ * placeholder flag is not supported, and unknown bits are invalid. A refused
+ * call leaves the view mapped. */
+static int test_unmap_ex(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE h = NULL;
+    NTSTATUS st = NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS, "unmapex create 0x%lx", (unsigned long)st);
+    LARGE_INTEGER off; off.QuadPart = 0;
+    PVOID base = NULL; SIZE_T vs = 0;
+
+    st = NtMapViewOfSectionEx(h, (HANDLE)-1, &base, &off, &vs, 0, PAGE_READWRITE, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS && base != NULL, "unmapex map 0x%lx", (unsigned long)st);
+    ASSERT(NtUnmapViewOfSectionEx((HANDLE)-1, base, 0) == STATUS_SUCCESS, "unmapex flags 0");
+    ASSERT(NtUnmapViewOfSectionEx((HANDLE)-1, base, 0) == STATUS_NOT_MAPPED_VIEW, "unmapex twice");
+
+    base = NULL; vs = 0;
+    st = NtMapViewOfSectionEx(h, (HANDLE)-1, &base, &off, &vs, 0, PAGE_READWRITE, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS, "unmapex remap 0x%lx", (unsigned long)st);
+    ASSERT(NtUnmapViewOfSectionEx((HANDLE)-1, base, MEM_UNMAP_WITH_TRANSIENT_BOOST) == STATUS_SUCCESS,
+           "unmapex transient boost");
+
+    base = NULL; vs = 0;
+    st = NtMapViewOfSectionEx(h, (HANDLE)-1, &base, &off, &vs, 0, PAGE_READWRITE, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS, "unmapex remap2 0x%lx", (unsigned long)st);
+    ASSERT(NtUnmapViewOfSectionEx((HANDLE)-1, base, MEM_PRESERVE_PLACEHOLDER) == STATUS_NOT_SUPPORTED,
+           "unmapex preserve placeholder not supported");
+    ASSERT(NtUnmapViewOfSectionEx((HANDLE)-1, base, 0x4) == STATUS_INVALID_PARAMETER,
+           "unmapex unknown flag");
+    ASSERT(NtUnmapViewOfSectionEx((HANDLE)-1, base, MEM_PRESERVE_PLACEHOLDER | MEM_UNMAP_WITH_TRANSIENT_BOOST)
+           == STATUS_NOT_SUPPORTED, "unmapex preserve with boost");
+    *(volatile unsigned char *)base = 0x21;   /* still mapped after the refusals */
+    ASSERT(nt_svc_NtUnmapViewOfSectionEx((HANDLE)-1, base, MEM_UNMAP_WITH_TRANSIENT_BOOST) == STATUS_SUCCESS,
+           "svc unmapex");
+    ASSERT(nt_svc_NtUnmapViewOfSectionEx((HANDLE)-1, base, 0) == STATUS_NOT_MAPPED_VIEW, "svc unmapex twice");
+    ASSERT(NtUnmapViewOfSectionEx((HANDLE)-1, (PVOID)0x1000, 0) == STATUS_NOT_MAPPED_VIEW, "unmapex unmapped");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "unmapex close");
+    ntmm_reset();
+    return 1;
+}
+
 int main(void) {
     printf("=== ntmm tests ===\n");
     if (!mm_setup_objects()) {
@@ -2558,6 +2601,7 @@ int main(void) {
     RUN_TEST(test_create_ex_params);
     RUN_TEST(test_ext_copy_in);
     RUN_TEST(test_map_ex);
+    RUN_TEST(test_unmap_ex);
     ntmm_reset();
     ObDestroyProcessObject(g_mm_proc);
     ObCleanupObjectManager();
