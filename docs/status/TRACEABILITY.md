@@ -81,24 +81,24 @@ Ranked by distinct host-test and harness sources, then by doc sources, then ID.
 |---|---|---|---|---|---|---|---|
 | 1 | DOD-ARCH-B002 | ARCH | P0 | HAS-HOST-TEST | 4 | 1 | `tests/harness/lint_integrity.py`, `tests/kernel/harness/pmu.py` (+3) |
 | 2 | DOD-ARCH-A002 | ARCH | P0 | HAS-HARNESS-ENTRY | 3 | 0 | `tests/harness/selftest.py`, `tests/kernel/harness/arch.py` (+1) |
-| 3 | DOD-NT-A001 | NT | P0 | HAS-HOST-TEST | 2 | 1 | `tests/harness/dualrun_wrapper.py`, `tests/harness/selftest.py` (+1) |
-| 4 | DOD-ARCH-A001 | ARCH | P0 | HAS-HARNESS-ENTRY | 2 | 0 | `tests/kernel/harness/provenance.py`, `tests/harness/registry.yaml` |
+| 3 | DOD-NT-A001 | NT | P0 | HAS-HOST-TEST | 2 | 2 | `tests/harness/dualrun_wrapper.py`, `tests/harness/selftest.py` (+2) |
+| 4 | DOD-ARCH-A001 | ARCH | P0 | HAS-HARNESS-ENTRY | 2 | 1 | `tests/kernel/harness/provenance.py`, `tests/harness/registry.yaml` (+1) |
 | 5 | DOD-ARCH-B001 | ARCH | P0 | HAS-HARNESS-ENTRY | 2 | 0 | `tests/kernel/harness/arch.py`, `tests/harness/registry.yaml` |
 | 6 | DOD-SYNC-A007 | SYNC | P2 | HAS-HOST-TEST | 2 | 0 | `tests/kernel/guest/run_sync_wait64.sh`, `tests/kernel/src/sync_wait64.c` |
 | 7 | DOD-SYNC-B007 | SYNC | P1 | HAS-HOST-TEST | 2 | 0 | `tests/kernel/guest/run_sync_wait64.sh`, `tests/kernel/src/sync_wait64.c` |
-| 8 | DOD-PE-A010 | PE | P2 | HAS-HOST-TEST | 1 | 1 | `tests/conformance/test_pe_parse.c`, `tests/harness/registry.yaml` |
-| 9 | DOD-PE-B010 | PE | P2 | HAS-HOST-TEST | 1 | 1 | `tests/conformance/test_pe_parse.c`, `tests/harness/registry.yaml` |
+| 8 | DOD-PE-A010 | PE | P2 | HAS-HOST-TEST | 1 | 2 | `tests/conformance/test_pe_parse.c`, `tests/harness/registry.yaml` (+1) |
+| 9 | DOD-PE-B010 | PE | P2 | HAS-HOST-TEST | 1 | 2 | `tests/conformance/test_pe_parse.c`, `tests/harness/registry.yaml` (+1) |
 | 10 | DOD-ARCH-B006 | ARCH | P1 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/provenance.py` |
 | 11 | DOD-GFX-B002 | GFX | P0 | HAS-HOST-TEST | 1 | 0 | `tests/harness/dualrun_wrapper.py` |
 | 12 | DOD-MEM-A001 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
 | 13 | DOD-MEM-B001 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
 | 14 | DOD-MEM-B002 | MEM | P0 | HAS-HOST-TEST | 1 | 0 | `tests/kernel/harness/mem.py` |
 | 15 | DOD-PE-B001 | PE | P0 | HAS-HOST-TEST | 1 | 0 | `tests/conformance/test_pe_parse.c` |
-| 16 | DOD-API-A006 | API | P1 | REFERENCED-IN-DOCS | 0 | 1 | `tests/harness/registry.yaml` |
-| 17 | DOD-API-B005 | API | P1 | REFERENCED-IN-DOCS | 0 | 1 | `tests/harness/registry.yaml` |
-| 18 | DOD-NET-A001 | NET | P0 | REFERENCED-IN-DOCS | 0 | 1 | `tests/unit/test_merge_dod.py` |
-| 19 | DOD-NET-A002 | NET | P0 | REFERENCED-IN-DOCS | 0 | 1 | `tests/unit/test_merge_dod.py` |
-| 20 | DOD-NET-A003 | NET | P1 | REFERENCED-IN-DOCS | 0 | 1 | `tests/unit/test_merge_dod.py` |
+| 16 | DOD-NT-A003 | NT | P0 | REFERENCED-IN-DOCS | 0 | 2 | `tests/harness/registry.yaml`, `tests/unit/test_criteria_trace.py` |
+| 17 | DOD-NT-B004 | NT | P0 | REFERENCED-IN-DOCS | 0 | 2 | `tests/harness/registry.yaml`, `tests/unit/test_criteria_trace.py` |
+| 18 | DOD-API-A006 | API | P1 | REFERENCED-IN-DOCS | 0 | 1 | `tests/harness/registry.yaml` |
+| 19 | DOD-API-B005 | API | P1 | REFERENCED-IN-DOCS | 0 | 1 | `tests/harness/registry.yaml` |
+| 20 | DOD-NET-A001 | NET | P0 | REFERENCED-IN-DOCS | 0 | 1 | `tests/unit/test_merge_dod.py` |
 
 ## NO-EVIDENCE criteria by area
 
