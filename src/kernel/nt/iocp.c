@@ -182,6 +182,24 @@ NTSTATUS nt_svc_NtCreateIoCompletion(PHANDLE CompletionPortHandle,
 	return STATUS_SUCCESS;
 }
 
+/*
+ * Names are not registered by nt_svc_NtCreateIoCompletion in this build
+ * (ObjectAttributes is ignored), so no named port can be found here. A
+ * missing ObjectAttributes is rejected before any lookup.
+ */
+NTSTATUS nt_svc_NtOpenIoCompletion(PHANDLE CompletionPortHandle,
+				   ACCESS_MASK DesiredAccess,
+				   POBJECT_ATTRIBUTES ObjectAttributes)
+{
+	(void)DesiredAccess;
+
+	if (!CompletionPortHandle)
+		return STATUS_ACCESS_VIOLATION;
+	if (!ObjectAttributes)
+		return STATUS_INVALID_PARAMETER;
+	return STATUS_OBJECT_NAME_NOT_FOUND;
+}
+
 NTSTATUS nt_svc_NtSetIoCompletion(HANDLE IoCompletionHandle,
 				  ULONG CompletionKey,
 				  PVOID CompletionValue,
@@ -620,17 +638,43 @@ NTSTATUS nt_svc_NtQueryIoCompletion(HANDLE IoCompletionHandle,
 				    PULONG ReturnLength)
 {
 	struct nt_iocp *iocp;
+	LONG depth;
 
-	(void)IoCompletionInformationClass;
-	(void)IoCompletionInformation;
-	(void)IoCompletionInformationLength;
-	(void)ReturnLength;
+	if (!IoCompletionInformation || !ReturnLength)
+		return STATUS_ACCESS_VIOLATION;
 
 	iocp = ntio_handle_lookup(IoCompletionHandle, 0);
 	if (!iocp)
 		return STATUS_INVALID_HANDLE;
+
+	if (IoCompletionInformationClass != IoCompletionBasicInformation) {
+		ntio_iocp_put(iocp);
+		return STATUS_INVALID_INFO_CLASS;
+	}
+	if (IoCompletionInformationLength != sizeof(LONG)) {
+		ntio_iocp_put(iocp);
+		return STATUS_INFO_LENGTH_MISMATCH;
+	}
+
+	/* Depth is the number of queued packets (IO_COMPLETION_BASIC_INFORMATION). */
+	spin_lock(&iocp->lock);
+	depth = (LONG)iocp->queued;
+	spin_unlock(&iocp->lock);
 	ntio_iocp_put(iocp);
-	return STATUS_NOT_IMPLEMENTED;
+
+#ifdef __KERNEL__
+	{
+		ULONG retlen = sizeof(LONG);
+
+		if (copy_to_user(IoCompletionInformation, &depth, sizeof(depth)) ||
+		    copy_to_user(ReturnLength, &retlen, sizeof(retlen)))
+			return STATUS_ACCESS_VIOLATION;
+	}
+#else
+	*(LONG *)IoCompletionInformation = depth;
+	*ReturnLength = sizeof(LONG);
+#endif
+	return STATUS_SUCCESS;
 }
 
 /* -------------------------------------------------------------------------- */

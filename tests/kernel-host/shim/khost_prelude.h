@@ -11,6 +11,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <sys/stat.h>   /* shim version: must precede the mkdir macro below */
+#include <dirent.h>
 
 #ifndef O_DIRECTORY
 #define O_DIRECTORY 0200000
@@ -29,6 +30,7 @@ int khost_unlink(const char *path);
 int khost_rmdir(const char *path);
 int khost_rename(const char *from, const char *to);
 int khost_system(const char *command);
+DIR *khost_opendir(const char *path);
 
 #define pread(fd, buf, n, off)  khost_pread((fd), (buf), (n), (off))
 #define pwrite(fd, buf, n, off) khost_pwrite((fd), (buf), (n), (off))
@@ -39,5 +41,6 @@ int khost_system(const char *command);
 #define rmdir                   khost_rmdir
 #define rename                  khost_rename
 #define system                  khost_system
+#define opendir                 khost_opendir
 
 #endif

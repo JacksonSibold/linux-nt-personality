@@ -202,6 +202,21 @@ extern "C" {
 #define FileStatLxInformation           70
 #define FileCaseSensitiveInformation    71
 
+/* FsInformationClass values (NtQueryVolumeInformationFile). */
+#define FileFsVolumeInformation         1
+#define FileFsLabelInformation          2
+#define FileFsSizeInformation           3
+#define FileFsDeviceInformation         4
+#define FileFsAttributeInformation      5
+#define FileFsControlInformation        6
+#define FileFsFullSizeInformation       7
+#define FileFsObjectIdInformation       8
+#define FileFsDriverPathInformation     9
+#define FileFsVolumeFlagsInformation    10
+#define FileFsSectorSizeInformation     11
+#define FileFsDataCopyInformation       12
+#define FILE_DEVICE_DISK                0x00000007
+
 /* -------------------------------------------------------------------------- */
 /* Information structures                                                       */
 /* -------------------------------------------------------------------------- */
@@ -267,6 +282,48 @@ typedef struct _FILE_ALIGNMENT_INFORMATION {
 	ULONG AlignmentRequirement;
 } FILE_ALIGNMENT_INFORMATION, *PFILE_ALIGNMENT_INFORMATION;
 
+typedef struct _FILE_NETWORK_OPEN_INFORMATION {
+	LARGE_INTEGER CreationTime;
+	LARGE_INTEGER LastAccessTime;
+	LARGE_INTEGER LastWriteTime;
+	LARGE_INTEGER ChangeTime;
+	LARGE_INTEGER AllocationSize;
+	LARGE_INTEGER EndOfFile;
+	ULONG FileAttributes;
+} FILE_NETWORK_OPEN_INFORMATION, *PFILE_NETWORK_OPEN_INFORMATION;
+
+typedef struct _FILE_ATTRIBUTE_TAG_INFORMATION {
+	ULONG FileAttributes;
+	ULONG ReparseTag;
+} FILE_ATTRIBUTE_TAG_INFORMATION, *PFILE_ATTRIBUTE_TAG_INFORMATION;
+
+/* Create options that FileModeInformation reports (NT Mode bits). */
+#define FILE_MODE_OPTIONS_MASK (FILE_WRITE_THROUGH | FILE_SEQUENTIAL_ONLY | 				FILE_NO_INTERMEDIATE_BUFFERING | 				FILE_SYNCHRONOUS_IO_ALERT | 				FILE_SYNCHRONOUS_IO_NONALERT | FILE_DELETE_ON_CLOSE)
+
+typedef struct _FILE_ALLOCATION_INFORMATION {
+	LARGE_INTEGER AllocationSize;
+} FILE_ALLOCATION_INFORMATION, *PFILE_ALLOCATION_INFORMATION;
+
+typedef struct _FILE_DISPOSITION_INFORMATION_EX {
+	ULONG Flags;
+} FILE_DISPOSITION_INFORMATION_EX, *PFILE_DISPOSITION_INFORMATION_EX;
+
+typedef struct _FILE_RENAME_INFORMATION_EX {
+	ULONG Flags;
+	HANDLE RootDirectory;
+	ULONG FileNameLength;
+	WCHAR FileName[1];
+} FILE_RENAME_INFORMATION_EX, *PFILE_RENAME_INFORMATION_EX;
+
+/* FILE_DISPOSITION_INFORMATION_EX.Flags and FILE_RENAME_INFORMATION_EX.Flags. */
+#define FILE_DISPOSITION_DELETE         0x00000001
+#define FILE_RENAME_REPLACE_IF_EXISTS   0x00000001
+
+typedef struct _FILE_FS_DEVICE_INFORMATION {
+	ULONG DeviceType;
+	ULONG Characteristics;
+} FILE_FS_DEVICE_INFORMATION, *PFILE_FS_DEVICE_INFORMATION;
+
 typedef struct _FILE_ALL_INFORMATION {
 	FILE_BASIC_INFORMATION BasicInformation;
 	FILE_STANDARD_INFORMATION StandardInformation;
@@ -278,6 +335,66 @@ typedef struct _FILE_ALL_INFORMATION {
 	FILE_ALIGNMENT_INFORMATION AlignmentInformation;
 	FILE_NAME_INFORMATION NameInformation;
 } FILE_ALL_INFORMATION, *PFILE_ALL_INFORMATION;
+
+/* Directory information structures (NtQueryDirectoryFile). */
+typedef struct _FILE_DIRECTORY_INFORMATION {
+	ULONG NextEntryOffset;
+	ULONG FileIndex;
+	LARGE_INTEGER CreationTime;
+	LARGE_INTEGER LastAccessTime;
+	LARGE_INTEGER LastWriteTime;
+	LARGE_INTEGER ChangeTime;
+	LARGE_INTEGER EndOfFile;
+	LARGE_INTEGER AllocationSize;
+	ULONG FileAttributes;
+	ULONG FileNameLength;
+	WCHAR FileName[1];
+} FILE_DIRECTORY_INFORMATION, *PFILE_DIRECTORY_INFORMATION;
+
+typedef struct _FILE_FULL_DIRECTORY_INFORMATION {
+	ULONG NextEntryOffset;
+	ULONG FileIndex;
+	LARGE_INTEGER CreationTime;
+	LARGE_INTEGER LastAccessTime;
+	LARGE_INTEGER LastWriteTime;
+	LARGE_INTEGER ChangeTime;
+	LARGE_INTEGER EndOfFile;
+	LARGE_INTEGER AllocationSize;
+	ULONG FileAttributes;
+	ULONG FileNameLength;
+	ULONG EaSize;
+	WCHAR FileName[1];
+} FILE_FULL_DIRECTORY_INFORMATION, *PFILE_FULL_DIRECTORY_INFORMATION;
+
+typedef struct _FILE_BOTH_DIRECTORY_INFORMATION {
+	ULONG NextEntryOffset;
+	ULONG FileIndex;
+	LARGE_INTEGER CreationTime;
+	LARGE_INTEGER LastAccessTime;
+	LARGE_INTEGER LastWriteTime;
+	LARGE_INTEGER ChangeTime;
+	LARGE_INTEGER EndOfFile;
+	LARGE_INTEGER AllocationSize;
+	ULONG FileAttributes;
+	ULONG FileNameLength;
+	ULONG EaSize;
+	UCHAR ShortNameLength;
+	WCHAR ShortName[12];
+	WCHAR FileName[1];
+} FILE_BOTH_DIRECTORY_INFORMATION, *PFILE_BOTH_DIRECTORY_INFORMATION;
+
+typedef struct _FILE_NAMES_INFORMATION {
+	ULONG NextEntryOffset;
+	ULONG FileIndex;
+	ULONG FileNameLength;
+	WCHAR FileName[1];
+} FILE_NAMES_INFORMATION, *PFILE_NAMES_INFORMATION;
+
+/* NtQueryDirectoryFileEx QueryFlags. */
+#define SL_RESTART_SCAN                 0x00000001
+#define SL_RETURN_SINGLE_ENTRY          0x00000002
+#define SL_INDEX_SPECIFIED              0x00000004
+#define SL_RETURN_ON_DISK_ENTRIES_ONLY  0x00000008
 
 /* -------------------------------------------------------------------------- */
 /* File object                                                                  */
@@ -316,7 +433,26 @@ struct nt_file_object {
 
 	/* Name cache (Linux path). */
 	char *linux_path;
+
+	/* Directory enumeration state (userspace shim). A snapshot of entry names
+	 * is taken when a scan starts; dir_pos is the next entry to return. */
+	char **dir_names;
+	size_t dir_count;
+	size_t dir_pos;
+	char *dir_pattern;
 };
+
+#ifndef STATUS_NOT_FOUND
+#define STATUS_NOT_FOUND ((NTSTATUS)0xC0000225L)
+#endif
+
+/* NtFlushBuffersFileEx flags. */
+#define FLUSH_FLAGS_FILE_DATA_ONLY      0x00000001
+#define FLUSH_FLAGS_NO_SYNC             0x00000002
+#define FLUSH_FLAGS_FILE_DATA_SYNC_ONLY 0x00000004
+#define FLUSH_FLAGS_VALID_MASK          (FLUSH_FLAGS_FILE_DATA_ONLY | \
+					 FLUSH_FLAGS_NO_SYNC | \
+					 FLUSH_FLAGS_FILE_DATA_SYNC_ONLY)
 
 /* -------------------------------------------------------------------------- */
 /* Service entry points (called through nt_service_table).                      */
@@ -370,6 +506,86 @@ NTSTATUS nt_svc_NtSetInformationFile(HANDLE FileHandle,
 
 NTSTATUS nt_svc_NtFlushBuffersFile(HANDLE FileHandle,
 				   PIO_STATUS_BLOCK IoStatusBlock);
+
+NTSTATUS nt_svc_NtFlushBuffersFileEx(HANDLE FileHandle, ULONG Flags,
+				     PVOID Parameters, ULONG ParametersSize,
+				     PIO_STATUS_BLOCK IoStatusBlock);
+
+NTSTATUS nt_svc_NtCancelIoFile(HANDLE FileHandle,
+			       PIO_STATUS_BLOCK IoStatusBlock);
+
+NTSTATUS nt_svc_NtCancelIoFileEx(HANDLE FileHandle,
+				 PIO_STATUS_BLOCK IoRequestToCancel,
+				 PIO_STATUS_BLOCK IoStatusBlock);
+
+NTSTATUS nt_svc_NtDeleteFile(POBJECT_ATTRIBUTES ObjectAttributes);
+
+NTSTATUS nt_svc_NtQueryFullAttributesFile(POBJECT_ATTRIBUTES ObjectAttributes,
+					  PFILE_NETWORK_OPEN_INFORMATION FileInformation);
+
+NTSTATUS nt_svc_NtLockFile(HANDLE FileHandle, HANDLE Event,
+			   PVOID ApcRoutine, PVOID ApcContext,
+			   PIO_STATUS_BLOCK IoStatusBlock,
+			   PLARGE_INTEGER ByteOffset, PLARGE_INTEGER Length,
+			   ULONG Key, BOOLEAN FailImmediately,
+			   BOOLEAN ExclusiveLock);
+
+NTSTATUS nt_svc_NtUnlockFile(HANDLE FileHandle,
+			     PIO_STATUS_BLOCK IoStatusBlock,
+			     PLARGE_INTEGER ByteOffset, PLARGE_INTEGER Length,
+			     ULONG Key);
+
+NTSTATUS nt_svc_NtQueryDirectoryFile(HANDLE FileHandle, HANDLE Event,
+				     PVOID ApcRoutine, PVOID ApcContext,
+				     PIO_STATUS_BLOCK IoStatusBlock,
+				     PVOID FileInformation, ULONG Length,
+				     ULONG FileInformationClass,
+				     BOOLEAN ReturnSingleEntry,
+				     PUNICODE_STRING FileName,
+				     BOOLEAN RestartScan);
+
+NTSTATUS nt_svc_NtQueryDirectoryFileEx(HANDLE FileHandle, HANDLE Event,
+				       PVOID ApcRoutine, PVOID ApcContext,
+				       PIO_STATUS_BLOCK IoStatusBlock,
+				       PVOID FileInformation, ULONG Length,
+				       ULONG FileInformationClass,
+				       ULONG QueryFlags,
+				       PUNICODE_STRING FileName);
+
+NTSTATUS nt_svc_NtQueryVolumeInformationFile(HANDLE FileHandle,
+					       PIO_STATUS_BLOCK IoStatusBlock,
+					       PVOID FsInformation, ULONG Length,
+					       ULONG FsInformationClass);
+
+NTSTATUS nt_svc_NtSetVolumeInformationFile(HANDLE FileHandle,
+					     PIO_STATUS_BLOCK IoStatusBlock,
+					     PVOID FsInformation, ULONG Length,
+					     ULONG FsInformationClass);
+
+NTSTATUS nt_svc_NtQueryEaFile(HANDLE FileHandle,
+			      PIO_STATUS_BLOCK IoStatusBlock,
+			      PVOID Buffer, ULONG Length,
+			      BOOLEAN ReturnSingleEntry,
+			      PVOID EaList, ULONG EaListLength,
+			      PULONG EaIndex, BOOLEAN RestartScan);
+
+NTSTATUS nt_svc_NtSetEaFile(HANDLE FileHandle,
+			    PIO_STATUS_BLOCK IoStatusBlock,
+			    PVOID Buffer, ULONG Length);
+
+NTSTATUS nt_svc_NtDeviceIoControlFile(HANDLE FileHandle, HANDLE Event,
+				      PVOID ApcRoutine, PVOID ApcContext,
+				      PIO_STATUS_BLOCK IoStatusBlock,
+				      ULONG IoControlCode,
+				      PVOID InputBuffer, ULONG InputBufferLength,
+				      PVOID OutputBuffer, ULONG OutputBufferLength);
+
+NTSTATUS nt_svc_NtFsControlFile(HANDLE FileHandle, HANDLE Event,
+				PVOID ApcRoutine, PVOID ApcContext,
+				PIO_STATUS_BLOCK IoStatusBlock,
+				ULONG FsControlCode,
+				PVOID InputBuffer, ULONG InputBufferLength,
+				PVOID OutputBuffer, ULONG OutputBufferLength);
 
 #ifdef __KERNEL__
 NTSTATUS nt_svc_NtClose(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11);
