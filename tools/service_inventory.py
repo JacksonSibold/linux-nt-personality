@@ -8,23 +8,52 @@ The service table is src/kernel/nt/nt_service_list.h, one line per service:
 
 For each service the handler definitions in src/kernel/nt/*.c are looked up
 as `NTSTATUS nt_svc_<Name>(...) { ... }`. Test sources (*_test.c) and
-prototypes (no body) are ignored. The result is one of:
+prototypes (no body) are ignored. Each service gets one class:
 
-  IMPLEMENTED           a strong definition with a real body
-  STUB-NOT-IMPLEMENTED  a strong definition whose body is nothing but
+  IMPLEMENTED           a strong definition whose body is not a refusal
+  STUB-NOT-IMPLEMENTED  a strong definition whose body is only a bare
                         `return STATUS_NOT_IMPLEMENTED;` or
-                        `return STATUS_NOT_SUPPORTED;` (casts of unused
-                        arguments to void are allowed)
+                        `return STATUS_NOT_SUPPORTED;` (void casts of unused
+                        arguments are allowed)
+  REFUSES               a strong definition whose body refuses after argument
+                        validation. The body is zero or more statements
+                        `if (...) return V;` with V one of STATUS_INVALID_PARAMETER,
+                        STATUS_INVALID_HANDLE, STATUS_INVALID_ADDRESS, followed
+                        by exactly one `return R;` with R one of
+                        STATUS_NOT_IMPLEMENTED, STATUS_NOT_SUPPORTED,
+                        STATUS_INVALID_DEVICE_REQUEST, STATUS_ACCESS_DENIED.
+                        Any other statement (a conditional refusal, a
+                        STATUS_SUCCESS path, a loop) makes the body IMPLEMENTED.
+                        A bare return of the two stub statuses is STUB, not
+                        REFUSES; every other refusal body is REFUSES.
   WEAK-FALLBACK         only a `__attribute__((weak))` definition exists, so
                         the table entry is the weak fallback
+  UNREACHABLE-WRAPPER-MISSING
+                        no nt_svc_<Name> definition at all, but a function
+                        defined in src/kernel/nt/*.c (not an nt_svc_ wrapper)
+                        matches the service name. Names match after lower-casing,
+                        removing underscores, removing a leading "nt" and a
+                        trailing "internal" or "impl". The first match in file
+                        order is reported as the handler file.
   MISSING               no definition at all; the table entry is NULL
+  A (userspace) / B (kernel)
+                        hybrid: the service has a strong definition in the
+                        userspace branch and one in the kernel branch of a
+                        conditional on __KERNEL__. A and B are the classes of
+                        the two branches, classified by the rules above.
 
 Linker rules apply: a strong definition overrides a weak one, so a service
 with both is classified by its strong definition. Comments and string literals
-are removed before the body is read. Preprocessor conditionals are not
-evaluated: when a service has several strong definitions (for example in the
-userspace and kernel branches of one file), the first one in file order decides
-its class.
+are removed before bodies are read.
+
+Preprocessor conditionals: only conditionals on __KERNEL__ are evaluated.
+`#ifdef __KERNEL__` and `#if defined(__KERNEL__)` put the kernel branch first;
+`#ifndef __KERNEL__` and `#if !defined(__KERNEL__)` put the userspace branch
+first; the other branch of each is the opposite side. An `#elif` makes its
+branch unlabelled. Every other conditional is transparent: its branches are
+read as one. A service that has strong definitions under both labelled
+branches is reported as a hybrid; otherwise the first strong definition in
+file order decides its class.
 
 Each service is placed in an area chosen from its name (first matching
 pattern wins). The area is only for grouping in the report.
@@ -51,9 +80,20 @@ HANDLER_DIR = "src/kernel/nt"
 
 IMPLEMENTED = "IMPLEMENTED"
 STUB = "STUB-NOT-IMPLEMENTED"
+REFUSES = "REFUSES"
 WEAK = "WEAK-FALLBACK"
+UNREACHABLE = "UNREACHABLE-WRAPPER-MISSING"
 MISSING = "MISSING"
-STATUSES = (IMPLEMENTED, STUB, WEAK, MISSING)
+STATUSES = (IMPLEMENTED, STUB, REFUSES, WEAK, UNREACHABLE, MISSING)
+BODY_CLASSES = (IMPLEMENTED, STUB, REFUSES)
+
+USERSPACE = "userspace"
+KERNEL = "kernel"
+HYBRID_SEP = " / "
+
+STUB_STATUSES = ("STATUS_NOT_IMPLEMENTED", "STATUS_NOT_SUPPORTED")
+REFUSAL_STATUSES = STUB_STATUSES + ("STATUS_INVALID_DEVICE_REQUEST", "STATUS_ACCESS_DENIED")
+VALIDATION_STATUSES = ("STATUS_INVALID_PARAMETER", "STATUS_INVALID_HANDLE", "STATUS_INVALID_ADDRESS")
 
 SERVICE_RE = re.compile(
     r"^\s*NT_SERVICE\s*\(\s*(0x[0-9a-fA-F]+)\s*,\s*(\w+)\s*,\s*(\d+)\s*\)\s*$",
@@ -61,9 +101,18 @@ SERVICE_RE = re.compile(
 DEF_RE = re.compile(
     r"(?P<attr>__attribute__\s*\(\(\s*weak\s*\)\)\s*)?"
     r"\bNTSTATUS\s+nt_svc_(?P<name>\w+)\s*\(", re.S)
-VOID_CAST_RE = re.compile(r"\(\s*void\s*\)\s*[\w.\[\]]+\s*;")
-STUB_RETURN_RE = re.compile(
-    r"^return\s+(STATUS_NOT_IMPLEMENTED|STATUS_NOT_SUPPORTED)\s*;$")
+FUNC_HEAD_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+DIRECTIVE_LINE_RE = re.compile(r"(?m)^[ \t]*#.*$")
+DIRECTIVE_RE = re.compile(r"^\s*#\s*(ifdef|ifndef|if|elif|else|endif)\b(.*)$")
+KERNEL_IF_RE = re.compile(r"(!?)\s*(defined\s*\(\s*__KERNEL__\s*\)|defined\s+__KERNEL__|__KERNEL__)")
+VOID_CAST_RE = re.compile(r"\(\s*void\s*\)[^;]*;")
+RETURN_RE = re.compile(r"^return\s+(\w+)$", re.S)
+VALIDATION_RE = re.compile(r"^if\s*\(.*\)\s*return\s+(\w+)$", re.S)
+C_KEYWORDS = frozenset({
+    "if", "for", "while", "switch", "return", "sizeof", "else", "do", "defined",
+    "typeof", "__typeof__", "_Alignof", "__attribute__", "_Static_assert",
+})
+IMPL_SUFFIXES = ("internal", "impl")
 
 # Ordered: the first pattern that matches the service name gives the area.
 AREA_PATTERNS = (
@@ -82,6 +131,15 @@ AREA_PATTERNS = (
 )
 AREA_RES = tuple((area, re.compile(pat)) for area, pat in AREA_PATTERNS)
 OTHER_AREA = "other"
+
+
+def hybrid_status(user_class, kernel_class):
+    """Status text for a service defined in both branches of a __KERNEL__ conditional."""
+    return f"{user_class} ({USERSPACE}) / {kernel_class} ({KERNEL})"
+
+
+def is_hybrid(status):
+    return HYBRID_SEP in status
 
 
 def strip_comments_and_strings(text):
@@ -127,18 +185,86 @@ def match_close(text, open_idx, open_ch, close_ch):
     return -1
 
 
-def body_is_stub(body):
-    """True when the body only casts arguments to void and returns a stub status."""
-    rest = VOID_CAST_RE.sub("", body)
+def refusal_class(body):
+    """STUB, REFUSES, or None (not a refusal) for one function body."""
+    rest = VOID_CAST_RE.sub(" ", body).replace("{", " ").replace("}", " ")
     stmts = [s.strip() for s in rest.split(";") if s.strip()]
-    if len(stmts) != 1:
-        return False
-    return bool(STUB_RETURN_RE.match(stmts[0] + ";"))
+    if not stmts:
+        return None
+    last = RETURN_RE.match(stmts[-1])
+    if not last or last.group(1) not in REFUSAL_STATUSES:
+        return None
+    for stmt in stmts[:-1]:
+        check = VALIDATION_RE.match(stmt)
+        if not check or check.group(1) not in VALIDATION_STATUSES:
+            return None
+    if len(stmts) == 1 and last.group(1) in STUB_STATUSES:
+        return STUB
+    return REFUSES
 
 
-def scan_definitions(src_text):
-    """Yield (name, is_weak, body_or_None) for each nt_svc_ definition in one file."""
+def body_is_stub(body):
+    """True when the body is a bare stub return (see refusal_class)."""
+    return refusal_class(body) == STUB
+
+
+def body_class(body):
+    return refusal_class(body) or IMPLEMENTED
+
+
+def kernel_branch_labels(kind, expr):
+    """(then, else) branch labels for a conditional on __KERNEL__, else (None, None)."""
+    expr = expr.strip()
+    if kind == "ifdef" and expr == "__KERNEL__":
+        return KERNEL, USERSPACE
+    if kind == "ifndef" and expr == "__KERNEL__":
+        return USERSPACE, KERNEL
+    if kind == "if":
+        m = KERNEL_IF_RE.fullmatch(expr)
+        if m:
+            return (USERSPACE, KERNEL) if m.group(1) else (KERNEL, USERSPACE)
+    return None, None
+
+
+def branch_labels(text):
+    """Branch label in force on each line of comment-free text (None when unlabelled).
+
+    Directive lines themselves are unlabelled. Only __KERNEL__ conditionals give a
+    label; an enclosing label applies inside nested conditionals that carry none.
+    """
+    labels = []
+    stack = []  # entries: [then_label, else_label, label_in_current_branch]
+    for line in text.split("\n"):
+        m = DIRECTIVE_RE.match(line)
+        if m:
+            kind, expr = m.group(1), m.group(2)
+            if kind in ("if", "ifdef", "ifndef"):
+                then_label, else_label = kernel_branch_labels(kind, expr)
+                stack.append([then_label, else_label, then_label])
+            elif stack:
+                top = stack[-1]
+                if kind == "elif":
+                    top[1] = None
+                    top[2] = None
+                elif kind == "else":
+                    top[2] = top[1]
+                elif kind == "endif":
+                    stack.pop()
+            labels.append(None)
+            continue
+        label = None
+        for entry in reversed(stack):
+            if entry[2] is not None:
+                label = entry[2]
+                break
+        labels.append(label)
+    return labels
+
+
+def scan_definitions_with_branch(src_text):
+    """Yield (name, is_weak, body, label) for each nt_svc_ definition in one file."""
     text = strip_comments_and_strings(src_text)
+    labels = branch_labels(text)
     for m in DEF_RE.finditer(text):
         paren = text.find("(", m.end() - 1)
         close_paren = match_close(text, paren, "(", ")")
@@ -153,12 +279,64 @@ def scan_definitions(src_text):
         if close_brace < 0:
             continue
         body = text[after + 1:close_brace]
-        yield m.group("name"), bool(m.group("attr")), body
+        label = labels[text.count("\n", 0, m.start())]
+        yield m.group("name"), bool(m.group("attr")), body, label
 
 
-def collect_handlers(root):
-    """Map service name -> {"strong": (file, stub?) or None, "weak": file or None}."""
+def scan_definitions(src_text):
+    """Yield (name, is_weak, body) for each nt_svc_ definition in one file."""
+    for name, is_weak, body, _label in scan_definitions_with_branch(src_text):
+        yield name, is_weak, body
+
+
+def scan_functions(src_text):
+    """Yield the name of each function defined in one file, excluding nt_svc_ wrappers.
+
+    Preprocessor lines are skipped, so a function-like macro body is not read as
+    a function. Keywords followed by a parenthesis are not function names.
+    """
+    text = DIRECTIVE_LINE_RE.sub(lambda m: " " * len(m.group(0)),
+                                 strip_comments_and_strings(src_text))
+    for m in FUNC_HEAD_RE.finditer(text):
+        name = m.group(1)
+        if name in C_KEYWORDS or name.startswith("nt_svc_"):
+            continue
+        close = match_close(text, m.end() - 1, "(", ")")
+        if close < 0:
+            continue
+        after = close + 1
+        while after < len(text) and text[after] in " \t\r\n":
+            after += 1
+        if after < len(text) and text[after] == "{":
+            yield name
+
+
+def norm_name(name):
+    """Name key for matching a service to a function: lower case, no underscores,
+    no leading "nt", no trailing "internal" or "impl"."""
+    s = name.lower().replace("_", "")
+    if s.startswith("nt"):
+        s = s[2:]
+    for suffix in IMPL_SUFFIXES:
+        if s.endswith(suffix) and len(s) > len(suffix):
+            s = s[:-len(suffix)]
+            break
+    return s
+
+
+def scan_tree(root):
+    """Return (handlers, impls) for the handler directory under root.
+
+    handlers: service name -> {"strong": (file, class) or None,
+                               "weak": file or None,
+                               "labelled": {label: (file, class)}}
+              "strong" is the first strong definition in file order; "labelled"
+              holds the first strong definition under each __KERNEL__ branch.
+    impls:    normalised name -> [(file, function name)] in file order, for
+              functions that are not nt_svc_ wrappers.
+    """
     handlers = {}
+    impls = {}
     hdir = os.path.join(root, HANDLER_DIR)
     if not os.path.isdir(hdir):
         raise OSError(f"no handler directory: {hdir}")
@@ -168,14 +346,25 @@ def collect_handlers(root):
         path = os.path.join(hdir, fname)
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             text = fh.read()
-        for name, is_weak, body in scan_definitions(text):
-            entry = handlers.setdefault(name, {"strong": None, "weak": None})
-            rel = f"{HANDLER_DIR}/{fname}"
+        rel = f"{HANDLER_DIR}/{fname}"
+        for name, is_weak, body, label in scan_definitions_with_branch(text):
+            entry = handlers.setdefault(name, {"strong": None, "weak": None, "labelled": {}})
             if is_weak:
                 entry["weak"] = entry["weak"] or rel
-            elif entry["strong"] is None:
-                entry["strong"] = (rel, body_is_stub(body))
-    return handlers
+                continue
+            cls = body_class(body)
+            if entry["strong"] is None:
+                entry["strong"] = (rel, cls)
+            if label is not None and label not in entry["labelled"]:
+                entry["labelled"][label] = (rel, cls)
+        for func in scan_functions(text):
+            impls.setdefault(norm_name(func), []).append((rel, func))
+    return handlers, impls
+
+
+def collect_handlers(root):
+    """Map service name -> handler record (see scan_tree)."""
+    return scan_tree(root)[0]
 
 
 def parse_services(root):
@@ -200,25 +389,40 @@ def area_of(name):
     return OTHER_AREA
 
 
-def classify(services, handlers):
+def classify(services, handlers, impls=None):
+    impls = impls or {}
     rows = []
     for svc in services:
-        h = handlers.get(svc["name"], {"strong": None, "weak": None})
-        if h["strong"] is not None:
-            file, is_stub = h["strong"]
-            status = STUB if is_stub else IMPLEMENTED
+        h = handlers.get(svc["name"]) or {"strong": None, "weak": None, "labelled": {}}
+        lab = h["labelled"]
+        if USERSPACE in lab and KERNEL in lab:
+            user_file, user_cls = lab[USERSPACE]
+            kernel_file, kernel_cls = lab[KERNEL]
+            status = hybrid_status(user_cls, kernel_cls)
+            file = ", ".join(dict.fromkeys([user_file, kernel_file]))
+        elif h["strong"] is not None:
+            file, status = h["strong"]
         elif h["weak"] is not None:
             file, status = h["weak"], WEAK
+        elif norm_name(svc["name"]) in impls:
+            file, _func = impls[norm_name(svc["name"])][0]
+            status = UNREACHABLE
         else:
             file, status = "", MISSING
         rows.append({**svc, "status": status, "file": file, "area": area_of(svc["name"])})
     return rows
 
 
+def ordered_statuses(counts):
+    """Base statuses first, then any hybrid statuses in sorted order."""
+    extra = sorted(s for s in counts if s not in STATUSES)
+    return list(STATUSES) + extra
+
+
 def summarize(rows):
     counts = {s: 0 for s in STATUSES}
     for r in rows:
-        counts[r["status"]] += 1
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
     return counts
 
 
@@ -233,9 +437,44 @@ def area_order(rows):
 def render_text(rows):
     counts = summarize(rows)
     lines = [f"services: {len(rows)}"]
-    for s in STATUSES:
+    for s in ordered_statuses(counts):
         lines.append(f"  {s}: {counts[s]}")
     return "\n".join(lines) + "\n"
+
+
+RULES_MD = (
+    "Each service in `src/kernel/nt/nt_service_list.h` is classified from the",
+    "`NTSTATUS nt_svc_<Name>(...)` definitions in `src/kernel/nt/*.c`. Test sources",
+    "(`*_test.c`) and prototypes are ignored. Comments and string literals are",
+    "removed first. Linker rules apply: a strong definition overrides a weak one.",
+    "",
+    "### Classes",
+    "",
+    "- `IMPLEMENTED`: a strong definition whose body is not a refusal.",
+    "- `STUB-NOT-IMPLEMENTED`: a strong definition whose body is only",
+    "  `return STATUS_NOT_IMPLEMENTED;` or `return STATUS_NOT_SUPPORTED;`. Void casts",
+    "  of unused arguments are allowed.",
+    "- `REFUSES`: a strong definition whose body refuses after argument validation.",
+    "  Zero or more `if (...) return V;` statements with `V` one of",
+    "  `STATUS_INVALID_PARAMETER`, `STATUS_INVALID_HANDLE`, `STATUS_INVALID_ADDRESS`,",
+    "  then exactly one `return R;` with `R` one of `STATUS_NOT_IMPLEMENTED`,",
+    "  `STATUS_NOT_SUPPORTED`, `STATUS_INVALID_DEVICE_REQUEST`, `STATUS_ACCESS_DENIED`.",
+    "  Any other statement makes the body `IMPLEMENTED`. A bare stub return is `STUB`.",
+    "- `WEAK-FALLBACK`: only a `__attribute__((weak))` definition exists.",
+    "- `UNREACHABLE-WRAPPER-MISSING`: no `nt_svc_<Name>` definition, but a function",
+    "  in `src/kernel/nt/*.c` matches the name (lower case, no underscores, leading",
+    "  `nt` and trailing `internal` or `impl` removed). The implementation exists",
+    "  but nothing in the table reaches it.",
+    "- `MISSING`: no definition; the table entry is NULL.",
+    "- `X (userspace) / Y (kernel)`: a hybrid. The service has a strong definition in",
+    "  each branch of a conditional on `__KERNEL__`. `X` and `Y` are the classes of",
+    "  the two branches.",
+    "",
+    "Preprocessor: only conditionals on `__KERNEL__` are evaluated (`#ifdef`,",
+    "`#ifndef`, `#if defined(...)`, `#if !defined(...)`, with `#else`). An `#elif`",
+    "makes its branch unlabelled. Other conditionals are read as one. Without a",
+    "hybrid, the first strong definition in file order decides the class.",
+)
 
 
 def render_markdown(rows):
@@ -245,25 +484,26 @@ def render_markdown(rows):
     out.append("")
     out.append("<!-- Generated by tools/service_inventory.py --markdown. Do not edit by hand. -->")
     out.append("")
-    out.append("Each service in `src/kernel/nt/nt_service_list.h` is classified by the")
-    out.append("handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.")
+    out.extend(RULES_MD)
     out.append("")
     out.append("## Counts")
     out.append("")
     out.append("| Status | Services |")
     out.append("|---|---:|")
     out.append(f"| total | {len(rows)} |")
-    for s in STATUSES:
+    for s in ordered_statuses(counts):
         out.append(f"| {s} | {counts[s]} |")
     out.append("")
     out.append("## By area")
     out.append("")
-    out.append("| Area | Total | IMPLEMENTED | STUB-NOT-IMPLEMENTED | WEAK-FALLBACK | MISSING |")
-    out.append("|---|---:|---:|---:|---:|---:|")
+    out.append(f"| Area | Total | IMPLEMENTED | {STUB} | {REFUSES} | {WEAK} | {UNREACHABLE} | {MISSING} | hybrid |")
+    out.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
     for area in area_order(rows):
         sub = [r for r in rows if r["area"] == area]
         c = summarize(sub)
-        out.append(f"| {area} | {len(sub)} | {c[IMPLEMENTED]} | {c[STUB]} | {c[WEAK]} | {c[MISSING]} |")
+        hybrids = sum(1 for r in sub if is_hybrid(r["status"]))
+        out.append(f"| {area} | {len(sub)} | {c[IMPLEMENTED]} | {c[STUB]} | {c[REFUSES]} | "
+                   f"{c[WEAK]} | {c[UNREACHABLE]} | {c[MISSING]} | {hybrids} |")
     out.append("")
     for area in area_order(rows):
         sub = [r for r in rows if r["area"] == area]
@@ -280,8 +520,8 @@ def render_markdown(rows):
 
 def run_inventory(root):
     services = parse_services(root)
-    handlers = collect_handlers(root)
-    return classify(services, handlers)
+    handlers, impls = scan_tree(root)
+    return classify(services, handlers, impls)
 
 
 # --- self test --------------------------------------------------------------
@@ -295,6 +535,12 @@ NT_SERVICE(0x0000, NtAccessCheck, 8)
 NT_SERVICE(0x0002, NtAcceptConnectPort, 9)
 NT_SERVICE(0x0001, NtWeakOnly, 1)
 NT_SERVICE(0x0003, NtTrulyAbsent, 2)
+NT_SERVICE(0x0010, NtCreatePort, 2)
+NT_SERVICE(0x0011, NtDeniedOnly, 1)
+NT_SERVICE(0x0012, NtValidatedRefusal, 2)
+NT_SERVICE(0x0013, NtQueryDirectoryObject, 3)
+NT_SERVICE(0x0014, NtRemovedWrapper, 1)
+NT_SERVICE(0x0015, NtGuardedRefusal, 1)
 """
 
 FIXTURE_IMPL = """\
@@ -332,15 +578,64 @@ __attribute__((weak)) NTSTATUS nt_svc_NtAcceptConnectPort(void) { return STATUS_
 NTSTATUS nt_svc_NtAcceptConnectPort(void) { return STATUS_NOT_IMPLEMENTED; }
 """
 
+# Userspace branch implements, kernel branch refuses: a hybrid.
+FIXTURE_BRANCH = """\
+#ifdef __KERNEL__
+NTSTATUS nt_svc_NtCreatePort(PHANDLE a, ULONG b)
+{
+    (void)a; (void)b;
+    return STATUS_NOT_IMPLEMENTED;
+}
+#else
+NTSTATUS nt_svc_NtCreatePort(PHANDLE a, ULONG b)
+{
+    if (!a) return STATUS_INVALID_PARAMETER;
+    return STATUS_SUCCESS;
+}
+#endif
+"""
+
+# Refusals: a bare non-stub refusal, and a validated refusal.
+FIXTURE_REFUSE = """\
+NTSTATUS nt_svc_NtDeniedOnly(PHANDLE a) { (void)a; return STATUS_ACCESS_DENIED; }
+NTSTATUS nt_svc_NtValidatedRefusal(PHANDLE a, ULONG b)
+{
+    if (!a) return STATUS_INVALID_HANDLE;
+    (void)b;
+    return STATUS_INVALID_DEVICE_REQUEST;
+}
+NTSTATUS nt_svc_NtGuardedRefusal(ULONG b)
+{
+    if (b) return STATUS_NOT_IMPLEMENTED;
+    return STATUS_NOT_SUPPORTED;
+}
+"""
+
+# An implementation under another name, and no nt_svc_ wrapper.
+FIXTURE_IMPL_OTHER = """\
+#define NT_MACRO_BODY(a) { return 0; }
+static NTSTATUS nt_query_directory_object_internal(ULONG a)
+{
+    (void)a;
+    return STATUS_SUCCESS;
+}
+"""
+
 EXPECTED = {
     "NtYieldExecution": IMPLEMENTED,
     "NtQueryPerformanceCounter": STUB,
     "NtOpenEvent": WEAK,
-    "NtQuerySystemInformation": IMPLEMENTED,
+    "NtQuerySystemInformation": REFUSES,
     "NtAccessCheck": MISSING,
     "NtAcceptConnectPort": STUB,
     "NtWeakOnly": WEAK,
     "NtTrulyAbsent": MISSING,
+    "NtCreatePort": hybrid_status(IMPLEMENTED, STUB),
+    "NtDeniedOnly": REFUSES,
+    "NtValidatedRefusal": REFUSES,
+    "NtQueryDirectoryObject": UNREACHABLE,
+    "NtRemovedWrapper": MISSING,
+    "NtGuardedRefusal": IMPLEMENTED,
 }
 
 
@@ -357,6 +652,23 @@ def selftest():
     check(not body_is_stub(" if (x) return STATUS_NOT_IMPLEMENTED; return STATUS_SUCCESS; "),
           "stub: conditional is not a stub")
     check(not body_is_stub(" return STATUS_SUCCESS; "), "stub: success is not a stub")
+    check(refusal_class(" return STATUS_ACCESS_DENIED; ") == REFUSES, "refuses: bare denied")
+    check(refusal_class(" if (!a) return STATUS_INVALID_PARAMETER; return STATUS_NOT_SUPPORTED; ")
+          == REFUSES, "refuses: validated stub status")
+    check(refusal_class(" if (!a) return STATUS_NOT_SUPPORTED; return STATUS_NOT_SUPPORTED; ") is None,
+          "refuses: conditional refusal is not a refusal body")
+    check(refusal_class(" if (!a) return STATUS_INVALID_PARAMETER; x = 1; return STATUS_NOT_SUPPORTED; ")
+          is None, "refuses: other statement disqualifies")
+    check(refusal_class(" if (!a) return STATUS_INVALID_INFO_CLASS; return STATUS_NOT_SUPPORTED; ")
+          is None, "refuses: validation status must be in the validation set")
+    check(refusal_class(" return STATUS_INVALID_DEVICE_REQUEST; ") == REFUSES, "refuses: bare device")
+    check(refusal_class(" return STATUS_SUCCESS; ") is None, "refuses: success")
+    check(norm_name("NtQueryDirectoryObject") == norm_name("nt_query_directory_object_internal"),
+          "norm: internal suffix and underscores")
+    check(kernel_branch_labels("ifdef", " __KERNEL__ ") == (KERNEL, USERSPACE), "branch: ifdef")
+    check(kernel_branch_labels("ifndef", "__KERNEL__") == (USERSPACE, KERNEL), "branch: ifndef")
+    check(kernel_branch_labels("if", "!defined(__KERNEL__)") == (USERSPACE, KERNEL), "branch: if !defined")
+    check(kernel_branch_labels("if", "defined(__linux__)") == (None, None), "branch: other macro")
     check(area_of("NtQueryTimerResolution") == "system", "area: timer resolution")
     check(area_of("NtSetTimer") == "sync", "area: timer is sync")
     check(area_of("NtFoo") == OTHER_AREA, "area: fallback")
@@ -374,6 +686,9 @@ def selftest():
             "weak.c": FIXTURE_WEAK,
             "conn_test.c": FIXTURE_TEST,
             "override.c": FIXTURE_STRONG_OVER_WEAK,
+            "branch.c": FIXTURE_BRANCH,
+            "refuse.c": FIXTURE_REFUSE,
+            "other.c": FIXTURE_IMPL_OTHER,
         }
         for name, text in files.items():
             with open(os.path.join(hdir, name), "w", encoding="utf-8") as fh:
@@ -384,11 +699,14 @@ def selftest():
         for name, want in EXPECTED.items():
             check(got.get(name) == want, f"{name}: want {want}, got {got.get(name)}")
         counts = summarize(rows)
-        check(counts[IMPLEMENTED] == 2 and counts[STUB] == 2 and counts[WEAK] == 2
-              and counts[MISSING] == 2, f"counts {counts}")
+        check(counts[IMPLEMENTED] == 2 and counts[STUB] == 2 and counts[REFUSES] == 3
+              and counts[WEAK] == 2 and counts[UNREACHABLE] == 1 and counts[MISSING] == 3
+              and counts[hybrid_status(IMPLEMENTED, STUB)] == 1,
+              f"counts {counts}")
         md = render_markdown(rows)
         check("## Area: system" in md and "| 0x0046 | `NtYieldExecution` |" in md,
               "markdown content")
+        check("### Classes" in md and "UNREACHABLE-WRAPPER-MISSING" in md, "markdown rules")
         check(render_markdown(rows) == md, "markdown is deterministic")
 
     for msg in fails:

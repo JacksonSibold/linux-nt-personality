@@ -145,6 +145,215 @@ class FixtureTreeTest(unittest.TestCase):
         self.assertEqual(rc, 1)
 
 
+class RefusalClassTest(unittest.TestCase):
+    """refusal_class: STUB for a bare stub return, REFUSES for a refusal after
+    validation or with another refusal status, None for anything else."""
+
+    def test_bare_stub_returns_are_stub(self):
+        self.assertEqual(si.refusal_class(" return STATUS_NOT_IMPLEMENTED; "), si.STUB)
+        self.assertEqual(si.refusal_class(" (void)a; return STATUS_NOT_SUPPORTED; "), si.STUB)
+
+    def test_bare_other_refusals_are_refuses(self):
+        self.assertEqual(si.refusal_class(" return STATUS_ACCESS_DENIED; "), si.REFUSES)
+        self.assertEqual(si.refusal_class(" (void)a; return STATUS_INVALID_DEVICE_REQUEST; "),
+                         si.REFUSES)
+
+    def test_validation_prefix_then_refusal_is_refuses(self):
+        body = " if (!a) return STATUS_INVALID_PARAMETER; return STATUS_NOT_SUPPORTED; "
+        self.assertEqual(si.refusal_class(body), si.REFUSES)
+        body = " if (!a) return STATUS_INVALID_HANDLE; if (b) return STATUS_INVALID_ADDRESS; " \
+               "return STATUS_ACCESS_DENIED; "
+        self.assertEqual(si.refusal_class(body), si.REFUSES)
+
+    def test_braced_validation_is_accepted(self):
+        body = " if (!a) { return STATUS_INVALID_PARAMETER; } return STATUS_NOT_IMPLEMENTED; "
+        self.assertEqual(si.refusal_class(body), si.REFUSES)
+
+    def test_conditional_refusal_is_not_refusal(self):
+        self.assertIsNone(si.refusal_class(
+            " if (x) return STATUS_NOT_IMPLEMENTED; return STATUS_NOT_SUPPORTED; "))
+
+    def test_other_statement_disqualifies(self):
+        self.assertIsNone(si.refusal_class(
+            " if (!a) return STATUS_INVALID_PARAMETER; x = 1; return STATUS_NOT_SUPPORTED; "))
+
+    def test_validation_status_outside_set_disqualifies(self):
+        self.assertIsNone(si.refusal_class(
+            " if (!a) return STATUS_INVALID_INFO_CLASS; return STATUS_NOT_SUPPORTED; "))
+
+    def test_success_and_empty_bodies_are_not_refusals(self):
+        self.assertIsNone(si.refusal_class(" return STATUS_SUCCESS; "))
+        self.assertIsNone(si.refusal_class("  "))
+
+    def test_body_class_defaults_to_implemented(self):
+        self.assertEqual(si.body_class(" return STATUS_SUCCESS; "), si.IMPLEMENTED)
+
+
+class BranchLabelTest(unittest.TestCase):
+    def test_kernel_conditions(self):
+        self.assertEqual(si.kernel_branch_labels("ifdef", "__KERNEL__"), (si.KERNEL, si.USERSPACE))
+        self.assertEqual(si.kernel_branch_labels("ifndef", "__KERNEL__"), (si.USERSPACE, si.KERNEL))
+        self.assertEqual(si.kernel_branch_labels("if", "defined(__KERNEL__)"),
+                         (si.KERNEL, si.USERSPACE))
+        self.assertEqual(si.kernel_branch_labels("if", "defined __KERNEL__"),
+                         (si.KERNEL, si.USERSPACE))
+        self.assertEqual(si.kernel_branch_labels("if", "!defined(__KERNEL__)"),
+                         (si.USERSPACE, si.KERNEL))
+
+    def test_other_conditions_are_transparent(self):
+        self.assertEqual(si.kernel_branch_labels("ifdef", "__linux__"), (None, None))
+        self.assertEqual(si.kernel_branch_labels("if", "defined(__KERNEL__) && X"), (None, None))
+        self.assertEqual(si.kernel_branch_labels("if", "CONFIG_X86_64"), (None, None))
+
+    def test_branch_lines(self):
+        text = "a\n#ifdef __KERNEL__\nk\n#else\nu\n#endif\nz\n"
+        labels = si.branch_labels(text)
+        self.assertEqual(labels[2], si.KERNEL)
+        self.assertEqual(labels[4], si.USERSPACE)
+        self.assertIsNone(labels[0])
+        self.assertIsNone(labels[6])
+
+    def test_nested_transparent_conditional_keeps_outer_label(self):
+        text = "#ifndef __KERNEL__\n#ifdef __linux__\nx\n#else\ny\n#endif\n#endif\n"
+        labels = si.branch_labels(text)
+        self.assertEqual(labels[2], si.USERSPACE)
+        self.assertEqual(labels[4], si.USERSPACE)
+
+    def test_elif_makes_branch_unlabelled(self):
+        text = "#ifdef __KERNEL__\na\n#elif X\nb\n#else\nc\n#endif\n"
+        labels = si.branch_labels(text)
+        self.assertEqual(labels[1], si.KERNEL)
+        self.assertIsNone(labels[3])
+        self.assertIsNone(labels[5])
+
+    def test_definition_label_comes_from_its_branch(self):
+        text = ("#ifdef __KERNEL__\nNTSTATUS nt_svc_NtA(void) { return STATUS_NOT_IMPLEMENTED; }\n"
+                "#else\nNTSTATUS nt_svc_NtA(void) { return STATUS_SUCCESS; }\n#endif\n")
+        defs = list(si.scan_definitions_with_branch(text))
+        self.assertEqual([d[3] for d in defs], [si.KERNEL, si.USERSPACE])
+
+
+class ScanFunctionsTest(unittest.TestCase):
+    def test_finds_definitions_not_calls_or_prototypes(self):
+        text = ("static NTSTATUS helper_one(int a)\n{\n    if (a) { foo(a); }\n    return 0;\n}\n"
+                "NTSTATUS proto_only(void);\n"
+                "NTSTATUS nt_svc_NtX(void) { return 0; }\n")
+        self.assertEqual(list(si.scan_functions(text)), ["helper_one"])
+
+    def test_macro_bodies_are_skipped(self):
+        text = "#define LOCK_BODY(a) { return 0; }\nstatic int real_one(void) { return 1; }\n"
+        self.assertEqual(list(si.scan_functions(text)), ["real_one"])
+
+    def test_normalised_names(self):
+        self.assertEqual(si.norm_name("NtCreateSection"), si.norm_name("create_section"))
+        self.assertEqual(si.norm_name("nt_query_directory_object_internal"),
+                         si.norm_name("NtQueryDirectoryObject"))
+        self.assertNotEqual(si.norm_name("NtCreateProcess"), si.norm_name("NtCreateProcessEx"))
+
+
+class ClassifyTest(unittest.TestCase):
+    """Rows for synthetic handler maps (no filesystem)."""
+
+    SVC = [{"ssn": 1, "name": "NtA", "argc": 0}]
+
+    def classify_one(self, handler, impls=None):
+        return si.classify(self.SVC, {"NtA": handler} if handler else {}, impls)[0]
+
+    def test_hybrid_status_text(self):
+        h = {"strong": ("a.c", si.IMPLEMENTED), "weak": None,
+             "labelled": {si.USERSPACE: ("a.c", si.IMPLEMENTED), si.KERNEL: ("a.c", si.STUB)}}
+        row = self.classify_one(h)
+        self.assertEqual(row["status"], si.hybrid_status(si.IMPLEMENTED, si.STUB))
+        self.assertEqual(row["status"], "IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel)")
+        self.assertTrue(si.is_hybrid(row["status"]))
+        self.assertEqual(row["file"], "a.c")
+
+    def test_hybrid_needs_both_labels(self):
+        h = {"strong": ("a.c", si.REFUSES), "weak": None,
+             "labelled": {si.KERNEL: ("a.c", si.REFUSES)}}
+        row = self.classify_one(h)
+        self.assertEqual(row["status"], si.REFUSES)
+        self.assertFalse(si.is_hybrid(row["status"]))
+
+    def test_unreachable_only_without_wrapper(self):
+        impls = {si.norm_name("NtA"): [("src/kernel/nt/mm.c", "nt_a_internal")]}
+        row = self.classify_one(None, impls)
+        self.assertEqual(row["status"], si.UNREACHABLE)
+        self.assertEqual(row["file"], "src/kernel/nt/mm.c")
+
+    def test_weak_wins_over_unreachable(self):
+        impls = {si.norm_name("NtA"): [("src/kernel/nt/mm.c", "nt_a_internal")]}
+        row = self.classify_one({"strong": None, "weak": "src/kernel/nt/w.c", "labelled": {}}, impls)
+        self.assertEqual(row["status"], si.WEAK)
+
+    def test_no_match_is_missing(self):
+        row = self.classify_one(None, {})
+        self.assertEqual(row["status"], si.MISSING)
+
+    def test_summary_counts_hybrid_keys(self):
+        rows = [{"status": si.hybrid_status(si.IMPLEMENTED, si.STUB), "area": "other",
+                 "ssn": 1, "name": "x", "argc": 0, "file": ""}]
+        counts = si.summarize(rows)
+        self.assertEqual(counts[si.hybrid_status(si.IMPLEMENTED, si.STUB)], 1)
+        self.assertEqual(counts[si.IMPLEMENTED], 0)
+        self.assertIn(si.hybrid_status(si.IMPLEMENTED, si.STUB), si.ordered_statuses(counts))
+
+
+class BranchTreeTest(unittest.TestCase):
+    """Filesystem fixtures for hybrids, refusals and the unreachable-wrapper rule."""
+
+    LIST = (
+        "NT_SERVICE(0x0010, NtCreateProcessEx, 9)\n"
+        "NT_SERVICE(0x0011, NtDenied, 1)\n"
+        "NT_SERVICE(0x0012, NtCreateSection, 7)\n"
+        "NT_SERVICE(0x0013, NtNothing, 1)\n"
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self._tmp.name)
+        make_tree(self.root, self.LIST, {
+            "proc.c": "#ifndef __KERNEL__\n"
+                      "NTSTATUS nt_svc_NtCreateProcessEx(PHANDLE h)\n"
+                      "{ if (!h) return STATUS_INVALID_PARAMETER; return STATUS_SUCCESS; }\n"
+                      "#else /* __KERNEL__ */\n"
+                      "NTSTATUS nt_svc_NtCreateProcessEx(PHANDLE a)\n"
+                      "{ (void)a; return STATUS_NOT_IMPLEMENTED; }\n"
+                      "#endif\n",
+            "deny.c": "NTSTATUS nt_svc_NtDenied(PHANDLE a) { (void)a; return STATUS_ACCESS_DENIED; }\n",
+            "mm.c": "static NTSTATUS nt_create_section(ULONG a)\n{ return STATUS_SUCCESS; }\n"
+                    "#define X(a) { return 0; }\n",
+        })
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_userspace_implemented_kernel_stub_is_hybrid(self):
+        rows = {r["name"]: r for r in si.run_inventory(str(self.root))}
+        self.assertEqual(rows["NtCreateProcessEx"]["status"],
+                         "IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel)")
+        self.assertEqual(rows["NtCreateProcessEx"]["file"], "src/kernel/nt/proc.c")
+
+    def test_refusal_file_classified(self):
+        rows = {r["name"]: r for r in si.run_inventory(str(self.root))}
+        self.assertEqual(rows["NtDenied"]["status"], si.REFUSES)
+
+    def test_section_function_without_wrapper_is_unreachable(self):
+        rows = {r["name"]: r for r in si.run_inventory(str(self.root))}
+        self.assertEqual(rows["NtCreateSection"]["status"], si.UNREACHABLE)
+        self.assertEqual(rows["NtCreateSection"]["file"], "src/kernel/nt/mm.c")
+
+    def test_no_implementation_stays_missing(self):
+        rows = {r["name"]: r for r in si.run_inventory(str(self.root))}
+        self.assertEqual(rows["NtNothing"]["status"], si.MISSING)
+
+    def test_markdown_states_the_rules(self):
+        md = si.render_markdown(si.run_inventory(str(self.root)))
+        self.assertIn("### Classes", md)
+        self.assertIn("UNREACHABLE-WRAPPER-MISSING", md)
+        self.assertIn("| hybrid |", md)
+
+
 class SelftestTest(unittest.TestCase):
     def test_builtin_selftest_passes(self):
         self.assertFalse(quiet(si.selftest))
@@ -159,7 +368,7 @@ class RepositoryTest(unittest.TestCase):
         self.assertEqual(len(rows), len(services))
         self.assertGreater(len(rows), 0)
         for r in rows:
-            self.assertIn(r["status"], si.STATUSES)
+            self.assertTrue(r["status"] in si.STATUSES or si.is_hybrid(r["status"]), r["status"])
 
     def test_ssns_are_unique(self):
         ssns = [s["ssn"] for s in si.parse_services(str(REPO))]
