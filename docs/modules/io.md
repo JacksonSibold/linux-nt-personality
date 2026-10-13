@@ -18,6 +18,18 @@ Service entry points (NT-style signatures, defined in `io.c`):
 - `nt_svc_NtFlushBuffersFile(HANDLE FileHandle, ...)` - flush.
 - `nt_svc_NtClose` - close a handle. Four definitions exist in `src/kernel/nt` (`io.c`, `nt_obj.c`). See gaps.
 
+Further services defined in `io.c` (inventory status in `docs/status/SERVICES.md`, all IMPLEMENTED):
+
+- Files and attributes: `NtQueryAttributesFile` (`io.c:2723`), `NtQueryFullAttributesFile` (`:3256`), `NtDeleteFile` (`:3220`).
+- Byte-range locks: `NtLockFile` (`:3311`), `NtUnlockFile` (`:3380`).
+- Cancel and flush: `NtCancelIoFile` (`:3199`), `NtCancelIoFileEx` (`:3205`), `NtFlushBuffersFileEx` (`:3146`).
+- Device and FS control: `NtDeviceIoControlFile` (`:3024`), `NtFsControlFile` (`:3042`).
+- Extended attributes: `NtQueryEaFile` (`:3083`), `NtSetEaFile` (`:3115`).
+- Directories: `NtQueryDirectoryFile` (`:3747`), `NtQueryDirectoryFileEx` (`:3764`).
+- Volumes: `NtQueryVolumeInformationFile` (`:3811`), `NtSetVolumeInformationFile` (`:3860`).
+
+Missing in the dispatch table (NULL slot): the object-directory and symbolic-link services `NtCreateDirectoryObject`, `NtOpenDirectoryObject`, `NtQueryDirectoryObject`, `NtCreateSymbolicLinkObject`, `NtOpenSymbolicLinkObject` and `NtQuerySymbolicLinkObject`. The inventory groups them under io by name only.
+
 Object and handle helpers:
 
 - `void *ntio_handle_peek(HANDLE h)`.
@@ -40,28 +52,29 @@ Path and test helpers:
 ## Key data structures
 
 - `struct nt_file_object` - `magic`, `ref` (kref), `lock` (spinlock_t), `filp` (struct file), `dentry` (borrowed), `granted_access`, `share_access`, `create_options`, flags `synchronous`, `delete_on_close`, `delete_pending`, `is_directory`, `iocp` and `iocp_key` (association), and `current_byte_offset` for synchronous I/O.
-- The share registry: a file-scope list of open instances keyed by `(dev, ino)`, guarded by the spinlock `ntio_share_mutex` (declared at `io.c:581`, lock and unlock helpers at `io.c:585-603`).
+- The share registry: a file-scope list of open instances keyed by `(dev, ino)`, guarded by the spinlock `ntio_share_mutex` (declared at `io.c:691`). `ntio_share_lock` and `ntio_share_unlock` are at `io.c:707` and `io.c:712`.
 - `FILE_*_INFORMATION` structures for the information classes, and `FILE_*` constants, declared in `io.h`.
 
 ## Invariants and locking (as implemented)
 
-- Share checks run under `ntio_share_lock`. `ntio_check_share_access` is called on every open, comparing requested `DesiredAccess` against the `ShareAccess` of existing instances on the same `(dev, ino)`. The conflicting open gets `STATUS_SHARING_VIOLATION` (`io.c:1493`).
-- File object lifetime is reference-counted with `kref` (`kref_init` at `io.c:1087`, `kref_put` with `ntio_file_release` at `io.c:573`). `ntio_file_get` and `ntio_file_put` (`io.c:563-574`) take and drop the same `kref`.
+- Share checks run under `ntio_share_lock`. `ntio_check_share_access` (`io.c:774`) is called on every open (`io.c:1632`), comparing requested `DesiredAccess` against the `ShareAccess` of existing instances on the same `(dev, ino)`. The conflicting open gets `STATUS_SHARING_VIOLATION` (`io.c:1636`). `NtDeleteFile` also checks share access (`io.c:3240-3244`).
+- File object lifetime is reference-counted with `kref` (`kref_init` at `io.c:1212`, `kref_put` with `ntio_file_release` at `io.c:683` and `:657`). `ntio_file_get` and `ntio_file_put` (`io.c:673` and `:680`) take and drop the same `kref`.
 - A file object's own state is protected by its `spinlock_t lock`.
-- `FILE_DELETE_ON_CLOSE` sets `delete_on_close` at create (`io.c:1497`), and `delete_pending` tracks the deferred delete.
-- Console pseudo-handles -10, -11 and -12 (stdin, stdout, stderr) are defined in `io.c` (`io.c:1794-1815`).
-- Completion of an I/O with an associated port posts a packet to that port through `ntio_iocp_post` (`io.c:1790`). The header comment says completion goes through a port unless the caller supplied an event or APC.
+- `FILE_DELETE_ON_CLOSE` sets `delete_on_close` at create (`io.c:1622`). `delete_pending` is set by the disposition information classes (`io.c:2607`, `:2650`).
+- Console pseudo-handles -10, -11 and -12 (stdin, stdout, stderr) are described at `io.c:1923-1940`. `NtWriteFile` on -11 and -12 routes to printk in the kernel build and to host stdout or stderr in the shim (`io.c:1974`).
+- Completion of an I/O with an associated port posts a packet through `ntio_iocp_post`, defined in `iocp.c:80` and called from `io.c:1919`. The header comment says completion goes through a port unless the caller supplied an event or APC.
 
 ## Known gaps (evident in code)
 
 - The header comment (`io.c:12-14`) says async requests are completed by a workqueue and that the unit-test build runs them "synchronously in `schedule_work()`". The file contains no `schedule_work` call, and no `work_struct` or `queue_work` use, only the comment. Completion appears to run inline.
-- Stdin is not backed in the shim build: `io.c:1872-1874` returns `STATUS_END_OF_FILE` with the comment "stdin not yet backed".
+- Stdin is not backed in the shim build: `NtReadFile` on -10 returns `STATUS_END_OF_FILE` with the comment "stdin not yet backed" (`io.c:2001`).
 - Generic mapping for files is described as "simplified" (`io.c:318`).
-- `nt_svc_NtClose` has four definitions in `src/kernel/nt`: `io.c:2467` (weak, kernel), `io.c:2506` and `nt_obj.c:762` (non-kernel, strong), and `nt_obj.c:1086` (kernel). Which definition is linked depends on the build, which I did not trace. Two non-weak definitions in the same link would be a conflict.
+- `nt_svc_NtClose` has four definitions in `src/kernel/nt`: `io.c:2911` (weak, raw-argument signature), `io.c:2950` and `nt_obj.c:777` (strong, `HANDLE` signature), and `nt_obj.c:1125` (raw-argument signature). Which definition is linked depends on the build, which I did not trace. Two strong definitions in the same link would be a conflict. The inventory counts the first strong one, `io.c:2950`.
 - The kernel-side wrappers in `io.c` target a specific kernel version. The comment at `io.c:54-60` lists 6.18 API changes (`vfs_rename` taking `renamedata`, `mnt_idmap` arguments) and notes that NFS delegation is not handled ("NFS not exported in the test VM").
 - Share enforcement is in-kernel only. Linux has no mandatory share mode, so non-NT opens of the same file are not blocked.
 - `ntio_resolve_path` translates NT paths to Linux paths. The `\??` and `\Device` namespace mapping was not traced in full.
 - The `security.md` module's access check is not called from `io.c`.
 - Directory enumeration (`NtQueryDirectoryFile`, `NtQueryDirectoryFileEx`) takes a name snapshot in the userspace build only. The kernel branch returns `STATUS_NOT_SUPPORTED` until an `iterate_dir` actor is written and built against the kernel.
-- Volume information: only `FileFsDeviceInformation` is answered. The other `FileFs*` classes return `STATUS_NOT_IMPLEMENTED`, and `NtSetVolumeInformationFile` refuses every class.
-- Byte-range locks refuse a conflict at once. Waiting for a lock (`FailImmediately` FALSE) is not supported. Extended attributes are not stored.
+- Volume information: `NtQueryVolumeInformationFile` answers only `FileFsDeviceInformation` (`io.c:3831`). The other `FileFs*` classes in the valid range return `STATUS_NOT_IMPLEMENTED`, and unknown classes return `STATUS_INVALID_INFO_CLASS`. `NtSetVolumeInformationFile` refuses every class, with the same two statuses (`io.c:3860`).
+- Byte-range locks: `NtLockFile` accepts `FailImmediately` but ignores it. Waiting is not supported, so a conflict with a lock held through another file object always returns `STATUS_LOCK_NOT_GRANTED` (comment at `io.c:3305-3310`).
+- Extended attributes: `NtSetEaFile` accepts only a zero length. Any other length returns `STATUS_EAS_NOT_SUPPORTED` (`io.c:3115`).
