@@ -839,6 +839,113 @@ TEST(open_symlink_missing_and_wrong_type)
 }
 
 /* -------------------------------------------------------------------------- */
+/* 7. NtQuerySymbolicLinkObject                                                */
+/* -------------------------------------------------------------------------- */
+
+TEST(query_symlink_target)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(361, "qsym1");
+    ASSERT(proc != NULL);
+    UNICODE_STRING us, target;
+    make_us(&us, "\\BaseNamedObjects\\QSymA", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    make_us(&target, "\\BaseNamedObjects\\QSymTarget", wbuf2, sizeof(wbuf2) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    HANDLE hl = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&hl, SYMBOLIC_LINK_QUERY, &oa, &target), STATUS_SUCCESS);
+
+    WCHAR outbuf[256];
+    UNICODE_STRING out;
+    out.Buffer = outbuf;
+    out.Length = 0;
+    out.MaximumLength = sizeof(outbuf);
+    ULONG ret = 0;
+    ASSERT_STATUS(nt_svc_NtQuerySymbolicLinkObject(hl, &out, &ret), STATUS_SUCCESS);
+    ASSERT(us_is(&out, "\\BaseNamedObjects\\QSymTarget"));
+    ASSERT(ret == target.Length);
+
+    /* An exact fit is accepted. */
+    out.Buffer = outbuf;
+    out.Length = 0;
+    out.MaximumLength = target.Length;
+    ASSERT_STATUS(nt_svc_NtQuerySymbolicLinkObject(hl, &out, NULL), STATUS_SUCCESS);
+    ASSERT(out.Length == target.Length);
+
+    ObCloseHandle(proc, hl);
+    teardown(proc);
+    PASS();
+}
+
+TEST(query_symlink_too_small_and_access)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(362, "qsym2");
+    ASSERT(proc != NULL);
+    UNICODE_STRING us, target;
+    make_us(&us, "\\BaseNamedObjects\\QSymB", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    make_us(&target, "\\BaseNamedObjects\\QSymTarget", wbuf2, sizeof(wbuf2) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    HANDLE hl = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&hl, SYMBOLIC_LINK_QUERY, &oa, &target), STATUS_SUCCESS);
+
+    WCHAR outbuf[256];
+    UNICODE_STRING out;
+    ULONG ret = 0;
+    out.Buffer = outbuf;
+    out.Length = 0;
+    out.MaximumLength = 4;
+    ASSERT_STATUS(nt_svc_NtQuerySymbolicLinkObject(hl, &out, &ret), STATUS_BUFFER_TOO_SMALL);
+    ASSERT(ret == target.Length);
+    ASSERT(out.Length == 0);
+
+    /* A handle without SYMBOLIC_LINK_QUERY cannot query. */
+    HANDLE hn = NULL;
+    ASSERT_STATUS(nt_svc_NtOpenSymbolicLinkObject(&hn, 0, &oa), STATUS_SUCCESS);
+    out.Buffer = outbuf;
+    out.MaximumLength = sizeof(outbuf);
+    ASSERT_STATUS(nt_svc_NtQuerySymbolicLinkObject(hn, &out, &ret), STATUS_ACCESS_DENIED);
+    ObCloseHandle(proc, hn);
+
+    /* A directory handle is not a link. */
+    HANDLE hd = NULL;
+    make_us(&us, "\\BaseNamedObjects\\QSymDir", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    oa = make_oa(&us, 0);
+    ASSERT_STATUS(nt_svc_NtCreateDirectoryObject(&hd, DIRECTORY_QUERY, &oa), STATUS_SUCCESS);
+    out.MaximumLength = sizeof(outbuf);
+    ASSERT_STATUS(nt_svc_NtQuerySymbolicLinkObject(hd, &out, &ret), STATUS_OBJECT_TYPE_MISMATCH);
+    ObCloseHandle(proc, hd);
+
+    ASSERT_STATUS(nt_svc_NtQuerySymbolicLinkObject(hl, NULL, &ret), STATUS_INVALID_PARAMETER);
+
+    ObCloseHandle(proc, hl);
+    teardown(proc);
+    PASS();
+}
+
+TEST(query_symlink_anonymous)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(363, "qsym3");
+    ASSERT(proc != NULL);
+    UNICODE_STRING target;
+    make_us(&target, "\\BaseNamedObjects\\AnonTarget", wbuf2, sizeof(wbuf2) / sizeof(WCHAR));
+    HANDLE hl = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&hl, SYMBOLIC_LINK_QUERY, NULL, &target), STATUS_SUCCESS);
+
+    WCHAR outbuf[128];
+    UNICODE_STRING out;
+    out.Buffer = outbuf;
+    out.Length = 0;
+    out.MaximumLength = sizeof(outbuf);
+    ASSERT_STATUS(nt_svc_NtQuerySymbolicLinkObject(hl, &out, NULL), STATUS_SUCCESS);
+    ASSERT(us_is(&out, "\\BaseNamedObjects\\AnonTarget"));
+
+    ObCloseHandle(proc, hl);
+    teardown(proc);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* main                                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -849,6 +956,9 @@ int main(void)
     RUN(make_permanent_with_privilege);
     RUN(make_permanent_bad_handle);
     RUN(make_permanent_no_token);
+    RUN(query_symlink_target);
+    RUN(query_symlink_too_small_and_access);
+    RUN(query_symlink_anonymous);
     RUN(open_symlink_is_not_followed);
     RUN(open_symlink_missing_and_wrong_type);
     RUN(create_symlink_resolves);

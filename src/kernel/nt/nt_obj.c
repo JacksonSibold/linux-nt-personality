@@ -944,6 +944,41 @@ NTSTATUS nt_svc_NtCreateSymbolicLinkObject(PHANDLE LinkHandle, ACCESS_MASK Desir
     return st;
 }
 
+/* NtQuerySymbolicLinkObject: needs SYMBOLIC_LINK_QUERY. The target is copied into
+ * LinkTarget (Length is set). When MaximumLength cannot hold it, the call
+ * returns STATUS_BUFFER_TOO_SMALL and ReturnedLength gives the size needed. */
+NTSTATUS nt_svc_NtQuerySymbolicLinkObject(HANDLE LinkHandle, PUNICODE_STRING LinkTarget,
+                                          PULONG ReturnedLength)
+{
+    struct nt_eprocess *proc = kshim_current_process();
+    struct nt_object_header *hdr = NULL;
+    struct nt_symlink *link;
+    ULONG need;
+    NTSTATUS st;
+    if (!proc || !LinkTarget)
+        return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(proc, LinkHandle, &nt_symlink_type, UserMode,
+                                   SYMBOLIC_LINK_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st))
+        return st;
+    link = (struct nt_symlink *)nt_object_body(hdr);
+    need = link->target.Length;
+    if (ReturnedLength)
+        *ReturnedLength = need;
+    if (LinkTarget->MaximumLength < need) {
+        st = STATUS_BUFFER_TOO_SMALL;
+    } else if (need && !LinkTarget->Buffer) {
+        st = STATUS_INVALID_PARAMETER;
+    } else {
+        if (need)
+            memcpy(LinkTarget->Buffer, link->target.Buffer, need);
+        LinkTarget->Length = (USHORT)need;
+        st = STATUS_SUCCESS;
+    }
+    ObDereferenceObject(hdr);
+    return st;
+}
+
 /* NtOpenSymbolicLinkObject: opens the link itself (the last component is not
  * followed). */
 NTSTATUS nt_svc_NtOpenSymbolicLinkObject(PHANDLE LinkHandle, ACCESS_MASK DesiredAccess,
@@ -1604,6 +1639,71 @@ NTSTATUS nt_svc_NtOpenSymbolicLinkObject(unsigned long a0, unsigned long a1, uns
         return STATUS_ACCESS_VIOLATION;
     }
     return st;
+}
+
+NTSTATUS nt_svc_NtQuerySymbolicLinkObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                          unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                          unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE LinkHandle = (HANDLE)a0;
+    PUNICODE_STRING LinkTarget = (PUNICODE_STRING)a1;
+    PULONG ReturnedLength = (PULONG)a2;
+    struct nt_eprocess *proc;
+    struct nt_object_header *hdr = NULL;
+    struct nt_symlink *link;
+    UNICODE_STRING u;
+    ULONG need, rl;
+    NTSTATUS st;
+    WCHAR *kbuf = NULL;
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!LinkTarget || !access_ok(LinkTarget, sizeof(*LinkTarget)))
+        return STATUS_ACCESS_VIOLATION;
+    if (ReturnedLength && !access_ok(ReturnedLength, sizeof(ULONG)))
+        return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(&u, LinkTarget, sizeof(u)))
+        return STATUS_ACCESS_VIOLATION;
+    proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    st = ObReferenceObjectByHandle(proc, LinkHandle, &nt_symlink_type, UserMode,
+                                   SYMBOLIC_LINK_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st))
+        return st;
+    link = (struct nt_symlink *)nt_object_body(hdr);
+    need = link->target.Length;
+    if (ReturnedLength) {
+        rl = need;
+        if (copy_to_user(ReturnedLength, &rl, sizeof(rl))) {
+            ObDereferenceObject(hdr);
+            return STATUS_ACCESS_VIOLATION;
+        }
+    }
+    if (u.MaximumLength < need) {
+        ObDereferenceObject(hdr);
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    if (need) {
+        if (!u.Buffer || !access_ok(u.Buffer, need)) {
+            ObDereferenceObject(hdr);
+            return STATUS_ACCESS_VIOLATION;
+        }
+        kbuf = (WCHAR *)kmalloc(need, GFP_KERNEL);
+        if (!kbuf) {
+            ObDereferenceObject(hdr);
+            return STATUS_NO_MEMORY;
+        }
+        memcpy(kbuf, link->target.Buffer, need);
+        if (copy_to_user(u.Buffer, kbuf, need)) {
+            kfree(kbuf);
+            ObDereferenceObject(hdr);
+            return STATUS_ACCESS_VIOLATION;
+        }
+        kfree(kbuf);
+    }
+    ObDereferenceObject(hdr);
+    u.Length = (USHORT)need;
+    if (copy_to_user(&LinkTarget->Length, &u.Length, sizeof(u.Length)))
+        return STATUS_ACCESS_VIOLATION;
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS nt_svc_NtClose(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
