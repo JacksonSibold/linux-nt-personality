@@ -76,16 +76,20 @@ record. It does not set a flag on the VAD.
 flowchart TD
     CS["NtCreateSection<br/>FileHandle must be NULL"] --> FH{"FileHandle set?"}
     FH -->|yes| NI["STATUS_NOT_IMPLEMENTED<br/>file-backed sections are not built"]
-    FH -->|no| SZ["kzalloc nt_section<br/>kshim_section_create anonymous backing"]
-    SZ --> HD["SectionHandle = (HANDLE)sec<br/>pointer, not a handle table entry"]
-    HD --> MV["NtMapViewOfSection<br/>check offset alignment and view size"]
-    MV --> VAD["lock, pick base, nt_vad_new as MEM_MAPPED view"]
+    FH -->|no| SZ["ObCreateObject Section<br/>kshim_section_create anonymous backing"]
+    SZ --> HD["SectionHandle = handle-table index<br/>ObInsertObject, not a pointer"]
+    HD --> MV["NtMapViewOfSection<br/>ObReferenceObjectByHandle type and access check"]
+    MV --> OF["check offset alignment and view size"]
+    OF --> VAD["lock, pick base, nt_vad_new as MEM_MAPPED view, VAD takes a section reference"]
     VAD --> MAP["kshim_section_map at base<br/>Linux protection if committed, else PROT_NONE"]
 ```
 
-- `NtCreateSection` returns the raw `nt_section` pointer as the section
-  handle. Section handles are not in the handle table, so `NtClose` and
-  `ObReferenceObjectByHandle` do not apply to them.
+- `NtCreateSection` creates a Section object (`nt_section_type`) and returns
+  a handle-table index, so `NtClose` and `ObReferenceObjectByHandle` apply to
+  it. `NtMapViewOfSection` needs `SECTION_MAP_READ`, plus `SECTION_MAP_WRITE`
+  for `PAGE_READWRITE` and `SECTION_MAP_EXECUTE` for the execute protections.
+- The section lives while it has a handle or a view. Each VAD that maps a view
+  holds one object reference, dropped by `nt_vad_free`.
 - File-backed sections return `STATUS_NOT_IMPLEMENTED`. A comment in the code
   says a lookup of the file handle is missing, so the section would be zeroed
   memory, not the file.

@@ -40,7 +40,10 @@ Notes on the code:
   drops the handle count, runs `ops.close`, and drops one reference.
 - Object types are listed in `ob_type_list`: directory, symbolic link, process,
   thread and a test type. `ObCreateObjectType` is declared in `object.h` but has
-  no definition, so only `ObRegisterObjectType` is usable.
+  no definition, so only `ObRegisterObjectType` is usable. The Section type
+  (`nt_section_type`, defined in `mm.c`) is registered with `ObRegisterObjectType`
+  when the first section is created, not in `ObInitObjectManager`, so the object
+  manager does not link against `mm.c`.
 - `ObInitObjectManager` creates the well-known directories `??`, `Device`,
   `BaseNamedObjects`, `KnownDlls` and `Sessions` under the root.
 

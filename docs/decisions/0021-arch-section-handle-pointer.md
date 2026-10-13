@@ -1,6 +1,6 @@
 # 0021: Section handle is a kernel pointer (arch M-2)
 
-Status: Proposed. Arch source (`arch/x86/nt`). Recorded only in this batch, not implemented. Decide together with 0001.
+Status: Proposed. Arch source (`arch/x86/nt`). Not implemented in arch. The same fix is in `src/kernel/nt` (c8f479e, record 0001), but it was not copied here: `arch/x86/nt/mm.c` is not structurally the same as `src/kernel/nt/mm.c`. Its `NtMapViewOfSection` carries the offset and size checks from `d921888` that src lacks, and it keeps VAD coalescing that src removed (`docs/analysis/tree-divergence.md`, mm.c, 10 hunks). Porting would mean choosing between the two trees' mm behaviour first (tree-divergence section 5, step 2 and 3), so it is left open.
 Finding: `docs/review/arch-x86-nt.md` M-2 (High).
 Date: 2026-10-12
 
