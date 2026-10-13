@@ -486,8 +486,56 @@ TEST(wait_single_notification_timer_stays_set) {
     PASS();
 }
 
+/* Due time of two seconds or more: must neither fire early nor after a
+ * fixed one-second chunk. */
+TEST(set_timer_long_due_time_honoured) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, SynchronizationTimer), STATUS_SUCCESS);
+    LARGE_INTEGER due = rel100(2500);
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, 0, NULL), STATUS_SUCCESS);
+    LARGE_INTEGER early = rel100(2000);
+    ASSERT_STATUS(t_wait_handle(h, &early), STATUS_TIMEOUT);
+    LARGE_INTEGER wait = rel100(3000);
+    ASSERT_STATUS(t_wait_handle(h, &wait), STATUS_WAIT_0);
+    PASS();
+}
 
+/* Periodic timer: each period signals once; a waiter consumes each one. */
+TEST(set_timer_period_repeats) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, SynchronizationTimer), STATUS_SUCCESS);
+    LARGE_INTEGER due = rel100(100);
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, 100, NULL), STATUS_SUCCESS);
+    int hits = 0;
+    for (int i = 0; i < 5; i++) {
+        LARGE_INTEGER w = rel100(1000);
+        if (t_wait_handle(h, &w) == STATUS_WAIT_0) hits++;
+        else break;
+    }
+    ASSERT(hits == 5);
+    ASSERT_STATUS(t_cancel_timer(h, NULL), STATUS_SUCCESS);
+    PASS();
+}
 
+/* Cancel must return promptly, and the cancelled expiry must not fire. */
+TEST(cancel_timer_is_prompt) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, SynchronizationTimer), STATUS_SUCCESS);
+    LARGE_INTEGER due = rel100(5000);
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, 0, NULL), STATUS_SUCCESS);
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    ASSERT_STATUS(t_cancel_timer(h, NULL), STATUS_SUCCESS);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    long ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+    ASSERT(ms < 500);
+    LARGE_INTEGER poll = rel100(100);
+    ASSERT_STATUS(t_wait_handle(h, &poll), STATUS_TIMEOUT);
+    PASS();
+}
 
 
 /* ------------------------------------------------------------------ */
@@ -516,6 +564,9 @@ int main(void) {
     RUN(query_timer_bad_arguments);
     RUN(wait_single_sync_timer_auto_reset);
     RUN(wait_single_notification_timer_stays_set);
+    RUN(set_timer_long_due_time_honoured);
+    RUN(set_timer_period_repeats);
+    RUN(cancel_timer_is_prompt);
     RUN(signal_and_wait_event_pair);
     RUN(signal_and_wait_mutant_release);
     RUN(signal_and_wait_bad_objects);

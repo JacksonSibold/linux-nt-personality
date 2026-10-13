@@ -221,6 +221,7 @@ NTSTATUS nt_create_timer(struct nt_timer **out, int type) {
     if (!t) return STATUS_NO_MEMORY;
     header_init(&t->header, NT_OBJ_TIMER, 0, type == NotificationTimer);
     pthread_mutex_init(&t->timer_lock, NULL);
+    pthread_cond_init(&t->timer_cond, NULL);
     t->active = false;
     t->thread_running = false;
     t->period_ms = 0;
@@ -253,6 +254,7 @@ void nt_put_timer(struct nt_timer *t) {
     if (!t) return;
     BOOLEAN dummy;
     nt_cancel_timer(t, &dummy);
+    pthread_cond_destroy(&t->timer_cond);
     pthread_mutex_destroy(&t->timer_lock);
     nt_header_release(&t->header);
 }
@@ -808,156 +810,78 @@ NTSTATUS nt_release_semaphore(struct nt_semaphore *sem, LONG release_count, LONG
     return STATUS_SUCCESS;
 }
 
-/* timer thread */
-struct timer_arg { struct nt_timer *t; };
+/* timer thread: one detached thread per arming. It waits on timer_cond until
+ * the NT absolute expiry (the wall clock is re-read on every wake, so the
+ * wait never rounds the due time) or until cancel is requested. On expiry it
+ * signals the timer and wakes the waiters; a periodic timer re-arms itself.
+ * It never calls a user APC routine. NtSetTimer rejects those, because
+ * nothing here can queue one to a thread. */
+static int64_t now_nt100(void) {
+    struct timespec now;
+    now_realtime(&now);
+    return timespec_to_100ns(&now) + 116444736000000000LL;
+}
+/* NT absolute time (100 ns since 1601) -> CLOCK_REALTIME deadline. */
+static void nt100_to_realtime(int64_t nt100, struct timespec *ts) {
+    int64_t unix100 = nt100 - 116444736000000000LL;
+    ts->tv_sec = (time_t)(unix100 / 10000000LL);
+    ts->tv_nsec = (long)((unix100 % 10000000LL) * 100);
+}
 
 static void *timer_thread_func(void *arg) {
     struct nt_timer *t = (struct nt_timer*)arg;
-    // compute due relative
-    LARGE_INTEGER due;
+    struct nt_dispatcher_header *h = &t->header;
     pthread_mutex_lock(&t->timer_lock);
-    due = t->due_time;
+    int64_t expiry = t->expiry_100ns;
+    LONG period_ms = t->period_ms;
+    for (;;) {
+        while (!t->cancel_requested) {
+            if (now_nt100() >= expiry) break;
+            struct timespec dl;
+            nt100_to_realtime(expiry, &dl);
+            pthread_cond_timedwait(&t->timer_cond, &t->timer_lock, &dl);
+        }
+        if (t->cancel_requested) break;
+        /* Signal while holding timer_lock (lock order: timer_lock, then the
+         * header lock), so a cancel that returns after this point sees the
+         * final signal state. */
+        pthread_mutex_lock(&h->lock);
+        h->signal_state = 1;
+        pthread_mutex_unlock(&h->lock);
+        wake_waiters_for_header(h);
+        if (period_ms <= 0) break;
+        expiry += (int64_t)period_ms * 10000LL;
+        int64_t now = now_nt100();
+        if (expiry <= now) expiry = now + (int64_t)period_ms * 10000LL; /* missed periods: no burst */
+    }
+    t->active = false;
+    t->thread_running = false;
+    pthread_cond_broadcast(&t->timer_cond);
     pthread_mutex_unlock(&t->timer_lock);
-
-    int64_t rel100;
-    if (due.QuadPart < 0) rel100 = -due.QuadPart;
-    else {
-        struct timespec now;
-        now_realtime(&now);
-        int64_t now100 = timespec_to_100ns(&now) + 116444736000000000LL;
-        int64_t due100 = due.QuadPart;
-        if (due100 <= now100) rel100 = 0;
-        else rel100 = due100 - now100;
-    }
-    long ms = (long)(rel100 / 10000LL);
-    long ns_rem = (long)((rel100 % 10000LL)*100);
-    struct timespec sleep_ts;
-    sleep_ts.tv_sec = ms/1000;
-    sleep_ts.tv_nsec = (ms%1000)*1000000L + ns_rem;
-    if (sleep_ts.tv_nsec >= 1000000000L) { sleep_ts.tv_sec++; sleep_ts.tv_nsec-=1000000000L; }
-
-    /* sleep with cancellation check using nanosleep loop + check cancel flag */
-    struct timespec rem = sleep_ts;
-    while (rem.tv_sec>0 || rem.tv_nsec>0) {
-        pthread_mutex_lock(&t->timer_lock);
-        bool cancel = t->cancel_requested;
-        pthread_mutex_unlock(&t->timer_lock);
-        if (cancel) break;
-        struct timespec chunk = rem;
-        if (chunk.tv_sec > 1) chunk.tv_sec = 1;
-        int rc = nanosleep(&chunk, &rem);
-        if (rc==0) {
-            if (chunk.tv_sec==1) { /* need to compute remaining total? simplified: use loop with 1 sec chunks */
-                // recalc remaining?
-                // Instead just continue using rem leftover from nanosleep interrupted? But we sliced.
-                // Simplify: if we did 1 sec chunk, rem now is sleep_ts - chunk? We approximated.
-                // For simplicity, just sleep full then check.
-                // To handle period correctly for small sleeps it's fine.
-                // We'll break after full sleep if not periodic
-            }
-            break;
-        } else {
-            if (errno==EINTR) continue;
-            else break;
-        }
-    }
-
-    pthread_mutex_lock(&t->timer_lock);
-    bool cancelled = t->cancel_requested;
-    pthread_mutex_unlock(&t->timer_lock);
-    if (cancelled) {
-        pthread_mutex_lock(&t->timer_lock);
-        t->active = false;
-        t->thread_running = false;
-        pthread_mutex_unlock(&t->timer_lock);
-        return NULL;
-    }
-
-    /* fire */
-    struct nt_dispatcher_header *h=&t->header;
-    pthread_mutex_lock(&h->lock);
-    h->signal_state = 1;
-    pthread_mutex_unlock(&h->lock);
-    wake_waiters_for_header(h);
-    /* APC */
-    if (t->apc_routine) {
-        if (t->apc_thread) {
-            nt_thread_queue_apc(t->apc_thread);
-            // wake apc thread if it is in alertable wait - caller will handle via wake
-        } else {
-            t->apc_routine(t->apc_ctx);
-        }
-    }
-
-    pthread_mutex_lock(&t->timer_lock);
-    if (t->period_ms > 0 && !t->cancel_requested) {
-        // periodic: re-arm by restarting thread? For periodic we loop.
-        // To implement periodic, we will loop in this thread.
-        LONG period_ms = t->period_ms;
-        // re-read cancel
-        if (!t->cancel_requested) {
-            // schedule next: keep active, spawn next? Instead loop
-            pthread_mutex_unlock(&t->timer_lock);
-            // loop for periodic: sleep period then fire again
-            while (1) {
-                struct timespec p;
-                p.tv_sec = period_ms/1000;
-                p.tv_nsec = (period_ms%1000)*1000000L;
-                nanosleep(&p, NULL);
-                pthread_mutex_lock(&t->timer_lock);
-                bool canc = t->cancel_requested;
-                pthread_mutex_unlock(&t->timer_lock);
-                if (canc) break;
-                pthread_mutex_lock(&h->lock);
-                h->signal_state = 1;
-                pthread_mutex_unlock(&h->lock);
-                wake_waiters_for_header(h);
-                if (t->apc_routine) {
-                    if (t->apc_thread) nt_thread_queue_apc(t->apc_thread);
-                    else t->apc_routine(t->apc_ctx);
-                }
-                if (h->manual_reset) { /* notification stays signaled; but periodic notification also stays */
-                } else {
-                    // sync timer will be reset by waiter
-                }
-            }
-            pthread_mutex_lock(&t->timer_lock);
-            t->active = false;
-            t->thread_running = false;
-            pthread_mutex_unlock(&t->timer_lock);
-            return NULL;
-        } else {
-            t->active = false;
-            t->thread_running = false;
-            pthread_mutex_unlock(&t->timer_lock);
-            return NULL;
-        }
-    } else {
-        t->active = false;
-        t->thread_running = false;
-        pthread_mutex_unlock(&t->timer_lock);
-        return NULL;
-    }
+    return NULL;
 }
 
 /* Absolute NT expiry (100 ns since 1601) for a due time; negative is relative. */
 static int64_t timer_expiry_100ns(const LARGE_INTEGER *due) {
     if (due->QuadPart >= 0) return due->QuadPart;
-    struct timespec now;
-    now_realtime(&now);
-    return timespec_to_100ns(&now) + 116444736000000000LL - due->QuadPart;
+    return now_nt100() - due->QuadPart;
 }
 NTSTATUS nt_set_timer(struct nt_timer *timer, const LARGE_INTEGER *due_time, LONG period_ms, void (*apc_routine)(void*), void *apc_ctx) {
     if (!timer || !due_time) return STATUS_INVALID_PARAMETER;
+    /* A user APC cannot be queued (no APC list exists), and the timer thread
+     * must never run user code, so the routine is refused before any state
+     * changes. */
+    if (apc_routine) return STATUS_NOT_IMPLEMENTED;
+    (void)apc_ctx;
     BOOLEAN dummy;
     nt_cancel_timer(timer, &dummy);
     pthread_mutex_lock(&timer->timer_lock);
     timer->due_time = *due_time;
     timer->expiry_100ns = timer_expiry_100ns(due_time);
     timer->period_ms = period_ms;
-    timer->apc_routine = apc_routine;
-    timer->apc_ctx = apc_ctx;
-    timer->apc_thread = nt_current_thread();
+    timer->apc_routine = NULL;
+    timer->apc_ctx = NULL;
+    timer->apc_thread = NULL;
     timer->cancel_requested = false;
     timer->active = true;
     timer->thread_running = true;
@@ -967,9 +891,11 @@ NTSTATUS nt_set_timer(struct nt_timer *timer, const LARGE_INTEGER *due_time, LON
     timer->header.signal_state = 0;
     pthread_mutex_unlock(&timer->header.lock);
     int rc = pthread_create(&timer->timer_thread, NULL, timer_thread_func, timer);
-    if (rc!=0) {
+    if (rc != 0) {
         pthread_mutex_lock(&timer->timer_lock);
-        timer->active=false; timer->thread_running=false;
+        timer->active = false;
+        timer->thread_running = false;
+        pthread_cond_broadcast(&timer->timer_cond);
         pthread_mutex_unlock(&timer->timer_lock);
         return STATUS_NO_MEMORY;
     }
@@ -979,13 +905,21 @@ NTSTATUS nt_set_timer(struct nt_timer *timer, const LARGE_INTEGER *due_time, LON
 NTSTATUS nt_cancel_timer(struct nt_timer *timer, BOOLEAN *current_state) {
     if (!timer) return STATUS_INVALID_PARAMETER;
     pthread_mutex_lock(&timer->timer_lock);
-    if (current_state) *current_state = timer->header.signal_state ? 1 : 0;
-    if (!timer->active) { pthread_mutex_unlock(&timer->timer_lock); return STATUS_SUCCESS; }
-    timer->cancel_requested = true;
+    if (current_state) {
+        pthread_mutex_lock(&timer->header.lock);
+        *current_state = timer->header.signal_state ? 1 : 0;
+        pthread_mutex_unlock(&timer->header.lock);
+    }
+    if (timer->thread_running) {
+        /* Wake the timer thread out of its wait and wait for it to exit, so
+         * no expiry can fire after this returns. No polling. */
+        timer->cancel_requested = true;
+        pthread_cond_broadcast(&timer->timer_cond);
+        while (timer->thread_running)
+            pthread_cond_wait(&timer->timer_cond, &timer->timer_lock);
+    }
+    timer->active = false;
     pthread_mutex_unlock(&timer->timer_lock);
-    /* give thread time to exit */
-    usleep(2000);
-    /* reset signal if needed? Windows cancel doesn't reset signal? Keep as is */
     return STATUS_SUCCESS;
 }
 
@@ -2316,6 +2250,7 @@ static void timer_object_init(struct nt_timer *t, bool manual)
     t->header.manual_reset = manual;
     atomic_init(&t->header.refcount, 1);
     pthread_mutex_init(&t->timer_lock, NULL);
+    pthread_cond_init(&t->timer_cond, NULL);
     t->thread_running = false;
 #else
     t->header.type = NT_OBJ_TIMER;
@@ -2344,14 +2279,9 @@ static void timer_obj_delete(struct nt_object_header *hdr)
     BOOLEAN dummy = 0;
     nt_cancel_timer(t, &dummy);
 #ifndef __KERNEL__
-    /* The timer thread is detached and still reads t, so wait for it to exit. */
-    for (;;) {
-        pthread_mutex_lock(&t->timer_lock);
-        bool running = t->thread_running;
-        pthread_mutex_unlock(&t->timer_lock);
-        if (!running) break;
-        usleep(1000);
-    }
+    /* nt_cancel_timer above has already waited until the detached timer
+     * thread has left, so nothing still reads t. */
+    pthread_cond_destroy(&t->timer_cond);
     pthread_mutex_destroy(&t->timer_lock);
     pthread_mutex_destroy(&t->header.lock);
 #endif

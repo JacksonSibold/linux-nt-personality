@@ -198,6 +198,7 @@ struct nt_semaphore {
 struct nt_timer {
     struct nt_dispatcher_header header;
     pthread_mutex_t             timer_lock;
+    pthread_cond_t              timer_cond; /* wakes the timer thread on cancel; signalled when it exits */
     pthread_t                   timer_thread;
     bool                        active;
     bool                        thread_running;
