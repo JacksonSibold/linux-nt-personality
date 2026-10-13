@@ -104,9 +104,9 @@ today.
 
 | Entry point | Kernel build (`arch/x86/nt/proc_thread.c`, `src/kernel/nt/proc_thread.c`) | Shim build (`proc_thread.c`, `#ifndef __KERNEL__`) |
 |---|---|---|
-| `NtCreateProcessEx` | `STATUS_NOT_IMPLEMENTED` (`arch` `:1352`, `src/kernel/nt` `:1416`) | `nt_create_process_internal` (`:346`). Creates an eprocess and a handle. No image. |
-| `NtCreateProcess` | `STATUS_NOT_IMPLEMENTED` (`arch` `:1353`, `src/kernel/nt` `:1417`) | Forwards to `NtCreateProcessEx`. `InheritObjectTable` is ignored. |
-| `NtCreateUserProcess` | `STATUS_NOT_IMPLEMENTED` (`arch` `:1354`, `src/kernel/nt` `:1418`) | Creates a process as above, then a thread on the dummy address `0x140001000`. `AttributeList` is used as the start address. This is a test hack and must not be kept. |
+| `NtCreateProcessEx` | `STATUS_NOT_IMPLEMENTED` (`arch` `:1353`, `src/kernel/nt` `:1441`) | `nt_create_process_internal` (`src/kernel/nt` `:407`, `arch` `:347`). Creates an eprocess and a handle. No image. |
+| `NtCreateProcess` | `STATUS_NOT_IMPLEMENTED` (`arch` `:1354`, `src/kernel/nt` `:1442`) | Forwards to `NtCreateProcessEx` (`src/kernel/nt` `:482`). `InheritObjectTable` is ignored. |
+| `NtCreateUserProcess` | Validates `CreateInfo` and `AttributeList` (`proc_create_args.h`), then `STATUS_NOT_IMPLEMENTED` (`arch` `:1366`, `src/kernel/nt` `:1454`) | Creates a process as above, then a thread on the dummy address `0x140001000` (`src/kernel/nt` `:491`). `AttributeList` is used as the start address. This is a test hack and must not be kept. |
 | `kernel32!CreateProcessW/A` | Not applicable | Stub in `src/ntdll/kernel32.c:395-402`: `SetLastError(2)`, returns NULL |
 
 The kernel build has a working thread path that could serve as a model for the
@@ -133,7 +133,7 @@ what each needs in this repo:
    file (`SEC_IMAGE`). Here `NtCreateSection` builds file-backed data sections
    (`src/kernel/nt/mm.c:1820`) and, in the userspace build, `SEC_IMAGE` sections
    (`nt_create_image_section`, `mm.c:1938`). The kernel build still returns
-   `STATUS_NOT_IMPLEMENTED` (`mm.c:1892`). Without the kernel side, the only image
+   `STATUS_NOT_IMPLEMENTED` (`mm.c:1893`). Without the kernel side, the only image
    source is a path that `binfmt_pe` reads itself. See prerequisite P1.
 2. **Child task.** Two ways to create a new task that runs a PE:
    - *Clone then exec.* Create a task with a new mm, then run the PE loader in
@@ -294,7 +294,7 @@ the `kshim` model) or in the VM (`vm/` scripts that run `/tests_kernel/*.exe`).
 | M3 | Not started | Nothing. | Suspended initial thread and resume. |
 | M4 | Host part done | `ObInheritHandleTable` in `handle.c`: copies OBJ_INHERIT entries at the same indices with the same access. All or nothing, with undo on failure. `ObInheritHandles` wraps it. Host tests: `tests/kernel-host/handle_inherit_test.c`. | No kernel path calls it (P2). VM test. |
 | M5 | Partial | `src/kernel/nt/proc_create_args.h`: probe and copy-in of PS_CREATE_INFO and PS_ATTRIBUTE_LIST with size checks and a double-fetch check. Both kernel-branch `NtCreateUserProcess` stubs call it, then return `STATUS_NOT_IMPLEMENTED`. Host tests: `tests/kernel-host/proc_create_args_test.c`. | The wrapper over M2 to M4. `CreateProcessW` calling it. The file-handle source (M6). ProcessParameters is not checked by the stub. |
-| M6 | Not started | Nothing. | `SEC_IMAGE` (P1). |
+| M6 | Partial (userspace build) | `SEC_IMAGE` sections in the userspace build: the planner `image_plan.h`, relocations `image_reloc.h`, and `nt_map_image_view` in `mm.c`. Tests: `image_plan_test.c`, `image_reloc_test.c`, `mm_test.c`. | The kernel-side `SEC_IMAGE` mapping (the kernel build returns `STATUS_NOT_IMPLEMENTED`, `mm.c:1893`). A file-handle image source in `NtCreateUserProcess`. VM test. |
 | M7 | Not started | Nothing. | Removal of the shim's dummy-address path. |
 
 ## 7. Prerequisites in this repo
