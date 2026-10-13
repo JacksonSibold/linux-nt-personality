@@ -263,4 +263,4 @@ and about 36 s for `stress_sync_test` per seed (the timed waits dominate). A ful
 `make stress STRESS_THREADS=16` with the three default seeds takes about 2 minutes
 (127 s measured). `make stress` writes each program's output to
 `build/<program>.seed<N>.log`. `nt_obj.c` and `proc_thread.c` print debug lines
-(`W1_INSTR`, `NtWaitForSingleObject:`) on every call, so those logs are large.
+(`W1_INSTR`, `NtWaitForSingleObject:`) on every call. Those lines are now compiled out unless `NT_DEBUG_TRACE` is defined (`src/kernel/nt/kshim.h`), so the logs are small by default.
