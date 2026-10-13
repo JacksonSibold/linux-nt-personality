@@ -16,6 +16,10 @@
 #include "kshim.h"
 #include "object.h"
 #include "handle.h"
+#include "io.h"
+#include <limits.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -492,14 +496,323 @@ static int test_alloc_size_wrap(void) {
     return 1;
 }
 
-/* M-7: a file-backed section is not implemented; it must not be created as
- * zeroed anonymous memory. */
-static int test_file_section_unsupported(void) {
-    LARGE_INTEGER sz; sz.QuadPart = 0x1000;
+/* ---- File-backed data sections (SEC_COMMIT with a FileHandle) ----
+ * Files are made on the host under g_mmf_root and opened through
+ * nt_svc_NtCreateFile, so each file handle is a real io file object. The host
+ * reads and writes check what reached the file. */
+static char g_mmf_root[512];
+
+/* Removed at exit, pass or fail, as io_test does. The host helpers below use
+ * open/pread/pwrite (the shim maps /tmp for those); stdio fopen does not map it. */
+static void mmf_setup(void) {
+    snprintf(g_mmf_root, sizeof(g_mmf_root), "/tmp/mm_test_%d", (int)getpid());
+    khost_scratch_arm_cleanup(g_mmf_root);
+    mkdir(g_mmf_root, 0700);
+    kshim_set_root(g_mmf_root);
+}
+
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
+
+static void mmf_path(char *out, size_t n, const char *name) {
+    snprintf(out, n, "%s/%s", g_mmf_root, name);
+}
+
+static int mmf_make(const char *name, size_t size, unsigned char fill) {
+    char p[512], buf[4096];
+    size_t done = 0;
+    int fd;
+    mmf_path(p, sizeof(p), name);
+    fd = open(p, O_CREAT | O_TRUNC | O_WRONLY | O_BINARY, 0644);
+    if (fd < 0) return 0;
+    memset(buf, fill, sizeof(buf));
+    while (done < size) {
+        size_t n = size - done < sizeof(buf) ? size - done : sizeof(buf);
+        if (write(fd, buf, n) != (ssize_t)n) { close(fd); return 0; }
+        done += n;
+    }
+    return close(fd) == 0;
+}
+
+static int mmf_poke(const char *name, long off, unsigned char b) {
+    char p[512];
+    int fd;
+    mmf_path(p, sizeof(p), name);
+    fd = open(p, O_WRONLY | O_BINARY);
+    if (fd < 0) return 0;
+    if (pwrite(fd, &b, 1, (off_t)off) != 1) { close(fd); return 0; }
+    return close(fd) == 0;
+}
+
+static long mmf_host_size(const char *name) {
+    char p[512];
+    int fd;
+    long n;
+    mmf_path(p, sizeof(p), name);
+    fd = open(p, O_RDONLY | O_BINARY);
+    if (fd < 0) return -1;
+    n = (long)lseek(fd, 0, SEEK_END);
+    close(fd);
+    return n;
+}
+
+static int mmf_host_byte(const char *name, long off, unsigned char *out) {
+    char p[512];
+    unsigned char c;
+    int fd;
+    mmf_path(p, sizeof(p), name);
+    fd = open(p, O_RDONLY | O_BINARY);
+    if (fd < 0) return 0;
+    if (pread(fd, &c, 1, (off_t)off) != 1) { close(fd); return 0; }
+    close(fd);
+    *out = c;
+    return 1;
+}
+
+static NTSTATUS mmf_open(const char *name, ACCESS_MASK access, HANDLE *out) {
+    static WCHAR buf[256];
+    UNICODE_STRING us;
+    OBJECT_ATTRIBUTES oa;
+    IO_STATUS_BLOCK iosb;
+    LARGE_INTEGER alloc;
+    size_t i, len = strlen(name);
+    for (i = 0; i < len && i < 255; i++) buf[i] = (WCHAR)(unsigned char)name[i];
+    us.Buffer = buf;
+    us.Length = (USHORT)(len * sizeof(WCHAR));
+    us.MaximumLength = us.Length;
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(oa);
+    oa.ObjectName = &us;
+    memset(&iosb, 0, sizeof(iosb));
+    alloc.QuadPart = 0;
+    *out = NULL;
+    return nt_svc_NtCreateFile(out, access, &oa, &iosb, &alloc, 0,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN,
+                               FILE_NON_DIRECTORY_FILE, NULL, 0);
+}
+
+/* max == 0 passes a NULL MaximumSize, which asks for the file size. */
+static NTSTATUS mmf_section(HANDLE fh, HANDLE *sec, ULONG prot, SIZE_T max) {
+    LARGE_INTEGER sz;
+    LARGE_INTEGER *pmax = NULL;
+    if (max) { sz.QuadPart = (LONGLONG)max; pmax = &sz; }
+    *sec = NULL;
+    return NtCreateSection(sec, SECTION_ALL_ACCESS, NULL, pmax, prot, SEC_COMMIT, fh);
+}
+
+static NTSTATUS mmf_map(HANDLE sec, LONGLONG offset, SIZE_T size, ULONG prot, PVOID *base) {
+    LARGE_INTEGER off;
+    SIZE_T vs = size;
+    off.QuadPart = offset;
+    *base = NULL;
+    return NtMapViewOfSection(sec, (HANDLE)-1, base, 0, 0, &off, &vs, 0, 0, prot);
+}
+
+static NTSTATUS mmf_flush(PVOID base, SIZE_T size) {
+    PVOID b = base;
+    SIZE_T s = size;
+    IO_STATUS_BLOCK iosb;
+    return NtFlushVirtualMemory((HANDLE)-1, &b, &s, &iosb);
+}
+
+/* Writes through a shared writable view reach the file after a flush. */
+static int test_file_section_shared_write_reaches_file(void) {
+    HANDLE fh = NULL, sec = NULL;
+    PVOID base = NULL;
+    unsigned char b = 0;
+    ASSERT(mmf_make("shared_rw.bin", 0x1000, 'A'), "make file");
+    ASSERT(mmf_open("shared_rw.bin", FILE_READ_DATA | FILE_WRITE_DATA, &fh) == STATUS_SUCCESS, "open rw");
+    ASSERT(mmf_section(fh, &sec, PAGE_READWRITE, 0) == STATUS_SUCCESS, "create section");
+    ASSERT(mmf_map(sec, 0, 0, PAGE_READWRITE, &base) == STATUS_SUCCESS, "map view");
+    ASSERT(((unsigned char *)base)[0] == 'A', "view shows file contents");
+    memcpy((unsigned char *)base + 0x10, "HELLO", 5);
+    ASSERT(mmf_flush(base, 0x1000) == STATUS_SUCCESS, "flush view");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "unmap");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close file");
+    ASSERT(mmf_host_byte("shared_rw.bin", 0x10, &b) && b == 'H', "file holds first written byte");
+    ASSERT(mmf_host_byte("shared_rw.bin", 0x14, &b) && b == 'O', "file holds last written byte");
+    ASSERT(mmf_host_size("shared_rw.bin") == 0x1000, "file size unchanged");
+    return 1;
+}
+
+/* A copy-on-write view takes private writes; the file keeps its bytes. */
+static int test_file_section_cow_does_not_modify_file(void) {
+    HANDLE fh = NULL, sec = NULL;
+    PVOID base = NULL;
+    unsigned char b = 0;
+    ASSERT(mmf_make("cow.bin", 0x1000, 'A'), "make file");
+    ASSERT(mmf_open("cow.bin", FILE_READ_DATA, &fh) == STATUS_SUCCESS, "open read");
+    ASSERT(mmf_section(fh, &sec, PAGE_WRITECOPY, 0) == STATUS_SUCCESS, "create cow section");
+    ASSERT(mmf_map(sec, 0, 0, PAGE_WRITECOPY, &base) == STATUS_SUCCESS, "map cow view");
+    ((unsigned char *)base)[0x10] = 'Q';
+    ASSERT(((unsigned char *)base)[0x10] == 'Q', "view sees private write");
+    ASSERT(mmf_flush(base, 0x1000) == STATUS_SUCCESS, "flush cow view");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "unmap cow");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close cow section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close cow file");
+    ASSERT(mmf_host_byte("cow.bin", 0x10, &b) && b == 'A', "file unchanged by cow write");
+    return 1;
+}
+
+/* Access is checked per protection: a write-only handle cannot back a read-only
+ * section (FILE_READ_DATA is needed), but it can back a read-write one. */
+static int test_file_section_access_by_protection(void) {
+    HANDLE fh = NULL, sec = NULL;
+    ASSERT(mmf_make("wonly.bin", 0x1000, 'A'), "make file");
+    ASSERT(mmf_open("wonly.bin", FILE_WRITE_DATA, &fh) == STATUS_SUCCESS, "open write-only");
+    ASSERT(mmf_section(fh, &sec, PAGE_READONLY, 0) == STATUS_ACCESS_DENIED, "read-only view of write-only handle");
+    ASSERT(sec == NULL, "no section for denied access");
+    ASSERT(mmf_section(fh, &sec, PAGE_READWRITE, 0) == STATUS_SUCCESS, "read-write section from write-only handle");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close rw section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close write-only file");
+    return 1;
+}
+
+/* An empty file has no size to map: NT returns STATUS_MAPPED_FILE_SIZE_ZERO,
+ * both for the default size and for an explicit zero MaximumSize. */
+static int test_file_section_zero_length_rejected(void) {
+    HANDLE fh = NULL, sec = NULL;
+    ASSERT(mmf_make("empty.bin", 0, 0), "make empty file");
+    ASSERT(mmf_open("empty.bin", FILE_READ_DATA | FILE_WRITE_DATA, &fh) == STATUS_SUCCESS, "open empty");
+    ASSERT(mmf_section(fh, &sec, PAGE_READWRITE, 0) == STATUS_MAPPED_FILE_SIZE_ZERO,
+           "default size of empty file");
+    ASSERT(sec == NULL, "no section for empty file");
+    {
+        LARGE_INTEGER z; z.QuadPart = 0;
+        ASSERT(NtCreateSection(&sec, SECTION_ALL_ACCESS, NULL, &z, PAGE_READWRITE, SEC_COMMIT, fh)
+               == STATUS_MAPPED_FILE_SIZE_ZERO, "explicit zero size of empty file");
+    }
+    ASSERT(mmf_host_size("empty.bin") == 0, "empty file not extended by the refusals");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close empty file");
+    return 1;
+}
+
+/* A view and its section outlive the file handle: the section keeps its own
+ * reference, and the file still reaches disk. A closed handle cannot make a new
+ * section. */
+static int test_file_section_handle_closed_keeps_view(void) {
+    HANDLE fh = NULL, sec = NULL;
+    PVOID base = NULL;
+    unsigned char b = 0;
+    ASSERT(mmf_make("closed.bin", 0x1000, 'A'), "make file");
+    ASSERT(mmf_open("closed.bin", FILE_READ_DATA | FILE_WRITE_DATA, &fh) == STATUS_SUCCESS, "open");
+    ASSERT(mmf_section(fh, &sec, PAGE_READWRITE, 0) == STATUS_SUCCESS, "create section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close file handle first");
+    ASSERT(mmf_section(fh, &sec, PAGE_READWRITE, 0) == STATUS_INVALID_HANDLE, "closed file handle refused");
+    ASSERT(mmf_map(sec, 0, 0, PAGE_READWRITE, &base) == STATUS_SUCCESS, "map after file handle closed");
+    ASSERT(((unsigned char *)base)[0] == 'A', "view reads after file handle closed");
+    ((unsigned char *)base)[0x20] = 'C';
+    ASSERT(mmf_flush(base, 0x1000) == STATUS_SUCCESS, "flush after file handle closed");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "unmap");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close section");
+    ASSERT(mmf_host_byte("closed.bin", 0x20, &b) && b == 'C', "write reached file after handle closed");
+    return 1;
+}
+
+/* Views must start on a 64 KiB boundary of the file. */
+static int test_file_section_offset_alignment(void) {
+    HANDLE fh = NULL, sec = NULL;
+    PVOID base = NULL;
+    ASSERT(mmf_make("aligned.bin", 0x20000, 'A'), "make file");
+    ASSERT(mmf_poke("aligned.bin", 0x10000, 'B'), "poke file");
+    ASSERT(mmf_open("aligned.bin", FILE_READ_DATA, &fh) == STATUS_SUCCESS, "open");
+    ASSERT(mmf_section(fh, &sec, PAGE_READONLY, 0) == STATUS_SUCCESS, "create section");
+    ASSERT(mmf_map(sec, 0x1000, 0x1000, PAGE_READONLY, &base) == STATUS_MAPPED_ALIGNMENT,
+           "4 KiB offset refused");
+    ASSERT(mmf_map(sec, 0x10000, 0, PAGE_READONLY, &base) == STATUS_SUCCESS, "64 KiB offset maps");
+    ASSERT(((unsigned char *)base)[0] == 'B', "view starts at the offset");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "unmap");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close file");
+    return 1;
+}
+
+/* Default size is the file size, and the section reports the file attribute. */
+static int test_file_section_query_file_attribute(void) {
+    HANDLE fh = NULL, sec = NULL, anon = NULL;
+    SECTION_BASIC_INFORMATION info;
+    SIZE_T ret = 0;
+    ASSERT(mmf_make("query.bin", 0x3000, 'A'), "make file");
+    ASSERT(mmf_open("query.bin", FILE_READ_DATA, &fh) == STATUS_SUCCESS, "open");
+    ASSERT(mmf_section(fh, &sec, PAGE_READONLY, 0) == STATUS_SUCCESS, "create section");
+    ASSERT(nt_svc_NtQuerySection(sec, 0, &info, sizeof(info), &ret) == STATUS_SUCCESS, "query file section");
+    ASSERT(info.AllocationAttributes & SEC_FILE, "file attribute reported");
+    ASSERT(info.AllocationAttributes & SEC_COMMIT, "commit attribute kept");
+    ASSERT(info.MaximumSize.QuadPart == 0x3000, "maximum size is file size, got 0x%llx",
+           (unsigned long long)info.MaximumSize.QuadPart);
+    {
+        LARGE_INTEGER asz; asz.QuadPart = 0x1000;
+        ASSERT(NtCreateSection(&anon, SECTION_ALL_ACCESS, NULL, &asz, PAGE_READWRITE, SEC_COMMIT, NULL)
+               == STATUS_SUCCESS, "anon section");
+    }
+    ASSERT(nt_svc_NtQuerySection(anon, 0, &info, sizeof(info), &ret) == STATUS_SUCCESS, "query anon section");
+    ASSERT(!(info.AllocationAttributes & SEC_FILE), "anonymous section has no file attribute");
+    ASSERT(ObCloseHandle(g_mm_proc, anon) == STATUS_SUCCESS, "close anon");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close file");
+    return 1;
+}
+
+/* A larger MaximumSize extends a read-write file, and a read-only section that
+ * is larger than its file is STATUS_SECTION_TOO_BIG. */
+static int test_file_section_size_rules(void) {
+    HANDLE fh = NULL, sec = NULL;
+    ASSERT(mmf_make("grow.bin", 0x1000, 'A'), "make file");
+    ASSERT(mmf_open("grow.bin", FILE_READ_DATA | FILE_WRITE_DATA, &fh) == STATUS_SUCCESS, "open");
+    ASSERT(mmf_section(fh, &sec, PAGE_READONLY, 0x2000) == STATUS_SECTION_TOO_BIG, "read-only too big");
+    ASSERT(sec == NULL, "no section when too big");
+    ASSERT(mmf_host_size("grow.bin") == 0x1000, "read-only refusal leaves file alone");
+    ASSERT(mmf_section(fh, &sec, PAGE_READWRITE, 0x2000) == STATUS_SUCCESS, "read-write extends");
+    ASSERT(mmf_host_size("grow.bin") == 0x2000, "file extended to section size");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close file");
+    return 1;
+}
+
+/* SEC_IMAGE is a separate milestone (process-creation M6). Until then it must
+ * refuse, never map the file as plain data. */
+static int test_sec_image_not_implemented(void) {
+    HANDLE fh = NULL, sec = NULL;
+    LARGE_INTEGER sz;
+    sz.QuadPart = 0x1000;
+    ASSERT(mmf_make("image.bin", 0x1000, 'A'), "make file");
+    ASSERT(mmf_open("image.bin", FILE_READ_DATA, &fh) == STATUS_SUCCESS, "open");
+    ASSERT(NtCreateSection(&sec, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READONLY, SEC_IMAGE, fh)
+           == STATUS_NOT_IMPLEMENTED, "SEC_IMAGE with file refused");
+    ASSERT(sec == NULL, "no section for SEC_IMAGE");
+    ASSERT(NtCreateSection(&sec, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READONLY, SEC_IMAGE, NULL)
+           == STATUS_NOT_IMPLEMENTED, "SEC_IMAGE without file refused");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close file");
+    return 1;
+}
+
+/* A FileHandle that is not an open handle is refused, not treated as a file. */
+static int test_file_section_forged_handle(void) {
     HANDLE sec = NULL;
-    NTSTATUS st = NtCreateSection(&sec, 0, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, (HANDLE)0x1234);
-    ASSERT(st == STATUS_NOT_IMPLEMENTED, "file section status 0x%lx", (unsigned long)st);
-    ASSERT(sec == NULL, "no section handle");
+    LARGE_INTEGER sz;
+    sz.QuadPart = 0x1000;
+    ASSERT(NtCreateSection(&sec, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, (HANDLE)0x1234)
+           == STATUS_INVALID_HANDLE, "forged file handle refused");
+    ASSERT(sec == NULL, "no section for forged handle");
+    return 1;
+}
+
+/* Leak tracker: a file section and its view leave no allocation behind. */
+static int test_file_section_leak_tracker(void) {
+    HANDLE fh = NULL, sec = NULL;
+    PVOID base = NULL;
+    long before;
+    ASSERT(mmf_make("leak.bin", 0x1000, 'A'), "make file");
+    before = atomic_load(&kshim_alloc_count);
+    ASSERT(mmf_open("leak.bin", FILE_READ_DATA | FILE_WRITE_DATA, &fh) == STATUS_SUCCESS, "open");
+    ASSERT(mmf_section(fh, &sec, PAGE_READWRITE, 0) == STATUS_SUCCESS, "create section");
+    ASSERT(mmf_map(sec, 0, 0, PAGE_READWRITE, &base) == STATUS_SUCCESS, "map");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_SUCCESS, "unmap");
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close file");
+    ASSERT(atomic_load(&kshim_alloc_count) == before, "file section leaked allocations");
     return 1;
 }
 
@@ -1608,7 +1921,18 @@ int main(void) {
     RUN_TEST(test_fuzz);
     RUN_TEST(test_vad_matrix);
     RUN_TEST(test_alloc_size_wrap);
-    RUN_TEST(test_file_section_unsupported);
+    mmf_setup();
+    RUN_TEST(test_file_section_shared_write_reaches_file);
+    RUN_TEST(test_file_section_cow_does_not_modify_file);
+    RUN_TEST(test_file_section_access_by_protection);
+    RUN_TEST(test_file_section_zero_length_rejected);
+    RUN_TEST(test_file_section_handle_closed_keeps_view);
+    RUN_TEST(test_file_section_offset_alignment);
+    RUN_TEST(test_file_section_query_file_attribute);
+    RUN_TEST(test_file_section_size_rules);
+    RUN_TEST(test_sec_image_not_implemented);
+    RUN_TEST(test_file_section_forged_handle);
+    RUN_TEST(test_file_section_leak_tracker);
     RUN_TEST(test_wrapping_size_protect_decommit);
     RUN_TEST(test_sections);
     RUN_TEST(test_view_size_round_up_wrap);
