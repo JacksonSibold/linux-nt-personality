@@ -78,6 +78,7 @@ struct nt_directory;
 struct nt_eprocess;
 struct nt_ethread;
 struct nt_handle_table;
+struct nt_job;
 
 /* -------------------------------------------------------------------------- */
 /* Object type callbacks                                                      */
@@ -367,6 +368,9 @@ struct nt_eprocess {
     BOOLEAN                  priority_foreground;   /* PROCESS_PRIORITY_CLASS.Foreground */
     ULONG                    default_hard_error_mode; /* SEM_* flags */
     BOOLEAN                  break_on_termination;  /* ProcessBreakOnTermination */
+    /* Job membership (job.c). NULL when the process is not in a job. Set and
+     * cleared under the job lock; nt_job_remove_process clears it on destroy. */
+    struct nt_job           *job;
 };
 
 struct nt_ethread {
@@ -417,6 +421,8 @@ struct nt_ethread {
 NTSTATUS ObCreateProcessObject(struct nt_eprocess **out, ULONG pid, const char *name);
 NTSTATUS ObCreateThreadObject(struct nt_ethread **out, struct nt_eprocess *proc, ULONG tid);
 void     ObDestroyProcessObject(struct nt_eprocess *proc);
+/* Removes proc from its job (job.c). Called first by ObDestroyProcessObject. */
+void     nt_job_remove_process(struct nt_eprocess *proc);
 void     ObDestroyThreadObject(struct nt_ethread *thr);
 
 struct nt_eprocess *ObFindProcessByHeader(struct nt_object_header *hdr);

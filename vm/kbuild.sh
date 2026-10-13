@@ -150,6 +150,7 @@ expected_objects=(
   "object.o"
   "sync.o"
   "security.o"
+  "job.o"
   "nt_obj.o"
   "nt_io.o"
   "ntstatus_kernel.o"
@@ -165,7 +166,7 @@ for obj in "${expected_objects[@]}"; do
     exit 1
   fi
 done
-echo "Makefile OK (17 objects)"
+echo "Makefile OK (18 objects)"
 
 # Build - with hardening against `make clean` corruption and fixdep race
 echo "Preparing host tools (fixdep, objtool) single-threaded..."

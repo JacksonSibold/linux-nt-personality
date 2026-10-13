@@ -137,7 +137,7 @@ TEST(named_create_and_open)
     HANDLE h = NULL, h2 = NULL;
     JOBOBJECT_BASIC_ACCOUNTING_INFORMATION acct;
 
-    make_us(&us, buf, 64, "JobTestNamed");
+    make_us(&us, buf, 64, "\\BaseNamedObjects\\JobTestNamed");
     memset(&oa, 0, sizeof(oa));
     oa.Length = sizeof(oa);
     oa.ObjectName = &us;
@@ -351,6 +351,34 @@ TEST(destroy_removes_membership)
     PASS();
 }
 
+/* An exited member that is not destroyed (the normal exit path in this tree)
+ * leaves the job on the next query and releases its membership. */
+TEST(exited_member_is_pruned)
+{
+    HANDLE j = job_create(JOB_OBJECT_ALL_ACCESS);
+    HANDLE j2 = job_create(JOB_OBJECT_ALL_ACCESS);
+    struct nt_eprocess *p = new_proc(3008);
+    HANDLE hp = proc_handle(p);
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION acct;
+    ASSERT(j && j2 && p && hp);
+    ASSERT_STATUS(job_assign(j, hp), STATUS_SUCCESS);
+
+    /* Simulate the exit: state set, object not destroyed. */
+    p->terminated = true;
+    p->exit_status = 9;
+
+    ASSERT_STATUS(job_accounting(j, &acct), STATUS_SUCCESS);
+    ASSERT(acct.TotalProcesses == 1);
+    ASSERT(acct.ActiveProcesses == 0);
+    ASSERT(acct.TotalTerminatedProcesses == 1);
+    ASSERT(p->job == NULL);
+    /* Membership released, so the exited process is refused as terminating. */
+    ASSERT_STATUS(job_assign(j2, hp), STATUS_PROCESS_IS_TERMINATING);
+    ASSERT_STATUS(ObCloseHandle(g_cur, j), STATUS_SUCCESS);
+    ASSERT_STATUS(ObCloseHandle(g_cur, j2), STATUS_SUCCESS);
+    PASS();
+}
+
 int main(void)
 {
     int i;
@@ -373,6 +401,7 @@ int main(void)
     RUN(kill_on_close_last_handle);
     RUN(no_kill_without_flag);
     RUN(destroy_removes_membership);
+    RUN(exited_member_is_pruned);
 
     printf("job tests: %d passed, %d failed\n", g_pass, g_fail);
 
