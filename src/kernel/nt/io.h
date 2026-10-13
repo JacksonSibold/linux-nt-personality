@@ -354,6 +354,8 @@ NTSTATUS nt_svc_NtWriteFile(HANDLE FileHandle, HANDLE Event,
 			    PLARGE_INTEGER ByteOffset,
 			    PULONG Key);
 
+NTSTATUS nt_svc_NtQueryAttributesFile(POBJECT_ATTRIBUTES ObjectAttributes,
+				      PFILE_BASIC_INFORMATION FileInformation);
 NTSTATUS nt_svc_NtQueryInformationFile(HANDLE FileHandle,
 				       PIO_STATUS_BLOCK IoStatusBlock,
 				       PVOID FileInformation,

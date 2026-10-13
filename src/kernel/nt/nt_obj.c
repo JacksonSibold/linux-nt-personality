@@ -617,6 +617,11 @@ NTSTATUS nt_svc_NtOpenSemaphore(unsigned long a0, unsigned long a1, unsigned lon
 #define ObjectTypesInformation 3
 #define ObjectHandleFlagInformation 4
 
+typedef struct _OBJECT_HANDLE_FLAG_INFORMATION {
+    BOOLEAN Inherit;
+    BOOLEAN ProtectFromClose;
+} OBJECT_HANDLE_FLAG_INFORMATION, *POBJECT_HANDLE_FLAG_INFORMATION;
+
 typedef struct _OBJECT_BASIC_INFORMATION {
     ULONG Attributes;
     ACCESS_MASK GrantedAccess;
@@ -743,8 +748,18 @@ NTSTATUS nt_svc_NtQueryObject(HANDLE Handle, ULONG ObjectInformationClass,
 NTSTATUS nt_svc_NtSetInformationObject(HANDLE Handle, ULONG ObjectInformationClass,
                                        PVOID ObjectInformation, ULONG Length)
 {
-    (void)Handle; (void)ObjectInformationClass; (void)ObjectInformation; (void)Length;
-    return STATUS_NOT_IMPLEMENTED;
+    OBJECT_HANDLE_FLAG_INFORMATION fi;
+    struct nt_eprocess *proc;
+    if (ObjectInformationClass != ObjectHandleFlagInformation)
+        return STATUS_INVALID_INFO_CLASS;
+    if (Length != sizeof(fi))
+        return STATUS_INFO_LENGTH_MISMATCH;
+    if (!ObjectInformation)
+        return STATUS_ACCESS_VIOLATION;
+    proc = kshim_current_process();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    memcpy(&fi, ObjectInformation, sizeof(fi));
+    return ObSetHandleFlags(proc, Handle, fi.Inherit, fi.ProtectFromClose);
 }
 
 NTSTATUS nt_svc_NtMakeTemporaryObject(HANDLE Handle)
@@ -773,6 +788,30 @@ NTSTATUS nt_svc_NtClose(HANDLE Handle)
 
 #else
 /* Kernel implementations with uaccess checks */
+
+NTSTATUS nt_svc_NtSetInformationObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                       unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                       unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE Handle = (HANDLE)a0;
+    ULONG ObjectInformationClass = (ULONG)a1;
+    PVOID ObjectInformation = (PVOID)a2;
+    ULONG Length = (ULONG)a3;
+    OBJECT_HANDLE_FLAG_INFORMATION fi;
+    struct nt_eprocess *proc;
+    (void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (ObjectInformationClass != ObjectHandleFlagInformation)
+        return STATUS_INVALID_INFO_CLASS;
+    if (Length != sizeof(fi))
+        return STATUS_INFO_LENGTH_MISMATCH;
+    if (!ObjectInformation || !access_ok(ObjectInformation, sizeof(fi)))
+        return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(&fi, ObjectInformation, sizeof(fi)))
+        return STATUS_ACCESS_VIOLATION;
+    proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    return ObSetHandleFlags(proc, Handle, fi.Inherit, fi.ProtectFromClose);
+}
 
 NTSTATUS nt_svc_NtQueryObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4,
                                unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)

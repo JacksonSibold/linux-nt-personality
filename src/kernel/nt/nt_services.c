@@ -37,6 +37,9 @@ extern struct nt_object_type nt_event_type;
 extern struct nt_object_type nt_mutant_type;
 extern struct nt_object_type nt_semaphore_type;
 
+/* 100 ns intervals from 1601-01-01 (NT epoch) to 1970-01-01 (Unix epoch). */
+#define NT_UNIX_EPOCH_100NS 116444736000000000LL
+
 /* helper: current eprocess for kernel - weak, object.c provides strong with lazy creation */
 #ifdef __KERNEL__
 __attribute__((weak)) struct nt_eprocess *nt_get_current_eprocess(void)
@@ -104,6 +107,16 @@ NTSTATUS nt_svc_NtQueryPerformanceCounter(unsigned long a0, unsigned long a1, un
     LONGLONG ticks = ns / 100;
     if (PerformanceCounter) PerformanceCounter->QuadPart = ticks;
     if (PerformanceFrequency) PerformanceFrequency->QuadPart = freq;
+    return STATUS_SUCCESS;
+}
+/* Typed signature: on the LLP64 host build unsigned long is 32 bits and cannot
+ * carry a pointer argument, so the generic a0..a11 form is used only in the kernel. */
+NTSTATUS nt_svc_NtQuerySystemTime(PLARGE_INTEGER SystemTime)
+{
+    struct timespec ts;
+    if (!SystemTime) return STATUS_ACCESS_VIOLATION;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    SystemTime->QuadPart = (LONGLONG)ts.tv_sec * 10000000LL + ts.tv_nsec / 100 + NT_UNIX_EPOCH_100NS;
     return STATUS_SUCCESS;
 }
 NTSTATUS nt_svc_NtQueryMutant(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
@@ -301,6 +314,17 @@ NTSTATUS nt_svc_NtQueryPerformanceCounter(unsigned long a0, unsigned long a1, un
         LARGE_INTEGER kfreq; kfreq.QuadPart = freq;
         if (copy_to_user(PerformanceFrequency, &kfreq, sizeof(kfreq))) return STATUS_ACCESS_VIOLATION;
     }
+    return STATUS_SUCCESS;
+}
+NTSTATUS nt_svc_NtQuerySystemTime(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    PLARGE_INTEGER SystemTime = (PLARGE_INTEGER)a0;
+    LARGE_INTEGER kt;
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!SystemTime) return STATUS_ACCESS_VIOLATION;
+    if (!access_ok(SystemTime, sizeof(LARGE_INTEGER))) return STATUS_ACCESS_VIOLATION;
+    kt.QuadPart = (LONGLONG)(ktime_get_real_ns() / 100) + NT_UNIX_EPOCH_100NS;
+    if (copy_to_user(SystemTime, &kt, sizeof(kt))) return STATUS_ACCESS_VIOLATION;
     return STATUS_SUCCESS;
 }
 NTSTATUS nt_svc_NtQueryMutant(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
