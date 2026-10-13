@@ -202,7 +202,9 @@ struct nt_vad {
 #ifdef __KERNEL__
 #ifndef KSHIM_SECTION_BACKING_DEFINED
 #define KSHIM_SECTION_BACKING_DEFINED
-struct kshim_section_backing { int fd; size_t size; void *mem; };
+/* Kernel backing: a file section holds a struct file reference in file (taken
+ * with get_file, dropped in nt_section_delete). fd is unused in the kernel. */
+struct kshim_section_backing { int fd; size_t size; void *mem; struct file *file; };
 #endif
 #endif
 

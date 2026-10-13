@@ -150,7 +150,6 @@ struct kstat {
     unsigned long nlink;
 };
 struct dentry { int dummy; };
-static inline char *kstrdup(const char *s, int flags) { (void)flags; return strdup(s); }
 
 struct file *kshim_filp_open(const char *path, int flags, mode_t mode);
 void kshim_filp_close(struct file *f);
@@ -215,6 +214,9 @@ void kshim_madvise_free(void *addr, size_t size);
 int kshim_section_create(struct kshim_section_backing *b, size_t size);
 int kshim_section_create_file(struct kshim_section_backing *b, const char *path, size_t *size);
 void *kshim_section_map(struct kshim_section_backing *b, void *addr, size_t offset, size_t size, int prot, int cow);
+/* File-backed view: copies the file bytes at offset into the view. Shared writes
+ * are written back by mm.c (flush and unmap), so the view is not a live mapping. */
+void *kshim_section_map_file(struct kshim_section_backing *b, void *addr, size_t offset, size_t size, int prot, int cow);
 void kshim_install_guard_handler(void);
 int kshim_handle_guard_fault(void *addr);
 
@@ -275,6 +277,18 @@ static inline void kfree(const void *p) { free((void*)p); }
 #endif
 
 #endif /* __KERNEL__ else */
+
+/* kstrdup allocates through kmalloc, so the tagged leak counter sees both the
+ * allocation and the kfree that releases it. A strdup here was never counted,
+ * and every kfree of it drove the counter negative. */
+static inline char *kstrdup(const char *s, int flags) {
+    size_t n = strlen(s) + 1;
+    char *d;
+    (void)flags;
+    d = kmalloc(n, flags);
+    if (d) memcpy(d, s, n);
+    return d;
+}
 
 /* Per-call diagnostic tracing, off by default. Build with -DNT_DEBUG_TRACE to
  * restore the old unconditional prints: same message text, same log levels.

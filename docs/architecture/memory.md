@@ -14,7 +14,7 @@ flowchart LR
     MM["nt_mm<br/>vad_root in kernel builds<br/>vad_head list in host shim"] --> V1["nt_vad<br/>start, end, state, protect<br/>alloc_base, type, guard"]
     V1 --> V2["nt_vad next run"]
     V1 -->|"MEM_MAPPED or MEM_IMAGE view"| SEC["nt_section<br/>size, attributes, is_file"]
-    SEC --> KB["kshim_section_backing<br/>fd, size, mem"]
+    SEC --> KB["kshim_section_backing<br/>fd, size, mem, file"]
     MM --> LOCK["ntmm_lock<br/>spinlock or rw_semaphore"]
 ```
 
@@ -75,10 +75,13 @@ record. It does not set a flag on the VAD.
 
 ```mermaid
 flowchart TD
-    CS["NtCreateSection<br/>FileHandle must be NULL"] --> FH{"FileHandle set?"}
-    FH -->|yes| NI["STATUS_NOT_IMPLEMENTED<br/>file-backed sections are not built"]
+    CS["NtCreateSection"] --> SI{"SEC_IMAGE?"}
+    SI -->|yes| NI["STATUS_NOT_IMPLEMENTED<br/>image sections are not built"]
+    SI -->|no| FH{"FileHandle set?"}
+    FH -->|yes| FS["file object: access check, size checks<br/>host dup fd, or kernel struct file reference"]
     FH -->|no| SZ["ObCreateObject Section<br/>kshim_section_create anonymous backing"]
-    SZ --> HD["SectionHandle = handle-table index<br/>ObInsertObject, not a pointer"]
+    FS --> HD["SectionHandle = handle-table index<br/>ObInsertObject, not a pointer"]
+    SZ --> HD
     HD --> MV["NtMapViewOfSection<br/>ObReferenceObjectByHandle type and access check"]
     MV --> OF["check offset alignment and view size"]
     OF --> VAD["lock, pick base, nt_vad_new as MEM_MAPPED view, VAD takes a section reference"]
@@ -91,13 +94,28 @@ flowchart TD
   for `PAGE_READWRITE` and `SECTION_MAP_EXECUTE` for the execute protections.
 - The section lives while it has a handle or a view. Each VAD that maps a view
   holds one object reference, dropped by `nt_vad_free`.
-- File-backed sections return `STATUS_NOT_IMPLEMENTED`. A comment in the code
-  says a lookup of the file handle is missing, so the section would be zeroed
-  memory, not the file.
-- `NtMapViewOfSection` checks the offset alignment (64 KiB for `SEC_IMAGE`, 4 KiB
-  otherwise), then records a view VAD under the lock before it calls
-  `kshim_section_map`. The mapping itself is done outside the lock. `NtCreateSection`
-  refuses `SEC_IMAGE`, so only the 4 KiB rule is reachable in this tree (`mm.c:1745`, `:1780`).
+- File-backed data sections (`SEC_COMMIT` with a `FileHandle`) are built. The
+  handle must be an open file object with `FILE_WRITE_DATA` (for a shared
+  read-write section) or `FILE_READ_DATA`. The default size is the file size.
+  An empty file is `STATUS_MAPPED_FILE_SIZE_ZERO`. A read-only or copy-on-write
+  section larger than its file is `STATUS_SECTION_TOO_BIG`. A read-write one
+  extends the file. `NtQuerySection` reports `SEC_FILE`.
+- The section takes its own reference to the file data, so the file handle can
+  close while views exist. In the kernel build that is a `struct file`
+  reference (`get_file`, dropped in `nt_section_delete`), and views are made with
+  `vm_mmap`, so shared views share the page cache. On the host the section dups
+  the fd. The Windows mmap shim cannot map a file, so each host view is a copy
+  filled at map time (`kshim_section_map_file`).
+- On the host a shared writable view is written back to its file on
+  `NtFlushVirtualMemory` and on `NtUnmapViewOfSection`. Copy-on-write and
+  read-only views are not written back. Two views of one section are not
+  coherent on the host until a flush, the same as anonymous sections there.
+- `NtMapViewOfSection` checks the offset alignment (64 KiB for file sections and
+  `SEC_IMAGE`, 4 KiB for anonymous ones), then records a view VAD under the lock
+  before it calls `kshim_section_map` or `kshim_section_map_file`. The mapping
+  itself is done outside the lock. A shared writable view needs a writable
+  section (`STATUS_SECTION_PROTECTION`). `NtCreateSection` refuses `SEC_IMAGE`
+  (`mm.c:1894`), so the image branch is not reachable in this tree.
 - `NtUnmapViewOfSection` takes the base, which must be the VAD's `alloc_base`,
   removes the view VAD and unmaps the range.
 

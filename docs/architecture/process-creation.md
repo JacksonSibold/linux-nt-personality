@@ -1,6 +1,6 @@
 # Process creation
 
-Status: design note, 2026-10-12. Nothing in this document is implemented. It
+Status: design note, 2026-10-12. Nothing in the process-creation plan is implemented. Prerequisite P1 is partly done: file-backed data sections are built, and `SEC_IMAGE` is not. It
 describes the code as it is, what `NtCreateUserProcess` would need on top of
 it, three implementation options, and a plan. The decision is recorded in
 [0037](../decisions/0037-process-creation.md), which is open.
@@ -18,7 +18,7 @@ it, three implementation options, and a plan. The decision is recorded in
 - The userspace shim has an eprocess-only `NtCreateProcessEx`, and its
   `NtCreateUserProcess` builds a thread on a dummy entry address. Neither
   creates a PE image. Neither is a model for the kernel path.
-- The main blockers are: no file-backed or `SEC_IMAGE` sections, one global
+- The main blockers are: no `SEC_IMAGE` sections (file-backed data sections are built, see P1), one global
   address space and VAD table, one global file-handle table, an empty
   `ProcessParameters`, and a process object that is created lazily for the
   first task.
@@ -129,9 +129,9 @@ creates the process and its initial thread, both suspended. The steps and
 what each needs in this repo:
 
 1. **Image source.** Windows passes a section handle that was created from the
-   file (`SEC_IMAGE`). Here `NtCreateSection` refuses a non-NULL `FileHandle`
-   (`src/kernel/nt/mm.c:1742`, `STATUS_NOT_IMPLEMENTED`) and refuses
-   `SEC_IMAGE` (`mm.c:1745`). Without this, the only image source is a path
+   file (`SEC_IMAGE`). Here `NtCreateSection` builds file-backed data sections
+   (`src/kernel/nt/mm.c:1817`), but still refuses `SEC_IMAGE` with
+   `STATUS_NOT_IMPLEMENTED` (`mm.c:1894`). Without this, the only image source is a path
    that `binfmt_pe` reads itself. See prerequisite P1.
 2. **Child task.** Two ways to create a new task that runs a PE:
    - *Clone then exec.* Create a task with a new mm, then run the PE loader in
@@ -279,16 +279,17 @@ the `kshim` model) or in the VM (`vm/` scripts that run `/tests_kernel/*.exe`).
 | M3 | Suspended start: the child's initial thread is created blocked, and `NtResumeThread` releases it. | VM: a parent checks that the child has not run (for example, it writes a file only after resume). |
 | M4 | Handle and token inheritance from the attribute list, with `ObInheritHandles` gated by the caller's list. | Host: `handle.c` inheritance test with an explicit list. VM: a handle created by the parent is usable in the child at the same value. |
 | M5 | `NtCreateUserProcess` wrapper over M2 to M4, path-based only. Returns `STATUS_INVALID_PARAMETER` for a file-handle image source. `CreateProcessW` calls it. | Host: argument validation. VM: `CreateProcessW` on a PE path. |
-| M6 | File-backed `SEC_IMAGE` sections (P1). Add a file-handle image source to `NtCreateUserProcess`. | Host: section creation and mapping with a file. VM: `NtCreateUserProcess` from a file handle. |
+| M6 | `SEC_IMAGE` sections (P1; file-backed data sections are done). Add a file-handle image source to `NtCreateUserProcess`. | Host: section creation and mapping with a file. VM: `NtCreateUserProcess` from a file handle. |
 | M7 | Remove the shim's dummy-address use of `NtCreateUserProcess`, and the eprocess-only path, once the kernel path covers them. | Shim build: existing tests pass, and the dummy address no longer appears. |
 
 ## 7. Prerequisites in this repo
 
 Each prerequisite lists the findings or decisions that already cover it.
 
-- **P1. File-backed and `SEC_IMAGE` sections.** `NtCreateSection` refuses
-  `FileHandle` (`src/kernel/nt/mm.c:1742`) and `SEC_IMAGE` (`mm.c:1745`). See
-  [memory.md](memory.md) (file-backed sections are not built) and
+- **P1. File-backed and `SEC_IMAGE` sections.** File-backed data sections
+  (`SEC_COMMIT` with a `FileHandle`) are built (`mm.c:1817`), with access checks,
+  size rules, and write-back on the host shim. `SEC_IMAGE` is still refused
+  (`mm.c:1894`). See [memory.md](memory.md) and
   [mm.md](../modules/mm.md). Related: [0004](../decisions/0004-section-object-lifetime.md)
   (section object lifetime, open), [0011](../decisions/0011-kernel-wx-sections.md)
   (sections mapped writable and executable, blocked), and

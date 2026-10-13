@@ -683,6 +683,25 @@ void ntio_file_put(struct nt_file_object *file)
 		kref_put(&file->ref, ntio_file_release);
 }
 
+/* File-backed sections: the file's size, and growing it for a read-write
+ * section that is larger than the file. */
+NTSTATUS ntio_file_section_size(struct nt_file_object *file, LONGLONG *size)
+{
+	struct kstat st;
+
+	if (kshim_vfs_getattr(file->filp, &st) != 0)
+		return STATUS_UNSUCCESSFUL;
+	*size = (LONGLONG)st.size;
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS ntio_file_section_extend(struct nt_file_object *file, LONGLONG size)
+{
+	if (kshim_vfs_truncate(file->filp, size) != 0)
+		return STATUS_UNSUCCESSFUL;
+	return STATUS_SUCCESS;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Share-access registry                                                        */
 /* -------------------------------------------------------------------------- */
