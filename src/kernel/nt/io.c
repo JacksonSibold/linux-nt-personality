@@ -2692,6 +2692,7 @@ static NTSTATUS ntio_set_rename(struct nt_file_object *file,
 	if (ri->RootDirectory) {
 		struct nt_file_object *root = ntio_handle_lookup(ri->RootDirectory, 0);
 		char rel[PATH_MAX];
+		const char *rel_part;
 		int n = -1;
 		/* ntio_handle_lookup takes a reference: drop it on every path. */
 		if (!root)
@@ -2701,12 +2702,27 @@ static NTSTATUS ntio_set_rename(struct nt_file_object *file,
 			return STATUS_INVALID_HANDLE;
 		}
 		status = kshim_ntpath_to_linux(&uname, rel, sizeof(rel));
-		if (NT_SUCCESS(status))
-			n = snprintf(newpath, sizeof(newpath), "%s/%s",
-				     root->linux_path, rel);
-		ntio_file_put(root);
-		if (!NT_SUCCESS(status))
+		if (!NT_SUCCESS(status)) {
+			ntio_file_put(root);
 			return status;
+		}
+		/* kshim_ntpath_to_linux resolves the name against the scratch root,
+		 * as for an absolute name. Strip that prefix so the name is relative
+		 * to the RootDirectory path, as NtCreateFile does (ntio create path). */
+		rel_part = rel;
+		if (strncmp(rel, g_kshim_root, strlen(g_kshim_root)) == 0) {
+			rel_part = rel + strlen(g_kshim_root);
+			if (*rel_part == '/')
+				rel_part++;
+		}
+		if (*rel_part == '\0') {
+			/* A rename cannot target the RootDirectory itself. */
+			ntio_file_put(root);
+			return STATUS_OBJECT_NAME_INVALID;
+		}
+		n = snprintf(newpath, sizeof(newpath), "%s/%s",
+			     root->linux_path, rel_part);
+		ntio_file_put(root);
 		if (n < 0 || (size_t)n >= sizeof(newpath))
 			return STATUS_NAME_TOO_LONG;
 	} else {

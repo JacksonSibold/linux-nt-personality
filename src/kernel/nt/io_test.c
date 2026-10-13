@@ -1219,10 +1219,9 @@ TEST(rename_root_directory_releases_ref)
 				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 				     FILE_OPEN, FILE_NON_DIRECTORY_FILE |
 				     FILE_SYNCHRONOUS_IO_NONALERT, &hf), STATUS_SUCCESS);
-	/* The status is not checked: a RootDirectory name is joined to the root
-	 * path by kshim_ntpath_to_linux, which treats it as absolute, so this
-	 * rename fails on the host. That is a separate defect (see the audit
-	 * notes). The reference is taken before any of that, and must go. */
+	/* The status is not checked here; rename_relative_to_root_directory
+	 * checks it. The reference is taken before the name is resolved, and
+	 * must be released on every path. */
 	rlen = make_rename_buf(rbuf, sizeof(rbuf), 0, 0, false, "rr_moved.txt");
 	ri->RootDirectory = hd;
 	(void)nt_svc_NtSetInformationFile(hf, &iosb, rbuf, rlen, FileRenameInformation);
@@ -1232,6 +1231,39 @@ TEST(rename_root_directory_releases_ref)
 	 * access granted, so an open that allows no sharing would conflict. */
 	ASSERT_STATUS(open_test_file("rr_dir", FILE_GENERIC_READ, 0, FILE_OPEN,
 				     FILE_DIRECTORY_FILE, &hd), STATUS_SUCCESS);
+	nt_svc_NtClose(hd);
+	PASS();
+}
+
+/* A rename whose name is relative to RootDirectory lands inside that
+ * directory, as NtCreateFile does. The target is dir/moved.txt, not a path
+ * under the scratch root. */
+TEST(rename_relative_to_root_directory)
+{
+	HANDLE hd = NULL, hf = NULL;
+	IO_STATUS_BLOCK iosb;
+	unsigned char rbuf[sizeof(FILE_RENAME_INFORMATION_EX) + 2 * PATH_MAX];
+	PFILE_RENAME_INFORMATION ri = (PFILE_RENAME_INFORMATION)rbuf;
+	ULONG rlen;
+
+	reset_state();
+	create_dir_at("rel_dir");
+	ASSERT(write_file_at("rel_src.txt", "x"));
+	ASSERT_STATUS(open_test_file("rel_dir", FILE_GENERIC_READ, FILE_SHARE_READ |
+				     FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+				     FILE_DIRECTORY_FILE, &hd), STATUS_SUCCESS);
+	ASSERT_STATUS(open_test_file("rel_src.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE |
+				     FILE_SYNCHRONOUS_IO_NONALERT, &hf), STATUS_SUCCESS);
+	rlen = make_rename_buf(rbuf, sizeof(rbuf), 0, 0, false, "moved.txt");
+	ri->RootDirectory = hd;
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(hf, &iosb, rbuf, rlen,
+						  FileRenameInformation), STATUS_SUCCESS);
+	ASSERT(file_exists_at("rel_dir/moved.txt"));
+	ASSERT(!file_exists_at("rel_src.txt"));
+	ASSERT(!file_exists_at("moved.txt"));
+	nt_svc_NtClose(hf);
 	nt_svc_NtClose(hd);
 	PASS();
 }
@@ -2060,6 +2092,7 @@ int main(void)
 	RUN(query_info_classes);
 	RUN(rename_name_length_bounded);
 	RUN(rename_root_directory_releases_ref);
+	RUN(rename_relative_to_root_directory);
 	RUN(set_info_classes);
 	RUN(device_fs_control_unsupported);
 	RUN(ea_unsupported);
