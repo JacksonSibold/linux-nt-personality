@@ -151,6 +151,7 @@ expected_objects=(
   "sync.o"
   "security.o"
   "job.o"
+  "debugobj.o"
   "nt_obj.o"
   "nt_io.o"
   "ntstatus_kernel.o"
