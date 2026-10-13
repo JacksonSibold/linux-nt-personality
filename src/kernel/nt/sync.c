@@ -2686,6 +2686,19 @@ extern struct nt_object_type nt_event_type, nt_mutant_type, nt_semaphore_type;
 
 /* Signal one object, then wait on another. Both handles are resolved first so that a
  * bad handle fails before anything is signalled. */
+/* Access rights (NT values). The signal handle needs the modify right of its type, the
+ * wait handle needs SYNCHRONIZE. */
+#define SYNC_SYNCHRONIZE            0x00100000UL
+#define SYNC_EVENT_MODIFY_STATE     0x0002UL
+#define SYNC_MUTANT_MODIFY_STATE    0x0001UL
+#define SYNC_SEMAPHORE_MODIFY_STATE 0x0002UL
+
+/* Same test as ObReferenceObjectByHandle's desired-access check. */
+static bool sync_rights_ok(ACCESS_MASK granted, ACCESS_MASK desired)
+{
+    return (desired & ~granted) == 0;
+}
+
 NTSTATUS nt_svc_NtSignalAndWaitForSingleObject(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
                                                ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
                                                ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
@@ -2705,9 +2718,10 @@ NTSTATUS nt_svc_NtSignalAndWaitForSingleObject(ULONG_PTR a0, ULONG_PTR a1, ULONG
         p_timeout = &k_timeout;
     }
     struct nt_object_header *sig_hdr = NULL, *wait_hdr = NULL;
-    NTSTATUS st = ObReferenceObjectByHandle(proc, SignalHandle, NULL, UserMode, 0, &sig_hdr, NULL);
+    ACCESS_MASK sig_granted = 0, wait_granted = 0, sig_desired = 0;
+    NTSTATUS st = ObReferenceObjectByHandle(proc, SignalHandle, NULL, UserMode, 0, &sig_hdr, &sig_granted);
     if (!NT_SUCCESS(st)) return st;
-    st = ObReferenceObjectByHandle(proc, WaitHandle, NULL, UserMode, 0, &wait_hdr, NULL);
+    st = ObReferenceObjectByHandle(proc, WaitHandle, NULL, UserMode, 0, &wait_hdr, &wait_granted);
     if (!NT_SUCCESS(st)) { ObDereferenceObject(sig_hdr); return st; }
     if (sig_hdr->type != &nt_event_type && sig_hdr->type != &nt_mutant_type &&
         sig_hdr->type != &nt_semaphore_type) {
@@ -2715,6 +2729,15 @@ NTSTATUS nt_svc_NtSignalAndWaitForSingleObject(ULONG_PTR a0, ULONG_PTR a1, ULONG
     } else if (wait_hdr->type != &nt_event_type && wait_hdr->type != &nt_mutant_type &&
                wait_hdr->type != &nt_semaphore_type && wait_hdr->type != &nt_timer_type) {
         st = STATUS_OBJECT_TYPE_MISMATCH;
+    }
+    /* Refuse before anything is signalled, so a missing right changes no state. */
+    if (NT_SUCCESS(st)) {
+        if (sig_hdr->type == &nt_event_type) sig_desired = SYNC_EVENT_MODIFY_STATE;
+        else if (sig_hdr->type == &nt_mutant_type) sig_desired = SYNC_MUTANT_MODIFY_STATE;
+        else sig_desired = SYNC_SEMAPHORE_MODIFY_STATE;
+        if (!sync_rights_ok(sig_granted, sig_desired) ||
+            !sync_rights_ok(wait_granted, SYNC_SYNCHRONIZE))
+            st = STATUS_ACCESS_DENIED;
     }
     if (NT_SUCCESS(st)) {
         LONG prev = 0;

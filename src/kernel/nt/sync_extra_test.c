@@ -376,6 +376,24 @@ TEST(signal_and_wait_bad_objects) {
     PASS();
 }
 
+/* Rights: the signalled handle needs EVENT_MODIFY_STATE and the wait handle needs
+ * SYNCHRONIZE. A handle without the right is refused before anything is signalled. */
+#define T_SYNCHRONIZE 0x00100000UL
+#define T_EVENT_MODIFY_STATE 0x0002UL
+TEST(signal_and_wait_checks_rights) {
+    reset_ob();
+    HANDLE sync_only = NULL, modify_only = NULL, full = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&sync_only, T_SYNCHRONIZE, NULL, SynchronizationEvent, 0), STATUS_SUCCESS);
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&modify_only, T_EVENT_MODIFY_STATE, NULL, SynchronizationEvent, 0), STATUS_SUCCESS);
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&full, 0x1F0003, NULL, SynchronizationEvent, 1), STATUS_SUCCESS);
+    LARGE_INTEGER to = rel100(100);
+    /* Signalling needs EVENT_MODIFY_STATE: SYNCHRONIZE alone is refused. */
+    ASSERT_STATUS(t_signal_and_wait(sync_only, full, 0, &to), STATUS_ACCESS_DENIED);
+    /* Waiting needs SYNCHRONIZE: EVENT_MODIFY_STATE alone is refused. */
+    ASSERT_STATUS(t_signal_and_wait(full, modify_only, 0, &to), STATUS_ACCESS_DENIED);
+    PASS();
+}
+
 /* ------------------------------------------------------------------ */
 /* Keyed events                                                         */
 /* ------------------------------------------------------------------ */
@@ -632,6 +650,7 @@ int main(void) {
     RUN(signal_and_wait_event_pair);
     RUN(signal_and_wait_mutant_release);
     RUN(signal_and_wait_bad_objects);
+    RUN(signal_and_wait_checks_rights);
     RUN(keyed_create_and_open);
     RUN(keyed_wait_times_out);
     RUN(keyed_release_wakes_waiter);
