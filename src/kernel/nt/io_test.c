@@ -14,6 +14,7 @@
 
 #include "io.h"
 #include "iocp.h"
+#include "sync.h"
 #include "object.h"
 
 #pragma GCC diagnostic ignored "-Wformat-truncation"
@@ -1218,10 +1219,9 @@ TEST(rename_root_directory_releases_ref)
 				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 				     FILE_OPEN, FILE_NON_DIRECTORY_FILE |
 				     FILE_SYNCHRONOUS_IO_NONALERT, &hf), STATUS_SUCCESS);
-	/* The status is not checked: a RootDirectory name is joined to the root
-	 * path by kshim_ntpath_to_linux, which treats it as absolute, so this
-	 * rename fails on the host. That is a separate defect (see the audit
-	 * notes). The reference is taken before any of that, and must go. */
+	/* The status is not checked here; rename_relative_to_root_directory
+	 * checks it. The reference is taken before the name is resolved, and
+	 * must be released on every path. */
 	rlen = make_rename_buf(rbuf, sizeof(rbuf), 0, 0, false, "rr_moved.txt");
 	ri->RootDirectory = hd;
 	(void)nt_svc_NtSetInformationFile(hf, &iosb, rbuf, rlen, FileRenameInformation);
@@ -1231,6 +1231,39 @@ TEST(rename_root_directory_releases_ref)
 	 * access granted, so an open that allows no sharing would conflict. */
 	ASSERT_STATUS(open_test_file("rr_dir", FILE_GENERIC_READ, 0, FILE_OPEN,
 				     FILE_DIRECTORY_FILE, &hd), STATUS_SUCCESS);
+	nt_svc_NtClose(hd);
+	PASS();
+}
+
+/* A rename whose name is relative to RootDirectory lands inside that
+ * directory, as NtCreateFile does. The target is dir/moved.txt, not a path
+ * under the scratch root. */
+TEST(rename_relative_to_root_directory)
+{
+	HANDLE hd = NULL, hf = NULL;
+	IO_STATUS_BLOCK iosb;
+	unsigned char rbuf[sizeof(FILE_RENAME_INFORMATION_EX) + 2 * PATH_MAX];
+	PFILE_RENAME_INFORMATION ri = (PFILE_RENAME_INFORMATION)rbuf;
+	ULONG rlen;
+
+	reset_state();
+	create_dir_at("rel_dir");
+	ASSERT(write_file_at("rel_src.txt", "x"));
+	ASSERT_STATUS(open_test_file("rel_dir", FILE_GENERIC_READ, FILE_SHARE_READ |
+				     FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+				     FILE_DIRECTORY_FILE, &hd), STATUS_SUCCESS);
+	ASSERT_STATUS(open_test_file("rel_src.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE |
+				     FILE_SYNCHRONOUS_IO_NONALERT, &hf), STATUS_SUCCESS);
+	rlen = make_rename_buf(rbuf, sizeof(rbuf), 0, 0, false, "moved.txt");
+	ri->RootDirectory = hd;
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(hf, &iosb, rbuf, rlen,
+						  FileRenameInformation), STATUS_SUCCESS);
+	ASSERT(file_exists_at("rel_dir/moved.txt"));
+	ASSERT(!file_exists_at("rel_src.txt"));
+	ASSERT(!file_exists_at("moved.txt"));
+	nt_svc_NtClose(hf);
 	nt_svc_NtClose(hd);
 	PASS();
 }
@@ -1542,6 +1575,41 @@ TEST(delete_and_full_attributes)
 
 /* Byte-range locks: conflicts between open handles, shared and exclusive
  * rules, read/write enforcement, exact-match unlock, and release on close. */
+/* A read whose end passes LLONG_MAX must still see a lock that covers the
+ * part of it below LLONG_MAX. The range end is saturated, not wrapped. */
+TEST(lock_conflict_near_offset_limit)
+{
+	HANDLE h1 = NULL, h2 = NULL;
+	IO_STATUS_BLOCK iosb;
+	LARGE_INTEGER off, len;
+	char data[16], buf[16];
+	LONGLONG top = (LONGLONG)(~0ULL >> 1);
+
+	reset_state();
+	memset(data, 'a', sizeof(data));
+	ASSERT(write_file_at("lock_top.txt", data));
+	ASSERT_STATUS(open_test_file("lock_top.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h1),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(open_test_file("lock_top.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h2),
+		      STATUS_SUCCESS);
+	/* h1 locks [top-16, top-1) exclusively. */
+	off.QuadPart = top - 16;
+	len.QuadPart = 15;
+	ASSERT_STATUS(nt_svc_NtLockFile(h1, NULL, NULL, NULL, &iosb, &off, &len,
+					7, 1, 1), STATUS_SUCCESS);
+	/* h2 reads [top-8, top+8): it overlaps the lock, so it is refused. */
+	off.QuadPart = top - 8;
+	ASSERT_STATUS(nt_svc_NtReadFile(h2, NULL, NULL, NULL, &iosb, buf, 16,
+					&off, NULL), STATUS_FILE_LOCK_CONFLICT);
+	nt_svc_NtClose(h2);
+	nt_svc_NtClose(h1);
+	PASS();
+}
+
 TEST(byte_range_locks)
 {
 	HANDLE h1 = NULL, h2 = NULL;
@@ -1690,6 +1758,79 @@ static bool dir_has(char names[][64], int n, const char *want)
 
 /* Directory enumeration: classes, patterns, restart, single entry, and the
  * buffer and handle error paths. */
+/* True if a FILE_NAMES_INFORMATION chain in buf has an entry whose name is
+ * exactly want (NUL-terminated UTF-16). */
+static bool names_has_wide(const unsigned char *buf, ULONG len, const WCHAR *want)
+{
+	size_t wl = 0;
+	ULONG off = 0;
+
+	while (want[wl])
+		wl++;
+	while (off + offsetof(FILE_NAMES_INFORMATION, FileName) <= len) {
+		const FILE_NAMES_INFORMATION *e = (const FILE_NAMES_INFORMATION *)(buf + off);
+
+		if (e->FileNameLength == wl * sizeof(WCHAR) &&
+		    memcmp(e->FileName, want, wl * sizeof(WCHAR)) == 0)
+			return true;
+		if (!e->NextEntryOffset)
+			break;
+		off += e->NextEntryOffset;
+	}
+	return false;
+}
+
+/* A host name is UTF-8. A non-ASCII name must come out as the UTF-16 code
+ * units of the same characters, not one unit per byte. */
+TEST(query_directory_utf8_name)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	static unsigned char buf[8192];
+	static const WCHAR want[] = { 'c', 'a', 'f', 0x00E9, '.', 't', 'x', 't', 0 };
+
+	reset_state();
+	create_dir_at("u8dir");
+	ASSERT(write_file_at("u8dir/caf\xC3\xA9.txt", "1"));
+	ASSERT_STATUS(open_test_file("u8dir", FILE_GENERIC_READ,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+						  sizeof(buf), FileNamesInformation,
+						  0, NULL, 1),
+		      STATUS_SUCCESS);
+	ASSERT(names_has_wide(buf, (ULONG)iosb.Information, want));
+	nt_svc_NtClose(h);
+	PASS();
+}
+
+/* A directory handle whose path has become a file reports
+ * STATUS_NOT_A_DIRECTORY from the listing, not STATUS_ACCESS_DENIED. */
+TEST(query_directory_replaced_by_file)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	static unsigned char buf[8192];
+	char full[PATH_MAX];
+
+	reset_state();
+	create_dir_at("rp_dir");
+	ASSERT_STATUS(open_test_file("rp_dir", FILE_GENERIC_READ,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+	snprintf(full, sizeof(full), "%s/%s", g_test_root, "rp_dir");
+	ASSERT(rmdir(full) == 0);
+	ASSERT(write_file_at("rp_dir", "x"));
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+						  sizeof(buf), FileNamesInformation,
+						  0, NULL, 1),
+		      STATUS_NOT_A_DIRECTORY);
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 TEST(query_directory_scan)
 {
 	HANDLE h = NULL;
@@ -2011,20 +2152,24 @@ TEST(iocp_query_depth)
 TEST(alert_consumed_once)
 {
 	struct nt_ethread thr;
+	struct nt_thread *synct = NULL;
 	NTSTATUS first, plain, second;
 	bool still_set;
 
 	memset(&thr, 0, sizeof(thr));
 	spin_lock_init(&thr.lock);
+	ASSERT_STATUS(nt_thread_create(&synct), STATUS_SUCCESS);
+	thr.sync_thread = synct;
 	kshim_set_current_thread(&thr);
 
 	plain = nt_svc_NtTestAlert();
-	thr.alerted = true;
+	nt_thread_alert(synct);
 	first = nt_svc_NtTestAlert();
 	second = nt_svc_NtTestAlert();
-	still_set = thr.alerted;
+	still_set = nt_thread_alert_pending(synct);
 
 	kshim_set_current_thread(NULL);
+	nt_thread_destroy(synct);
 
 	ASSERT_STATUS(plain, STATUS_SUCCESS);
 	ASSERT_STATUS(first, STATUS_ALERTED);
@@ -2055,6 +2200,7 @@ int main(void)
 	RUN(query_info_classes);
 	RUN(rename_name_length_bounded);
 	RUN(rename_root_directory_releases_ref);
+	RUN(rename_relative_to_root_directory);
 	RUN(set_info_classes);
 	RUN(device_fs_control_unsupported);
 	RUN(ea_unsupported);
@@ -2062,7 +2208,10 @@ int main(void)
 	RUN(cancel_io_no_pending);
 	RUN(delete_and_full_attributes);
 	RUN(byte_range_locks);
+	RUN(lock_conflict_near_offset_limit);
 	RUN(query_directory_scan);
+	RUN(query_directory_utf8_name);
+	RUN(query_directory_replaced_by_file);
 	RUN(query_volume_device);
 	RUN(set_volume_unsupported);
 	RUN(iocp_open_by_name);

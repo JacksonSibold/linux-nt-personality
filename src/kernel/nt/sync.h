@@ -104,6 +104,11 @@ void     nt_thread_destroy(struct nt_thread *t);
 void     nt_thread_alert(struct nt_thread *t);
 void     nt_thread_queue_apc(struct nt_thread *t);
 void     nt_thread_clear_alert(struct nt_thread *t);
+/* Alert state as an alertable wait sees it. nt_thread_alert_pending only
+ * reads; nt_thread_consume_alert reads and clears (NT: the alert is used up
+ * by the wait or NtTestAlert that reports it). */
+bool     nt_thread_alert_pending(struct nt_thread *t);
+bool     nt_thread_consume_alert(struct nt_thread *t);
 
 /* ------------------------------------------------------------------ */
 /* Dispatcher object model                                              */

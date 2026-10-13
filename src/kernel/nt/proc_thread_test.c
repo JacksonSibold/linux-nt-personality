@@ -480,8 +480,11 @@ static void test_alert_resume_thread(void){
     setup_proc();
     struct nt_eprocess *proc=kshim_current_process();
     struct nt_ethread *cur=kshim_current_thread();
+    struct nt_thread *cursync=NULL;
     HANDLE th=NULL; ULONG prev=99;
     NTSTATUS s;
+    ASSERT(nt_thread_create(&cursync)==STATUS_SUCCESS);
+    cur->sync_thread=cursync;
     /* Open a second thread object to act on (current thread is a pseudo handle) */
     CLIENT_ID cid; cid.UniqueProcess=0; cid.UniqueThread=(HANDLE)(ULONG_PTR)cur->tid;
     s=nt_svc_NtOpenThread(&th,0,NULL,&cid);
@@ -494,19 +497,19 @@ static void test_alert_resume_thread(void){
     s=nt_svc_NtAlertResumeThread(th,&prev);
     ASSERT(s==STATUS_SUCCESS && prev==1);
     ASSERT(atomic_load(&cur->suspend_count)==0);
-    ASSERT(cur->alerted);
+    ASSERT(nt_thread_alert_pending(cur->sync_thread));
     /* Alerting a running thread still alerts it; previous count is 0 */
-    cur->alerted=false;
+    ASSERT(nt_thread_consume_alert(cur->sync_thread));
     prev=99;
     s=nt_svc_NtAlertResumeThread(th,&prev);
     ASSERT(s==STATUS_SUCCESS && prev==0);
-    ASSERT(cur->alerted);
+    ASSERT(nt_thread_alert_pending(cur->sync_thread));
     /* NtAlertThread alerts without touching the suspend count */
-    cur->alerted=false;
+    ASSERT(nt_thread_consume_alert(cur->sync_thread));
     s=nt_svc_NtAlertThread(th);
-    ASSERT(s==STATUS_SUCCESS && cur->alerted);
+    ASSERT(s==STATUS_SUCCESS && nt_thread_alert_pending(cur->sync_thread));
     ASSERT(atomic_load(&cur->suspend_count)==0);
-    cur->alerted=false;
+    ASSERT(nt_thread_consume_alert(cur->sync_thread));
     /* Terminated thread refuses alert and alert-resume */
     pthread_mutex_lock(&cur->lock); cur->terminated=true; pthread_mutex_unlock(&cur->lock);
     ASSERT(nt_svc_NtAlertThread(th)==STATUS_THREAD_IS_TERMINATING);
@@ -516,6 +519,42 @@ static void test_alert_resume_thread(void){
     ASSERT(nt_svc_NtAlertResumeThread(th,NULL)==STATUS_SUCCESS);
     ASSERT(nt_svc_NtAlertResumeThread((HANDLE)(ULONG_PTR)0x1234,&prev)==STATUS_INVALID_HANDLE);
     ObCloseHandle(proc,th);
+    cur->sync_thread=NULL;
+    nt_thread_destroy(cursync);
+    PASS();
+}
+
+/* ---- An alert satisfies an alertable wait (NT: KTHREAD.Alerted). An
+ * alertable wait returns STATUS_ALERTED and consumes the alert; a
+ * non-alertable wait ignores it. ---- */
+NTSTATUS nt_svc_NtCreateEvent(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG, BOOLEAN);
+static void test_alert_satisfies_alertable_wait(void){
+    setup_proc();
+    struct nt_eprocess *proc=kshim_current_process();
+    struct nt_thread *synct=NULL;
+    ASSERT(nt_thread_create(&synct)==STATUS_SUCCESS);
+    nt_set_current_thread(synct);
+    kshim_current_thread()->sync_thread=synct;
+    HANDLE ev=NULL;
+    ASSERT(nt_svc_NtCreateEvent(&ev,0x1F0003,NULL,NotificationEvent,0)==STATUS_SUCCESS);
+    LARGE_INTEGER zero; zero.QuadPart=0;
+    ASSERT(nt_svc_NtAlertThread(NtCurrentThread())==STATUS_SUCCESS);
+    /* Non-alertable wait on an unsignalled event: times out, alert kept */
+    ASSERT(nt_svc_NtWaitForSingleObject(ev,FALSE,&zero)==STATUS_TIMEOUT);
+    /* Alertable wait: the alert satisfies it and is consumed */
+    ASSERT(nt_svc_NtWaitForSingleObject(ev,TRUE,&zero)==STATUS_ALERTED);
+    ASSERT(nt_svc_NtWaitForSingleObject(ev,TRUE,&zero)==STATUS_TIMEOUT);
+    /* NtAlertResumeThread on the current thread also satisfies it */
+    HANDLE cur=NULL; ULONG prev=0;
+    CLIENT_ID cid; cid.UniqueProcess=0; cid.UniqueThread=(HANDLE)(ULONG_PTR)kshim_current_thread()->tid;
+    ASSERT(nt_svc_NtOpenThread(&cur,0,NULL,&cid)==STATUS_SUCCESS);
+    ASSERT(nt_svc_NtAlertResumeThread(cur,&prev)==STATUS_SUCCESS);
+    ASSERT(nt_svc_NtWaitForSingleObject(ev,TRUE,&zero)==STATUS_ALERTED);
+    ObCloseHandle(proc,cur);
+    ObCloseHandle(proc,ev);
+    kshim_current_thread()->sync_thread=NULL;
+    nt_set_current_thread(NULL);
+    nt_thread_destroy(synct);
     PASS();
 }
 
@@ -792,6 +831,7 @@ int main(void){
     RUN(test_set_thread_priority);
     RUN(test_set_thread_affinity);
     RUN(test_alert_resume_thread);
+    RUN(test_alert_satisfies_alertable_wait);
     RUN(test_process_terminate_twice);
     RUN(test_open_bad_cid);
     RUN(test_set_process_base_priority);

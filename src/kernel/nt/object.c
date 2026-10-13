@@ -633,7 +633,7 @@ NTSTATUS ObCreateSymbolicLinkObject(POBJECT_ATTRIBUTES oa, PCUNICODE_STRING targ
     struct nt_object_header *hdr = NULL;
     struct nt_symlink *link = NULL;
     NTSTATUS st;
-    if (!out_hdr || !target || target->Length == 0)
+    if (!out_hdr || !target || target->Length == 0 || !target->Buffer)
         return STATUS_INVALID_PARAMETER;
     st = ObCreateObject(&nt_symlink_type, oa, sizeof(*link), &hdr, (void **)&link);
     if (!NT_SUCCESS(st))

@@ -685,6 +685,26 @@ TEST(create_symlink_resolves)
     PASS();
 }
 
+/* A target with a nonzero Length and no Buffer is refused before any copy. */
+TEST(create_symlink_null_target_buffer)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(342, "sym_nullbuf");
+    ASSERT(proc != NULL);
+    UNICODE_STRING us, target;
+    make_us(&us, "\\BaseNamedObjects\\SymNull", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    HANDLE hl = NULL;
+    target.Buffer = NULL;
+    target.Length = 8;
+    target.MaximumLength = 8;
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&hl, SYMBOLIC_LINK_QUERY, &oa, &target),
+                  STATUS_INVALID_PARAMETER);
+    ASSERT(hl == NULL);
+    teardown(proc);
+    PASS();
+}
+
 TEST(create_symlink_collision_and_openif)
 {
     reset_ob();
@@ -1077,6 +1097,7 @@ int main(void)
     RUN(open_symlink_is_not_followed);
     RUN(open_symlink_missing_and_wrong_type);
     RUN(create_symlink_resolves);
+    RUN(create_symlink_null_target_buffer);
     RUN(create_symlink_collision_and_openif);
     RUN(create_symlink_anonymous_and_bad_args);
     RUN(create_symlink_type_and_path_errors);
