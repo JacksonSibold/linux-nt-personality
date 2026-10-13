@@ -997,6 +997,31 @@ TEST(ci_component_length_limit)
 /* Main                                                                         */
 /* -------------------------------------------------------------------------- */
 
+TEST(query_attributes_file)
+{
+	FILE_BASIC_INFORMATION bi;
+	OBJECT_ATTRIBUTES oa;
+
+	reset_state();
+	create_file_at("attr_file.txt");
+	create_dir_at("attr_dir");
+
+	oa = make_obj_attr("attr_file.txt");
+	ASSERT_STATUS(nt_svc_NtQueryAttributesFile(&oa, &bi), STATUS_SUCCESS);
+	ASSERT(bi.FileAttributes == FILE_ATTRIBUTE_NORMAL);
+	ASSERT(bi.LastWriteTime.QuadPart > 116444736000000000LL);
+
+	oa = make_obj_attr("attr_dir");
+	ASSERT_STATUS(nt_svc_NtQueryAttributesFile(&oa, &bi), STATUS_SUCCESS);
+	ASSERT(bi.FileAttributes == FILE_ATTRIBUTE_DIRECTORY);
+
+	oa = make_obj_attr("attr_missing.txt");
+	ASSERT_STATUS(nt_svc_NtQueryAttributesFile(&oa, &bi), STATUS_OBJECT_NAME_NOT_FOUND);
+
+	ASSERT_STATUS(nt_svc_NtQueryAttributesFile(NULL, &bi), STATUS_ACCESS_VIOLATION);
+	PASS();
+}
+
 int main(void)
 {
 	setup_root();
@@ -1014,6 +1039,7 @@ int main(void)
 	RUN(iocp_completion_on_cancel);
 	RUN(delete_on_close);
 	RUN(query_set_info);
+	RUN(query_attributes_file);
 	RUN(ci_component_length_limit);
 
 	printf("ntio tests: %d passed, %d failed\n", g_pass, g_fail);

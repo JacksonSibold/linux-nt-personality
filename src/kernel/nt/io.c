@@ -2057,6 +2057,46 @@ NTSTATUS nt_svc_NtWriteFile(HANDLE FileHandle, HANDLE Event,
 /* Query / Set information                                                      */
 /* -------------------------------------------------------------------------- */
 
+/* Basic information from a stat result, shared by the handle and path queries. */
+static void ntio_basic_from_stat(PFILE_BASIC_INFORMATION bi, const struct kstat *st)
+{
+	bi->CreationTime.QuadPart = 0;
+	bi->LastAccessTime.QuadPart = (LONGLONG)st->atime.tv_sec * 10000000LL + 116444736000000000LL;
+	bi->LastWriteTime.QuadPart = (LONGLONG)st->mtime.tv_sec * 10000000LL + 116444736000000000LL;
+	bi->ChangeTime.QuadPart = (LONGLONG)st->ctime.tv_sec * 10000000LL + 116444736000000000LL;
+	bi->FileAttributes = FILE_ATTRIBUTE_NORMAL;
+	if (S_ISDIR(st->mode))
+		bi->FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+}
+
+/* Stat a Linux path. The kernel side walks the path with kern_path(). */
+static int ntio_getattr_path(const char *path, struct kstat *st)
+{
+#ifdef __KERNEL__
+	struct path p;
+	struct kstat kst;
+	int err = kern_path(path, LOOKUP_FOLLOW, &p);
+
+	if (err)
+		return err;
+	err = vfs_getattr(&p, &kst, STATX_BASIC_STATS, AT_STATX_SYNC_AS_STAT);
+	path_put(&p);
+	if (!err) {
+		st->dev = kst.dev;
+		st->ino = kst.ino;
+		st->mode = kst.mode;
+		st->size = kst.size;
+		st->atime = kst.atime;
+		st->mtime = kst.mtime;
+		st->ctime = kst.ctime;
+		st->nlink = kst.nlink;
+	}
+	return err;
+#else
+	return kshim_vfs_getattr_path(path, st);
+#endif
+}
+
 static NTSTATUS ntio_query_basic(struct nt_file_object *file,
 				 PVOID buf, ULONG len, PULONG retlen)
 {
@@ -2069,13 +2109,7 @@ static NTSTATUS ntio_query_basic(struct nt_file_object *file,
 		return STATUS_UNSUCCESSFUL;
 
 	bi = (PFILE_BASIC_INFORMATION)buf;
-	bi->CreationTime.QuadPart = 0;
-	bi->LastAccessTime.QuadPart = (LONGLONG)st.atime.tv_sec * 10000000LL + 116444736000000000LL;
-	bi->LastWriteTime.QuadPart = (LONGLONG)st.mtime.tv_sec * 10000000LL + 116444736000000000LL;
-	bi->ChangeTime.QuadPart = (LONGLONG)st.ctime.tv_sec * 10000000LL + 116444736000000000LL;
-	bi->FileAttributes = FILE_ATTRIBUTE_NORMAL;
-	if (S_ISDIR(st.mode))
-		bi->FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+	ntio_basic_from_stat(bi, &st);
 	if (retlen)
 		*retlen = sizeof(*bi);
 	return STATUS_SUCCESS;
@@ -2356,6 +2390,30 @@ static NTSTATUS ntio_set_rename(struct nt_file_object *file,
 
 	kfree(file->linux_path);
 	file->linux_path = kstrdup(newpath, GFP_KERNEL);
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS nt_svc_NtQueryAttributesFile(POBJECT_ATTRIBUTES ObjectAttributes,
+				      PFILE_BASIC_INFORMATION FileInformation)
+{
+	char path[PATH_MAX];
+	FILE_BASIC_INFORMATION bi;
+	struct kstat st;
+	bool is_dir = false;
+	NTSTATUS status;
+
+	if (!ObjectAttributes || !FileInformation)
+		return STATUS_ACCESS_VIOLATION;
+
+	status = ntio_resolve_path(ObjectAttributes, path, sizeof(path), &is_dir);
+	if (!NT_SUCCESS(status))
+		return status;
+	if (ntio_getattr_path(path, &st) != 0)
+		return STATUS_OBJECT_NAME_NOT_FOUND;
+
+	ntio_basic_from_stat(&bi, &st);
+	if (copy_to_user(FileInformation, &bi, sizeof(bi)))
+		return STATUS_ACCESS_VIOLATION;
 	return STATUS_SUCCESS;
 }
 

@@ -10,10 +10,10 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 76 |
+| IMPLEMENTED | 77 |
 | STUB-NOT-IMPLEMENTED | 2 |
 | WEAK-FALLBACK | 0 |
-| MISSING | 93 |
+| MISSING | 92 |
 
 ## By area
 
@@ -22,7 +22,7 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | system | 10 | 7 | 0 | 0 | 3 |
 | process-thread | 43 | 20 | 2 | 0 | 21 |
 | memory | 19 | 4 | 0 | 0 | 15 |
-| io | 30 | 7 | 0 | 0 | 23 |
+| io | 30 | 8 | 0 | 0 | 22 |
 | sync | 32 | 22 | 0 | 0 | 10 |
 | security | 10 | 0 | 0 | 0 | 10 |
 | registry | 11 | 11 | 0 | 0 | 0 |
@@ -141,7 +141,7 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | 0x0007 | `NtDeviceIoControlFile` | 10 | MISSING |  |
 | 0x0039 | `NtFsControlFile` | 10 | MISSING |  |
 | 0x00d7 | `NtDeleteFile` | 1 | MISSING |  |
-| 0x003d | `NtQueryAttributesFile` | 2 | MISSING |  |
+| 0x003d | `NtQueryAttributesFile` | 2 | IMPLEMENTED | `src/kernel/nt/io.c` |
 | 0x014c | `NtQueryFullAttributesFile` | 2 | MISSING |  |
 | 0x0061 | `NtCancelTimer` | 2 | MISSING |  |
 | 0x00a9 | `NtCreateDirectoryObject` | 3 | MISSING |  |
