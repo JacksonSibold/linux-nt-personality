@@ -2738,6 +2738,8 @@ NTSTATUS nt_svc_NtQueryAttributesFile(POBJECT_ATTRIBUTES ObjectAttributes,
 	if (ntio_getattr_path(path, &st) != 0)
 		return STATUS_OBJECT_NAME_NOT_FOUND;
 
+	/* Zero first: sizeof(bi) includes 4 tail padding bytes, and the struct is copied out. */
+	memset(&bi, 0, sizeof(bi));
 	ntio_basic_from_stat(&bi, &st);
 	if (copy_to_user(FileInformation, &bi, sizeof(bi)))
 		return STATUS_ACCESS_VIOLATION;
