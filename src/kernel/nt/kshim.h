@@ -276,6 +276,19 @@ static inline void kfree(const void *p) { free((void*)p); }
 
 #endif /* __KERNEL__ else */
 
+/* Per-call diagnostic tracing, off by default. Build with -DNT_DEBUG_TRACE to
+ * restore the old unconditional prints: same message text, same log levels.
+ * NT_TRACE is KERN_INFO (pr_info); NT_TRACE_ERR is KERN_ERR (pr_err). With the
+ * macro off the arguments are not evaluated, so a trace call must not carry
+ * side effects. */
+#ifdef NT_DEBUG_TRACE
+#define NT_TRACE(...)     pr_info(__VA_ARGS__)
+#define NT_TRACE_ERR(...) pr_err(__VA_ARGS__)
+#else
+#define NT_TRACE(...)     do { } while (0)
+#define NT_TRACE_ERR(...) do { } while (0)
+#endif
+
 typedef enum { KernelMode = 0, UserMode = 1, MaximumMode = 2 } KPROCESSOR_MODE;
 struct nt_eprocess;
 struct nt_ethread;

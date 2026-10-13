@@ -558,7 +558,7 @@ NTSTATUS nt_svc_NtCreateMutant(unsigned long a0, unsigned long a1, unsigned long
     st=nt_ensure_handle_table(proc); if(!NT_SUCCESS(st)) return st;
     st=k_copy_oa(ObjectAttributes,&k_oa,&k_name,k_buf,sizeof(k_buf),&oa); if(!NT_SUCCESS(st)) return st;
     st=nt_create_mutant_internal(proc,DesiredAccess,oa,InitialOwner,&h);
-    pr_err("NtCreateMutant: st=0x%x h=%p oa=%p name=%ls\n", st, h, oa, oa&&oa->ObjectName?oa->ObjectName->Buffer:NULL);
+    NT_TRACE_ERR("NtCreateMutant: st=0x%x h=%p oa=%p name=%ls\n", st, h, oa, oa&&oa->ObjectName?oa->ObjectName->Buffer:NULL);
     if(NT_SUCCESS(st)||st==STATUS_OBJECT_NAME_COLLISION){ if(copy_to_user(MutantHandle,&h,sizeof(h))) return STATUS_ACCESS_VIOLATION; }
     return st;
 }
@@ -1247,16 +1247,16 @@ static NTSTATUS wait_on_eprocess(struct nt_eprocess *proc, BOOLEAN Alertable, PL
 NTSTATUS nt_svc_NtWaitForSingleObject(HANDLE Handle, BOOLEAN Alertable, PLARGE_INTEGER Timeout)
 {
     struct nt_eprocess *proc = kshim_current_process();
-    pr_err("NtWaitForSingleObject: Handle=%p proc=%p\n", Handle, proc);
+    NT_TRACE_ERR("NtWaitForSingleObject: Handle=%p proc=%p\n", Handle, proc);
     if (!proc) return STATUS_INVALID_PARAMETER;
     struct nt_object_header *hdr=NULL;
     NTSTATUS st=ObReferenceObjectByHandle(proc, Handle, NULL, UserMode, 0, &hdr, NULL);
-    pr_err("NtWaitForSingleObject: ObReference st=0x%x hdr=%p\n", st, hdr);
+    NT_TRACE_ERR("NtWaitForSingleObject: ObReference st=0x%x hdr=%p\n", st, hdr);
     if (!NT_SUCCESS(st)) return st;
     /* Handle thread/process as waitable even though not dispatcher */
     if (hdr->type == &nt_thread_type) {
         struct nt_ethread *thr = ObFindThreadByHeader(hdr);
-        pr_err("NtWaitForSingleObject thread: thr=%p tid=%lu h=%p hdr=%p\n", thr, thr?thr->tid:0, Handle, hdr);
+        NT_TRACE_ERR("NtWaitForSingleObject thread: thr=%p tid=%lu h=%p hdr=%p\n", thr, thr?thr->tid:0, Handle, hdr);
         ObDereferenceObject(hdr);
         if (!thr) return STATUS_INVALID_HANDLE;
         return wait_on_ethread(thr, Alertable, Timeout);
@@ -1306,7 +1306,7 @@ NTSTATUS nt_svc_NtResetEvent(HANDLE EventHandle, PLONG PreviousState)
 
 NTSTATUS nt_svc_NtReleaseMutant(HANDLE MutantHandle, PLONG PreviousCount)
 {
-    pr_info("W1_INSTR: NtReleaseMutant handle=%p prevPtr=%p\n", MutantHandle, PreviousCount);
+    NT_TRACE("W1_INSTR: NtReleaseMutant handle=%p prevPtr=%p\n", MutantHandle, PreviousCount);
     struct nt_eprocess *proc = kshim_current_process();
     if (!proc) return STATUS_INVALID_PARAMETER;
     struct nt_object_header *hdr=NULL;
@@ -1338,11 +1338,11 @@ NTSTATUS nt_svc_NtReleaseSemaphore(HANDLE SemaphoreHandle, LONG ReleaseCount, PL
 
 static NTSTATUS wait_on_ethread(struct nt_ethread *thr, BOOLEAN Alertable, PLARGE_INTEGER Timeout)
 {
-    pr_err("wait_on_ethread: thr=%p tid=%lu terminated=%d Alertable=%d Timeout=%p\n", thr, thr ? thr->tid : 0, thr ? thr->terminated : -1, Alertable, Timeout);
+    NT_TRACE_ERR("wait_on_ethread: thr=%p tid=%lu terminated=%d Alertable=%d Timeout=%p\n", thr, thr ? thr->tid : 0, thr ? thr->terminated : -1, Alertable, Timeout);
     if (!thr) return STATUS_INVALID_HANDLE;
     /* Fast check under lock */
     spin_lock(&thr->lock);
-    if (thr->terminated) { spin_unlock(&thr->lock); pr_err("wait_on_ethread: fast return WAIT_0\n"); return STATUS_WAIT_0; }
+    if (thr->terminated) { spin_unlock(&thr->lock); NT_TRACE_ERR("wait_on_ethread: fast return WAIT_0\n"); return STATUS_WAIT_0; }
     spin_unlock(&thr->lock);
     /* Timeout == NULL => infinite wait */
     if (!Timeout) {
@@ -1440,16 +1440,16 @@ static NTSTATUS wait_on_eprocess(struct nt_eprocess *proc, BOOLEAN Alertable, PL
 NTSTATUS nt_svc_NtWaitForSingleObject(HANDLE Handle, BOOLEAN Alertable, PLARGE_INTEGER Timeout)
 {
     struct nt_eprocess *proc = kshim_current_process();
-    pr_err("NtWaitForSingleObject: Handle=%p proc=%p\n", Handle, proc);
+    NT_TRACE_ERR("NtWaitForSingleObject: Handle=%p proc=%p\n", Handle, proc);
     if (!proc) return STATUS_INVALID_PARAMETER;
     struct nt_object_header *hdr=NULL;
     NTSTATUS st=ObReferenceObjectByHandle(proc, Handle, NULL, UserMode, 0, &hdr, NULL);
-    pr_err("NtWaitForSingleObject: ObReference st=0x%x hdr=%p\n", st, hdr);
+    NT_TRACE_ERR("NtWaitForSingleObject: ObReference st=0x%x hdr=%p\n", st, hdr);
     if (!NT_SUCCESS(st)) return st;
-    pr_err("NtWaitForSingleObject: hdr type %p nt_thread %p nt_process %p\n", hdr->type, &nt_thread_type, &nt_process_type);
+    NT_TRACE_ERR("NtWaitForSingleObject: hdr type %p nt_thread %p nt_process %p\n", hdr->type, &nt_thread_type, &nt_process_type);
     if (hdr->type == &nt_thread_type) {
         struct nt_ethread *thr = ObFindThreadByHeader(hdr);
-        pr_err("NtWaitForSingleObject thread: thr=%p tid=%lu h=%p hdr=%p\n", thr, thr?thr->tid:0, Handle, hdr);
+        NT_TRACE_ERR("NtWaitForSingleObject thread: thr=%p tid=%lu h=%p hdr=%p\n", thr, thr?thr->tid:0, Handle, hdr);
         ObDereferenceObject(hdr);
         if (!thr) return STATUS_INVALID_HANDLE;
         return wait_on_ethread(thr, Alertable, Timeout);
@@ -1475,7 +1475,7 @@ extern struct nt_eprocess *nt_current_eprocess(void);
 NTSTATUS nt_svc_NtDelayExecution(BOOLEAN Alertable, PLARGE_INTEGER DelayInterval)
 {
     (void)Alertable;
-    pr_info("W1_INSTR: NtDelayExecution DelayInterval=%p\n", DelayInterval);
+    NT_TRACE("W1_INSTR: NtDelayExecution DelayInterval=%p\n", DelayInterval);
     if (!DelayInterval) {
         struct nt_ethread *thr = nt_current_ethread();
         if (thr && thr->terminated) return STATUS_THREAD_IS_TERMINATING;
@@ -1483,10 +1483,10 @@ NTSTATUS nt_svc_NtDelayExecution(BOOLEAN Alertable, PLARGE_INTEGER DelayInterval
     }
     LARGE_INTEGER interval;
     if (copy_from_user(&interval, DelayInterval, sizeof(interval))) {
-        pr_info("W1_INSTR: NtDelayExecution copy_from_user failed\n");
+        NT_TRACE("W1_INSTR: NtDelayExecution copy_from_user failed\n");
         return STATUS_ACCESS_VIOLATION;
     }
-    pr_info("W1_INSTR: NtDelayExecution interval=%lld\n", interval.QuadPart);
+    NT_TRACE("W1_INSTR: NtDelayExecution interval=%lld\n", interval.QuadPart);
     if (interval.QuadPart == 0) return STATUS_SUCCESS;
     long ms;
     if (interval.QuadPart < 0) {
