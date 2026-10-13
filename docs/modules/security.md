@@ -1,7 +1,7 @@
 # Module: security (NT security model)
 
 Sources: `src/kernel/nt/security.c`, `src/kernel/nt/security.h`
-Related: `object.md` (security descriptor slot in object headers), `registry.md` (Machine-hive write rule is path-based, not SD-based), `io.md` (file share checks), `security_test.c` (tests).
+Related: `object.md` (security descriptor slot in object headers, the token object type, and the process and thread token slots), `registry.md` (Machine-hive write rule is path-based, not SD-based), `io.md` (file share checks), `security_test.c` and `security_extra_test.c` (tests), `debugfs_tests.c` (se_access_check checks).
 
 ## Purpose
 
@@ -47,6 +47,21 @@ Access check and inheritance:
 - `NTSTATUS se_access_check(const SECURITY_DESCRIPTOR *sd, const ACCESS_TOKEN *token, ACCESS_MASK desired_access, const GENERIC_MAPPING *generic_mapping, enum ntsec_object_class object_class, ACCESS_MASK *granted_access)` - evaluate a DACL against a token and return the granted mask.
 - `NTSTATUS se_inherit_dacl(const PACL parent_dacl, BOOLEAN is_container, const GENERIC_MAPPING *generic_mapping, ...)` - compute a child DACL from a parent.
 
+## Token object and token slots
+
+- The token is an object-manager type. `nt_token_type` is named `"Token"` (`object.c:202`) and is registered in `object.c:1340`. Its body is `struct nt_token_body`, which holds one `ACCESS_TOKEN` reference (`object.h:116`). The object is created with `ObCreateObject` (`security.c:1022`), and `token_delete` drops the reference (`object.c:193`).
+- Each process holds a primary token in `primary_token` (`object.h:281`). It is created with `token_create_default_primary` (`security.c:1034`, called from `object.c:1175`) and released in `ObDestroyProcessObject` (`object.c:1250`).
+- Each thread has an `impersonation_token` slot (`object.h:318`). It is NULL unless the thread impersonates, and it is released in `object.c:1273`.
+- `token_reference` and `token_dereference` use `__atomic` operations on `ref_count` (`security.c:1123`, `1128`).
+- Token open: `NtOpenProcessToken`, `NtOpenProcessTokenEx`, `NtOpenThreadToken` and `NtOpenThreadTokenEx` (`security.c:1931-1951`) go through `ntsec_open_process_token` and `ntsec_open_thread_token`. Both reach `ntsec_open_token_for` (`security.c:1858`), which calls `ntsec_check_token_object_access` (`security.c:1826`) and then `se_access_check`. The caller's token is the primary token, or the thread's impersonation token when one is set (`security.c:1865-1873`).
+
+## Services
+
+Token and security services defined in `security.c` (from the inventory in `docs/status/SERVICES.md`):
+
+- Implemented: `NtOpenProcessToken`, `NtOpenProcessTokenEx`, `NtOpenThreadToken`, `NtOpenThreadTokenEx`, `NtQueryInformationToken` (`security.c:2220`), `NtDuplicateToken` (`:2351`), `NtAdjustPrivilegesToken` (`:2586`), `NtPrivilegeCheck` (`:2596`), `NtAccessCheck` (`:2605`).
+- Not defined (dispatch slot is NULL): `NtSetInformationToken`, `NtSetSecurityObject`, `NtQuerySecurityObject`, `NtCloseObjectAuditAlarm`, `NtAccessCheckAndAuditAlarm`.
+
 ## Key data structures
 
 - `struct _SID`, `struct _GUID`, `struct _LUID`, `struct _GENERIC_MAPPING`, `struct _ACL`, `struct _ACE_HEADER`, plus typed ACE structures (`ACCESS_ALLOWED_ACE`, `ACCESS_DENIED_ACE`, object ACEs, callback ACEs).
@@ -59,10 +74,12 @@ Access check and inheritance:
 
 - Isolation rule (`security.h` header): tokens live in the NT personality, separate from Linux `cred`. `se_access_check` is intended only for NT object create and open paths, and a PE open must pass both the NT check and Linux DAC/LSM checks.
 - `acl_capacity_lookup` falls back to `AclSize` when an ACL was not registered, which covers imported ACLs.
-- `security.c` contains no lock or atomic operations. I found zero `spin_lock`, `pthread_mutex`, `read_lock` or `atomic` calls in the file. Shared structures are not synchronised here.
+- `security.c` has no spinlock or mutex calls. Its only atomics are the two token reference-count operations (`security.c:1123`, `1128`). Other shared structures are not synchronised here.
 
 ## Known gaps (evident in code)
 
-- No call sites for `se_access_check`, `token_create_primary`, `sd_create_absolute` or `se_inherit_dacl` exist outside `security.c`, `security.h` and the test files. The enforcement described in the header ("called ONLY on NT object create/open paths") is not wired into `object.c`, `handle.c`, `registry.c`, `io.c` or `mm.c` in this tree. `debugfs_tests.c` mentions the fail-closed check only in a comment.
-- The ACL capacity side table holds 256 entries. `acl_capacity_register` (`security.c:57-60`) silently drops registrations beyond that, so the lookup falls back to `AclSize` for those ACLs.
-- The module is unsynchronised (see above). Concurrent use of tokens, ACLs or the capacity table is unsafe.
+- `se_access_check`, `token_create_primary`, `sd_create_absolute` and `se_inherit_dacl` are called only from inside `security.c`, which uses them for the token-open path (`security.c:1851`) and an access-check helper behind `NtAccessCheck` (`security.c:2564`). No call site exists in `object.c`, `handle.c`, `registry.c`, `io.c` or `mm.c`, so the enforcement the header describes ("called ONLY on NT object create/open paths") is not wired there. `debugfs_tests.c` mentions the fail-closed check only in a comment.
+- Process open (`NtOpenProcess`, `proc_thread.c:629`) does not reach this check, and no process or thread open path performs an access check (see `proc_thread.md` and decision record 0002).
+- The ACL capacity side table holds 256 entries (`ACL_CAP_MAX`, `security.c:45`). `acl_capacity_register` (`security.c:62`) silently drops registrations beyond that, so the lookup falls back to `AclSize` for those ACLs.
+- The module is unsynchronised apart from the token reference count. Concurrent use of ACLs, SIDs or the capacity table is unsafe.
+- Security descriptors are stored in the object header (`object.h:130`, set from the object attributes at `object.c:521`). No service reads or sets them, because `NtQuerySecurityObject` and `NtSetSecurityObject` are missing.
