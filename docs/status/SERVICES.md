@@ -10,20 +10,20 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 77 |
+| IMPLEMENTED | 88 |
 | STUB-NOT-IMPLEMENTED | 2 |
 | WEAK-FALLBACK | 0 |
-| MISSING | 92 |
+| MISSING | 81 |
 
 ## By area
 
 | Area | Total | IMPLEMENTED | STUB-NOT-IMPLEMENTED | WEAK-FALLBACK | MISSING |
 |---|---:|---:|---:|---:|---:|
-| system | 10 | 7 | 0 | 0 | 3 |
+| system | 10 | 8 | 0 | 0 | 2 |
 | process-thread | 43 | 20 | 2 | 0 | 21 |
 | memory | 19 | 4 | 0 | 0 | 15 |
-| io | 30 | 8 | 0 | 0 | 22 |
-| sync | 32 | 22 | 0 | 0 | 10 |
+| io | 30 | 9 | 0 | 0 | 21 |
+| sync | 32 | 31 | 0 | 0 | 1 |
 | security | 10 | 0 | 0 | 0 | 10 |
 | registry | 11 | 11 | 0 | 0 | 0 |
 | ports | 10 | 0 | 0 | 0 | 10 |
@@ -39,7 +39,7 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | 0x0031 | `NtQueryPerformanceCounter` | 2 | IMPLEMENTED | `src/kernel/nt/nt_services.c` |
 | 0x005a | `NtQuerySystemTime` | 1 | IMPLEMENTED | `src/kernel/nt/nt_services.c` |
 | 0x0034 | `NtDelayExecution` | 2 | IMPLEMENTED | `src/kernel/nt/nt_obj.c` |
-| 0x0046 | `NtYieldExecution` | 0 | MISSING |  |
+| 0x0046 | `NtYieldExecution` | 0 | IMPLEMENTED | `src/kernel/nt/sync.c` |
 | 0x01b8 | `NtSetTimerResolution` | 3 | MISSING |  |
 | 0x0168 | `NtQueryTimerResolution` | 3 | MISSING |  |
 | 0x01db | `NtRtlNtStatusToDosError` | 2 | IMPLEMENTED | `src/kernel/nt/ntstatus_kernel.c` |
@@ -143,7 +143,7 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | 0x00d7 | `NtDeleteFile` | 1 | MISSING |  |
 | 0x003d | `NtQueryAttributesFile` | 2 | IMPLEMENTED | `src/kernel/nt/io.c` |
 | 0x014c | `NtQueryFullAttributesFile` | 2 | MISSING |  |
-| 0x0061 | `NtCancelTimer` | 2 | MISSING |  |
+| 0x0061 | `NtCancelTimer` | 2 | IMPLEMENTED | `src/kernel/nt/sync.c` |
 | 0x00a9 | `NtCreateDirectoryObject` | 3 | MISSING |  |
 | 0x0058 | `NtOpenDirectoryObject` | 3 | MISSING |  |
 | 0x0149 | `NtQueryDirectoryObject` | 7 | MISSING |  |
@@ -169,17 +169,17 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | 0x0131 | `NtOpenSemaphore` | 3 | IMPLEMENTED | `src/kernel/nt/nt_obj.c` |
 | 0x000a | `NtReleaseSemaphore` | 3 | IMPLEMENTED | `src/kernel/nt/nt_obj.c` |
 | 0x0163 | `NtQuerySemaphore` | 5 | IMPLEMENTED | `src/kernel/nt/nt_services.c` |
-| 0x00c7 | `NtCreateTimer` | 4 | MISSING |  |
-| 0x0135 | `NtOpenTimer` | 3 | MISSING |  |
-| 0x0062 | `NtSetTimer` | 7 | MISSING |  |
-| 0x0038 | `NtQueryTimer` | 5 | MISSING |  |
+| 0x00c7 | `NtCreateTimer` | 4 | IMPLEMENTED | `src/kernel/nt/sync.c` |
+| 0x0135 | `NtOpenTimer` | 3 | IMPLEMENTED | `src/kernel/nt/sync.c` |
+| 0x0062 | `NtSetTimer` | 7 | IMPLEMENTED | `src/kernel/nt/sync.c` |
+| 0x0038 | `NtQueryTimer` | 5 | IMPLEMENTED | `src/kernel/nt/sync.c` |
 | 0x0004 | `NtWaitForSingleObject` | 3 | IMPLEMENTED | `src/kernel/nt/nt_obj.c` |
 | 0x005b | `NtWaitForMultipleObjects` | 5 | IMPLEMENTED | `src/kernel/nt/sync.c` |
-| 0x01be | `NtSignalAndWaitForSingleObject` | 4 | MISSING |  |
-| 0x00b3 | `NtCreateKeyedEvent` | 4 | MISSING |  |
-| 0x0129 | `NtOpenKeyedEvent` | 3 | MISSING |  |
-| 0x0176 | `NtReleaseKeyedEvent` | 4 | MISSING |  |
-| 0x01da | `NtWaitForKeyedEvent` | 4 | MISSING |  |
+| 0x01be | `NtSignalAndWaitForSingleObject` | 4 | IMPLEMENTED | `src/kernel/nt/sync.c` |
+| 0x00b3 | `NtCreateKeyedEvent` | 4 | IMPLEMENTED | `src/kernel/nt/sync.c` |
+| 0x0129 | `NtOpenKeyedEvent` | 3 | IMPLEMENTED | `src/kernel/nt/sync.c` |
+| 0x0176 | `NtReleaseKeyedEvent` | 4 | IMPLEMENTED | `src/kernel/nt/sync.c` |
+| 0x01da | `NtWaitForKeyedEvent` | 4 | IMPLEMENTED | `src/kernel/nt/sync.c` |
 | 0x00af | `NtCreateIoCompletion` | 4 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
 | 0x0124 | `NtOpenIoCompletion` | 3 | MISSING |  |
 | 0x01a9 | `NtSetIoCompletion` | 5 | IMPLEMENTED | `src/kernel/nt/iocp.c` |
