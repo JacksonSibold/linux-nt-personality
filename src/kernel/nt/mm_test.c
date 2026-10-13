@@ -521,6 +521,28 @@ static int test_view_size_round_up_wrap(void) {
     return 1;
 }
 
+/* A size within one page of SIZE_MAX rounds up to 0 and used to pass the end
+ * check, so protect and decommit returned success without touching the range. */
+static int test_wrapping_size_protect_decommit(void) {
+    PVOID b = NULL;
+    SIZE_T s = 0x1000;
+    NTSTATUS st = NtAllocateVirtualMemory((HANDLE)-1, &b, 0, &s, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "alloc for wrap test 0x%lx", (unsigned long)st);
+    PVOID pb = b;
+    SIZE_T huge = (SIZE_T)-1 - 100;
+    ULONG old = 0;
+    st = NtProtectVirtualMemory((HANDLE)-1, &pb, &huge, PAGE_READONLY, &old);
+    ASSERT(st == STATUS_INVALID_PARAMETER, "wrapping protect status 0x%lx", (unsigned long)st);
+    PVOID db = b;
+    huge = (SIZE_T)-1 - 100;
+    st = NtFreeVirtualMemory((HANDLE)-1, &db, &huge, MEM_DECOMMIT);
+    ASSERT(st == STATUS_INVALID_PARAMETER, "wrapping decommit status 0x%lx", (unsigned long)st);
+    PVOID rb = b; SIZE_T rs = 0;
+    st = NtFreeVirtualMemory((HANDLE)-1, &rb, &rs, MEM_RELEASE);
+    ASSERT(st == STATUS_SUCCESS, "release after wrap test 0x%lx", (unsigned long)st);
+    return 1;
+}
+
 /* 8. sections */
 static int test_sections(void) {
     LARGE_INTEGER sz;
@@ -988,6 +1010,7 @@ int main(void) {
     RUN_TEST(test_vad_matrix);
     RUN_TEST(test_alloc_size_wrap);
     RUN_TEST(test_file_section_unsupported);
+    RUN_TEST(test_wrapping_size_protect_decommit);
     RUN_TEST(test_sections);
     RUN_TEST(test_view_size_round_up_wrap);
     RUN_TEST(test_probe_virtualquery_regression);
