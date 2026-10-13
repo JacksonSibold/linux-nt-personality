@@ -1331,6 +1331,37 @@ NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
 /* NtQueryVirtualMemory                                                       */
 /* -------------------------------------------------------------------------- */
 
+/* MemoryRegionInformation: the VAD that holds addr. Like MemoryBasicInformation
+ * this reports one VAD, not a coalesced region. Free addresses are
+ * STATUS_INVALID_ADDRESS (NT has no region for them). */
+static NTSTATUS ntmm_query_region(PVOID BaseAddress, PVOID MemoryInformation,
+                                  SIZE_T MemoryInformationLength, PSIZE_T ReturnLength) {
+    struct nt_mm *mm = &g_nt_mm;
+    PMEMORY_REGION_INFORMATION info = (PMEMORY_REGION_INFORMATION)MemoryInformation;
+    ULONG_PTR addr = (ULONG_PTR)BaseAddress;
+    if (!info || MemoryInformationLength < sizeof(*info)) return STATUS_INFO_LENGTH_MISMATCH;
+    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
+    ntmm_lock(mm);
+    struct nt_vad *vad = nt_vad_find(mm, addr);
+    if (!vad) {
+        ntmm_unlock(mm);
+        return STATUS_INVALID_ADDRESS;
+    }
+    info->AllocationBase = (PVOID)vad->alloc_base;
+    info->AllocationProtect = vad->alloc_protect;
+    if (vad->type == MEM_IMAGE)
+        info->RegionType = MEM_REGION_MAPPED_IMAGE;
+    else if (vad->type == MEM_MAPPED)
+        info->RegionType = MEM_REGION_MAPPED_PAGEFILE; /* section backing is anonymous */
+    else
+        info->RegionType = MEM_REGION_PRIVATE;
+    info->RegionSize = vad->end - vad->start;
+    info->CommitSize = (vad->state == MEM_COMMIT) ? vad->end - vad->start : 0;
+    ntmm_unlock(mm);
+    if (ReturnLength) *ReturnLength = sizeof(*info);
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
                               ULONG MemoryInformationClass,
                               PVOID MemoryInformation,
@@ -1340,6 +1371,14 @@ NTSTATUS NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
     PMEMORY_BASIC_INFORMATION mbi = (PMEMORY_BASIC_INFORMATION)MemoryInformation;
     ULONG_PTR addr = (ULONG_PTR)BaseAddress;
     (void)ProcessHandle;
+    if (MemoryInformationClass == MemoryRegionInformation)
+        return ntmm_query_region(BaseAddress, MemoryInformation, MemoryInformationLength, ReturnLength);
+    /* Working-set and mapped-file-name classes need a model this manager does
+     * not keep (no per-page residency, no file names). Known but unsupported. */
+    if (MemoryInformationClass == MemoryWorkingSetInformation ||
+        MemoryInformationClass == MemoryMappedFilenameInformation ||
+        MemoryInformationClass == MemoryWorkingSetExInformation)
+        return STATUS_NOT_SUPPORTED;
     if (MemoryInformationClass != MemoryBasicInformation) return STATUS_INVALID_INFO_CLASS;
     if (!mbi || MemoryInformationLength < sizeof(*mbi)) return STATUS_INFO_LENGTH_MISMATCH;
     if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
@@ -1419,6 +1458,168 @@ NTSTATUS NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
     ntmm_unlock(mm);
     if (ReturnLength) *ReturnLength = sizeof(*mbi);
     return STATUS_SUCCESS;
+}
+
+/* -------------------------------------------------------------------------- */
+/* NtReadVirtualMemory / NtWriteVirtualMemory (current process only)          */
+/* -------------------------------------------------------------------------- */
+
+/* The caller's buffer and the target range are both in the current address
+ * space. In the kernel they are user pointers and go through the copy
+ * helpers; the host shim uses memcpy. */
+#ifdef __KERNEL__
+static inline int ntmm_user_read(void *kdst, const void *usrc, size_t n)  { return copy_from_user(kdst, usrc, n) ? -1 : 0; }
+static inline int ntmm_user_write(void *udst, const void *ksrc, size_t n) { return copy_to_user(udst, ksrc, n) ? -1 : 0; }
+#else
+static inline int ntmm_user_read(void *kdst, const void *usrc, size_t n)  { memcpy(kdst, usrc, n); return 0; }
+static inline int ntmm_user_write(void *udst, const void *ksrc, size_t n) { memcpy(udst, ksrc, n); return 0; }
+#endif
+
+static int ntmm_access_ok(ULONG protect, int write) {
+    ULONG base = protect & 0xFFUL;
+    if (protect & PAGE_GUARD) return 0;
+    if (write)
+        return base == PAGE_READWRITE || base == PAGE_WRITECOPY ||
+               base == PAGE_EXECUTE_READWRITE || base == PAGE_EXECUTE_WRITECOPY;
+    return base == PAGE_READONLY || base == PAGE_READWRITE || base == PAGE_WRITECOPY ||
+           base == PAGE_EXECUTE_READ || base == PAGE_EXECUTE_READWRITE || base == PAGE_EXECUTE_WRITECOPY;
+}
+
+/* Length of the run at addr (at most want bytes) that is committed and has an
+ * access the caller needs. Zero when the first byte is not accessible. The
+ * lock is dropped before the copy, so a concurrent unmap can race with it. */
+static SIZE_T ntmm_access_run(ULONG_PTR addr, SIZE_T want, int write) {
+    struct nt_mm *mm = &g_nt_mm;
+    SIZE_T run = 0;
+    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
+    ntmm_lock(mm);
+    struct nt_vad *vad = nt_vad_find(mm, addr);
+    if (vad && vad->state == MEM_COMMIT && ntmm_access_ok(vad->protect, write)) {
+        ULONG_PTR avail = vad->end - addr;
+        run = (avail < want) ? (SIZE_T)avail : want;
+    }
+    ntmm_unlock(mm);
+    return run;
+}
+
+/* Copies up to size bytes between the target range and the caller's buffer,
+ * a page at a time through a kernel bounce buffer. *done is the number of
+ * bytes moved before the first inaccessible byte or fault. */
+static NTSTATUS ntmm_transfer(ULONG_PTR addr, PVOID user, SIZE_T size, SIZE_T *done, int write) {
+    unsigned char kbuf[NTMM_PAGE_SIZE];
+    SIZE_T off = 0;
+    SIZE_T req = size;
+    *done = 0;
+    if (size == 0) return STATUS_SUCCESS;
+    /* The last byte addr + size - 1 must not wrap past the top of the address
+     * space. Bytes beyond that cannot be mapped, so they count as not copied. */
+    {
+        SIZE_T room = (SIZE_T)(~(ULONG_PTR)0 - addr);
+        if (size - 1 > room) size = room + 1;
+    }
+    while (off < size) {
+        ULONG_PTR cur = addr + off;
+        SIZE_T want = size - off;
+        SIZE_T run;
+        unsigned char *ubuf = (unsigned char *)user + off;
+        if (want > sizeof(kbuf)) want = sizeof(kbuf);
+        run = ntmm_access_run(cur, want, write);
+        if (run == 0) break;
+        if (write) {
+            if (ntmm_user_read(kbuf, ubuf, run)) break;
+            if (ntmm_user_write((void *)cur, kbuf, run)) break;
+        } else {
+            if (ntmm_user_read(kbuf, (const void *)cur, run)) break;
+            if (ntmm_user_write(ubuf, kbuf, run)) break;
+        }
+        off += run;
+    }
+    *done = off;
+    return (off == req) ? STATUS_SUCCESS : STATUS_PARTIAL_COPY;
+}
+
+NTSTATUS NtReadVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
+                             PVOID Buffer, SIZE_T BufferSize,
+                             PSIZE_T NumberOfBytesRead) {
+    SIZE_T done = 0;
+    NTSTATUS st;
+    /* Only the current process: one global address space, no process handle
+     * lookup for other processes yet. */
+    if (ProcessHandle != (HANDLE)-1) return STATUS_NOT_SUPPORTED;
+    st = ntmm_transfer((ULONG_PTR)BaseAddress, Buffer, BufferSize, &done, 0);
+    if (NumberOfBytesRead) *NumberOfBytesRead = done;
+    return st;
+}
+
+NTSTATUS NtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
+                              PVOID Buffer, SIZE_T BufferSize,
+                              PSIZE_T NumberOfBytesWritten) {
+    SIZE_T done = 0;
+    NTSTATUS st;
+    if (ProcessHandle != (HANDLE)-1) return STATUS_NOT_SUPPORTED;
+    st = ntmm_transfer((ULONG_PTR)BaseAddress, Buffer, BufferSize, &done, 1);
+    if (NumberOfBytesWritten) *NumberOfBytesWritten = done;
+    return st;
+}
+
+/* -------------------------------------------------------------------------- */
+/* NtFlushVirtualMemory                                                       */
+/* -------------------------------------------------------------------------- */
+
+/* Nothing needs writing back: private pages and views of anonymous or memfd
+ * backing are already coherent, because there is no file backing yet (file
+ * sections are STATUS_NOT_IMPLEMENTED). So the flush checks the range and
+ * reports it flushed. The range is page-rounded, as NT does. Every byte must
+ * sit in a committed VAD: no VAD is STATUS_INVALID_ADDRESS, a reserved one is
+ * STATUS_NOT_COMMITTED. */
+NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
+                              PSIZE_T RegionSize, PIO_STATUS_BLOCK IoStatus) {
+    struct nt_mm *mm = &g_nt_mm;
+    ULONG_PTR start, end, cur;
+    NTSTATUS st = STATUS_SUCCESS;
+    if (ProcessHandle != (HANDLE)-1) return STATUS_NOT_SUPPORTED;
+    if (!BaseAddress || !RegionSize || !IoStatus) return STATUS_INVALID_PARAMETER;
+    ULONG_PTR req = (ULONG_PTR)*BaseAddress;
+    SIZE_T size = *RegionSize;
+    if (size == 0) return STATUS_INVALID_PARAMETER;
+    /* The end (req + size) must not wrap before rounding. */
+    if (size > (SIZE_T)(~(ULONG_PTR)0 - req - (NTMM_PAGE_SIZE - 1))) return STATUS_INVALID_PARAMETER;
+    start = ntmm_round_down(req, NTMM_PAGE_SIZE);
+    end = ntmm_round_up(req + size, NTMM_PAGE_SIZE);
+    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
+    ntmm_lock(mm);
+    for (cur = start; cur < end; ) {
+        struct nt_vad *vad = nt_vad_find(mm, cur);
+        if (!vad) { st = STATUS_INVALID_ADDRESS; break; }
+        if (vad->state != MEM_COMMIT) { st = STATUS_NOT_COMMITTED; break; }
+        cur = vad->end;
+    }
+    ntmm_unlock(mm);
+    *BaseAddress = (PVOID)start;
+    *RegionSize = (SIZE_T)(end - start);
+    IoStatus->DUMMYUNIONNAME.Status = st;
+    IoStatus->Information = (st == STATUS_SUCCESS) ? (ULONG_PTR)(end - start) : 0;
+    return st;
+}
+
+/* -------------------------------------------------------------------------- */
+/* NtAllocateVirtualMemoryEx                                                  */
+/* -------------------------------------------------------------------------- */
+
+/* Without extended parameters this is NtAllocateVirtualMemory. Extended
+ * parameters (NUMA node, address requirements) need placement support that
+ * this manager does not have, so any count is STATUS_NOT_SUPPORTED. Other
+ * process handles are refused here, unlike NtAllocateVirtualMemory, which
+ * still ignores ProcessHandle (known gap). */
+NTSTATUS NtAllocateVirtualMemoryEx(HANDLE ProcessHandle, PVOID *BaseAddress,
+                                   PSIZE_T RegionSize, ULONG AllocationType,
+                                   ULONG PageProtection, PVOID ExtendedParameters,
+                                   ULONG ExtendedParameterCount) {
+    (void)ExtendedParameters;
+    if (ProcessHandle != (HANDLE)-1) return STATUS_NOT_SUPPORTED;
+    if (ExtendedParameterCount != 0) return STATUS_NOT_SUPPORTED;
+    return NtAllocateVirtualMemory(ProcessHandle, BaseAddress, 0, RegionSize,
+                                   AllocationType, PageProtection);
 }
 
 /* -------------------------------------------------------------------------- */

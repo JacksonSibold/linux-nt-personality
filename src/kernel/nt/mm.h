@@ -97,6 +97,16 @@
 #define SEC_LARGE_PAGES                 0x80000000UL
 
 #define MemoryBasicInformation          0UL
+#define MemoryWorkingSetInformation     1UL
+#define MemoryMappedFilenameInformation 2UL
+#define MemoryRegionInformation         3UL
+#define MemoryWorkingSetExInformation   4UL
+
+/* MEMORY_REGION_INFORMATION.RegionType bits */
+#define MEM_REGION_PRIVATE              0x00000001UL
+#define MEM_REGION_MAPPED_DATA_FILE     0x00000002UL
+#define MEM_REGION_MAPPED_IMAGE         0x00000004UL
+#define MEM_REGION_MAPPED_PAGEFILE      0x00000008UL
 
 #define NTMM_ALLOC_GRANULARITY          0x10000UL
 #define NTMM_ALLOC_GRANULARITY_SHIFT    16
@@ -118,6 +128,15 @@ typedef struct _MEMORY_BASIC_INFORMATION {
     ULONG   Protect;
     ULONG   Type;
 } MEMORY_BASIC_INFORMATION, *PMEMORY_BASIC_INFORMATION;
+
+/* Layout of the Windows MEMORY_REGION_INFORMATION (64-bit). */
+typedef struct _MEMORY_REGION_INFORMATION {
+    PVOID   AllocationBase;
+    ULONG   AllocationProtect;
+    ULONG   RegionType;         /* MEM_REGION_* bits */
+    SIZE_T  RegionSize;
+    SIZE_T  CommitSize;
+} MEMORY_REGION_INFORMATION, *PMEMORY_REGION_INFORMATION;
 
 typedef struct _SECTION_BASIC_INFORMATION {
     ULONG_PTR Unknown;
@@ -248,6 +267,18 @@ NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                             PSIZE_T ViewSize, ULONG InheritDisposition,
                             ULONG AllocationType, ULONG Win32Protect);
 NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress);
+NTSTATUS NtReadVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
+                             PVOID Buffer, SIZE_T BufferSize,
+                             PSIZE_T NumberOfBytesRead);
+NTSTATUS NtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
+                              PVOID Buffer, SIZE_T BufferSize,
+                              PSIZE_T NumberOfBytesWritten);
+NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
+                              PSIZE_T RegionSize, PIO_STATUS_BLOCK IoStatus);
+NTSTATUS NtAllocateVirtualMemoryEx(HANDLE ProcessHandle, PVOID *BaseAddress,
+                                    PSIZE_T RegionSize, ULONG AllocationType,
+                                    ULONG PageProtection, PVOID ExtendedParameters,
+                                    ULONG ExtendedParameterCount);
 
 /* Guard fault helper: simulate access to addr. Returns STATUS_GUARD_PAGE_VIOLATION
  * on first access to a guarded page and clears the guard bit. Returns STATUS_SUCCESS

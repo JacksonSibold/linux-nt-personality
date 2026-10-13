@@ -10,10 +10,10 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 97 |
+| IMPLEMENTED | 101 |
 | STUB-NOT-IMPLEMENTED | 2 |
 | WEAK-FALLBACK | 0 |
-| MISSING | 72 |
+| MISSING | 68 |
 
 ## By area
 
@@ -21,7 +21,7 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 |---|---:|---:|---:|---:|---:|
 | system | 10 | 8 | 0 | 0 | 2 |
 | process-thread | 43 | 24 | 2 | 0 | 17 |
-| memory | 19 | 4 | 0 | 0 | 15 |
+| memory | 19 | 8 | 0 | 0 | 11 |
 | io | 30 | 9 | 0 | 0 | 21 |
 | sync | 32 | 31 | 0 | 0 | 1 |
 | security | 10 | 5 | 0 | 0 | 5 |
@@ -97,13 +97,13 @@ handler found in `src/kernel/nt/*.c`. The rules are in the tool's docstring.
 | SSN | Service | Argc | Status | Handler file |
 |---|---|---:|---|---|
 | 0x0018 | `NtAllocateVirtualMemory` | 6 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
-| 0x0076 | `NtAllocateVirtualMemoryEx` | 7 | MISSING |  |
+| 0x0076 | `NtAllocateVirtualMemoryEx` | 7 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x001e | `NtFreeVirtualMemory` | 4 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x0050 | `NtProtectVirtualMemory` | 5 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x0023 | `NtQueryVirtualMemory` | 6 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
-| 0x003f | `NtReadVirtualMemory` | 5 | MISSING |  |
-| 0x003a | `NtWriteVirtualMemory` | 5 | MISSING |  |
-| 0x00f0 | `NtFlushVirtualMemory` | 4 | MISSING |  |
+| 0x003f | `NtReadVirtualMemory` | 5 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
+| 0x003a | `NtWriteVirtualMemory` | 5 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
+| 0x00f0 | `NtFlushVirtualMemory` | 4 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x0113 | `NtLockVirtualMemory` | 4 | MISSING |  |
 | 0x01d3 | `NtUnlockVirtualMemory` | 4 | MISSING |  |
 | 0x004a | `NtCreateSection` | 7 | MISSING |  |
