@@ -107,11 +107,11 @@ The parser in this directory is careful about bounds for most reads (`pe_check_r
 - `pe_export_build` returned export function RVAs at or above SizeOfImage (exports.dll fixture; the first hit minimised from 6899 to 4608 bytes with `--minimise`).
 - Fix: each case returns `PE_ERR_CORRUPT`. EndAddress is exclusive, so SizeOfImage itself is allowed for it. `pe_directory_get` already enforces the same bound for the directories.
 
-### L-16 [Medium] Import walk work is not bounded by the file size (open; needs owner decision)
-- **Status:** needs owner. Found by a hand-written probe, not by the fuzzer: the fuzzer's per-walk callback budget (size/8 + size/20 + 64) was never reached by its mutations.
-- `pe_imports_walk` walks each import descriptor's ILT to its zero terminator and keeps no total across descriptors. Several descriptors can point at the same ILT. The import directory is capped at 0x10000 bytes, so there are at most 3276 descriptors.
-- Probe (scratch program, not committed): a 512 KiB image with 3276 descriptors sharing one ILT of about 61000 thunks made 187,858,944 callbacks in 2.6 s. The same shape with 100 descriptors made 5,734,400 callbacks in 0.07 s. The work is descriptors times ILT length, so a 16 MiB file could reach about 7 x 10^9 callbacks.
-- Fix options: count thunks across the whole walk and fail with `PE_ERR_CORRUPT` above size/8, or reject descriptors whose ILT ranges overlap. Which of these is right depends on whether any real loader accepts shared ILTs. Not implemented.
+### L-16 [Medium] Import walk work is not bounded across descriptors
+- **Status:** fixed in 7f7e5d1; decision recorded in docs/decisions/0036-loader-import-walk-budget.md. Host tests: `test_import_thunk_budget_exact`, `test_import_thunk_budget_exceeded`, `test_import_descriptor_count_bounded` (the budget tests failed before the fix, reaching 263168 callbacks). Found by a hand probe, not the fuzzer.
+- `pe_imports_walk` walks each import descriptor's ILT to its zero terminator and kept no total across descriptors. Several descriptors can point at the same ILT. The import directory cap of 0x10000 bytes allowed 3275 descriptors.
+- Probe (scratch program, not committed): a 512 KiB image with 3276 descriptors sharing one ILT of about 61000 thunks made 187,858,944 callbacks in 2.6 s. The work is descriptors times ILT length, so a 16 MiB file could reach about 7 x 10^9 callbacks.
+- Fix: `PE_MAX_IMPORT_THUNKS` (262144) bounds thunks summed over the walk, and `PE_MAX_IMPORT_DESCRIPTORS` (1024) bounds descriptors. Exceeding either fails with `PE_ERR_CORRUPT` before the excess callback runs. Both are in `src/loader/pe_parse.h`.
 
 ## Not verified / out of scope
 - No compile, no sanitizer run, no fuzzing. Overflow claims are from reading the arithmetic.

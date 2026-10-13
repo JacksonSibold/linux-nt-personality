@@ -832,6 +832,11 @@ pe_status_t pe_imports_walk(const pe_context_t *ctx,
     u32 max_desc = imp_dir.size / sizeof(IMAGE_IMPORT_DESCRIPTOR);
     if (max_desc == 0) return PE_ERR_CORRUPT;
 
+    /* Totals for the whole walk (L-16).  Descriptors may share an ILT, so the
+     * per-descriptor loop alone does not bound the callbacks. */
+    u32 n_desc = 0;
+    u32 n_thunks = 0;
+
     for (u32 d = 0; d < max_desc; ++d) {
         u32 desc_off = imp_off + d * sizeof(IMAGE_IMPORT_DESCRIPTOR);
         IMAGE_IMPORT_DESCRIPTOR desc;
@@ -845,6 +850,9 @@ pe_status_t pe_imports_walk(const pe_context_t *ctx,
             desc.Name == 0 &&
             desc.FirstThunk == 0)
             break;
+
+        if (++n_desc > PE_MAX_IMPORT_DESCRIPTORS)
+            return PE_ERR_CORRUPT;
 
         u32 name_off;
         s = pe_rva_to_offset(ctx, desc.Name, &name_off);
@@ -885,6 +893,9 @@ pe_status_t pe_imports_walk(const pe_context_t *ctx,
             if (s != PE_OK) return s;
 
             if (thunk.u1.Ordinal == 0) break;
+
+            if (++n_thunks > PE_MAX_IMPORT_THUNKS)
+                return PE_ERR_CORRUPT;
 
             pe_import_symbol_t sym = {0};
             if (thunk.u1.Ordinal & IMAGE_ORDINAL_FLAG64) {
