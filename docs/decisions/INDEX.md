@@ -9,7 +9,7 @@ Status values:
 - **no-change**: the record is accepted and no code change is needed.
 - **open**: the record is proposed and not implemented.
 
-Snapshot: 2026-10-12, `HEAD` at the time this index was written. 71 records: 13 fixed, 16 open, 41 blocked, 1 no-change.
+Snapshot: 2026-10-12, `HEAD` at the time this index was written. 72 records: 14 fixed, 16 open, 41 blocked, 1 no-change.
 
 | Record | Title | Status | Finding | Commit |
 |---|---|---|---|---|
@@ -84,6 +84,7 @@ Snapshot: 2026-10-12, `HEAD` at the time this index was written. 71 records: 13 
 | [0069](0069-ntdll-win32-file-ops.md) | Win32 file operations report false success or always fail | blocked | ntdll K32-8 (Medium) | |
 | [0070](0070-ntdll-file-mapping.md) | File mappings return a fake handle | blocked | ntdll K32-12 (Medium) | |
 | [0071](0071-ntdll-registry-backend.md) | Registry functions always report "not found" | blocked | ntdll ADV-1 (Low) | |
+| [0072](0072-kernel-nt-lpc-ports.md) | LPC ports (NtCreatePort family) are not implemented | fixed | none (service gap) | fa370b1 |
 
 ## Notes
 

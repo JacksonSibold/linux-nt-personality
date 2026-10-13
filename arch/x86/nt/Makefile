@@ -9,6 +9,7 @@ obj-$(CONFIG_NT_PERSONALITY) += object.o
 obj-$(CONFIG_NT_PERSONALITY) += sync.o
 obj-$(CONFIG_NT_PERSONALITY) += security.o
 obj-$(CONFIG_NT_PERSONALITY) += job.o
+obj-$(CONFIG_NT_PERSONALITY) += port.o
 obj-$(CONFIG_NT_PERSONALITY) += nt_obj.o
 obj-$(CONFIG_NT_PERSONALITY) += nt_io.o
 obj-$(CONFIG_NT_PERSONALITY) += ntstatus_kernel.o

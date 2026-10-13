@@ -10,6 +10,7 @@ The project is an incomplete research prototype (see the top-level `README.md`).
 | [handle](./handle.md) | `handle.c`, `handle.h` | Per-process three-level handle table, pseudo-handles, duplication, and all-or-nothing inheritance into a new table. |
 | [registry](./registry.md) | `registry.c`, `registry.h` | Registry keys and values as object-manager objects, with a snapshot-file persistence stub. |
 | [sync](./sync.md) | `sync.c`, `sync.h` | Dispatcher objects (event, mutant, semaphore, timer, keyed event), WaitAny/WaitAll engine, address waits, thread alert state. |
+| [port](./port.md) | `port.c`, `port.h` | LPC ports: connection-oriented request/reply messages (NtCreatePort family), PORT_MESSAGE validation, connection queue, disconnect propagation. |
 | [security](./security.md) | `security.c`, `security.h` | SIDs, tokens (object type, process and thread slots, token services), ACLs and ACEs, security descriptors, `se_access_check`. |
 | [mm](./mm.md) | `mm.c`, `mm.h` | Virtual memory: reserve and commit, 64 KiB granularity, VAD map, guard pages, anonymous, file-backed and `SEC_IMAGE` sections. |
 | [image_plan](./image_plan.md) | `image_plan.h` | Layout planner for `SEC_IMAGE` sections: validates a PE file and produces its mapping plan. Userspace build. |
