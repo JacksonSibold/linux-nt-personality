@@ -2109,3 +2109,92 @@ NTSTATUS nt_svc_NtUnmapViewOfSection(unsigned long a0, unsigned long a1, unsigne
 }
 
 #endif /* __KERNEL__ */
+
+/* NtQuerySection core. SectionInformation and ReturnLength are kernel-side in
+ * the kernel build (the wrapper copies them out) and the caller's pointers in
+ * the kshim build. Only SectionBasicInformation (class 0) is supported. */
+static NTSTATUS nt_query_section_core(HANDLE SectionHandle, ULONG SectionInformationClass,
+                                      PVOID SectionInformation, SIZE_T SectionInformationLength,
+                                      PSIZE_T ReturnLength) {
+    const SIZE_T needed = sizeof(SECTION_BASIC_INFORMATION);
+    struct nt_object_header *hdr = NULL;
+    struct nt_section *sec;
+    SECTION_BASIC_INFORMATION *info;
+    NTSTATUS st;
+    if (SectionInformationClass == 1) return STATUS_NOT_IMPLEMENTED; /* SectionImageInformation */
+    if (SectionInformationClass != 0) return STATUS_INVALID_INFO_CLASS;
+    if (SectionInformationLength != needed) {
+        if (ReturnLength) *ReturnLength = needed;
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    if (!SectionInformation) return STATUS_ACCESS_VIOLATION;
+    st = ObReferenceObjectByHandle(kshim_current_process(), SectionHandle, &nt_section_type,
+                                   UserMode, SECTION_QUERY, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    sec = (struct nt_section *)nt_object_body(hdr);
+    info = (SECTION_BASIC_INFORMATION *)SectionInformation;
+    info->BaseAddress = NULL;   /* a section has no base until it is mapped */
+    info->AllocationAttributes = sec->attributes;
+    info->MaximumSize.QuadPart = (LONGLONG)sec->size;
+    ObDereferenceObject(hdr);
+    if (ReturnLength) *ReturnLength = needed;
+    return STATUS_SUCCESS;
+}
+
+/* Growing a section needs its backing resized, which kshim_section_create cannot
+ * do. The entry point reads no user memory and changes nothing. */
+#ifndef __KERNEL__
+
+NTSTATUS nt_svc_NtQuerySection(HANDLE SectionHandle, ULONG SectionInformationClass,
+                               PVOID SectionInformation, SIZE_T SectionInformationLength,
+                               PSIZE_T ReturnLength) {
+    return nt_query_section_core(SectionHandle, SectionInformationClass, SectionInformation,
+                                 SectionInformationLength, ReturnLength);
+}
+
+NTSTATUS nt_svc_NtExtendSection(HANDLE SectionHandle, PLARGE_INTEGER NewSectionSize) {
+    (void)SectionHandle; (void)NewSectionSize;
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+#else /* __KERNEL__ */
+
+/* The result is copied out only on success. ReturnLength is copied out
+ * whenever it is given, so a length mismatch still reports the needed size. */
+NTSTATUS nt_svc_NtQuerySection(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                               unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                               unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE SectionHandle = (HANDLE)a0;
+    ULONG SectionInformationClass = (ULONG)a1;
+    PVOID SectionInformation = (PVOID)a2;
+    SIZE_T SectionInformationLength = (SIZE_T)a3;
+    PSIZE_T ReturnLength = (PSIZE_T)a4;
+    SECTION_BASIC_INFORMATION kinfo;
+    SIZE_T kret = 0;
+    NTSTATUS st;
+    (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (ReturnLength && !access_ok(ReturnLength, sizeof(*ReturnLength)))
+        return STATUS_ACCESS_VIOLATION;
+    st = nt_query_section_core(SectionHandle, SectionInformationClass, &kinfo,
+                               SectionInformationLength, &kret);
+    if (NT_SUCCESS(st)) {
+        if (!SectionInformation || !access_ok(SectionInformation, sizeof(kinfo)) ||
+            copy_to_user(SectionInformation, &kinfo, sizeof(kinfo)))
+            return STATUS_ACCESS_VIOLATION;
+    }
+    if (ReturnLength && copy_to_user(ReturnLength, &kret, sizeof(kret)))
+        return STATUS_ACCESS_VIOLATION;
+    return st;
+}
+
+NTSTATUS nt_svc_NtExtendSection(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6; (void)a7;
+    (void)a8; (void)a9; (void)a10; (void)a11;
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+#endif /* __KERNEL__ */

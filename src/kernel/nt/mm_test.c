@@ -1518,6 +1518,52 @@ static int test_nt_svc_map_errors(void) {
     return 1;
 }
 
+/* ---- nt_svc_ section entry points: query / extend family ---- */
+
+/* SectionBasicInformation reports the size and the allocation attributes. A
+ * short buffer, an unknown class and a handle without SECTION_QUERY are refused. */
+static int test_nt_svc_query_section(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE h = NULL;
+    NTSTATUS st = nt_svc_NtCreateSection(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "query create 0x%lx", (unsigned long)st);
+    SECTION_BASIC_INFORMATION info;
+    SIZE_T ret = 0;
+    st = nt_svc_NtQuerySection(h, 0, &info, sizeof(info), &ret);
+    ASSERT(st == STATUS_SUCCESS, "query basic 0x%lx", (unsigned long)st);
+    ASSERT(info.MaximumSize.QuadPart == 0x2000, "query size 0x%llx", (unsigned long long)info.MaximumSize.QuadPart);
+    ASSERT(info.AllocationAttributes == SEC_COMMIT, "query attributes 0x%lx", (unsigned long)info.AllocationAttributes);
+    ASSERT(ret == sizeof(info), "query return length %zu", (size_t)ret);
+    ASSERT(nt_svc_NtQuerySection(h, 0, &info, sizeof(info) - 1, &ret) == STATUS_INFO_LENGTH_MISMATCH, "query short buffer");
+    ASSERT(nt_svc_NtQuerySection(h, 7, &info, sizeof(info), &ret) == STATUS_INVALID_INFO_CLASS, "query unknown class");
+    ASSERT(nt_svc_NtQuerySection(h, 1, &info, sizeof(info), &ret) == STATUS_NOT_IMPLEMENTED, "query image class");
+
+    HANDLE mapOnly = NULL;
+    st = nt_svc_NtCreateSection(&mapOnly, SECTION_MAP_READ, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "query map-only create 0x%lx", (unsigned long)st);
+    ASSERT(nt_svc_NtQuerySection(mapOnly, 0, &info, sizeof(info), &ret) == STATUS_ACCESS_DENIED, "query without SECTION_QUERY");
+    ASSERT(ObCloseHandle(g_mm_proc, mapOnly) == STATUS_SUCCESS, "query close map-only");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "query close");
+    return 1;
+}
+
+/* Extending a section is not implemented. The call changes nothing, so the
+ * size reported afterwards is the original one. */
+static int test_nt_svc_extend_section(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE h = NULL;
+    NTSTATUS st = nt_svc_NtCreateSection(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "extend create 0x%lx", (unsigned long)st);
+    LARGE_INTEGER bigger; bigger.QuadPart = 0x4000;
+    ASSERT(nt_svc_NtExtendSection(h, &bigger) == STATUS_NOT_IMPLEMENTED, "extend status");
+    SECTION_BASIC_INFORMATION info;
+    SIZE_T ret = 0;
+    ASSERT(nt_svc_NtQuerySection(h, 0, &info, sizeof(info), &ret) == STATUS_SUCCESS, "extend query");
+    ASSERT(info.MaximumSize.QuadPart == 0x2000, "extend left size unchanged");
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "extend close");
+    return 1;
+}
+
 int main(void) {
     printf("=== ntmm tests ===\n");
     if (!mm_setup_objects()) {
@@ -1558,6 +1604,8 @@ int main(void) {
     RUN_TEST(test_nt_svc_open_section_errors);
     RUN_TEST(test_nt_svc_map_unmap);
     RUN_TEST(test_nt_svc_map_errors);
+    RUN_TEST(test_nt_svc_query_section);
+    RUN_TEST(test_nt_svc_extend_section);
     ntmm_reset();
     ObDestroyProcessObject(g_mm_proc);
     ObCleanupObjectManager();

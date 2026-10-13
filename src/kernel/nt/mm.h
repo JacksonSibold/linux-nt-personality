@@ -139,9 +139,9 @@ typedef struct _MEMORY_REGION_INFORMATION {
 } MEMORY_REGION_INFORMATION, *PMEMORY_REGION_INFORMATION;
 
 typedef struct _SECTION_BASIC_INFORMATION {
-    ULONG_PTR Unknown;
-    ULONG     SectionAttributes;
-    LARGE_INTEGER SectionSize;
+    PVOID     BaseAddress;
+    ULONG     AllocationAttributes;
+    LARGE_INTEGER MaximumSize;
 } SECTION_BASIC_INFORMATION, *PSECTION_BASIC_INFORMATION;
 
 typedef struct _SECTION_IMAGE_INFORMATION {
@@ -301,6 +301,10 @@ NTSTATUS nt_svc_NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                                    PSIZE_T ViewSize, ULONG InheritDisposition,
                                    ULONG AllocationType, ULONG Win32Protect);
 NTSTATUS nt_svc_NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress);
+NTSTATUS nt_svc_NtQuerySection(HANDLE SectionHandle, ULONG SectionInformationClass,
+                               PVOID SectionInformation, SIZE_T SectionInformationLength,
+                               PSIZE_T ReturnLength);
+NTSTATUS nt_svc_NtExtendSection(HANDLE SectionHandle, PLARGE_INTEGER NewSectionSize);
 #endif
 NTSTATUS NtReadVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
                              PVOID Buffer, SIZE_T BufferSize,
