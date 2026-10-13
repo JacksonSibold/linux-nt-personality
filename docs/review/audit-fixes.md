@@ -186,9 +186,30 @@ These need a decision. None of them was changed in this pass.
 9. **`cc755fa`** (`src/kernel/nt/handle.c:533`, the `NtDuplicateObject` undo path): the undo path calls `ObCloseHandle` on the duplicate. If the caller passes `OBJ_PROTECT_FROM_CLOSE` in the duplicate's attributes, that close is refused, so the new handle and its object reference leak. The test covers only attributes 0.
 10. **`d4a33f2`** (`src/kernel/fs/binfmt_pe.c:55`, the ntdll reloc branch of `pe_map_ntdll`): on the ntdll path, a relocation directory above `PE_MAX_RELOC_BYTES` is skipped silently, so the image can load with no relocations applied. The exe path returns `-ENOEXEC`. The ntdll path should probably do the same.
 
-Notes outside the table (not changed):
+## SUSPECT: third-pass resolution
 
-- `arch/x86/nt/mm.c` (`NtFreeVirtualMemory`, decommit, about line 1231) has no wrap guard at all. It has the same defect as `d5728cf`. No commit in the range touches that path, so it is not counted above.
+Date: 2026-10-12. Branch `haiku/suspects2`, worktree `ntpers-suspects2`. Each SUSPECT above was re-read against its diff and audit note. Fixes are separate commits; the rest are decided here.
+
+| Commit | Resolution | Hash |
+|---|---|---|
+| `667d788` | accepted-with-reason: the 300-character create is rejected by the total-length check first (STATUS_NAME_TOO_LONG); the 255-character case still asserts STATUS_OBJECT_NAME_INVALID exactly. Still a rejection, and the commit message gives the reason | none |
+| `eef2786` | resolved OK: `build/gen_ntdll_def.py` run with the WinPython interpreter reproduces `src/ntdll/ntdll.def` byte for byte | none |
+| `1f334ce` | needs-owner: should `sprintf`/`vsprintf` keep the old 8191-byte bound, or silently cut output at 1023 bytes as now? The cut is silent, so a caller that formats 1024 or more bytes gets short output with no error | none |
+| `27030e1` | resolved OK: regenerated `ntdll.def` matches the checked-in copy; `_DllMainCRTStartup` is defined undecorated in `ntdll_main.c` and the shims, and the six `.def` copies agree | none |
+| `fd86cb3` | needs-owner: does Windows `VirtualAlloc` accept `flProtect` 0 with `MEM_RESERVE` alone? If it does, this commit makes a valid call fail (the fix would ignore protection for reserve-only). No Windows reference on this host, and `kernel32.c` is MinGW-only | none |
+| `e6d152f` | accepted-with-reason: the NULL branch cannot run, because `nt_svc_NtCreateThread` already reads `thr->tid` (proc_thread.c:1290) before calling `nt_setup_child_regs`. A `void` helper that returns silently is still fail-open; an error return needs a caller cleanup change, not made here | none |
+| `38b1b0a` | accepted-with-reason: the probe before the count change removes the fault in the normal case. The residual race is a user page unmapped between probe and `copy_to_user`; a rollback needs a second lock and can race other suspend/resume calls. Revisit if Windows-atomic semantics are wanted | none |
+| `b3dcef5` | accepted-with-reason: the IO-17 rewind (`pos -= got`) is correct. `kshim_kernel_read` advances `pos` by `got`, and a failed copy leaves the reported total unchanged. The commit message omits it (message-only gap) | none |
+| `cc755fa` | needs-owner: a duplicate created with `OBJ_PROTECT_FROM_CLOSE` cannot be undone, because the undo `ObCloseHandle` is refused (handle.c:371), leaving the handle and its reference. The fix is a design choice: refuse before creating when the source is protected, or remove the undo entry without the protection check | none |
+| `d4a33f2` | fixed: the ntdll reloc branch now returns `-ENOEXEC` for a directory above `PE_MAX_RELOC_BYTES`, as the exe path does. Not host-tested: `pe_map_ntdll` is static and needs the kernel file shims | `3daa005` |
+
+Also fixed in this pass, from the notes below: the decommit path in `arch/x86/nt/mm.c` had no wrap guard (same defect as `d5728cf`), now ported from `993c3ee`. Fixed in `ca5a2e0`.
+
+Checks on the fixed tree: `python -m unittest discover tests/unit`: 509 run, OK (skipped 1). `make -C tests/host test`, `make -C tests/ntdll-host test`, `make -C tests/kernel-host check`: all pass. `bash tests/syntax/check.sh`: 32 passed, 5 failed, 452 warnings, the same five files as before.
+
+Notes outside the table:
+
+- `arch/x86/nt/mm.c` (`NtFreeVirtualMemory`, decommit) had no wrap guard (same defect as `d5728cf`). Fixed in `ca5a2e0` (see the third-pass table).
 - `f942cb9`'s test (`src/kernel/nt/mm_test.c`) frees the section struct directly instead of closing the handle, so the handle table keeps an entry for freed memory. It is OK for the audited change but should be cleaned up.
 
 ## Per-commit audit

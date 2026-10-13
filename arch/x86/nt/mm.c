@@ -1231,6 +1231,8 @@ NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
     /* MEM_DECOMMIT */
     base = ntmm_round_down(base, NTMM_PAGE_SIZE);
     if (size == 0) return STATUS_INVALID_PARAMETER;
+    /* Reject a size whose page round-up wraps to 0 (it would pass the end check). */
+    if (size > (SIZE_T)(~(ULONG_PTR)0) - NTMM_PAGE_SIZE - base) return STATUS_INVALID_PARAMETER;
     size = (SIZE_T)ntmm_round_up(size, NTMM_PAGE_SIZE);
     ULONG_PTR end = base + size;
     ntmm_lock(mm);
