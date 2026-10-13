@@ -305,12 +305,13 @@ Six programs were added to `make stress`, each run with 16 workers and seeds 1 t
 - Open: the kernel branch keeps the old order. `vm_munmap` takes `mmap_lock`, and moving it under the VAD lock changes the lock order. That is a design decision.
 - Not kept: a shim self-test for the granule case. It could not be built, because Windows rejects a `MEM_RESERVE` at an address that is not 64K aligned, so a shared allocation base cannot be made from a fixed mapping.
 
-### REG-1 [Medium] NtSetValueKey persists a value after releasing the key lock (open)
+### REG-1 [Medium] NtSetValueKey persists a value after releasing the key lock (fixed fe55b39)
 
 - `stress_registry_test` (`7ac3e45`) faults under `KSHIM_POISON=1` at every seed run in `make stress` (seeds 1 to 3). `addr2line` puts the fault at `registry.c:294`, the read of `v->name.Buffer` in `persist_write_value`, with a bad read address of -1.
 - Cause: both branches of `NtSetValueKey` call `persist_write_value(k, target)` or `(k, nv)` after `write_unlock(&k->lock)`. `NtDeleteValueKey` removes the value under the lock and frees it, so a set that is still persisting reads freed memory. Without poison the freed memory usually still holds the old values, which is why unpoisoned runs pass.
-- Not fixed: moving the persist under the lock is not safe in the kernel. `k->lock` is an `rwlock_t`, and the persist path does file I/O. A fix needs a sleepable per-key lock covering set persistence and value free, or a deferred free. That is a design decision.
-- Related, not a memory error: `NtDeleteValueKey` persists the deletion after unlocking, so a concurrent set of the same name can be unlinked on disk after it was written. Not tested.
+- **Status:** fixed in fe55b39, with the regression test in f6535bc. Each key has a sleepable `persist_lock` (`struct mutex`). `NtSetValueKey` and `NtDeleteValueKey` hold it across the in-memory change and the disk write, so a value cannot be freed while a set persists it. Disk writes for one value now land in the order they were applied. Lock order: `persist_lock`, then the key `rwlock_t`. Readers and the snapshot take only the `rwlock_t`, as before. The host shim maps `struct mutex` to a pthread mutex (`kshim.h`). The kernel build was not compiled here.
+- The regression test is `registry_ops_test` case 7 (`test_delete_waits_for_persisting_set`). It holds a set in the persist window through the userspace-only seam `ntreg_test_persist_hook` and checks that a delete of the same value waits. It failed before the fix and passes after. `stress_registry_test` at 16 threads with `KSHIM_POISON=1` passes seeds 1 to 3 with no violations (before the fix it faulted at every seed).
+- Follow-up, open, not tested: `NtDeleteKey` removes the key's files without taking the value `persist_lock`. A value set racing with the key delete can recreate a file under the deleted key's directory. The stress test checks in-memory state, not disk state, so it does not see this.
 
 ### OB-1 [Medium] ObpRemoveFromDirectory reads the parent directory without a reference (open, suspected)
 
