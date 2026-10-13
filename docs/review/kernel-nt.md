@@ -323,10 +323,14 @@ Six programs were added to `make stress`, each run with 16 workers and seeds 1 t
 - `object.c` resolves a symlink only when it is the final component (around line 446). A link in the middle of a path returns `STATUS_OBJECT_PATH_NOT_FOUND`, because the link type has no parse routine. `stress_namespace_test` counts successful opens through a link, and that count is 0 on every run.
 - Not fixed: a parse routine for links changes path semantics. Not a concurrency issue.
 
-### SYNC-3 [Medium] stress_sync_test fails about half its runs at seed 2 (open, pre-existing, not minimised)
+### SYNC-3 [Medium] stress_sync_test handles invalidated under concurrent named event creates (fixed)
 
-- With 16 workers, the failing runs report `owned wait` and `close` returning `STATUS_INVALID_HANDLE` on handles the worker still holds (1 to 6 violations per run). On the current tree 5 of 7 runs failed at seed 2, with and without poison. The base commit `45a70b4` failed 1 of 4 runs with the same messages, so this predates this work. Changes `6707c84` and `2bac4c0` do not touch the sync path.
-- Not minimised. A handle slot being freed twice, or reused during the race round, is a guess and is not confirmed.
+- Symptom: with 8 or 16 workers, `owned wait` and `close` returned `STATUS_INVALID_HANDLE` on handles the worker still held. Before the fix, 10 of 80 runs failed over seeds 1 to 20 at 8 and 16 workers, with and without `KSHIM_POISON=1` (31 violations). The base commit `45a70b4` failed with the same messages, so this predates this work.
+- Minimised with the family mask `STRESS_SYNC_SKIP` (commit `f5a0869`). With named create off (`0x20`), seeds 5, 11 and 16 at 8 workers all passed. The failing runs had no leak, refcount or watchdog violation. The wait, signal and mutant paths were not implicated.
+- Root cause: `nt_create_event_internal` (`src/kernel/nt/nt_obj.c`) looks the name up by type, then inserts. When the insert returned `STATUS_OBJECT_NAME_COLLISION` (another creator took the name between the two steps, or another type holds it), the path returned that status without setting its handle. `nt_svc_NtCreateEvent` then copied the caller's uninitialised `HANDLE` back. The garbage value entered the worker's handle list and was closed, which invalidated handles other workers held.
+- Fixed in `af69b86`: on collision the holder is reopened by type. An event gives a valid handle with `NAME_COLLISION`. A different type gives `OBJECT_TYPE_MISMATCH` and no handle. Regression: `create_event_name_held_by_mutant` in `src/kernel/nt/sync_extra_test.c`. It reaches the same branch deterministically and returned `NAME_COLLISION` before the fix.
+- Verified after the fix: `stress_sync_test` seeds 1 to 20 at 16 workers pass with and without poison (40 of 40). `sync_test` and `sync_extra_test` pass.
+- Same pattern, not changed: the mutant and semaphore create paths in `nt_obj.c` and the timer create path in `sync.c` also reach a collision without setting their handle. The mutant and semaphore wrappers copy the uninitialised value back on `NAME_COLLISION`. The stress test does not name mutants or semaphores, so it does not reach them. Open as a follow-up.
 
 ### Confirmed, no change
 

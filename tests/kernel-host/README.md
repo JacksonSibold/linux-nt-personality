@@ -196,7 +196,7 @@ separate `BUILD=build-o2` directory (`build-*/` is git-ignored).
 - **Stress findings still open (`make stress` is not green).** Each is recorded in `docs/review/kernel-nt.md`, with the seed that reproduces it:
   - `stress_registry_test` faults under `KSHIM_POISON=1` (every seed): `NtSetValueKey` persists a value after releasing the key lock, and `NtDeleteValueKey` can free that value first (REG-1).
   - `stress_namespace_test` faults in a libwinpthread lock about one run in three under `KSHIM_POISON=1` (OB-1). Without poison it passed every run tried.
-  - `stress_sync_test` fails about half the runs at seed 2 with 16 workers, both with and without poison. The base commit before this work (`45a70b4`) fails the same way (SYNC-3, not minimised).
+  - `stress_sync_test` (SYNC-3) is fixed: a named event create that lost an insert race returned an uninitialised handle. Seeds 1 to 20 pass at 16 workers with and without poison. `STRESS_SYNC_SKIP` disables operation families for minimisation (see `stress_sync_test.c`).
   - Opening an event through a path that crosses a symbolic link always fails with `STATUS_OBJECT_PATH_NOT_FOUND` (OB-2). The namespace test keeps that probe, so its counter `thru_link` stays 0.
 
 ## Modules that cannot be built here
@@ -303,6 +303,6 @@ memory then produces a visibly wrong value or a fault.
 A watchdog thread in each program aborts the process with a report if no worker
 has completed an operation for 60 seconds. That is treated as a deadlock.
 
-Measured on this machine (2026-10-12, UCRT gcc, Windows 11, 16 workers, `KSHIM_POISON=1`, seed 2, default op counts): `stress_token_test` 1 s, `stress_handle_test` 2 s, `stress_section_test` 2 s, `stress_sd_test` 3 s, `stress_namespace_test` 11 s, `stress_object_test` 18 s, `stress_sync_test` 16 s (the timed waits dominate, and it fails about half the runs, see below), `stress_timer_test` 28 s, `stress_registry_test` faults in under 1 s (see below). A full `make stress STRESS_THREADS=16` (three seeds, nine programs) took about 2 min 40 s on the 2026-10-12 run, with the failures listed below. `make stress` writes each program's output to
+Measured on this machine (2026-10-12, UCRT gcc, Windows 11, 16 workers, `KSHIM_POISON=1`, seed 2, default op counts): `stress_token_test` 1 s, `stress_handle_test` 2 s, `stress_section_test` 2 s, `stress_sd_test` 3 s, `stress_namespace_test` 11 s, `stress_object_test` 18 s, `stress_sync_test` 16 s (the timed waits dominate; SYNC-3 is fixed, see below), `stress_timer_test` 28 s, `stress_registry_test` faults in under 1 s (see below). A full `make stress STRESS_THREADS=16` (three seeds, nine programs) took about 2 min 40 s on the 2026-10-12 run, with the failures listed below. `make stress` writes each program's output to
 `build/<program>.seed<N>.log`. `nt_obj.c` and `proc_thread.c` print debug lines
 (`W1_INSTR`, `NtWaitForSingleObject:`) on every call. Those lines are now compiled out unless `NT_DEBUG_TRACE` is defined (`src/kernel/nt/kshim.h`), so the logs are small by default.
