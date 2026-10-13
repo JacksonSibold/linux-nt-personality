@@ -463,3 +463,178 @@ Newest first. Files: basenames of the in-scope files each commit touches. Locati
 | `ef03f4b` | Makefile, nt_services.c, system_test.c | OK | src/kernel/nt/nt_services.c:144 | Resolution clamped; user outputs probed with access_ok and written with copy_to_user; the state update is unlocked (noted in the code). |
 | `c8f479e` | Makefile, mm.c, mm.h, mm_test.c | OK | src/kernel/nt/mm.c:1769 | Section references balanced: the VAD takes one per copy (mm.c:1809) and nt_vad_free drops it; the lookup reference is released after mapping; creation failure paths are safe. |
 | `c20dead` | nt_services.c, system_test.c | OK | src/kernel/nt/nt_services.c:163 | NtRaiseHardError refused; no user memory read or written; the count is checked. |
+
+
+# Fourth pass: commits after 2393db8
+
+Date: 2026-10-12. Branch `haiku/audit4`, worktree `ntpers-audit4`. This pass repeats the audit for every non-merge commit after `2393db8`, the newest audited row of the third pass, that touches `src`, `arch`, `build`, `tests` or `tools`. The range is `2393db8..e2d279e` (the HEAD at the start of this pass), which gives 98 commits. The table lists each once, newest first. Docs-only commits outside those paths are not in the table.
+
+## Method and limits
+
+- Focus areas were read line by line in context (`git show -U8`, callers checked by grep at the audited commit): the security descriptor slot (`bd5852e` and every `ObCreateObject` caller in `src`, `arch`, `tests`), the object namespace (directory, symlink, permanence, reference counting on lookup), thread priority, affinity and alert, the file-IO directory, lock, volume and rename paths, user-pointer copies, and error unwinds.
+- Other commits (registry, loader, binfmt, tooling, tests, docs-like files) were checked by diff skim and by the host test suite. Rows marked `(skim)` were not read line by line.
+- Verdicts from the third pass for commits in this range are repeated where they still apply. The pass-3 fixes are marked as such; they were not re-audited for a new defect beyond a re-read.
+- Host limits, as in the earlier passes: `access_ok` is `1` in the host shim (`src/kernel/nt/kshim.h:73`), `copy_from_user` is `memcpy`, and there is no allocation-failure injection. Fixes for those paths are not host-tested. The commit messages say so.
+- The kernel build was not run (no kernel headers on this host). `src/kernel/nt` is copied over `arch/x86/nt` by `vm/kbuild.sh:78-79`, so kernel-only code in `src/kernel/nt` was checked as kernel code.
+- The Python unit suite was run with `-I` under the WinPython interpreter (`C:/Users/Jackson/AppData/Local/Programs/WinPython/WPy64-3.13.12.0/python/python.exe`), not `python3`.
+
+## Results
+
+| Verdict | Count |
+|---|---|
+| OK | 74 |
+| SUSPECT | 15 |
+| BROKEN | 9 (all fixed; 4 new in this pass, 5 carried from pass 3) |
+| Audited | 98 |
+
+Verdicts count each audited hash once. `bc82d49` and `22f2688` are BROKEN and also carry a SUSPECT note. The BROKEN rows for `c229350`, `74ca2e6`, `22f2688` and `bc82d49` are new in this pass. `ca5a2e0`, `10ddb43`, `b891048`, `cc1bbde` and `993c3ee` were BROKEN in pass 3 and are listed again because they are in this range; their fixes were already committed.
+
+## Fixes applied
+
+One commit per item, in branch order (oldest first). Each references the audited hash. None is pushed.
+
+- **170edb9** `fix(nt/io): bound the rename name by the information buffer`, for `bc82d49`. `ntio_set_rename` read `FileNameLength` bytes without checking them against the buffer length, and truncated the length to USHORT. The new test `rename_name_length_bounded` (`src/kernel/nt/io_test.c`) fails before the change (`STATUS_ACCESS_DENIED`, not `STATUS_INFO_LENGTH_MISMATCH`) and passes after it.
+- **520cf42** `fix(nt/io): release the RootDirectory reference in rename`, for `bc82d49`. `ntio_handle_lookup` takes a reference that the rename never dropped (`io.c:2693`). The new test `rename_root_directory_releases_ref` fails before the change (a `FILE_SHARE_NONE` open of the directory returned `STATUS_SHARING_VIOLATION`) and passes after it. The test does not check the rename status, see the SUSPECT list.
+- **e3bf004** `fix(nt/io): allocate the new path before a rename succeeds`, for `bc82d49`. A failed `kstrdup` after the rename left `linux_path` NULL with `STATUS_SUCCESS` (`io.c:2731`). Not host-tested (no allocation injection).
+- **dca4180** `fix(nt/obj): do not make a discarded NtDuplicateObject duplicate protected`, for `74ca2e6`. A duplicate made with `OBJ_PROTECT_FROM_CLOSE` and no `TargetHandle` could not be closed again, so the handle count rose on every call. The new case in `duplicate_null_target` (`src/kernel/nt/object_extra_test.c`) fails before the change and passes after it.
+- **6c650e3** `fix(nt/proc_thread): copy the thread information value from user memory`, for `22f2688`. `NtSetInformationThread` dereferenced the user pointer `Info` directly. It now uses `access_ok` and `copy_from_user`. Not host-tested (the host shim cannot fault).
+- **39e7e0a** `fix(nt/io_test): compile the scratch cleanup call only where it is declared`, for `c229350`. The syntax check failed on `src/kernel/nt/io_test.c` (implicit declaration). The prelude now defines `KHOST_SCRATCH_CLEANUP` and the call is guarded by it.
+
+## Checks on the fixed tree
+
+- `make -C tests/kernel-host check-quick`: all programs exit 0.
+- `make -C tests/kernel-host check`: exit 0. Under `io_test`, 31 passed, 0 failed; under `object_extra_test`, 29 passed, 0 failed.
+- Python unit suite (`-I -m unittest discover tests/unit`): 538 run, OK (skipped 1).
+- `bash tests/syntax/check.sh`: passed 36, failed 5, warnings 483. The five failures are the same as the third pass (`src/kernel/nt/dispatch.c`, `src/kernel/nt/kshim.c`, `src/kernel/fs/binfmt_pe.c`, `src/kernel/fs/binfmt_pe_test.c`, `arch/x86/nt/dispatch.c`). The `io_test.c` failure from `c229350` is fixed in 39e7e0a.
+
+## SUSPECT: for review
+
+These need a decision. None was changed in this pass.
+
+1. **`cbd67a7`** (`src/kernel/nt/nt_obj.c:957`): the userspace `NtCreateSymbolicLinkObject` does not check `LinkTarget->Buffer` before the copy. Host-only; the kernel branch checks it.
+2. **`7a676a1`** (`src/kernel/nt/object.c:648`): `OBJECT_ATTRIBUTES.RootDirectory` is ignored by `ObInsertOrOpenNamedObject`, so a relative name fails. Decide whether to implement it. It is a missing feature, not an unsafe path.
+3. **`6b86fe8`** (`src/kernel/nt/object.c:882`): `is_permanent` is set but never read. An anonymous `OBJ_PERMANENT` object is freed on its last handle close. Decide whether permanence should hold a reference.
+4. **`3477776`** (`src/kernel/nt/security.c:2796`): `NtSetSecurityObject` on an object with no descriptor returns `STATUS_ACCESS_DENIED`, so the owner cannot attach one. The code comment states the choice. Confirm it is intended.
+5. **`ef03f4b`** (`src/kernel/nt/nt_services.c:49`): one global timer-resolution request; a release by one caller resets it for all. Documented model limit; the state is not locked.
+6. **`22f2688`** (`src/kernel/nt/proc_thread.c:2023`, `src/kernel/nt/sync.c:566`): the alert flag is split. `NtAlertThread` and `NtAlertResumeThread` set `nt_ethread.alerted`. Alertable waits test and clear `struct nt_thread.alerted`, and nothing in production sets that field (`nt_thread_alert` is only called from its own test). So an alert does not satisfy an alertable wait. `NtTestAlert` (`iocp.c:769`) does see the `nt_ethread` flag. This needs one flag for both paths.
+7. **`9bb018d`** (`src/kernel/nt/dispatch.c:348`): if `NtAllocateVirtualMemoryEx` succeeds and the copy-out of base or size faults, the region stays committed and the caller never gets its address.
+8. **`7e43c43`** (`src/kernel/nt/io.c:3593`): directory entry names are widened one byte per character, so non-ASCII host names are wrong. `opendir` failure maps to `STATUS_ACCESS_DENIED`.
+9. **`7bc43a3`** (`src/kernel/nt/io.c:621`): the lock conflict test computes `start + length` and `l->start + l->length` without an overflow check. A plain read or write near a file offset of 2^63 gives undefined arithmetic. No unsafe access was found.
+10. **`bc82d49`** (`src/kernel/nt/io.c:2703`): a `RootDirectory` name goes through `kshim_ntpath_to_linux`, which treats it as absolute, so the rename lands under the scratch root. `NtCreateFile` strips the root after translation (`io.c:1100-1130`); rename does not. Fix by following the create path. Relative renames do not work until then.
+11. **`4260f62`** (`src/kernel/nt/security.c:2530`): `ntsec_sr_length` adds the offsets as `ULONG` after the 64-bit comparison, so a wrapped sum can give a small total. `sd_from_self_relative` rejects the result, so the outcome is fail-closed. Keep the total 64-bit. (Pass-3 SUSPECT 6, unchanged.)
+12. **`c1934e9`** (`src/kernel/nt/sync.c:869`): `timer_expiry_100ns` computes `now - due` for a relative due time and overflows at `INT64_MIN`. (Pass-3 SUSPECT 5, unchanged.)
+13. **`1e8f0dd`** (`src/kernel/nt/security.c:2174`): `TokenStatistics` returns the low 32 bits of a kernel pointer as `TokenId.LowPart`. The fill pass of `ntsec_query_token` (`security.c:2233`) has no bound against the measured size. (Pass-3 SUSPECT 4, unchanged.)
+14. **`0520a92`** (`src/kernel/nt/registry.c:1045`): `snap_walk_key` recurses once per key level with no depth bound. (Pass-3 note, unchanged.)
+15. **`ecc7f83`** (`src/kernel/nt/object.c:309`): the fix re-checks `parent_dir` under the directory lock, but the first read is unlocked. If `directory_delete` frees the directory between the read and the lock, the lock is taken on freed memory. A lock on the directory pointer is needed.
+16. **`b9661c2`** (`src/kernel/nt/sync.c:2857`): `keyed_event_op` passes access 0 for WAIT and RELEASE. (Pass-3 SUSPECT 3, unchanged.)
+17. **`0258238`** (`src/kernel/nt/sync.c:2708`): `NtSignalAndWaitForSingleObject` references both handles with access 0. (Pass-3 SUSPECT 2, unchanged.)
+
+Observed, not a verdict:
+
+- `proc_thread_test` prints `leaks 34` at exit and still returns 0. The line is the same before and after `6c650e3`.
+- `io_test` syntax warnings rose from the third-pass count with the new tests. They were not classified individually.
+
+## Per-commit audit
+
+Newest first. Files: basenames of every file the commit touches. Location: `file:line` in the post-image at HEAD (`e2d279e` for unchanged code), or at the commit where the line was first changed.
+
+| Commit | Files | Verdict | Location | Reason |
+|---|---|---|---|---|
+| `74ca2e6` | nt_obj.c, object_extra_test.c | BROKEN | `src/kernel/nt/nt_obj.c:619-623` | Userspace path with NULL TargetHandle closes a duplicate made with OBJ_PROTECT_FROM_CLOSE; ObCloseHandle refuses (handle.c:371), so the handle count rose by one. Fixed in dca4180. |
+| `fec4217` | handle.c, handle.h, nt_obj.c, object_extra_test.c | OK | `src/kernel/nt/handle.c:410` | Class 4 read per handle with length check; both branches. Cosmetic: the "Set the Inherit..." comment now sits above ObGetHandleFlags and ObSetHandleFlags has none. |
+| `6c153ff` | nt_obj.c, object_extra_test.c | OK | `src/kernel/nt/nt_obj.c:970` | Kernel branch checks access_ok for the caller's string and copies the target through a bounded kernel buffer; userspace branch checks MaximumLength before memcpy. |
+| `934d67b` | nt_obj.c, object.c, object_extra_test.c | OK | `src/kernel/nt/object.c:852` | OBJ_OPENLINK only for the symlink type; the type check at object.c:444-453 covers the other types. |
+| `cbd67a7` | nt_obj.c, object_extra_test.c | SUSPECT | `src/kernel/nt/nt_obj.c:957` | Userspace branch passes LinkTarget to ObCreateSymbolicLinkObject without checking Buffer; a nonzero Length with NULL Buffer faults on the host. The kernel branch checks it. |
+| `455346f` | nt_obj.c, object.h, object_extra_test.c | OK | `src/kernel/nt/nt_obj.c:143` | nt_dir_fill: two passes under one read lock; stage bound rec*(take+2)+strs+sz checked before each take; records 8-aligned; kernel branch stages at most NT_DIR_QUERY_MAX. |
+| `ef074ff` | nt_obj.c, object_extra_test.c | OK | `src/kernel/nt/nt_obj.c:1000` | Opens through ObpParsePath with type directory; no handle leak on type mismatch (checked). |
+| `7a676a1` | nt_obj.c, object.c, object.h, object_extra_test.c | SUSPECT | `src/kernel/nt/object.c:648` | RootDirectory in OBJECT_ATTRIBUTES is ignored by ObInsertOrOpenNamedObject; a relative name fails as PATH_SYNTAX_BAD. Not an unsafe path, a missing NT feature. Decide whether to implement. |
+| `6b86fe8` | Makefile, nt_obj.c, object.c, object.h, object_extra_test.c, security.c, security.h | SUSPECT | `src/kernel/nt/object.c:882` | is_permanent is set (object.c:301, 891) but nothing reads it. An anonymous OBJ_PERMANENT object is freed on its last handle close, so permanence holds only while the object sits in a directory. |
+| `6c194aa` | security.c, security_extra_test.c | OK | `src/kernel/nt/security.c:3080` | Audit is a no-op by design (documented in the comment); the access decision uses the same core as NtAccessCheck. |
+| `94efa84` | DEVELOPMENT.md, KNOWN-ISSUES.md, README.md, SERVICES.md, registry.md, service_inventory.py, test_service_inventory.py | OK | `tools/service_inventory.py` | Tooling and docs only; covered by the Python unit run. |
+| `efa987d` | Makefile, README.md | OK | `tests/kernel-host/Makefile` | Build target and docs only. |
+| `07afc54` | Makefile, sync_test.c | OK | `tests/kernel-host/sync_test.c` | Test iteration count from environment; default unchanged. |
+| `37685de` | security.c, security_extra_test.c | OK | `src/kernel/nt/security.c:2800` | Owner, group and DACL set under the object's current descriptor; SACL and no-descriptor cases return before any change. |
+| `c229350` | Makefile, io_test.c, khost_prelude.h, posix_host.c | BROKEN | `src/kernel/nt/io_test.c:82` | Calls khost_scratch_arm_cleanup, declared only in the kernel-host prelude; the syntax check (tests/syntax/check.sh) failed on io_test.c. Fixed in 39e7e0a. |
+| `bb51ab6` | registry.c | OK | `src/kernel/nt/registry.c` | Pass-3 fix (old value kept when allocation fails); re-read, no defect. |
+| `0fad804` | sync.c | OK | `src/kernel/nt/sync.c` | Pass-3 fix (probe before the timer changes); re-read, no defect. |
+| `6b45e31` | sync.c | OK | `src/kernel/nt/sync.c` | Pass-3 fix (keyed-event handle closed on copy-out fault); re-read, no defect. |
+| `1c8145e` | sync.c | OK | `src/kernel/nt/sync.c` | Pass-3 fix (timer handle closed on copy-out fault); re-read, no defect. |
+| `0caabcd` | io.c | OK | `src/kernel/nt/io.c` | Pass-3 fix (zeroed FILE_NETWORK_OPEN_INFORMATION); re-read, no defect. |
+| `b5e7ecf` | io.c | OK | `src/kernel/nt/io.c` | Pass-3 fix (zeroed FILE_BASIC_INFORMATION); re-read, no defect. |
+| `e1486e9` | mm.c | OK | `src/kernel/nt/mm.c` | Pass-3 fix (top-page wrap guard); re-read, no defect. |
+| `bfd5d93` | mm.c, mm_test.c | OK | `src/kernel/nt/mm.c` | Pass-3 fix (flush wrap guard); re-read, no defect. |
+| `3477776` | object.c, object.h, security.c, security.h, security_extra_test.c | SUSPECT | `src/kernel/nt/security.c:2796` | A descriptor-less object refuses every set with ACCESS_DENIED (the owner cannot set one). The code comment states the choice. Confirm it is intended. |
+| `2c79f14` | proc_thread.c, proc_thread.md, proc_thread_test.c | OK | `src/kernel/nt/proc_thread.c` | Terminate and suspend status codes; error paths unchanged in shape. |
+| `c20dead` | nt_services.c, system_test.c | OK | `src/kernel/nt/nt_services.c` | Refusal after argument validation; no state change. |
+| `c8f479e` | Makefile, mm.c, mm.h, mm_test.c | OK | `src/kernel/nt/mm.c` | Section handles through the object table (ADR 0001); section struct is freed by the object delete path. |
+| `ef03f4b` | Makefile, nt_services.c, system_test.c | SUSPECT | `src/kernel/nt/nt_services.c:49` | One global timer-resolution request. Release resets it for every caller, and the state is not locked (the commit says so). Model limit, not an unsafe access. |
+| `22f2688` | io_test.c, iocp.c, proc_thread.c, proc_thread.h, proc_thread_test.c | BROKEN | `src/kernel/nt/proc_thread.c:2033` | NtSetInformationThread dereferenced the user pointer Info directly; in the kernel build (src/kernel/nt copied over arch/x86/nt by vm/kbuild.sh) that is an unchecked user access. Fixed in 6c650e3. Also SUSPECT: NtAlertThread sets nt_ethread.alerted (proc_thread.c:2023) while the wait paths test struct nt_thread.alerted (sync.c:566); nothing in production sets that field, so an alert does not satisfy an alertable wait. |
+| `bd5852e` | object.c, object.h, object_test.c | OK | `src/kernel/nt/object.c:746` | Set copies outside the lock and swaps under ob_sd_lock; old copy freed after unlock; freed once in ObDereferenceObject (object.c:735). All ObCreateObject callers leave SecurityDescriptor NULL (grep: nt_obj.c, sync.c, registry.c, mm.c, security.c, object.c), so nothing borrowed is lost. |
+| `9bb018d` | dispatch.c, mm.c, mm.h, mm_test.c | SUSPECT | `src/kernel/nt/dispatch.c:348` | If NtAllocateVirtualMemoryEx allocates and then copy_to_user of the base or size fails, the region stays committed and the caller never learns its address. |
+| `4d4b483` | io.c, io.h, io_test.c | OK | `src/kernel/nt/io.c` | Refuses every class with the documented status; no buffer use. |
+| `c354ebf` | io.c, io.h, io_test.c | OK | `src/kernel/nt/io.c` | FileFsDeviceInformation copied with length check; other classes return before any copy. Output fields all set. |
+| `7e43c43` | io.c, io.h, io_test.c, khost_prelude.h, posix_host.c | SUSPECT | `src/kernel/nt/io.c:3593` | Entry names are host bytes widened one byte per WCHAR (wname[i]=(WCHAR)(unsigned char)name[i]); non-ASCII names come out wrong. Also opendir failure maps to STATUS_ACCESS_DENIED, not NOT_A_DIRECTORY. Buffer bounds are correct (cur_off+size checked before each fill). |
+| `d34f367` | object.h | OK | `src/kernel/nt/object.h` | Fields appended at the end; no offsets used outside object.c. |
+| `8c0b86c` | dispatch.c, mm.c, mm.h, mm_test.c | OK | `src/kernel/nt/mm.c` | NtFlushVirtualMemory; the top-page guard is the one fixed in bfd5d93. |
+| `7bc43a3` | io.c, io.h, io_test.c | SUSPECT | `src/kernel/nt/io.c:621` | ntio_lock_conflicts computes start + length and l->start + l->length without an overflow check. The lock path bounds start+len (io.c:3386 caller), but a plain read or write at a file offset near 2^63 can overflow in the conflict test. Undefined arithmetic only; no unsafe access found. |
+| `64476d7` | io.c, io.h, io_test.c | OK | `src/kernel/nt/io.c` | Pass-3 fix (zeroed FILE_NETWORK_OPEN_INFORMATION); re-read, no defect. |
+| `760d12e` | io.c, io.h, io_test.c | OK | `src/kernel/nt/io.c` | CancelIoFile; reads pending list under the file lock; no reference left behind (skim). |
+| `7e90685` | io.c, io.h, io_test.c | OK | `src/kernel/nt/io.c` | FlushBuffersFileEx; delegates to the existing flush path (skim). |
+| `6b71651` | io.c, io.h, io_test.c | OK | `src/kernel/nt/io.c` | EA query and set: length and class checks before copy (skim). |
+| `e0b4227` | io.c, io.h, io_test.c | OK | `src/kernel/nt/io.c` | DeviceIoControl and FsControl: unsupported codes refuse before copy (skim). |
+| `bc82d49` | io.c, io.h, io_test.c, posix_host.c | BROKEN | `src/kernel/nt/io.c:2675` | FileNameLength was not checked against the buffer length, so the name was read past the caller's buffer and the length was truncated to USHORT. Fixed in 170edb9. The RootDirectory reference was never released (io.c:2693). Fixed in 520cf42. The new path was duplicated after the rename (io.c:2731), so a failed allocation left the file moved with linux_path NULL and SUCCESS. Fixed in e3bf004. Also SUSPECT: a RootDirectory name goes to kshim_ntpath_to_linux (io.c:2703), which treats it as absolute, so the rename lands under the scratch root. NtCreateFile strips the root after translation (io.c:1100-1130); rename does not. |
+| `6e8f5bf` | registry.c, registry_test.c | OK | `src/kernel/nt/registry.c` | REG_OPTION_CREATE_LINK refused before any state change (skim). |
+| `eb0ede7` | io.c, io.h, io_test.c | OK | `src/kernel/nt/io.c` | Query classes: each length checked before copy-out; unknown classes refused (skim). |
+| `18d429d` | io_test.c, iocp.c, iocp.h | OK | `src/kernel/nt/iocp.c` | NtQueryIoCompletion looks the port up, drops the reference before the copy-out, and both branches copy with checks. |
+| `a90862b` | dispatch.c, mm.c, mm.h, mm_test.c | OK | `src/kernel/nt/mm.c:1533` | ntmm_transfer: wrap of addr+size clamped; each run checked by ntmm_access_run; copy failure breaks with the partial count. The 4 KiB bounce buffer on the kernel stack is the pass-3 SUSPECT 7 class. |
+| `00b5a3f` | mm.c, mm.h, mm_test.c | OK | `src/kernel/nt/mm.c` | MemoryRegionInformation; WS and filename classes refused (skim). |
+| `4260f62` | security.c, security.h, security_extra_test.c | SUSPECT | `src/kernel/nt/security.c:2530` | ntsec_sr_length: the offset is added as ULONG (total = (ULONG)(offs[i]+size)) after a 64-bit comparison, so a wrapped sum can give a small total. sd_from_self_relative rejects the descriptor, so the outcome is fail-closed (pass-3 SUSPECT 6). Fix: keep total 64-bit. |
+| `1f292a1` | sync_extra_test.c | OK | `src/kernel/nt/sync_extra_test.c` | Comment only. |
+| `b3adda7` | sync.c, sync_extra_test.c | OK | `src/kernel/nt/sync.c` | NtReleaseKeyedEvent waits for a waiter to take the release; no reference change (skim). |
+| `8f099f2` | sync.c, sync_extra_test.c | OK | `src/kernel/nt/sync.c:1012` | NtSetTimer refuses a user APC routine before any state change. |
+| `c1934e9` | sync.c, sync.h, sync_extra_test.c | SUSPECT | `src/kernel/nt/sync.c:869` | Timer thread now waits on timer_cond to an absolute deadline; cancel waits for thread exit. timer_expiry_100ns still computes now - due for a negative (relative) due time, which overflows for INT64_MIN (pass-3 SUSPECT 5, unchanged). |
+| `5014421` | nt_obj.c, sync.c, sync_extra_test.c | OK | `src/kernel/nt/sync.c` | Timers accepted by the wait services; the wait path does not reference the timer beyond the wait block (skim). |
+| `ec4c86d` | security.c, security_extra_test.c | OK | `src/kernel/nt/security.c` | NtDuplicateToken: access and type checked; new token referenced by the handle (skim). |
+| `1e8f0dd` | security.c, security.h, security_extra_test.c | SUSPECT | `src/kernel/nt/security.c:2174` | TokenStatistics returns the low 32 bits of a kernel pointer as TokenId.LowPart (partial address disclosure). The fill pass of ntsec_query_token (security.c:2201) has no bound against the measured size. Pass-3 SUSPECT 4, unchanged. |
+| `c56cc62` | security.c, security.h, security_extra_test.c | OK | `src/kernel/nt/security.c` | NtOpenProcessToken(Ex) and NtOpenThreadToken(Ex): access and reference checked (skim). |
+| `2a73077` | object.c, object.h, security.c, security.h, security_extra_test.c | OK | `src/kernel/nt/object.c` | Primary token and impersonation slots: the old value is dereferenced on replace (skim). |
+| `2676f9e` | registry.c, registry_test.c | OK | `src/kernel/nt/registry.c` | Align64 information classes; buffer lengths checked (skim). |
+| `295b44f` | Makefile, object.c, object.h, security.c, security_extra_test.c | OK | `src/kernel/nt/object.c` | Token object type and handle helper; reference taken by ObCreateTokenHandle (skim). |
+| `3e98e64` | README.md | OK | `tests/kernel-host/README.md` | Docs only. |
+| `f2ce759` | registry.c, registry_test.c | OK | `src/kernel/nt/registry.c` | KeyNodeInformation length checked before the copy (skim). |
+| `3f63828` | registry.c, registry_test.c | OK | `src/kernel/nt/registry.c:950` | NtDeleteKey nested removal: registry_find_key returns a referenced key, released on every path; the subkey entry's reference is dropped under the parent lock. |
+| `0520a92` | registry.c, registry.h, registry_test.c | SUSPECT | `src/kernel/nt/registry.c:1045` | snap_walk_key recurses once per key level with no depth bound; a deep key tree can exhaust the kernel stack in NtFlushKey (pass-3 note, unchanged). |
+| `8140aec` | proc_thread.c | OK | `src/kernel/nt/proc_thread.c` | Per-call prints behind NT_DEBUG_TRACE; no logic change. |
+| `b2b3e3b` | nt_obj.c | OK | `src/kernel/nt/nt_obj.c` | Per-call prints behind NT_DEBUG_TRACE; no logic change. |
+| `a9fc20b` | kshim.h | OK | `src/kernel/nt/kshim.h` | NT_TRACE macros; no logic change. |
+| `5c5b570` | Makefile | OK | `tests/kernel-host/Makefile` | Build wiring only. |
+| `7f7e5d1` | 0036-loader-import-walk-budget.md, pe_parse.c, pe_parse.h, test_pe_parse.c | OK | `src/loader/pe_parse.c` | Import walk total bounded across descriptors (skim). |
+| `ecc7f83` | README.md, object.c | SUSPECT | `src/kernel/nt/object.c:309` | The fix re-checks parent_dir under the directory lock, but the first read of obj->parent_dir (object.c:309) is unlocked. If the directory is freed by directory_delete between that read and the lock, the lock is taken on freed memory. Needs a lock on the directory pointer. |
+| `f8a0644` | sync.c, sync_extra_test.c | OK | `src/kernel/nt/sync.c` | NtYieldExecution; no state (skim). |
+| `b9661c2` | sync.c, sync_extra_test.c | SUSPECT | `src/kernel/nt/sync.c:2857` | keyed_event_op passes access 0 for WAIT and RELEASE, so KEYEDEVENT_WAIT and KEYEDEVENT_WAKE are not checked (pass-3 SUSPECT 3, unchanged). |
+| `0258238` | sync.c, sync_extra_test.c | SUSPECT | `src/kernel/nt/sync.c:2708` | NtSignalAndWaitForSingleObject references both handles with access 0 (pass-3 SUSPECT 2, unchanged). |
+| `3daa005` | binfmt_pe.c | OK | `src/kernel/fs/binfmt_pe.c:55` | Relocation directory size bounded before the walk (pass 3 verdict). |
+| `8ea698f` | sync.c, sync.h, sync_extra_test.c | OK | `src/kernel/nt/sync.c` | NtQueryTimer class 0 only; length and output checked (pass 3 verdict). |
+| `ca5a2e0` | mm.c | BROKEN | `arch/x86/nt/mm.c:1300` | Decommit wrap guard underflowed for a base in the top page (pass 3). Fixed in e1486e9. |
+| `06c28f3` | DEVELOPMENT.md, ci.yml, run_all_checks.sh | OK | `build/ci.yml` | CI wiring only. |
+| `663b877` | fuzz_pe.c, fuzz_plat.c | OK | `tests/fuzz/Makefile` | Build define only. |
+| `b448667` | pe_parse.c | OK | `src/loader/pe_parse.c` | Walker RVAs at or above SizeOfImage rejected (skim). |
+| `50dbf92` | Makefile, README.md, stress_common.h, stress_handle_test.c, stress_object_test.c, stress_sync_test.c | OK | `tests/kernel-host/stress_handle_test.c` | Stress programs; counts violations and exits nonzero. Not part of check. |
+| `a164b43` | kshim.c | OK | `tests/kernel-host/shim/kshim.c` | KSHIM_POISON debug option only. |
+| `10ddb43` | sync.c, sync_extra_test.c | BROKEN | `src/kernel/nt/sync.c:2557` | PreviousState and CurrentState probed after the timer changed (pass 3). Fixed in 0fad804. |
+| `3047209` | test_pe_parse.c | OK | `tests/host/test_pe_parse.c` | Test additions only. |
+| `b891048` | Makefile, sync.c, sync_extra_test.c | BROKEN | `src/kernel/nt/sync.c:2484` | Timer handle left in the process table when the copy-out faults (pass 3). Fixed in 1c8145e. |
+| `f9698f5` | .gitignore, Makefile, fuzz_pe.c, fuzz_plat.c, fuzz_plat.h | OK | `tests/fuzz/fuzz_pe.c` | Deterministic fuzzer; exits 1 on a finding. |
+| `41b0102` | service_inventory.py | OK | `tools` | Executable bit only. |
+| `d5e0b2e` | README.md, service_inventory.py, syscall-dispatch.md | OK | `docs and tools` | Counts and docs. |
+| `6db83e7` | i2_test.c, object_test.c | OK | `src/kernel/nt/object_test.c:400` | Bare returns now assert. |
+| `cc1bbde` | SERVICES.md, io.c, io.h, io_test.c | BROKEN | `src/kernel/nt/io.c:2742` | FILE_BASIC_INFORMATION copied out with 4 uninitialised tail bytes (pass 3). Fixed in b5e7ecf. |
+| `993c3ee` | mm.c, mm_test.c | BROKEN | `src/kernel/nt/mm.c:1232` | Protect and decommit size guard ran after rounding; a size within a page of SIZE_MAX passed (pass 3). Fixed in e1486e9. |
+| `fd00d2a` | SERVICES.md, handle.c, handle.h, i2_test.c, nt_obj.c | OK | `src/kernel/nt/nt_obj.c:748` | ObjectInformation probed and copied; flags set under the table lock (pass 3 verdict). |
+| `42ee3d6` | SERVICES.md, i2_test.c, nt_services.c | OK | `src/kernel/nt/nt_services.c:136` | NULL checked; 1601 epoch constant (pass 3 verdict). |
+| `8e70c92` | DEVELOPMENT.md, KNOWN-ISSUES.md, README.md, SERVICES.md, ci.yml, service_inventory.py, test_service_inventory.py | OK | `tools/service_inventory.py` | Tooling; Python unit run passes. |
+| `53469cc` | README.md | OK | `tools/criteria_trace.py` | Docs only. |
+| `05927a9` | test_criteria_trace.py | OK | `tests/unit/test_criteria_trace.py` | Unit tests; suite passes. |
+| `67df457` | criteria_trace.py | OK | `tools/criteria_trace.py` | Tooling. |
+| `25bc012` | io.c, nt_io.c | OK | `src/kernel/nt/io.c:898` | Component buffers sized NAME_MAX+1 (pass 3 verdict). |
+| `122f91d` | nt_service_list.h, syscall_table.def, test_syscall_table_argtypes.py | OK | `src/kernel/nt/nt_service_list.h` | ArgTypes table entries; the Python argtypes test covers them (skim). |
