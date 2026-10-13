@@ -26,6 +26,8 @@
 #include "../../ntdll/ntstatus.h"
 #endif
 
+#include "mm_ext.h"
+
 /* -------------------------------------------------------------------------- */
 /* NT memory constants                                                        */
 /* -------------------------------------------------------------------------- */
@@ -300,6 +302,11 @@ NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
                          POBJECT_ATTRIBUTES ObjectAttributes,
                          PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
                          ULONG AllocationAttributes, HANDLE FileHandle);
+NTSTATUS NtCreateSectionEx(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                           POBJECT_ATTRIBUTES ObjectAttributes,
+                           PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
+                           ULONG AllocationAttributes, HANDLE FileHandle,
+                           PVOID ExtendedParameters, ULONG ExtendedParameterCount);
 NTSTATUS NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                             PVOID *BaseAddress, ULONG_PTR ZeroBits,
                             SIZE_T CommitSize, PLARGE_INTEGER SectionOffset,
@@ -319,6 +326,11 @@ NTSTATUS nt_svc_NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess
                                 ULONG AllocationAttributes, HANDLE FileHandle);
 NTSTATUS nt_svc_NtOpenSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
                               POBJECT_ATTRIBUTES ObjectAttributes);
+NTSTATUS nt_svc_NtCreateSectionEx(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                                  POBJECT_ATTRIBUTES ObjectAttributes,
+                                  PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
+                                  ULONG AllocationAttributes, HANDLE FileHandle,
+                                  PVOID ExtendedParameters, ULONG ExtendedParameterCount);
 NTSTATUS nt_svc_NtMapViewOfSection(HANDLE SectionHandle, HANDLE ProcessHandle,
                                    PVOID *BaseAddress, ULONG_PTR ZeroBits,
                                    SIZE_T CommitSize, PLARGE_INTEGER SectionOffset,

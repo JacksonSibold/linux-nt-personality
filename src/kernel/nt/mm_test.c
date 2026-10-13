@@ -2288,6 +2288,113 @@ static int test_nt_svc_extend_section(void) {
     return 1;
 }
 
+/* ---- NtCreateSectionEx ---- */
+
+static MEM_EXTENDED_PARAMETER mk_ext(ULONG type, ULONG64 value) {
+    MEM_EXTENDED_PARAMETER p;
+    memset(&p, 0, sizeof(p));
+    p.Type = type;
+    p.ULong64 = value;
+    return p;
+}
+
+/* Zero extended parameters is NtCreateSection. Validation of the array happens
+ * before anything is created, so a refused call leaves the handle NULL. */
+static int test_create_ex_params(void) {
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE h = NULL;
+    NTSTATUS st = NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, NULL, 0);
+    ASSERT(st == STATUS_SUCCESS && h != NULL, "ex zero params 0x%lx", (unsigned long)st);
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "ex zero params close");
+
+    MEM_EXTENDED_PARAMETER amd64 = mk_ext(MemExtendedParameterImageMachine, NT_IMAGE_MACHINE_AMD64);
+    h = NULL;
+    st = NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &amd64, 1);
+    ASSERT(st == STATUS_SUCCESS && h != NULL, "ex machine amd64 0x%lx", (unsigned long)st);
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "ex amd64 close");
+
+    /* Other machines, and machine 0 or a value above 16 bits, are invalid parameters. */
+    MEM_EXTENDED_PARAMETER i386 = mk_ext(MemExtendedParameterImageMachine, 0x14C);
+    MEM_EXTENDED_PARAMETER zero = mk_ext(MemExtendedParameterImageMachine, 0);
+    MEM_EXTENDED_PARAMETER wide = mk_ext(MemExtendedParameterImageMachine, 0x10000 | NT_IMAGE_MACHINE_AMD64);
+    h = NULL;
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &i386, 1) == STATUS_INVALID_PARAMETER,
+           "ex machine i386 refused");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &zero, 1) == STATUS_INVALID_PARAMETER,
+           "ex machine zero refused");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &wide, 1) == STATUS_INVALID_PARAMETER,
+           "ex machine wide refused");
+    ASSERT(h == NULL, "refused create writes no handle");
+
+    /* Attribute flags are accepted only as zero. */
+    MEM_EXTENDED_PARAMETER attr0 = mk_ext(MemExtendedParameterAttributeFlags, 0);
+    MEM_EXTENDED_PARAMETER attr1 = mk_ext(MemExtendedParameterAttributeFlags, 1);
+    st = NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &attr0, 1);
+    ASSERT(st == STATUS_SUCCESS && h != NULL, "ex attr zero 0x%lx", (unsigned long)st);
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "ex attr close");
+    h = NULL;
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &attr1, 1) == STATUS_NOT_SUPPORTED,
+           "ex attr nonzero not supported");
+
+    /* Known types this manager does not honour are not supported. Unknown or
+     * reserved types are invalid. */
+    MEM_EXTENDED_PARAMETER numa = mk_ext(MemExtendedParameterNumaNode, 0);
+    MEM_EXTENDED_PARAMETER req = mk_ext(MemExtendedParameterAddressRequirements, 0);
+    MEM_EXTENDED_PARAMETER invalid_type = mk_ext(MemExtendedParameterInvalidType, 0);
+    MEM_EXTENDED_PARAMETER past_max = mk_ext(MemExtendedParameterMax, 0);
+    MEM_EXTENDED_PARAMETER reserved = amd64;
+    reserved.Reserved = 1;
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &numa, 1) == STATUS_NOT_SUPPORTED,
+           "ex numa not supported");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &req, 1) == STATUS_NOT_SUPPORTED,
+           "ex addr req not supported on create");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &invalid_type, 1) == STATUS_INVALID_PARAMETER,
+           "ex invalid type");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &past_max, 1) == STATUS_INVALID_PARAMETER,
+           "ex past-max type");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &reserved, 1) == STATUS_INVALID_PARAMETER,
+           "ex reserved bits");
+
+    /* Count and array argument shape. */
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, NULL, 1) == STATUS_INVALID_PARAMETER,
+           "ex null array");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &amd64, MEM_EXT_MAX_COUNT + 1) == STATUS_NOT_SUPPORTED,
+           "ex count over max");
+    ASSERT(NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &amd64, 0xFFFFFFFFu) == STATUS_NOT_SUPPORTED,
+           "ex count 0xffffffff");
+    ASSERT(h == NULL, "refused creates write no handle");
+
+    /* The service entry point takes the same arguments. */
+    st = nt_svc_NtCreateSectionEx(&h, SECTION_ALL_ACCESS, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL, &amd64, 1);
+    ASSERT(st == STATUS_SUCCESS, "svc ex amd64 0x%lx", (unsigned long)st);
+    ASSERT(ObCloseHandle(g_mm_proc, h) == STATUS_SUCCESS, "svc ex close");
+    ntmm_reset();
+    return 1;
+}
+
+/* ntmm_ext_copy_in: count bounds, and an address-requirements record is copied
+ * once and its pointer redirected into the snapshot. */
+static int test_ext_copy_in(void) {
+    struct nt_mem_ext_snapshot snap;
+    ASSERT(ntmm_ext_copy_in(NULL, 0, &snap) == STATUS_SUCCESS && snap.count == 0, "copy in zero");
+    ASSERT(ntmm_ext_copy_in(NULL, 1, &snap) == STATUS_INVALID_PARAMETER, "copy in null array");
+    MEM_EXTENDED_PARAMETER one = mk_ext(MemExtendedParameterNumaNode, 0);
+    ASSERT(ntmm_ext_copy_in(&one, MEM_EXT_MAX_COUNT + 1, &snap) == STATUS_NOT_SUPPORTED, "copy in over max");
+
+    MEM_ADDRESS_REQUIREMENTS rq;
+    memset(&rq, 0, sizeof(rq));
+    rq.Alignment = 0x10000;
+    MEM_EXTENDED_PARAMETER arr[2];
+    arr[0] = mk_ext(MemExtendedParameterAddressRequirements, 0);
+    arr[0].Pointer = &rq;
+    arr[1] = mk_ext(MemExtendedParameterImageMachine, NT_IMAGE_MACHINE_AMD64);
+    ASSERT(ntmm_ext_copy_in(arr, 2, &snap) == STATUS_SUCCESS && snap.count == 2, "copy in two");
+    ASSERT(snap.params[0].Pointer == (PVOID)&snap.reqs[0], "requirements pointer redirected");
+    ASSERT(snap.reqs[0].Alignment == 0x10000, "requirements record copied");
+    ASSERT(snap.params[1].ULong64 == NT_IMAGE_MACHINE_AMD64, "scalar entry copied");
+    return 1;
+}
+
 int main(void) {
     printf("=== ntmm tests ===\n");
     if (!mm_setup_objects()) {
@@ -2351,6 +2458,8 @@ int main(void) {
     RUN_TEST(test_nt_svc_map_errors);
     RUN_TEST(test_nt_svc_query_section);
     RUN_TEST(test_nt_svc_extend_section);
+    RUN_TEST(test_create_ex_params);
+    RUN_TEST(test_ext_copy_in);
     ntmm_reset();
     ObDestroyProcessObject(g_mm_proc);
     ObCleanupObjectManager();

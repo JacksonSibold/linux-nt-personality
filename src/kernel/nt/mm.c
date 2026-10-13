@@ -2331,6 +2331,78 @@ NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
     return st;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Extended parameters (mm_ext.h)                                             */
+/* -------------------------------------------------------------------------- */
+
+/* Copies the array once. The kernel build reads user memory through
+ * ntmm_user_read; the userspace build reads plain memory. */
+NTSTATUS ntmm_ext_copy_in(const void *user, ULONG count, struct nt_mem_ext_snapshot *snap) {
+    ULONG i;
+    if (!snap) return STATUS_INVALID_PARAMETER;
+    snap->count = 0;
+    if (count == 0) return STATUS_SUCCESS;
+    if (count > MEM_EXT_MAX_COUNT) return STATUS_NOT_SUPPORTED;
+    if (!user) return STATUS_INVALID_PARAMETER;
+    if (ntmm_user_read(snap->params, user, (size_t)count * sizeof(MEM_EXTENDED_PARAMETER)))
+        return STATUS_ACCESS_VIOLATION;
+    for (i = 0; i < count; i++) {
+        if ((ULONG)snap->params[i].Type != MemExtendedParameterAddressRequirements) continue;
+        const void *uptr = snap->params[i].Pointer;
+        if (!uptr) continue;    /* refused by the caller's validation */
+        if (ntmm_user_read(&snap->reqs[i], uptr, sizeof(MEM_ADDRESS_REQUIREMENTS)))
+            return STATUS_ACCESS_VIOLATION;
+        snap->params[i].Pointer = &snap->reqs[i];
+    }
+    snap->count = count;
+    return STATUS_SUCCESS;
+}
+
+/* NtCreateSectionEx checks. ImageMachine must name AMD64; any other machine,
+ * including 0 and values above 16 bits, is STATUS_INVALID_PARAMETER (an
+ * informational IMAGE_MACHINE_TYPE_MISMATCH would pass NT_SUCCESS). Attribute
+ * flags are accepted only as zero. Other known types are STATUS_NOT_SUPPORTED. */
+static NTSTATUS nt_create_ex_check(const MEM_EXTENDED_PARAMETER *params, ULONG count) {
+    ULONG i;
+    for (i = 0; i < count; i++) {
+        ULONG type = (ULONG)params[i].Type;
+        if (params[i].Reserved) return STATUS_INVALID_PARAMETER;
+        switch (type) {
+        case MemExtendedParameterImageMachine:
+            if (params[i].ULong64 != NT_IMAGE_MACHINE_AMD64) return STATUS_INVALID_PARAMETER;
+            break;
+        case MemExtendedParameterAttributeFlags:
+            if (params[i].ULong64 != 0) return STATUS_NOT_SUPPORTED;
+            break;
+        case MemExtendedParameterInvalidType:
+        default:
+            if (type == MemExtendedParameterInvalidType || type >= MemExtendedParameterMax)
+                return STATUS_INVALID_PARAMETER;
+            return STATUS_NOT_SUPPORTED;
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
+/* Zero extended parameters is NtCreateSection. The array is validated before
+ * anything is created, so a refused call leaves no object and no handle. */
+NTSTATUS NtCreateSectionEx(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                           POBJECT_ATTRIBUTES ObjectAttributes,
+                           PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
+                           ULONG AllocationAttributes, HANDLE FileHandle,
+                           PVOID ExtendedParameters, ULONG ExtendedParameterCount) {
+    NTSTATUS st;
+    if (ExtendedParameterCount != 0) {
+        if (!ExtendedParameters) return STATUS_INVALID_PARAMETER;
+        if (ExtendedParameterCount > MEM_EXT_MAX_COUNT) return STATUS_NOT_SUPPORTED;
+        st = nt_create_ex_check((const MEM_EXTENDED_PARAMETER *)ExtendedParameters,
+                                ExtendedParameterCount);
+        if (!NT_SUCCESS(st)) return st;
+    }
+    return NtCreateSection(SectionHandle, DesiredAccess, ObjectAttributes, MaximumSize,
+                           SectionPageProtection, AllocationAttributes, FileHandle);
+}
+
 #ifndef __KERNEL__
 /* Removes a partly built image view: its VADs come out of the list and are
  * freed. With unmap set, the host range is released too (the caller has
@@ -2707,6 +2779,16 @@ NTSTATUS nt_svc_NtOpenSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
     return nt_open_section(SectionHandle, DesiredAccess, ObjectAttributes);
 }
 
+NTSTATUS nt_svc_NtCreateSectionEx(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+                                  POBJECT_ATTRIBUTES ObjectAttributes,
+                                  PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection,
+                                  ULONG AllocationAttributes, HANDLE FileHandle,
+                                  PVOID ExtendedParameters, ULONG ExtendedParameterCount) {
+    return NtCreateSectionEx(SectionHandle, DesiredAccess, ObjectAttributes, MaximumSize,
+                             SectionPageProtection, AllocationAttributes, FileHandle,
+                             ExtendedParameters, ExtendedParameterCount);
+}
+
 #else /* __KERNEL__ */
 
 /* Arguments arrive as raw register or stack values from do_nt_syscall. The
@@ -2742,6 +2824,52 @@ NTSTATUS nt_svc_NtCreateSection(unsigned long a0, unsigned long a1, unsigned lon
         pmax = &kmax;
     }
     st = NtCreateSection(&h, DesiredAccess, oa, pmax, SectionPageProtection, AllocationAttributes, FileHandle);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(SectionHandle, &h, sizeof(h))) {
+        ObCloseHandle(kshim_current_process(), h);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return STATUS_SUCCESS;
+}
+
+/* The extended-parameter array is copied in once (ntmm_ext_copy_in). The
+ * native function then reads only the kernel snapshot. */
+NTSTATUS nt_svc_NtCreateSectionEx(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                  unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                  unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    PHANDLE SectionHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    PLARGE_INTEGER MaximumSize = (PLARGE_INTEGER)a3;
+    ULONG SectionPageProtection = (ULONG)a4;
+    ULONG AllocationAttributes = (ULONG)a5;
+    HANDLE FileHandle = (HANDLE)a6;
+    PVOID ExtendedParameters = (PVOID)a7;
+    ULONG ExtendedParameterCount = (ULONG)a8;
+    OBJECT_ATTRIBUTES k_oa;
+    UNICODE_STRING k_name;
+    WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL;
+    LARGE_INTEGER kmax;
+    PLARGE_INTEGER pmax = NULL;
+    struct nt_mem_ext_snapshot snap;
+    HANDLE h = NULL;
+    NTSTATUS st;
+    (void)a9; (void)a10; (void)a11;
+    if (!SectionHandle) return STATUS_INVALID_PARAMETER;
+    if (!access_ok(SectionHandle, sizeof(*SectionHandle))) return STATUS_ACCESS_VIOLATION;
+    st = ntmm_ext_copy_in(ExtendedParameters, ExtendedParameterCount, &snap);
+    if (!NT_SUCCESS(st)) return st;
+    st = ObCopyObjectAttributesFromUser(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    if (MaximumSize) {
+        if (!access_ok(MaximumSize, sizeof(*MaximumSize))) return STATUS_ACCESS_VIOLATION;
+        if (copy_from_user(&kmax, MaximumSize, sizeof(kmax))) return STATUS_ACCESS_VIOLATION;
+        pmax = &kmax;
+    }
+    st = NtCreateSectionEx(&h, DesiredAccess, oa, pmax, SectionPageProtection, AllocationAttributes,
+                           FileHandle, snap.params, snap.count);
     if (!NT_SUCCESS(st)) return st;
     if (copy_to_user(SectionHandle, &h, sizeof(h))) {
         ObCloseHandle(kshim_current_process(), h);
