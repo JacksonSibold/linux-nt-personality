@@ -1104,6 +1104,110 @@ TEST(iocp_query_depth)
 	PASS();
 }
 
+static bool write_file_at(const char *relpath, const char *data)
+{
+	char full[PATH_MAX];
+	size_t n = strlen(data);
+	ssize_t w;
+	int fd;
+
+	snprintf(full, sizeof(full), "%s/%s", g_test_root, relpath);
+	fd = open(full, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0)
+		return false;
+	w = write(fd, data, n);
+	close(fd);
+	return w == (ssize_t)n;
+}
+
+/* Query classes that reuse the basic/standard data plus fixed values. */
+TEST(query_info_classes)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	FILE_INTERNAL_INFORMATION ii, ii2;
+	FILE_EA_INFORMATION ea;
+	FILE_ACCESS_INFORMATION acc;
+	FILE_MODE_INFORMATION mode;
+	FILE_ALIGNMENT_INFORMATION align;
+	FILE_NETWORK_OPEN_INFORMATION net;
+	FILE_ATTRIBUTE_TAG_INFORMATION tag;
+	HANDLE h2 = NULL;
+
+	reset_state();
+	ASSERT(write_file_at("qinfo.txt", "abcdef"));
+	ASSERT_STATUS(open_test_file("qinfo.txt", FILE_GENERIC_READ, FILE_SHARE_READ,
+				     FILE_OPEN,
+				     FILE_NON_DIRECTORY_FILE |
+				     FILE_SYNCHRONOUS_IO_NONALERT, &h),
+		      STATUS_SUCCESS);
+
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &ii, sizeof(ii),
+						    FileInternalInformation),
+		      STATUS_SUCCESS);
+	ASSERT(iosb.Information == sizeof(ii));
+	ASSERT(ii.IndexNumber.QuadPart != 0);
+	ASSERT_STATUS(open_test_file("qinfo.txt", FILE_GENERIC_READ, FILE_SHARE_READ,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h2),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h2, &iosb, &ii2, sizeof(ii2),
+						    FileInternalInformation),
+		      STATUS_SUCCESS);
+	ASSERT(ii2.IndexNumber.QuadPart == ii.IndexNumber.QuadPart);
+	nt_svc_NtClose(h2);
+
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &ea, sizeof(ea),
+						    FileEaInformation),
+		      STATUS_SUCCESS);
+	ASSERT(ea.EaSize == 0);
+	ASSERT(iosb.Information == sizeof(ea));
+
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &acc, sizeof(acc),
+						    FileAccessInformation),
+		      STATUS_SUCCESS);
+	ASSERT((acc.AccessFlags & FILE_READ_DATA) != 0);
+	ASSERT((acc.AccessFlags & FILE_WRITE_DATA) == 0);
+
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &mode, sizeof(mode),
+						    FileModeInformation),
+		      STATUS_SUCCESS);
+	ASSERT((mode.Mode & FILE_SYNCHRONOUS_IO_NONALERT) != 0);
+	ASSERT((mode.Mode & ~FILE_MODE_OPTIONS_MASK) == 0);
+
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &align, sizeof(align),
+						    FileAlignmentInformation),
+		      STATUS_SUCCESS);
+	ASSERT(align.AlignmentRequirement == 0);
+
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &net, sizeof(net),
+						    FileNetworkOpenInformation),
+		      STATUS_SUCCESS);
+	ASSERT(net.EndOfFile.QuadPart == 6);
+	ASSERT((net.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0);
+
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &tag, sizeof(tag),
+						    FileAttributeTagInformation),
+		      STATUS_SUCCESS);
+	ASSERT(tag.ReparseTag == 0);
+	ASSERT(tag.FileAttributes == net.FileAttributes);
+
+	/* Short buffers are rejected for every new class. */
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &ii, sizeof(ii) - 1,
+						    FileInternalInformation),
+		      STATUS_INFO_LENGTH_MISMATCH);
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &net, sizeof(net) - 1,
+						    FileNetworkOpenInformation),
+		      STATUS_INFO_LENGTH_MISMATCH);
+
+	/* Classes that are not implemented still report invalid class. */
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &ii, sizeof(ii),
+						    FileStreamInformation),
+		      STATUS_INVALID_INFO_CLASS);
+
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 int main(void)
 {
 	setup_root();
@@ -1123,6 +1227,7 @@ int main(void)
 	RUN(query_set_info);
 	RUN(query_attributes_file);
 	RUN(ci_component_length_limit);
+	RUN(query_info_classes);
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);
 

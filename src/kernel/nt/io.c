@@ -2179,6 +2179,132 @@ static NTSTATUS ntio_query_name(struct nt_file_object *file,
 	return STATUS_SUCCESS;
 }
 
+static NTSTATUS ntio_query_internal(struct nt_file_object *file,
+				    PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_INTERNAL_INFORMATION ii;
+	struct kstat st;
+
+	if (len < sizeof(*ii))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	if (kshim_vfs_getattr(file->filp, &st) != 0)
+		return STATUS_UNSUCCESSFUL;
+	ii = (PFILE_INTERNAL_INFORMATION)buf;
+	ii->IndexNumber.QuadPart = (LONGLONG)st.ino;
+	if (retlen)
+		*retlen = sizeof(*ii);
+	return STATUS_SUCCESS;
+}
+
+/* No extended attributes are stored, so the EA size is always zero. */
+static NTSTATUS ntio_query_ea(PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_EA_INFORMATION ei;
+
+	if (len < sizeof(*ei))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	ei = (PFILE_EA_INFORMATION)buf;
+	ei->EaSize = 0;
+	if (retlen)
+		*retlen = sizeof(*ei);
+	return STATUS_SUCCESS;
+}
+
+static NTSTATUS ntio_query_access(struct nt_file_object *file,
+				  PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_ACCESS_INFORMATION ai;
+
+	if (len < sizeof(*ai))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	ai = (PFILE_ACCESS_INFORMATION)buf;
+	ai->AccessFlags = file->granted_access;
+	if (retlen)
+		*retlen = sizeof(*ai);
+	return STATUS_SUCCESS;
+}
+
+static NTSTATUS ntio_query_mode(struct nt_file_object *file,
+				PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_MODE_INFORMATION mi;
+
+	if (len < sizeof(*mi))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	mi = (PFILE_MODE_INFORMATION)buf;
+	mi->Mode = file->create_options & FILE_MODE_OPTIONS_MASK;
+	if (retlen)
+		*retlen = sizeof(*mi);
+	return STATUS_SUCCESS;
+}
+
+/* Every file is byte aligned in this implementation. */
+static NTSTATUS ntio_query_alignment(PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_ALIGNMENT_INFORMATION ai;
+
+	if (len < sizeof(*ai))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	ai = (PFILE_ALIGNMENT_INFORMATION)buf;
+	ai->AlignmentRequirement = 0; /* FILE_BYTE_ALIGNMENT */
+	if (retlen)
+		*retlen = sizeof(*ai);
+	return STATUS_SUCCESS;
+}
+
+static NTSTATUS ntio_query_network_open(struct nt_file_object *file,
+					PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_NETWORK_OPEN_INFORMATION ni;
+	FILE_BASIC_INFORMATION bi;
+	FILE_STANDARD_INFORMATION si;
+	ULONG blen = 0, slen = 0;
+	NTSTATUS status;
+
+	if (len < sizeof(*ni))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	status = ntio_query_basic(file, &bi, sizeof(bi), &blen);
+	if (!NT_SUCCESS(status))
+		return status;
+	status = ntio_query_standard(file, &si, sizeof(si), &slen);
+	if (!NT_SUCCESS(status))
+		return status;
+
+	ni = (PFILE_NETWORK_OPEN_INFORMATION)buf;
+	ni->CreationTime = bi.CreationTime;
+	ni->LastAccessTime = bi.LastAccessTime;
+	ni->LastWriteTime = bi.LastWriteTime;
+	ni->ChangeTime = bi.ChangeTime;
+	ni->AllocationSize = si.AllocationSize;
+	ni->EndOfFile = si.EndOfFile;
+	ni->FileAttributes = bi.FileAttributes;
+	if (retlen)
+		*retlen = sizeof(*ni);
+	return STATUS_SUCCESS;
+}
+
+/* No reparse points are reported, so the reparse tag is always zero. */
+static NTSTATUS ntio_query_attribute_tag(struct nt_file_object *file,
+					 PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_ATTRIBUTE_TAG_INFORMATION ti;
+	FILE_BASIC_INFORMATION bi;
+	ULONG blen = 0;
+	NTSTATUS status;
+
+	if (len < sizeof(*ti))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	status = ntio_query_basic(file, &bi, sizeof(bi), &blen);
+	if (!NT_SUCCESS(status))
+		return status;
+	ti = (PFILE_ATTRIBUTE_TAG_INFORMATION)buf;
+	ti->FileAttributes = bi.FileAttributes;
+	ti->ReparseTag = 0;
+	if (retlen)
+		*retlen = sizeof(*ti);
+	return STATUS_SUCCESS;
+}
+
 static NTSTATUS ntio_query_all(struct nt_file_object *file,
 			       PVOID buf, ULONG len, PULONG retlen)
 {
@@ -2206,7 +2332,7 @@ static NTSTATUS ntio_query_all(struct nt_file_object *file,
 	ai->InternalInformation.IndexNumber.QuadPart = 0;
 	ai->EaInformation.EaSize = 0;
 	ai->AccessInformation.AccessFlags = file->granted_access;
-	ai->ModeInformation.Mode = file->synchronous ? 0x10 : 0;
+	ai->ModeInformation.Mode = file->create_options & FILE_MODE_OPTIONS_MASK;
 	ai->AlignmentInformation.AlignmentRequirement = 0;
 	ai->NameInformation.FileNameLength = 0;
 
@@ -2267,6 +2393,27 @@ NTSTATUS nt_svc_NtQueryInformationFile(HANDLE FileHandle,
 	case FileAllInformation:
 		status = ntio_query_all(file, kbuf, Length, &retlen);
 		break;
+	case FileInternalInformation:
+		status = ntio_query_internal(file, kbuf, Length, &retlen);
+		break;
+	case FileEaInformation:
+		status = ntio_query_ea(kbuf, Length, &retlen);
+		break;
+	case FileAccessInformation:
+		status = ntio_query_access(file, kbuf, Length, &retlen);
+		break;
+	case FileModeInformation:
+		status = ntio_query_mode(file, kbuf, Length, &retlen);
+		break;
+	case FileAlignmentInformation:
+		status = ntio_query_alignment(kbuf, Length, &retlen);
+		break;
+	case FileNetworkOpenInformation:
+		status = ntio_query_network_open(file, kbuf, Length, &retlen);
+		break;
+	case FileAttributeTagInformation:
+		status = ntio_query_attribute_tag(file, kbuf, Length, &retlen);
+		break;
 	default:
 		status = STATUS_INVALID_INFO_CLASS;
 		break;
@@ -2300,6 +2447,27 @@ NTSTATUS nt_svc_NtQueryInformationFile(HANDLE FileHandle,
 		break;
 	case FileAllInformation:
 		status = ntio_query_all(file, FileInformation, Length, &retlen);
+		break;
+	case FileInternalInformation:
+		status = ntio_query_internal(file, FileInformation, Length, &retlen);
+		break;
+	case FileEaInformation:
+		status = ntio_query_ea(FileInformation, Length, &retlen);
+		break;
+	case FileAccessInformation:
+		status = ntio_query_access(file, FileInformation, Length, &retlen);
+		break;
+	case FileModeInformation:
+		status = ntio_query_mode(file, FileInformation, Length, &retlen);
+		break;
+	case FileAlignmentInformation:
+		status = ntio_query_alignment(FileInformation, Length, &retlen);
+		break;
+	case FileNetworkOpenInformation:
+		status = ntio_query_network_open(file, FileInformation, Length, &retlen);
+		break;
+	case FileAttributeTagInformation:
+		status = ntio_query_attribute_tag(file, FileInformation, Length, &retlen);
 		break;
 	default:
 		status = STATUS_INVALID_INFO_CLASS;
