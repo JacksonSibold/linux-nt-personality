@@ -179,6 +179,11 @@ static inline void read_lock(rwlock_t *l) { pthread_rwlock_rdlock(l); }
 static inline void read_unlock(rwlock_t *l) { pthread_rwlock_unlock(l); }
 static inline void write_lock(rwlock_t *l) { pthread_rwlock_wrlock(l); }
 static inline void write_unlock(rwlock_t *l) { pthread_rwlock_unlock(l); }
+/* sleepable lock, same names as the kernel's struct mutex */
+struct mutex { pthread_mutex_t m; };
+static inline void mutex_init(struct mutex *l) { pthread_mutex_init(&l->m, NULL); }
+static inline void mutex_lock(struct mutex *l) { pthread_mutex_lock(&l->m); }
+static inline void mutex_unlock(struct mutex *l) { pthread_mutex_unlock(&l->m); }
 
 /* rbtree shim */
 struct rb_node { struct rb_node *rb_left; struct rb_node *rb_right; unsigned long __rb_parent_color; };

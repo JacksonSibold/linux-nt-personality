@@ -16,10 +16,12 @@
 #include "../../ntdll/nt_types.h"
 #include "../../ntdll/ntstatus.h"
 
+#include <pthread.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <wchar.h>
 
 static int g_pass = 0;
@@ -448,6 +450,107 @@ static void test_value_access_checks(void)
 /* -------------------------------------------------------------------------- */
 /* Main                                                                        */
 /* -------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------- */
+/* 7. REG-1: a delete of a value waits for a set still persisting that value   */
+/* The setter is held in the window after the key lock is released and before  */
+/* the value is written to disk (ntreg_test_persist_hook). A delete of the same */
+/* value must not finish while the set is held. Before the fix it did, and the */
+/* setter then persisted a value the delete had already freed.                 */
+/* -------------------------------------------------------------------------- */
+extern void (*ntreg_test_persist_hook)(void);
+
+static pthread_mutex_t g_race_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_race_cv = PTHREAD_COND_INITIALIZER;
+static int g_race_in_window, g_race_release, g_race_del_done;
+static struct nt_eprocess *g_race_proc;
+static HANDLE g_race_key;
+static NTSTATUS g_race_set_st, g_race_del_st;
+
+static void race_window_hook(void)
+{
+    pthread_mutex_lock(&g_race_mu);
+    g_race_in_window = 1;
+    pthread_cond_broadcast(&g_race_cv);
+    while (!g_race_release) pthread_cond_wait(&g_race_cv, &g_race_mu);
+    pthread_mutex_unlock(&g_race_mu);
+}
+
+static void *race_setter(void *arg)
+{
+    (void)arg;
+    WCHAR nb[16];
+    UNICODE_STRING vn;
+    make_us(&vn, "Race", nb, sizeof(nb));
+    kshim_set_current_process(g_race_proc);
+    kshim_set_current_thread(NULL);
+    ULONG v = 7;
+    g_race_set_st = NtSetValueKey(g_race_key, &vn, 0, REG_DWORD, &v, sizeof(v));
+    return NULL;
+}
+
+static void *race_deleter(void *arg)
+{
+    (void)arg;
+    WCHAR nb[16];
+    UNICODE_STRING vn;
+    make_us(&vn, "Race", nb, sizeof(nb));
+    kshim_set_current_process(g_race_proc);
+    kshim_set_current_thread(NULL);
+    g_race_del_st = NtDeleteValueKey(g_race_key, &vn);
+    pthread_mutex_lock(&g_race_mu);
+    g_race_del_done = 1;
+    pthread_cond_broadcast(&g_race_cv);
+    pthread_mutex_unlock(&g_race_mu);
+    return NULL;
+}
+
+static void test_delete_waits_for_persisting_set(void)
+{
+    reset_state();
+    struct nt_eprocess *proc = make_proc(1105, "regops7");
+    struct nt_ethread *thr = make_thread(proc, 7);
+    HANDLE hk = NULL;
+    ASSERT_STATUS(scratch_key(&hk, "ntpers_ops_race", KEY_ALL_ACCESS), STATUS_SUCCESS);
+
+    g_race_proc = proc;
+    g_race_key = hk;
+    g_race_in_window = g_race_release = g_race_del_done = 0;
+    g_race_set_st = g_race_del_st = STATUS_UNSUCCESSFUL;
+    ntreg_test_persist_hook = race_window_hook;
+
+    pthread_t ts, td;
+    ASSERT(pthread_create(&ts, NULL, race_setter, NULL) == 0);
+    pthread_mutex_lock(&g_race_mu);
+    while (!g_race_in_window) pthread_cond_wait(&g_race_cv, &g_race_mu);
+    pthread_mutex_unlock(&g_race_mu);
+
+    ASSERT(pthread_create(&td, NULL, race_deleter, NULL) == 0);
+    struct timespec wait = { 0, 200L * 1000L * 1000L };
+    nanosleep(&wait, NULL);
+
+    pthread_mutex_lock(&g_race_mu);
+    int delete_finished_early = g_race_del_done;
+    g_race_release = 1;
+    pthread_cond_broadcast(&g_race_cv);
+    pthread_mutex_unlock(&g_race_mu);
+
+    pthread_join(ts, NULL);
+    pthread_join(td, NULL);
+    ntreg_test_persist_hook = NULL;
+
+    ASSERT(!delete_finished_early);
+    ASSERT_STATUS(g_race_set_st, STATUS_SUCCESS);
+    ASSERT_STATUS(g_race_del_st, STATUS_SUCCESS);
+    unsigned char buf[32];
+    ULONG rlen = 0;
+    ASSERT_STATUS(query_partial(hk, "Race", buf, sizeof(buf), &rlen), STATUS_OBJECT_NAME_NOT_FOUND);
+
+    ObCloseHandle(proc, hk);
+    drop_scratch_key(proc, "ntpers_ops_race");
+    end_proc(proc, thr);
+    PASS();
+}
+
 int main(void)
 {
     printf("registry value ops tests starting\n");
@@ -459,6 +562,7 @@ int main(void)
     test_enumerate_values_each_once();
     test_value_buffer_sizing();
     test_value_access_checks();
+    test_delete_waits_for_persisting_set();
     printf("registry value ops tests: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) return 1;
     return 0;
