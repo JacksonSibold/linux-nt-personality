@@ -44,11 +44,15 @@ static int g_fail = 0;
 
 NTSTATUS nt_svc_NtMakePermanentObject(HANDLE Handle);
 NTSTATUS nt_svc_NtMakeTemporaryObject(HANDLE Handle);
+NTSTATUS nt_svc_NtCreateSymbolicLinkObject(PHANDLE LinkHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes, PUNICODE_STRING LinkTarget);
+NTSTATUS nt_svc_NtOpenSymbolicLinkObject(PHANDLE LinkHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes);
+NTSTATUS nt_svc_NtQuerySymbolicLinkObject(HANDLE LinkHandle, PUNICODE_STRING LinkTarget, PULONG ReturnedLength);
 NTSTATUS nt_svc_NtQueryDirectoryObject(HANDLE DirectoryHandle, PVOID Buffer, ULONG Length, BOOLEAN ReturnSingleEntry, BOOLEAN RestartScan, PULONG Context, PULONG ReturnLength);
 NTSTATUS nt_svc_NtOpenDirectoryObject(PHANDLE DirectoryHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes);
 NTSTATUS nt_svc_NtCreateDirectoryObject(PHANDLE DirectoryHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes);
 
 static WCHAR wbuf[256];
+static WCHAR wbuf2[256];
 
 static void make_us(UNICODE_STRING *us, const char *s, WCHAR *buf, size_t buflen)
 {
@@ -469,7 +473,7 @@ static BOOLEAN us_is(const UNICODE_STRING *u, const char *s)
 
 /* Creates \BaseNamedObjects\QD with entries e1, e2, e3 (test objects). The
  * entries are inserted without handles, so only the directory holds them. */
-static void make_query_dir(struct nt_eprocess *proc, HANDLE *out_dir)
+static void make_query_dir(HANDLE *out_dir)
 {
     UNICODE_STRING us;
     OBJECT_ATTRIBUTES oa;
@@ -500,7 +504,7 @@ TEST(query_directory_all_entries)
     struct nt_eprocess *proc = make_proc(331, "qdir1");
     ASSERT(proc != NULL);
     HANDLE hd = NULL;
-    make_query_dir(proc, &hd);
+    make_query_dir(&hd);
     ASSERT(hd != NULL);
 
     unsigned char buf[4096];
@@ -543,7 +547,7 @@ TEST(query_directory_single_entry_and_restart)
     struct nt_eprocess *proc = make_proc(333, "qdir3");
     ASSERT(proc != NULL);
     HANDLE hd = NULL;
-    make_query_dir(proc, &hd);
+    make_query_dir(&hd);
     ASSERT(hd != NULL);
 
     unsigned char buf[1024];
@@ -574,7 +578,7 @@ TEST(query_directory_buffer_too_small_and_partial)
     struct nt_eprocess *proc = make_proc(334, "qdir4");
     ASSERT(proc != NULL);
     HANDLE hd = NULL;
-    make_query_dir(proc, &hd);
+    make_query_dir(&hd);
     ASSERT(hd != NULL);
 
     unsigned char small[sizeof(OBJECT_DIRECTORY_INFORMATION) * 2];
@@ -609,7 +613,7 @@ TEST(query_directory_access_type_args)
     struct nt_eprocess *proc = make_proc(335, "qdir5");
     ASSERT(proc != NULL);
     HANDLE hd = NULL;
-    make_query_dir(proc, &hd);
+    make_query_dir(&hd);
     ASSERT(hd != NULL);
 
     /* A handle without DIRECTORY_QUERY cannot query. */
@@ -639,6 +643,138 @@ TEST(query_directory_access_type_args)
 }
 
 /* -------------------------------------------------------------------------- */
+/* 5. NtCreateSymbolicLinkObject                                               */
+/* -------------------------------------------------------------------------- */
+
+/* Inserts a test object named target_path and returns its handle. */
+static HANDLE make_link_target(struct nt_eprocess *proc, const char *target_path)
+{
+    HANDLE h = NULL;
+    NTSTATUS st = insert_named(proc, target_path, &h);
+    if (st != STATUS_SUCCESS) { g_fail++; fprintf(stderr, "FAIL make_link_target 0x%08lx\n", (unsigned long)st); return NULL; }
+    return h;
+}
+
+TEST(create_symlink_resolves)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(341, "sym1");
+    ASSERT(proc != NULL);
+    HANDLE ht = make_link_target(proc, "\\BaseNamedObjects\\SymTarget");
+    ASSERT(ht != NULL);
+
+    UNICODE_STRING us, target;
+    make_us(&us, "\\BaseNamedObjects\\SymA", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    make_us(&target, "\\BaseNamedObjects\\SymTarget", wbuf2, sizeof(wbuf2) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    HANDLE hl = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&hl, SYMBOLIC_LINK_QUERY, &oa, &target), STATUS_SUCCESS);
+    ASSERT(hl != NULL);
+
+    /* A name lookup through the link finds the target object. */
+    struct nt_object_header *via_link = NULL, *direct = NULL;
+    ASSERT_STATUS(ObReferenceObjectByName(&us, &nt_test_type, KernelMode, 0, &via_link), STATUS_SUCCESS);
+    ASSERT_STATUS(ObReferenceObjectByHandle(proc, ht, NULL, KernelMode, 0, &direct, NULL), STATUS_SUCCESS);
+    ASSERT(via_link == direct);
+    ObDereferenceObject(via_link);
+    ObDereferenceObject(direct);
+
+    ObCloseHandle(proc, hl);
+    ObCloseHandle(proc, ht);
+    teardown(proc);
+    PASS();
+}
+
+TEST(create_symlink_collision_and_openif)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(342, "sym2");
+    ASSERT(proc != NULL);
+    UNICODE_STRING us, target;
+    make_us(&us, "\\BaseNamedObjects\\SymC", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    make_us(&target, "\\BaseNamedObjects\\SymTarget", wbuf2, sizeof(wbuf2) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    HANDLE h1 = NULL, h2 = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&h1, SYMBOLIC_LINK_QUERY, &oa, &target), STATUS_SUCCESS);
+
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&h2, SYMBOLIC_LINK_QUERY, &oa, &target), STATUS_OBJECT_NAME_COLLISION);
+    ASSERT(h2 == NULL);
+
+    OBJECT_ATTRIBUTES oa_if = make_oa(&us, OBJ_OPENIF);
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&h2, SYMBOLIC_LINK_QUERY, &oa_if, &target), STATUS_OBJECT_NAME_EXISTS);
+    ASSERT(h2 != NULL);
+    struct nt_object_header *a = NULL, *b = NULL;
+    ASSERT_STATUS(ObReferenceObjectByHandle(proc, h1, NULL, KernelMode, 0, &a, NULL), STATUS_SUCCESS);
+    ASSERT_STATUS(ObReferenceObjectByHandle(proc, h2, NULL, KernelMode, 0, &b, NULL), STATUS_SUCCESS);
+    ASSERT(a == b);
+    ObDereferenceObject(a);
+    ObDereferenceObject(b);
+
+    ObCloseHandle(proc, h2);
+    ObCloseHandle(proc, h1);
+    teardown(proc);
+    PASS();
+}
+
+TEST(create_symlink_anonymous_and_bad_args)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(343, "sym3");
+    ASSERT(proc != NULL);
+    UNICODE_STRING target, bad;
+    make_us(&target, "\\BaseNamedObjects\\SymTarget", wbuf2, sizeof(wbuf2) / sizeof(WCHAR));
+    HANDLE h = NULL;
+
+    /* Anonymous link: no name, still a valid handle. */
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&h, SYMBOLIC_LINK_QUERY, NULL, &target), STATUS_SUCCESS);
+    ASSERT(h != NULL);
+    ObCloseHandle(proc, h);
+    h = NULL;
+
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(NULL, SYMBOLIC_LINK_QUERY, NULL, &target), STATUS_INVALID_PARAMETER);
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&h, SYMBOLIC_LINK_QUERY, NULL, NULL), STATUS_INVALID_PARAMETER);
+    ASSERT(h == NULL);
+
+    UNICODE_STRING empty;
+    memset(&empty, 0, sizeof(empty));
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&h, SYMBOLIC_LINK_QUERY, NULL, &empty), STATUS_INVALID_PARAMETER);
+
+    /* Odd byte length is not a UTF-16 string. */
+    bad = target;
+    bad.Length = 3;
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&h, SYMBOLIC_LINK_QUERY, NULL, &bad), STATUS_OBJECT_NAME_INVALID);
+
+    teardown(proc);
+    PASS();
+}
+
+TEST(create_symlink_type_and_path_errors)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(344, "sym4");
+    ASSERT(proc != NULL);
+    HANDLE ht = make_link_target(proc, "\\BaseNamedObjects\\SymTarget2");
+    ASSERT(ht != NULL);
+    UNICODE_STRING us, target;
+    make_us(&target, "\\BaseNamedObjects\\SymTarget2", wbuf2, sizeof(wbuf2) / sizeof(WCHAR));
+    HANDLE h = NULL;
+
+    /* A name held by another object type is a type mismatch with OBJ_OPENIF. */
+    make_us(&us, "\\BaseNamedObjects\\SymTarget2", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa_if = make_oa(&us, OBJ_OPENIF);
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&h, SYMBOLIC_LINK_QUERY, &oa_if, &target), STATUS_OBJECT_TYPE_MISMATCH);
+    ASSERT(h == NULL);
+
+    make_us(&us, "\\BaseNamedObjects\\NoSuch\\L", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&h, SYMBOLIC_LINK_QUERY, &oa, &target), STATUS_OBJECT_PATH_NOT_FOUND);
+
+    ObCloseHandle(proc, ht);
+    teardown(proc);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* main                                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -649,6 +785,10 @@ int main(void)
     RUN(make_permanent_with_privilege);
     RUN(make_permanent_bad_handle);
     RUN(make_permanent_no_token);
+    RUN(create_symlink_resolves);
+    RUN(create_symlink_collision_and_openif);
+    RUN(create_symlink_anonymous_and_bad_args);
+    RUN(create_symlink_type_and_path_errors);
     RUN(query_directory_all_entries);
     RUN(query_directory_empty);
     RUN(query_directory_single_entry_and_restart);

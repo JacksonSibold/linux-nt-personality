@@ -221,6 +221,21 @@ static NTSTATUS nt_dir_fill(struct nt_directory *dir, ULONG *index, BOOLEAN sing
     return STATUS_SUCCESS;
 }
 
+/* Maps the generic rights of a symbolic link object request. */
+static ACCESS_MASK nt_map_symlink_access(ACCESS_MASK a)
+{
+    ACCESS_MASK m = a & ~(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL);
+    if (a & GENERIC_READ)
+        m |= READ_CONTROL | SYMBOLIC_LINK_QUERY;
+    if (a & GENERIC_WRITE)
+        m |= READ_CONTROL;
+    if (a & GENERIC_EXECUTE)
+        m |= READ_CONTROL | SYMBOLIC_LINK_QUERY;
+    if (a & GENERIC_ALL)
+        m |= SYMBOLIC_LINK_ALL_ACCESS;
+    return m;
+}
+
 /* Maps the generic rights of a directory object request (NT GENERIC_MAPPING for
  * object directories). Other bits pass through unchanged. */
 static ACCESS_MASK nt_map_directory_access(ACCESS_MASK a)
@@ -905,6 +920,30 @@ NTSTATUS nt_svc_NtCreateDirectoryObject(PHANDLE DirectoryHandle, ACCESS_MASK Des
     return st;
 }
 
+/* NtCreateSymbolicLinkObject: the target is copied. Create-or-open rules are in
+ * ObInsertOrOpenNamedObject (object.c). */
+NTSTATUS nt_svc_NtCreateSymbolicLinkObject(PHANDLE LinkHandle, ACCESS_MASK DesiredAccess,
+                                           POBJECT_ATTRIBUTES ObjectAttributes,
+                                           PUNICODE_STRING LinkTarget)
+{
+    struct nt_eprocess *proc = kshim_current_process();
+    struct nt_object_header *hdr = NULL;
+    HANDLE h = NULL;
+    NTSTATUS st;
+    if (!LinkHandle || !LinkTarget || !proc)
+        return STATUS_INVALID_PARAMETER;
+    if (ObjectAttributes && ObjectAttributes->Length != sizeof(*ObjectAttributes))
+        return STATUS_INVALID_PARAMETER;
+    st = ObCreateSymbolicLinkObject(ObjectAttributes, LinkTarget, &hdr);
+    if (!NT_SUCCESS(st))
+        return st;
+    st = ObInsertOrOpenNamedObject(hdr, ObjectAttributes, nt_map_symlink_access(DesiredAccess), proc, &h);
+    ObDereferenceObject(hdr);
+    if (NT_SUCCESS(st))
+        *LinkHandle = h;
+    return st;
+}
+
 /* NtOpenDirectoryObject: opens the directory the name refers to. A symbolic
  * link in the path is followed; a link at the last component is a type mismatch. */
 NTSTATUS nt_svc_NtOpenDirectoryObject(PHANDLE DirectoryHandle, ACCESS_MASK DesiredAccess,
@@ -1465,6 +1504,57 @@ NTSTATUS nt_svc_NtQueryDirectoryObject(unsigned long a0, unsigned long a1, unsig
     if (st == STATUS_SUCCESS || st == STATUS_NO_MORE_ENTRIES) {
         if (copy_to_user(Context, &index, sizeof(index)))
             return STATUS_ACCESS_VIOLATION;
+    }
+    return st;
+}
+
+NTSTATUS nt_svc_NtCreateSymbolicLinkObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                           unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                           unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    PHANDLE LinkHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    PUNICODE_STRING LinkTarget = (PUNICODE_STRING)a3;
+    HANDLE h = NULL; OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256];
+    UNICODE_STRING k_target; WCHAR *k_tbuf = NULL; UNICODE_STRING tgt_copy;
+    POBJECT_ATTRIBUTES oa = NULL; struct nt_object_header *hdr = NULL; NTSTATUS st; struct nt_eprocess *proc;
+    (void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!LinkHandle || !access_ok(LinkHandle, sizeof(*LinkHandle)))
+        return STATUS_ACCESS_VIOLATION;
+    if (!LinkTarget || !access_ok(LinkTarget, sizeof(*LinkTarget)))
+        return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(&k_target, LinkTarget, sizeof(k_target)))
+        return STATUS_ACCESS_VIOLATION;
+    if (k_target.Length == 0 || !k_target.Buffer)
+        return STATUS_INVALID_PARAMETER;
+    proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    st = nt_ensure_handle_table(proc);
+    if (!NT_SUCCESS(st)) return st;
+    st = k_copy_oa(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    if (!access_ok(k_target.Buffer, k_target.Length))
+        return STATUS_ACCESS_VIOLATION;
+    k_tbuf = (WCHAR *)kmalloc(k_target.Length, GFP_KERNEL);
+    if (!k_tbuf) return STATUS_NO_MEMORY;
+    if (copy_from_user(k_tbuf, k_target.Buffer, k_target.Length)) {
+        kfree(k_tbuf);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    tgt_copy.Buffer = k_tbuf;
+    tgt_copy.Length = k_target.Length;
+    tgt_copy.MaximumLength = k_target.Length;
+    st = ObCreateSymbolicLinkObject(oa, &tgt_copy, &hdr);
+    if (NT_SUCCESS(st)) {
+        st = ObInsertOrOpenNamedObject(hdr, oa, nt_map_symlink_access(DesiredAccess), proc, &h);
+        ObDereferenceObject(hdr);
+    }
+    kfree(k_tbuf);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(LinkHandle, &h, sizeof(h))) {
+        ObCloseHandle(proc, h);
+        return STATUS_ACCESS_VIOLATION;
     }
     return st;
 }
