@@ -3784,6 +3784,74 @@ NTSTATUS nt_svc_NtQueryDirectoryFileEx(HANDLE FileHandle, HANDLE Event,
 }
 
 
+/*
+ * NtQueryVolumeInformationFile. FileFsDeviceInformation reports a disk device
+ * with no characteristics, which is what every file in this build is on. The
+ * other volume classes need filesystem statistics this build does not gather
+ * yet, so they return STATUS_NOT_IMPLEMENTED. Unknown classes return
+ * STATUS_INVALID_INFO_CLASS.
+ */
+static NTSTATUS ntio_complete_iosb_info(PIO_STATUS_BLOCK __user IoStatusBlock,
+					NTSTATUS status, ULONG_PTR information)
+{
+#ifdef __KERNEL__
+	IO_STATUS_BLOCK kiosb;
+
+	kiosb.DUMMYUNIONNAME.Status = status;
+	kiosb.Information = information;
+	if (copy_to_user(IoStatusBlock, &kiosb, sizeof(kiosb)))
+		return STATUS_ACCESS_VIOLATION;
+#else
+	IoStatusBlock->DUMMYUNIONNAME.Status = status;
+	IoStatusBlock->Information = information;
+#endif
+	return status;
+}
+
+NTSTATUS nt_svc_NtQueryVolumeInformationFile(HANDLE FileHandle,
+					     PIO_STATUS_BLOCK __user IoStatusBlock,
+					     PVOID __user FsInformation, ULONG Length,
+					     ULONG FsInformationClass)
+{
+	struct nt_file_object *file;
+	FILE_FS_DEVICE_INFORMATION di;
+	NTSTATUS status;
+
+	if (!IoStatusBlock || !FsInformation)
+		return STATUS_ACCESS_VIOLATION;
+#ifdef __KERNEL__
+	if (!access_ok(IoStatusBlock, sizeof(IO_STATUS_BLOCK)))
+		return STATUS_ACCESS_VIOLATION;
+#endif
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb_info(IoStatusBlock, STATUS_INVALID_HANDLE, 0);
+	ntio_file_put(file);
+
+	if (FsInformationClass == FileFsDeviceInformation) {
+		if (Length < sizeof(di))
+			return ntio_complete_iosb_info(IoStatusBlock,
+						       STATUS_INFO_LENGTH_MISMATCH, 0);
+		di.DeviceType = FILE_DEVICE_DISK;
+		di.Characteristics = 0;
+#ifdef __KERNEL__
+		if (copy_to_user(FsInformation, &di, sizeof(di)))
+			return ntio_complete_iosb_info(IoStatusBlock,
+						       STATUS_ACCESS_VIOLATION, 0);
+#else
+		memcpy(FsInformation, &di, sizeof(di));
+#endif
+		return ntio_complete_iosb_info(IoStatusBlock, STATUS_SUCCESS, sizeof(di));
+	}
+
+	if (FsInformationClass >= FileFsVolumeInformation &&
+	    FsInformationClass <= FileFsDataCopyInformation)
+		status = STATUS_NOT_IMPLEMENTED;
+	else
+		status = STATUS_INVALID_INFO_CLASS;
+	return ntio_complete_iosb_info(IoStatusBlock, status, 0);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Module init / fini (userspace shim)                                          */
 /* -------------------------------------------------------------------------- */

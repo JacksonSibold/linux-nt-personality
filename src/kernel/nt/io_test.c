@@ -1769,6 +1769,49 @@ TEST(query_directory_scan)
 	PASS();
 }
 
+/* FileFsDeviceInformation reports a disk device. Other volume classes are
+ * not implemented yet, and unknown classes are invalid. */
+TEST(query_volume_device)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	FILE_FS_DEVICE_INFORMATION di;
+
+	reset_state();
+	ASSERT(write_file_at("vol.txt", "x"));
+	ASSERT_STATUS(open_test_file("vol.txt", FILE_GENERIC_READ, FILE_SHARE_READ,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+
+	di.DeviceType = 0;
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, &di, sizeof(di),
+							  FileFsDeviceInformation),
+		      STATUS_SUCCESS);
+	ASSERT(di.DeviceType == FILE_DEVICE_DISK);
+	ASSERT(di.Characteristics == 0);
+	ASSERT(iosb.Information == sizeof(di));
+	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_SUCCESS);
+
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, &di, sizeof(di) - 1,
+							  FileFsDeviceInformation),
+		      STATUS_INFO_LENGTH_MISMATCH);
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, &di, sizeof(di),
+							  FileFsSizeInformation),
+		      STATUS_NOT_IMPLEMENTED);
+	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_NOT_IMPLEMENTED);
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, &di, sizeof(di), 99),
+		      STATUS_INVALID_INFO_CLASS);
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(NULL, &iosb, &di, sizeof(di),
+							  FileFsDeviceInformation),
+		      STATUS_INVALID_HANDLE);
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, NULL, &di, sizeof(di),
+							  FileFsDeviceInformation),
+		      STATUS_ACCESS_VIOLATION);
+
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 /* NtOpenIoCompletion: names are not registered by NtCreateIoCompletion in
  * this build, so every name lookup misses. The NULL object-attributes case
  * is rejected before any lookup. */
@@ -1879,6 +1922,7 @@ int main(void)
 	RUN(delete_and_full_attributes);
 	RUN(byte_range_locks);
 	RUN(query_directory_scan);
+	RUN(query_volume_device);
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);
 

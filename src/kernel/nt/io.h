@@ -202,6 +202,21 @@ extern "C" {
 #define FileStatLxInformation           70
 #define FileCaseSensitiveInformation    71
 
+/* FsInformationClass values (NtQueryVolumeInformationFile). */
+#define FileFsVolumeInformation         1
+#define FileFsLabelInformation          2
+#define FileFsSizeInformation           3
+#define FileFsDeviceInformation         4
+#define FileFsAttributeInformation      5
+#define FileFsControlInformation        6
+#define FileFsFullSizeInformation       7
+#define FileFsObjectIdInformation       8
+#define FileFsDriverPathInformation     9
+#define FileFsVolumeFlagsInformation    10
+#define FileFsSectorSizeInformation     11
+#define FileFsDataCopyInformation       12
+#define FILE_DEVICE_DISK                0x00000007
+
 /* -------------------------------------------------------------------------- */
 /* Information structures                                                       */
 /* -------------------------------------------------------------------------- */
@@ -303,6 +318,11 @@ typedef struct _FILE_RENAME_INFORMATION_EX {
 /* FILE_DISPOSITION_INFORMATION_EX.Flags and FILE_RENAME_INFORMATION_EX.Flags. */
 #define FILE_DISPOSITION_DELETE         0x00000001
 #define FILE_RENAME_REPLACE_IF_EXISTS   0x00000001
+
+typedef struct _FILE_FS_DEVICE_INFORMATION {
+	ULONG DeviceType;
+	ULONG Characteristics;
+} FILE_FS_DEVICE_INFORMATION, *PFILE_FS_DEVICE_INFORMATION;
 
 typedef struct _FILE_ALL_INFORMATION {
 	FILE_BASIC_INFORMATION BasicInformation;
@@ -531,6 +551,11 @@ NTSTATUS nt_svc_NtQueryDirectoryFileEx(HANDLE FileHandle, HANDLE Event,
 				       ULONG FileInformationClass,
 				       ULONG QueryFlags,
 				       PUNICODE_STRING FileName);
+
+NTSTATUS nt_svc_NtQueryVolumeInformationFile(HANDLE FileHandle,
+					       PIO_STATUS_BLOCK IoStatusBlock,
+					       PVOID FsInformation, ULONG Length,
+					       ULONG FsInformationClass);
 
 NTSTATUS nt_svc_NtQueryEaFile(HANDLE FileHandle,
 			      PIO_STATUS_BLOCK IoStatusBlock,
