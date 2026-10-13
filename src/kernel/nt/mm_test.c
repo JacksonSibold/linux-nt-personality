@@ -1137,6 +1137,70 @@ static int test_rw_virtual_memory(void) {
     return 1;
 }
 
+/* NtFlushVirtualMemory: the range is page-rounded, must be committed, and the
+ * IoStatus reports the flushed length. Only the current process is supported. */
+static int test_flush_virtual_memory(void) {
+    PVOID base = NULL;
+    SIZE_T size = 0x20000;
+    NTSTATUS st = NtAllocateVirtualMemory((HANDLE)-1, &base, 0, &size, MEM_RESERVE, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "reserve 0x%lx", (unsigned long)st);
+    PVOID commit = base;
+    SIZE_T csize = 0x10000;
+    st = NtAllocateVirtualMemory((HANDLE)-1, &commit, 0, &csize, MEM_COMMIT, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "commit 0x%lx", (unsigned long)st);
+
+    IO_STATUS_BLOCK iosb;
+    PVOID fbase = (PVOID)((ULONG_PTR)base + 0x123);
+    SIZE_T fsize = 0x10;
+    iosb.DUMMYUNIONNAME.Status = 0xdead; iosb.Information = 0;
+    st = NtFlushVirtualMemory((HANDLE)-1, &fbase, &fsize, &iosb);
+    ASSERT(st == STATUS_SUCCESS, "flush committed 0x%lx", (unsigned long)st);
+    ASSERT(fbase == base, "flush base rounded down");
+    ASSERT(fsize == 0x1000, "flush size rounded up 0x%zx", (size_t)fsize);
+    ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_SUCCESS && iosb.Information == 0x1000, "flush iosb");
+
+    /* Crossing into the reserved tail is not committed. */
+    fbase = (PVOID)((ULONG_PTR)base + 0xf000);
+    fsize = 0x2000;
+    st = NtFlushVirtualMemory((HANDLE)-1, &fbase, &fsize, &iosb);
+    ASSERT(st == STATUS_NOT_COMMITTED, "flush reserved tail 0x%lx", (unsigned long)st);
+
+    /* Free address. */
+    fbase = (PVOID)((ULONG_PTR)base + 0x20000);
+    fsize = 0x1000;
+    st = NtFlushVirtualMemory((HANDLE)-1, &fbase, &fsize, &iosb);
+    ASSERT(st == STATUS_INVALID_ADDRESS, "flush free 0x%lx", (unsigned long)st);
+
+    /* Mapped section view: anonymous backing is coherent, so flush succeeds. */
+    LARGE_INTEGER sz; sz.QuadPart = 0x2000;
+    HANDLE sec = NULL;
+    st = NtCreateSection(&sec, 0, NULL, &sz, PAGE_READWRITE, SEC_COMMIT, NULL);
+    ASSERT(st == STATUS_SUCCESS, "section 0x%lx", (unsigned long)st);
+    PVOID vbase = NULL; SIZE_T vsize = 0; LARGE_INTEGER off; off.QuadPart = 0;
+    st = NtMapViewOfSection(sec, (HANDLE)-1, &vbase, 0, 0, &off, &vsize, 0, 0, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "map 0x%lx", (unsigned long)st);
+    fbase = vbase; fsize = vsize;
+    st = NtFlushVirtualMemory((HANDLE)-1, &fbase, &fsize, &iosb);
+    ASSERT(st == STATUS_SUCCESS, "flush view 0x%lx", (unsigned long)st);
+    NtUnmapViewOfSection((HANDLE)-1, vbase);
+    {
+        struct nt_section *s = (struct nt_section *)sec;
+        int fd = s->backing.fd; void *mem = s->backing.mem; size_t bsz = s->backing.size;
+        kfree(s);
+        if (mem) kshim_munmap(mem, bsz);
+        if (fd >= 0) close(fd);
+    }
+
+    /* Argument and process checks. */
+    st = NtFlushVirtualMemory((HANDLE)-1, NULL, &fsize, &iosb);
+    ASSERT(st == STATUS_INVALID_PARAMETER, "null base 0x%lx", (unsigned long)st);
+    fbase = base; fsize = 0x1000;
+    st = NtFlushVirtualMemory((HANDLE)0x1234, &fbase, &fsize, &iosb);
+    ASSERT(st == STATUS_NOT_SUPPORTED, "other process 0x%lx", (unsigned long)st);
+    ntmm_reset(); /* release VADs: last test */
+    return 1;
+}
+
 int main(void) {
     printf("=== ntmm tests ===\n");
     RUN_TEST(test_reserve_commit_subrange);
@@ -1159,6 +1223,7 @@ int main(void) {
     RUN_TEST(test_probe_direct_windows_rule);
     RUN_TEST(test_query_region_info);
     RUN_TEST(test_rw_virtual_memory);
+    RUN_TEST(test_flush_virtual_memory);
     printf("\n=== RESULT %d/%d passed, %d failed ===\n", tests_pass, tests_run, tests_fail);
     extern _Atomic long kshim_alloc_count;
     long leaks = atomic_load(&kshim_alloc_count);

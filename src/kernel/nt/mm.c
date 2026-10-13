@@ -1563,6 +1563,46 @@ NTSTATUS NtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
 }
 
 /* -------------------------------------------------------------------------- */
+/* NtFlushVirtualMemory                                                       */
+/* -------------------------------------------------------------------------- */
+
+/* Nothing needs writing back: private pages and views of anonymous or memfd
+ * backing are already coherent, because there is no file backing yet (file
+ * sections are STATUS_NOT_IMPLEMENTED). So the flush checks the range and
+ * reports it flushed. The range is page-rounded, as NT does. Every byte must
+ * sit in a committed VAD: no VAD is STATUS_INVALID_ADDRESS, a reserved one is
+ * STATUS_NOT_COMMITTED. */
+NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
+                              PSIZE_T RegionSize, PIO_STATUS_BLOCK IoStatus) {
+    struct nt_mm *mm = &g_nt_mm;
+    ULONG_PTR start, end, cur;
+    NTSTATUS st = STATUS_SUCCESS;
+    if (ProcessHandle != (HANDLE)-1) return STATUS_NOT_SUPPORTED;
+    if (!BaseAddress || !RegionSize || !IoStatus) return STATUS_INVALID_PARAMETER;
+    ULONG_PTR req = (ULONG_PTR)*BaseAddress;
+    SIZE_T size = *RegionSize;
+    if (size == 0) return STATUS_INVALID_PARAMETER;
+    /* The end (req + size) must not wrap before rounding. */
+    if (size > (SIZE_T)(~(ULONG_PTR)0 - req - (NTMM_PAGE_SIZE - 1))) return STATUS_INVALID_PARAMETER;
+    start = ntmm_round_down(req, NTMM_PAGE_SIZE);
+    end = ntmm_round_up(req + size, NTMM_PAGE_SIZE);
+    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
+    ntmm_lock(mm);
+    for (cur = start; cur < end; ) {
+        struct nt_vad *vad = nt_vad_find(mm, cur);
+        if (!vad) { st = STATUS_INVALID_ADDRESS; break; }
+        if (vad->state != MEM_COMMIT) { st = STATUS_NOT_COMMITTED; break; }
+        cur = vad->end;
+    }
+    ntmm_unlock(mm);
+    *BaseAddress = (PVOID)start;
+    *RegionSize = (SIZE_T)(end - start);
+    IoStatus->DUMMYUNIONNAME.Status = st;
+    IoStatus->Information = (st == STATUS_SUCCESS) ? (ULONG_PTR)(end - start) : 0;
+    return st;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Guard fault helper                                                         */
 /* -------------------------------------------------------------------------- */
 

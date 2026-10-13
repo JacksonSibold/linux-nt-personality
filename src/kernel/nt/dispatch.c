@@ -154,6 +154,7 @@ extern NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
 extern NTSTATUS NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, ULONG MemoryInformationClass, PVOID MemoryInformation, SIZE_T MemoryInformationLength, PSIZE_T ReturnLength);
 extern NTSTATUS NtReadVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, PVOID Buffer, SIZE_T BufferSize, PSIZE_T NumberOfBytesRead);
 extern NTSTATUS NtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, PVOID Buffer, SIZE_T BufferSize, PSIZE_T NumberOfBytesWritten);
+extern NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, PIO_STATUS_BLOCK IoStatus);
 
 NTSTATUS nt_svc_NtAllocateVirtualMemory(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {
@@ -307,6 +308,39 @@ NTSTATUS nt_svc_NtWriteVirtualMemory(unsigned long a0, unsigned long a1, unsigne
     if (st != STATUS_NOT_SUPPORTED && NumberOfBytesWritten &&
         copy_to_user(NumberOfBytesWritten, &done, sizeof(done)))
         return STATUS_ACCESS_VIOLATION;
+    return st;
+}
+
+NTSTATUS nt_svc_NtFlushVirtualMemory(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    HANDLE ProcessHandle = (HANDLE)a0;
+    PVOID __user *BaseAddress = (PVOID __user *)a1;
+    PSIZE_T RegionSize = (PSIZE_T)a2;
+    PIO_STATUS_BLOCK IoStatus = (PIO_STATUS_BLOCK)a3;
+    (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (!BaseAddress || !RegionSize || !IoStatus)
+        return STATUS_INVALID_PARAMETER;
+    if (!access_ok(BaseAddress, sizeof(PVOID)) || !access_ok(RegionSize, sizeof(SIZE_T)) ||
+        !access_ok(IoStatus, sizeof(IO_STATUS_BLOCK)))
+        return STATUS_ACCESS_VIOLATION;
+    PVOID base;
+    SIZE_T size;
+    if (copy_from_user(&base, BaseAddress, sizeof(base)))
+        return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(&size, RegionSize, sizeof(size)))
+        return STATUS_ACCESS_VIOLATION;
+    PVOID kbase = base;
+    SIZE_T ksize = size;
+    IO_STATUS_BLOCK kiosb = { 0 };
+    NTSTATUS st = NtFlushVirtualMemory(ProcessHandle, &kbase, &ksize, &kiosb);
+    if (st != STATUS_NOT_SUPPORTED) {
+        if (copy_to_user(BaseAddress, &kbase, sizeof(kbase)))
+            return STATUS_ACCESS_VIOLATION;
+        if (copy_to_user(RegionSize, &ksize, sizeof(ksize)))
+            return STATUS_ACCESS_VIOLATION;
+        if (copy_to_user(IoStatus, &kiosb, sizeof(kiosb)))
+            return STATUS_ACCESS_VIOLATION;
+    }
     return st;
 }
 
