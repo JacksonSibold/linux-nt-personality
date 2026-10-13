@@ -3587,8 +3587,14 @@ static NTSTATUS ntio_dir_snapshot(struct nt_file_object *file, const char *patte
 		return STATUS_NO_MEMORY;
 
 	d = opendir(file->linux_path);
-	if (!d)
+	if (!d) {
+		/* The path may have stopped being a directory since it was opened. */
+		if (errno == ENOTDIR)
+			return STATUS_NOT_A_DIRECTORY;
+		if (errno == ENOENT)
+			return STATUS_NO_SUCH_FILE;
 		return STATUS_ACCESS_DENIED;
+	}
 	status = ntio_dir_add(file, ".", pattern, &cap);
 	if (NT_SUCCESS(status))
 		status = ntio_dir_add(file, "..", pattern, &cap);
@@ -3603,21 +3609,92 @@ static NTSTATUS ntio_dir_snapshot(struct nt_file_object *file, const char *patte
 	return status;
 }
 
+/*
+ * Host names are UTF-8. Decode one code point at s (n bytes left). An invalid
+ * or truncated sequence gives U+FFFD and consumes one byte. *len is the number
+ * of bytes consumed.
+ */
+static unsigned long ntio_utf8_next(const unsigned char *s, size_t n, size_t *len)
+{
+	unsigned char c = s[0];
+	unsigned long cp;
+	size_t need, k;
+
+	*len = 1;
+	if (c < 0x80)
+		return c;
+	if (c >= 0xC2 && c <= 0xDF) {
+		need = 1;
+		cp = c & 0x1F;
+	} else if (c >= 0xE0 && c <= 0xEF) {
+		need = 2;
+		cp = c & 0x0F;
+	} else if (c >= 0xF0 && c <= 0xF4) {
+		need = 3;
+		cp = c & 0x07;
+	} else {
+		return 0xFFFD;
+	}
+	if (need + 1 > n)
+		return 0xFFFD;
+	for (k = 1; k <= need; k++) {
+		if ((s[k] & 0xC0) != 0x80)
+			return 0xFFFD;
+		cp = (cp << 6) | (s[k] & 0x3F);
+	}
+	/* Reject overlong forms, surrogates and values past U+10FFFF. */
+	if ((need == 2 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) ||
+	    (need == 3 && (cp < 0x10000 || cp > 0x10FFFF)))
+		return 0xFFFD;
+	*len = need + 1;
+	return cp;
+}
+
+/*
+ * Convert a host UTF-8 name to UTF-16 code units. out may be NULL, in which
+ * case only the number of units is returned. Code points past U+FFFF become
+ * a surrogate pair.
+ */
+static size_t ntio_utf8_to_utf16(const char *name, size_t namelen, WCHAR *out)
+{
+	const unsigned char *s = (const unsigned char *)name;
+	size_t i = 0, u = 0;
+
+	while (i < namelen) {
+		size_t len;
+		unsigned long cp = ntio_utf8_next(s + i, namelen - i, &len);
+
+		if (cp >= 0x10000) {
+			cp -= 0x10000;
+			if (out) {
+				out[u] = (WCHAR)(0xD800 | (cp >> 10));
+				out[u + 1] = (WCHAR)(0xDC00 | (cp & 0x3FF));
+			}
+			u += 2;
+		} else {
+			if (out)
+				out[u] = (WCHAR)cp;
+			u++;
+		}
+		i += len;
+	}
+	return u;
+}
+
 /* Write one entry at dst. dst is zeroed first, so NextEntryOffset is 0. */
 static void ntio_dir_fill_entry(void *dst, ULONG cls, ULONG index,
 				const char *name, size_t namelen,
 				const struct kstat *st)
 {
 	FILE_BASIC_INFORMATION bi;
-	size_t i, fixed = ntio_dir_fixed_size(cls);
+	size_t fixed = ntio_dir_fixed_size(cls);
 	WCHAR *wname;
-	ULONG name_bytes = (ULONG)(namelen * sizeof(WCHAR));
+	ULONG name_bytes = (ULONG)(ntio_utf8_to_utf16(name, namelen, NULL) * sizeof(WCHAR));
 
 	memset(dst, 0, fixed + name_bytes);
 	ntio_basic_from_stat(&bi, st);
 	wname = (WCHAR *)((unsigned char *)dst + fixed);
-	for (i = 0; i < namelen; i++)
-		wname[i] = (WCHAR)(unsigned char)name[i];
+	ntio_utf8_to_utf16(name, namelen, wname);
 
 	if (cls == FileNamesInformation) {
 		PFILE_NAMES_INFORMATION n = (PFILE_NAMES_INFORMATION)dst;
@@ -3661,7 +3738,8 @@ static NTSTATUS ntio_query_dir_common(struct nt_file_object *file,
 	while (file->dir_pos < file->dir_count) {
 		const char *name = file->dir_names[file->dir_pos];
 		size_t namelen = strlen(name);
-		size_t size = ntio_dir_fixed_size(cls) + namelen * sizeof(WCHAR);
+		size_t size = ntio_dir_fixed_size(cls) +
+			      ntio_utf8_to_utf16(name, namelen, NULL) * sizeof(WCHAR);
 		char full[PATH_MAX];
 		struct kstat st;
 		int n;

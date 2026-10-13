@@ -1758,6 +1758,79 @@ static bool dir_has(char names[][64], int n, const char *want)
 
 /* Directory enumeration: classes, patterns, restart, single entry, and the
  * buffer and handle error paths. */
+/* True if a FILE_NAMES_INFORMATION chain in buf has an entry whose name is
+ * exactly want (NUL-terminated UTF-16). */
+static bool names_has_wide(const unsigned char *buf, ULONG len, const WCHAR *want)
+{
+	size_t wl = 0;
+	ULONG off = 0;
+
+	while (want[wl])
+		wl++;
+	while (off + offsetof(FILE_NAMES_INFORMATION, FileName) <= len) {
+		const FILE_NAMES_INFORMATION *e = (const FILE_NAMES_INFORMATION *)(buf + off);
+
+		if (e->FileNameLength == wl * sizeof(WCHAR) &&
+		    memcmp(e->FileName, want, wl * sizeof(WCHAR)) == 0)
+			return true;
+		if (!e->NextEntryOffset)
+			break;
+		off += e->NextEntryOffset;
+	}
+	return false;
+}
+
+/* A host name is UTF-8. A non-ASCII name must come out as the UTF-16 code
+ * units of the same characters, not one unit per byte. */
+TEST(query_directory_utf8_name)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	static unsigned char buf[8192];
+	static const WCHAR want[] = { 'c', 'a', 'f', 0x00E9, '.', 't', 'x', 't', 0 };
+
+	reset_state();
+	create_dir_at("u8dir");
+	ASSERT(write_file_at("u8dir/caf\xC3\xA9.txt", "1"));
+	ASSERT_STATUS(open_test_file("u8dir", FILE_GENERIC_READ,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+						  sizeof(buf), FileNamesInformation,
+						  0, NULL, 1),
+		      STATUS_SUCCESS);
+	ASSERT(names_has_wide(buf, (ULONG)iosb.Information, want));
+	nt_svc_NtClose(h);
+	PASS();
+}
+
+/* A directory handle whose path has become a file reports
+ * STATUS_NOT_A_DIRECTORY from the listing, not STATUS_ACCESS_DENIED. */
+TEST(query_directory_replaced_by_file)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	static unsigned char buf[8192];
+	char full[PATH_MAX];
+
+	reset_state();
+	create_dir_at("rp_dir");
+	ASSERT_STATUS(open_test_file("rp_dir", FILE_GENERIC_READ,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+	snprintf(full, sizeof(full), "%s/%s", g_test_root, "rp_dir");
+	ASSERT(rmdir(full) == 0);
+	ASSERT(write_file_at("rp_dir", "x"));
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+						  sizeof(buf), FileNamesInformation,
+						  0, NULL, 1),
+		      STATUS_NOT_A_DIRECTORY);
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 TEST(query_directory_scan)
 {
 	HANDLE h = NULL;
@@ -2137,6 +2210,8 @@ int main(void)
 	RUN(byte_range_locks);
 	RUN(lock_conflict_near_offset_limit);
 	RUN(query_directory_scan);
+	RUN(query_directory_utf8_name);
+	RUN(query_directory_replaced_by_file);
 	RUN(query_volume_device);
 	RUN(set_volume_unsupported);
 	RUN(iocp_open_by_name);
