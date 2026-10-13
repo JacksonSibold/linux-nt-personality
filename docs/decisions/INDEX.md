@@ -9,7 +9,7 @@ Status values:
 - **no-change**: the record is accepted and no code change is needed.
 - **open**: the record is proposed and not implemented.
 
-Snapshot: 2026-10-12, `HEAD` at the time this index was written. 37 records: 13 fixed, 16 open, 7 blocked, 1 no-change.
+Snapshot: 2026-10-12, `HEAD` at the time this index was written. 71 records: 13 fixed, 16 open, 41 blocked, 1 no-change.
 
 | Record | Title | Status | Finding | Commit |
 |---|---|---|---|---|
@@ -50,6 +50,40 @@ Snapshot: 2026-10-12, `HEAD` at the time this index was written. 37 records: 13 
 | [0035](0035-kernel-acl-capacity-table.md) | ACL capacity table silently drops registrations | blocked | kernel-nt SEC-1 (Low) | |
 | [0036](0036-loader-import-walk-budget.md) | Import walk has no total bound across descriptors | fixed | loader L-16 (Medium) | 7f7e5d1 |
 | [0037](0037-process-creation.md) | How NtCreateUserProcess and CreateProcess create a PE process | open | design (no review finding) | |
+| [0038](0038-arch-io-root-resolve-beneath.md) | Path mapping is a string prefix; symlinks escape the root; default root is the host | blocked | arch IO-11 (Medium) | |
+| [0039](0039-arch-io-non-ascii-names.md) | Non-ASCII NT names collapse to '?' | blocked | arch IO-15 (Low) | |
+| [0040](0040-arch-trampoline-rwx.md) | Synthetic trampoline page is RWX and never unmapped | blocked | arch P-5 (Medium) | |
+| [0041](0041-loader-wx-policy.md) | Protection mapping has no W^X policy | blocked | loader L-12 (Low) | |
+| [0042](0042-kernel-fs-ntdll-fallback.md) | Exec continues without ntdll when the ntdll image fails | blocked | kernel-fs K-18 (Low) | |
+| [0043](0043-ntdll-gettempfilename.md) | GetTempFileNameA uses a fixed path and an unbounded copy | blocked | ntdll K32-9 (Medium) | |
+| [0044](0044-ntdll-sprintf-contract.md) | sprintf and vsprintf write without a size | blocked | ntdll CRT-1 (High) | |
+| [0045](0045-arch-build-tree-warnings.md) | Canonical copy of the NT sources and warning policy | blocked | arch B-2, B-3 (Medium) | |
+| [0046](0046-arch-weak-fallbacks.md) | Weak fallbacks hide missing strong symbols | blocked | arch B-4 (Low) | |
+| [0047](0047-kernel-fs-kshim-guard.md) | kshim.h has no guard against kernel inclusion | blocked | kernel-fs S-1 (Low) | |
+| [0048](0048-arch-thread-object-leak.md) | Thread object is leaked when there is no ethread | blocked | arch D-5 (Low) | |
+| [0049](0049-arch-noinstr-logging.md) | noinstr function calls instrumented code | blocked | arch D-7 (Low) | |
+| [0050](0050-arch-output-params-on-failure.md) | Output parameters are written back when the service fails | blocked | arch D-8 (Low) | |
+| [0051](0051-arch-vad-protect-order.md) | VAD protection changed before the page protection | blocked | arch M-5 (Medium) | |
+| [0052](0052-arch-vad-publish-window.md) | VAD is published before its mapping exists | blocked | arch M-11 (Medium) | |
+| [0053](0053-arch-file-section-stub.md) | Kernel stub for file-backed sections drops the file | blocked | arch M-14 (Low) | |
+| [0054](0054-arch-rename-root-ref.md) | Reference leak when renaming relative to a root directory | blocked | arch IO-8 (Medium) | |
+| [0055](0055-arch-casefold-scan.md) | Case-insensitive resolution scans whole directories under a spinlock | blocked | arch IO-12 (Medium) | |
+| [0056](0056-arch-replace-if-exists.md) | ReplaceIfExists is ignored on rename | blocked | arch IO-13 (Low) | |
+| [0057](0057-arch-stack-path-buffers.md) | Large stack buffers in the file path | blocked | arch IO-16 (Low) | |
+| [0058](0058-arch-eof-limit.md) | EndOfFile is not range-checked | blocked | arch IO-18 (Low) | |
+| [0059](0059-kernel-nt-exclusive-open.md) | Exclusive-open check is not atomic with handle creation | blocked | kernel-nt O-2 (Low) | |
+| [0060](0060-kernel-nt-timeout-pointer.md) | timeout_to_jiffies dereferences a pointer that may be a user address | blocked | kernel-nt SYNC-2 (Low) | |
+| [0061](0061-kernel-nt-acl-capacity.md) | ACL capacity table silently drops registrations | blocked | kernel-nt SEC-1 (Low) | |
+| [0062](0062-ntdll-unwind-bounds.md) | UNWIND_INFO and chain reads are not bounds-checked | blocked | ntdll UNW-5 (Low) | |
+| [0063](0063-ntdll-second-pass.md) | No second pass for exception unwinding | blocked | ntdll EXC-3 (Medium) | |
+| [0064](0064-ntdll-dispatch-state-lock.md) | Dispatch state is global and unsynchronised; lock primitive is not chosen | blocked | ntdll EXC-4, EXC-5 (Low), K32-14 (Medium) | |
+| [0065](0065-ntdll-unsupported-formats.md) | printf-family stubs and float formats fail silently | blocked | ntdll RT-3 (Low), CRT-5 (Medium) | |
+| [0066](0066-ntdll-errno-abi.md) | errno definition clashes with MinGW's _errno | blocked | ntdll RT-4 (Low) | |
+| [0067](0067-ntdll-exit-terminate.md) | _exit spins on hlt and discards the status | blocked | ntdll RT-6 (Low) | |
+| [0068](0068-ntdll-import-failure.md) | Import failures and thunk overflow do not stop process start | blocked | ntdll MAIN-3 (Medium), MAIN-6 (Low) | |
+| [0069](0069-ntdll-win32-file-ops.md) | Win32 file operations report false success or always fail | blocked | ntdll K32-8 (Medium) | |
+| [0070](0070-ntdll-file-mapping.md) | File mappings return a fake handle | blocked | ntdll K32-12 (Medium) | |
+| [0071](0071-ntdll-registry-backend.md) | Registry functions always report "not found" | blocked | ntdll ADV-1 (Low) | |
 
 ## Notes
 
