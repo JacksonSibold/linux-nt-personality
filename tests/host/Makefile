@@ -30,6 +30,14 @@ endif
 # make's built-in CC default is "cc", so ?= would not take effect. Override on
 # the command line with make CC=... if needed.
 CC       := gcc
+# The PE fixtures must be PE images: the host gcc makes them on Windows, and elsewhere they
+# need a MinGW cross compiler. Without FIX_CC the real-PE tests are skipped, not failed.
+ifeq ($(EXE_SUFFIX),.exe)
+FIX_CC := $(CC)
+else
+FIX_CC ?= x86_64-w64-mingw32-gcc
+endif
+HAVE_FIX_CC := $(shell command -v $(FIX_CC) >/dev/null 2>&1 && echo yes)
 SANITIZE ?= auto
 SRC      := ../../src/loader
 # COVERAGE=1: gcov instrumentation at -O0 in out-cov/ (see tools/c_coverage.sh).
@@ -83,10 +91,20 @@ FIX_LDFLAGS := -fno-use-linker-plugin -nostdlib
 REAL_TEST := $(OUT)/test_real_pe$(EXE_SUFFIX)
 REAL_OBJS := $(OUT)/pe_parse.o $(OUT)/test_real_pe.o
 
-test: $(TEST) $(REAL_TEST) $(FIX_EXES)
+ifeq ($(HAVE_FIX_CC),yes)
+REAL_RUN := $(REAL_TEST) $(FIX_EXES)
+else
+REAL_RUN :=
+endif
+
+test: $(TEST) $(REAL_RUN)
 	./$(TEST) 2>$(OUT)/pe_diag.log
 	@echo "host-test: pe_validate diagnostics in $(OUT)/pe_diag.log"
+ifeq ($(HAVE_FIX_CC),yes)
 	./$(REAL_TEST) 2>>$(OUT)/pe_diag.log
+else
+	@echo "host-test: SKIP real-PE tests ($(FIX_CC) not found; it builds the PE fixtures)"
+endif
 
 real-pe: $(REAL_TEST) $(FIX_EXES)
 	./$(REAL_TEST) 2>>$(OUT)/pe_diag.log
@@ -98,10 +116,10 @@ $(REAL_TEST): $(REAL_OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(REAL_OBJS) -o $@
 
 $(FIX_OUT)/minimal.exe: $(FIX_SRC)/minimal.c | $(FIX_OUT)
-	$(CC) $(FIX_CFLAGS) $(FIX_LDFLAGS) -Wl,-e,minimal_entry $< -o $@
+	$(FIX_CC) $(FIX_CFLAGS) $(FIX_LDFLAGS) -Wl,-e,minimal_entry $< -o $@
 
 $(FIX_OUT)/exports.dll: $(FIX_SRC)/exports.c $(FIX_SRC)/exports.def | $(FIX_OUT)
-	$(CC) $(FIX_CFLAGS) $(FIX_LDFLAGS) -shared -Wl,-e,exports_entry $(FIX_SRC)/exports.c $(FIX_SRC)/exports.def -o $@
+	$(FIX_CC) $(FIX_CFLAGS) $(FIX_LDFLAGS) -shared -Wl,-e,exports_entry $(FIX_SRC)/exports.c $(FIX_SRC)/exports.def -o $@
 
 $(FIX_OUT):
 	mkdir -p $(FIX_OUT)

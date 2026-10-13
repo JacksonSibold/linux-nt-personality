@@ -91,6 +91,8 @@ void plat_install_fault_handler(fuzz_fault_fn fn)
 
 void plat_silence_stderr(void)
 {
-    if (!getenv("FUZZ_DIAG"))
-        (void)freopen(FUZZ_DEVNULL, "w", stderr);
+    /* glibc marks freopen warn_unused_result, so the result is checked. If the
+     * redirect fails, stderr simply stays on the terminal. */
+    if (!getenv("FUZZ_DIAG") && !freopen(FUZZ_DEVNULL, "w", stderr))
+        return;
 }

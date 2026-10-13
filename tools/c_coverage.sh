@@ -91,7 +91,7 @@ for gcda in "$KDIR/build-cov"/*.gcda "$HDIR/out-cov"/*.gcda "$NDIR/out-cov"/*.gc
     *)         suite=kernel-host ;;
   esac
   part_n=$((part_n + 1)); part="$RAW.part$part_n"
-  gcov -n -f -o "$(dirname "$gcda")" "$gcda" 2>/dev/null | tr -d '' | awk -v suite="$suite" '
+  gcov -n -f -o "$(dirname "$gcda")" "$gcda" 2>/dev/null | tr -d '\r' | awk -v suite="$suite" '
     # "Function '"'"'name'"'"'" is 10 characters before the name, "File '"'"'" is 6.
     function name(s, pre) { s = substr(s, pre + 1); return substr(s, 1, length(s) - 1) }
     function norm(s) { sub(/^.*src\//, "src/", s); return s }

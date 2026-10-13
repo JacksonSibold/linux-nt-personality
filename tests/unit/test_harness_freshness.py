@@ -53,12 +53,14 @@ class CheckFreshnessWindowsBranch(unittest.TestCase):
         return result, calls
 
     def test_fresh_returns_true_and_uses_wsl_real_root(self):
+        # The expected root is derived from the real checkout with the same helper the
+        # code uses: a drive path (Windows) maps to /mnt/<drive>/..., while a POSIX
+        # checkout (Linux CI) is returned unchanged. Only the platform check is mocked.
         result, calls = self._run(returncode=0)
         self.assertTrue(result)
         self.assertEqual(calls[0][:4], ["wsl", "-d", "Ubuntu", "--"])
-        script_arg = calls[0][5]
-        self.assertTrue(script_arg.startswith("/mnt/"), script_arg)
-        self.assertTrue(script_arg.endswith("/vm/freshness.sh"), script_arg)
+        expected_root = freshness.windows_to_wsl_path(str(REPO))
+        self.assertEqual(calls[0][5], f"{expected_root}/vm/freshness.sh")
 
     def test_stale_returns_false(self):
         result, _ = self._run(returncode=1)
