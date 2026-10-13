@@ -22,7 +22,8 @@ flowchart LR
   one protection and one `alloc_base`. The kernel build keeps them in an
   rb-tree (`vad_root`). The host shim keeps a sorted list (`vad_head`).
 - Adjacent VADs with equal attributes are merged by `nt_vad_coalesce` and
-  `nt_coalesce_all`. `nt_vad_split` cuts a run at a page boundary.
+  `nt_coalesce_all`, but a commit does not merge them (`mm.c:1116-1118`), and
+  `NtProtectVirtualMemory` does. `nt_vad_split` cuts a run at a page boundary.
 - Granularity is 64 KiB for a reservation (`NTMM_ALLOC_GRANULARITY`) and 4 KiB
   for a page-level operation (`NTMM_PAGE_SIZE`).
 - The one address space is a global `g_nt_mm`. See the gaps below.
@@ -95,7 +96,8 @@ flowchart TD
   memory, not the file.
 - `NtMapViewOfSection` checks the offset alignment (64 KiB for `SEC_IMAGE`, 4 KiB
   otherwise), then records a view VAD under the lock before it calls
-  `kshim_section_map`. The mapping itself is done outside the lock.
+  `kshim_section_map`. The mapping itself is done outside the lock. `NtCreateSection`
+  refuses `SEC_IMAGE`, so only the 4 KiB rule is reachable in this tree (`mm.c:1745`, `:1780`).
 - `NtUnmapViewOfSection` takes the base, which must be the VAD's `alloc_base`,
   removes the view VAD and unmaps the range.
 
@@ -120,15 +122,18 @@ what the loader mapped, as well as what the NT calls mapped. See
   moved so far). Writes to `PAGE_READONLY` fail. A `ProcessHandle` other than
   `NtCurrentProcess` gives `STATUS_NOT_SUPPORTED`.
 - `NtFlushVirtualMemory` checks that the page-rounded range is committed and
-  reports it flushed. Nothing is written back: there is no file backing yet.
+  reports it flushed. Nothing is written back: there is no file backing yet. Only
+  the current-process handle is accepted (`mm.c:1605`).
 - `NtAllocateVirtualMemoryEx` is `NtAllocateVirtualMemory` when no extended
   parameters are given. Any extended parameter returns `STATUS_NOT_SUPPORTED`.
 - Not implemented: `NtLockVirtualMemory` and `NtUnlockVirtualMemory` (need a
-  page-lock primitive in kshim), and the section services `NtQuerySection`,
-  `NtExtendSection`, `NtOpenSection` and the `NtCreateSection`,
-  `NtMapViewOfSection` and `NtUnmapViewOfSection` wrappers. The section
-  handle is a raw `nt_section` pointer, so exposing these to user mode needs
-  a handle-table entry first (review kernel-nt.md, M-1).
+  page-lock primitive in kshim). `NtQuerySection`, `NtExtendSection`,
+  `NtOpenSection`, `NtCreateSectionEx`, `NtMapViewOfSectionEx` and
+  `NtUnmapViewOfSectionEx` have no service entry. `NtCreateSection`,
+  `NtMapViewOfSection` and `NtUnmapViewOfSection` exist as C functions in
+  `mm.c` but have no `nt_svc_` wrapper, so their dispatch slots are NULL. The
+  section handle is a handle-table index (ADR 0001, record 0001), so adding those
+  wrappers is now a matter of wiring the table entry, not of changing the handle.
 
 ## Gaps
 
