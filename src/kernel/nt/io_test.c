@@ -1565,6 +1565,210 @@ TEST(byte_range_locks)
 	PASS();
 }
 
+/* Walk a chain of directory entries, returning each name (ASCII) and the
+ * number of entries. name_len_off and name_off give the field offsets. */
+static int dir_walk(const unsigned char *buf, ULONG used,
+		    size_t name_len_off, size_t name_off,
+		    char names[][64], int max)
+{
+	ULONG off = 0;
+	int n = 0;
+
+	for (;;) {
+		ULONG next = 0, nlen = 0, i;
+
+		if (n >= max || off + name_off > used)
+			break;
+		memcpy(&next, buf + off, sizeof(next));
+		memcpy(&nlen, buf + off + name_len_off, sizeof(nlen));
+		for (i = 0; i < nlen / sizeof(WCHAR) && i < 63; i++) {
+			WCHAR wc;
+
+			memcpy(&wc, buf + off + name_off + i * sizeof(WCHAR), sizeof(wc));
+			names[n][i] = (char)wc;
+		}
+		names[n][nlen / sizeof(WCHAR) < 63 ? nlen / sizeof(WCHAR) : 63] = '\0';
+		n++;
+		if (next == 0)
+			break;
+		off += next;
+	}
+	return n;
+}
+
+static bool dir_has(char names[][64], int n, const char *want)
+{
+	int i;
+
+	for (i = 0; i < n; i++) {
+		if (strcmp(names[i], want) == 0)
+			return true;
+	}
+	return false;
+}
+
+/* Directory enumeration: classes, patterns, restart, single entry, and the
+ * buffer and handle error paths. */
+TEST(query_directory_scan)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	static unsigned char buf[8192];
+	char names[16][64];
+	WCHAR pat_buf[64];
+	UNICODE_STRING pat;
+	int n, calls;
+	HANDLE fh = NULL;
+
+	reset_state();
+	create_dir_at("qdir");
+	ASSERT(write_file_at("qdir/a.txt", "1"));
+	ASSERT(write_file_at("qdir/b.txt", "22"));
+	ASSERT(write_file_at("qdir/ab.log", "333"));
+	create_dir_at("qdir/sub");
+
+	ASSERT_STATUS(open_test_file("qdir", FILE_GENERIC_READ,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+
+	/* All names: ".", "..", a.txt, b.txt, ab.log and sub. */
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+						  sizeof(buf), FileNamesInformation,
+						  0, NULL, 1),
+		      STATUS_SUCCESS);
+	ASSERT(iosb.Information > 0);
+	n = dir_walk(buf, (ULONG)iosb.Information,
+		     offsetof(FILE_NAMES_INFORMATION, FileNameLength),
+		     offsetof(FILE_NAMES_INFORMATION, FileName), names, 16);
+	ASSERT(n == 6);
+	ASSERT(dir_has(names, n, "."));
+	ASSERT(dir_has(names, n, ".."));
+	ASSERT(dir_has(names, n, "a.txt"));
+	ASSERT(dir_has(names, n, "ab.log"));
+	ASSERT(dir_has(names, n, "sub"));
+
+	/* The scan is exhausted until it restarts. */
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+						  sizeof(buf), FileNamesInformation,
+						  0, NULL, 0),
+		      STATUS_NO_MORE_FILES);
+	ASSERT(iosb.Information == 0);
+
+	/* Restart with a pattern matching *.txt. */
+	make_unicode(&pat, "*.txt", pat_buf, sizeof(pat_buf));
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+						  sizeof(buf), FileNamesInformation,
+						  0, &pat, 1),
+		      STATUS_SUCCESS);
+	n = dir_walk(buf, (ULONG)iosb.Information,
+		     offsetof(FILE_NAMES_INFORMATION, FileNameLength),
+		     offsetof(FILE_NAMES_INFORMATION, FileName), names, 16);
+	ASSERT(n == 2);
+	ASSERT(dir_has(names, n, "a.txt"));
+	ASSERT(dir_has(names, n, "b.txt"));
+
+	/* Matching is ASCII case-insensitive: "A*" matches a.txt and ab.log. */
+	make_unicode(&pat, "A*", pat_buf, sizeof(pat_buf));
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+						  sizeof(buf), FileNamesInformation,
+						  0, &pat, 1),
+		      STATUS_SUCCESS);
+	n = dir_walk(buf, (ULONG)iosb.Information,
+		     offsetof(FILE_NAMES_INFORMATION, FileNameLength),
+		     offsetof(FILE_NAMES_INFORMATION, FileName), names, 16);
+	ASSERT(n == 2);
+	ASSERT(dir_has(names, n, "a.txt"));
+	ASSERT(dir_has(names, n, "ab.log"));
+
+	/* Single entry per call, through NtQueryDirectoryFileEx flags. */
+	calls = 0;
+	for (;;) {
+		ULONG flags = SL_RETURN_SINGLE_ENTRY | (calls == 0 ? SL_RESTART_SCAN : 0);
+		NTSTATUS st = nt_svc_NtQueryDirectoryFileEx(h, NULL, NULL, NULL, &iosb,
+							    buf, sizeof(buf),
+							    FileNamesInformation, flags,
+							    NULL);
+
+		if (st == STATUS_NO_MORE_FILES)
+			break;
+		ASSERT_STATUS(st, STATUS_SUCCESS);
+		n = dir_walk(buf, (ULONG)iosb.Information,
+			     offsetof(FILE_NAMES_INFORMATION, FileNameLength),
+			     offsetof(FILE_NAMES_INFORMATION, FileName), names, 16);
+		ASSERT(n == 1);
+		calls++;
+		ASSERT(calls <= 16);
+	}
+	ASSERT(calls == 6);
+
+	/* FileBothDirectoryInformation carries the name at its own offset. */
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+						  sizeof(buf), FileBothDirectoryInformation,
+						  0, NULL, 1),
+		      STATUS_SUCCESS);
+	n = dir_walk(buf, (ULONG)iosb.Information,
+		     offsetof(FILE_BOTH_DIRECTORY_INFORMATION, FileNameLength),
+		     offsetof(FILE_BOTH_DIRECTORY_INFORMATION, FileName), names, 16);
+	ASSERT(n == 6);
+	ASSERT(dir_has(names, n, "b.txt"));
+
+	/* FileDirectoryInformation reports the directory attribute on sub. */
+	make_unicode(&pat, "sub", pat_buf, sizeof(pat_buf));
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+						  sizeof(buf), FileDirectoryInformation,
+						  0, &pat, 1),
+		      STATUS_SUCCESS);
+	{
+		FILE_DIRECTORY_INFORMATION *di = (FILE_DIRECTORY_INFORMATION *)buf;
+
+		ASSERT(di->FileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+		ASSERT(di->FileNameLength == 3 * sizeof(WCHAR));
+	}
+
+	/* A buffer one byte short of the first entry ("." is 14 bytes) overflows. */
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+						  offsetof(FILE_NAMES_INFORMATION, FileName) + 1,
+						  FileNamesInformation, 0, NULL, 1),
+		      STATUS_BUFFER_OVERFLOW);
+	ASSERT(iosb.Information == 0);
+
+	/* Argument errors. */
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+						  sizeof(buf), FileBasicInformation,
+						  0, NULL, 1),
+		      STATUS_INVALID_INFO_CLASS);
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFileEx(h, NULL, NULL, NULL, &iosb, buf,
+						    sizeof(buf), FileNamesInformation,
+						    SL_INDEX_SPECIFIED, NULL),
+		      STATUS_NOT_SUPPORTED);
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFileEx(h, NULL, NULL, NULL, &iosb, buf,
+						    sizeof(buf), FileNamesInformation,
+						    0x100, NULL),
+		      STATUS_INVALID_PARAMETER);
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(NULL, NULL, NULL, NULL, &iosb, buf,
+						  sizeof(buf), FileNamesInformation,
+						  0, NULL, 1),
+		      STATUS_INVALID_HANDLE);
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, NULL, buf,
+						  sizeof(buf), FileNamesInformation,
+						  0, NULL, 1),
+		      STATUS_ACCESS_VIOLATION);
+
+	/* A regular file handle is not a directory. */
+	ASSERT_STATUS(open_test_file("qdir/a.txt", FILE_GENERIC_READ,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &fh),
+		      STATUS_SUCCESS);
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(fh, NULL, NULL, NULL, &iosb, buf,
+						  sizeof(buf), FileNamesInformation,
+						  0, NULL, 1),
+		      STATUS_INVALID_PARAMETER);
+	nt_svc_NtClose(fh);
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 /* NtOpenIoCompletion: names are not registered by NtCreateIoCompletion in
  * this build, so every name lookup misses. The NULL object-attributes case
  * is rejected before any lookup. */
@@ -1674,6 +1878,7 @@ int main(void)
 	RUN(cancel_io_no_pending);
 	RUN(delete_and_full_attributes);
 	RUN(byte_range_locks);
+	RUN(query_directory_scan);
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);
 

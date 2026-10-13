@@ -10,6 +10,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <io.h>
@@ -300,6 +301,15 @@ int khost_rmdir(const char *path)
     char buf[KHOST_PATH_MAX];
     translate(path, buf, sizeof(buf));
     return _rmdir(buf);
+}
+
+/* Directory open with the same path translation as the other file calls, so
+ * a POSIX-style root such as /tmp/... resolves on the host. */
+DIR *khost_opendir(const char *path)
+{
+    char buf[KHOST_PATH_MAX];
+    translate(path, buf, sizeof(buf));
+    return opendir(buf);
 }
 
 /* POSIX rename() replaces an existing target. The CRT rename() on Windows

@@ -316,6 +316,66 @@ typedef struct _FILE_ALL_INFORMATION {
 	FILE_NAME_INFORMATION NameInformation;
 } FILE_ALL_INFORMATION, *PFILE_ALL_INFORMATION;
 
+/* Directory information structures (NtQueryDirectoryFile). */
+typedef struct _FILE_DIRECTORY_INFORMATION {
+	ULONG NextEntryOffset;
+	ULONG FileIndex;
+	LARGE_INTEGER CreationTime;
+	LARGE_INTEGER LastAccessTime;
+	LARGE_INTEGER LastWriteTime;
+	LARGE_INTEGER ChangeTime;
+	LARGE_INTEGER EndOfFile;
+	LARGE_INTEGER AllocationSize;
+	ULONG FileAttributes;
+	ULONG FileNameLength;
+	WCHAR FileName[1];
+} FILE_DIRECTORY_INFORMATION, *PFILE_DIRECTORY_INFORMATION;
+
+typedef struct _FILE_FULL_DIRECTORY_INFORMATION {
+	ULONG NextEntryOffset;
+	ULONG FileIndex;
+	LARGE_INTEGER CreationTime;
+	LARGE_INTEGER LastAccessTime;
+	LARGE_INTEGER LastWriteTime;
+	LARGE_INTEGER ChangeTime;
+	LARGE_INTEGER EndOfFile;
+	LARGE_INTEGER AllocationSize;
+	ULONG FileAttributes;
+	ULONG FileNameLength;
+	ULONG EaSize;
+	WCHAR FileName[1];
+} FILE_FULL_DIRECTORY_INFORMATION, *PFILE_FULL_DIRECTORY_INFORMATION;
+
+typedef struct _FILE_BOTH_DIRECTORY_INFORMATION {
+	ULONG NextEntryOffset;
+	ULONG FileIndex;
+	LARGE_INTEGER CreationTime;
+	LARGE_INTEGER LastAccessTime;
+	LARGE_INTEGER LastWriteTime;
+	LARGE_INTEGER ChangeTime;
+	LARGE_INTEGER EndOfFile;
+	LARGE_INTEGER AllocationSize;
+	ULONG FileAttributes;
+	ULONG FileNameLength;
+	ULONG EaSize;
+	UCHAR ShortNameLength;
+	WCHAR ShortName[12];
+	WCHAR FileName[1];
+} FILE_BOTH_DIRECTORY_INFORMATION, *PFILE_BOTH_DIRECTORY_INFORMATION;
+
+typedef struct _FILE_NAMES_INFORMATION {
+	ULONG NextEntryOffset;
+	ULONG FileIndex;
+	ULONG FileNameLength;
+	WCHAR FileName[1];
+} FILE_NAMES_INFORMATION, *PFILE_NAMES_INFORMATION;
+
+/* NtQueryDirectoryFileEx QueryFlags. */
+#define SL_RESTART_SCAN                 0x00000001
+#define SL_RETURN_SINGLE_ENTRY          0x00000002
+#define SL_INDEX_SPECIFIED              0x00000004
+#define SL_RETURN_ON_DISK_ENTRIES_ONLY  0x00000008
+
 /* -------------------------------------------------------------------------- */
 /* File object                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -353,6 +413,13 @@ struct nt_file_object {
 
 	/* Name cache (Linux path). */
 	char *linux_path;
+
+	/* Directory enumeration state (userspace shim). A snapshot of entry names
+	 * is taken when a scan starts; dir_pos is the next entry to return. */
+	char **dir_names;
+	size_t dir_count;
+	size_t dir_pos;
+	char *dir_pattern;
 };
 
 #ifndef STATUS_NOT_FOUND
@@ -447,6 +514,23 @@ NTSTATUS nt_svc_NtUnlockFile(HANDLE FileHandle,
 			     PIO_STATUS_BLOCK IoStatusBlock,
 			     PLARGE_INTEGER ByteOffset, PLARGE_INTEGER Length,
 			     ULONG Key);
+
+NTSTATUS nt_svc_NtQueryDirectoryFile(HANDLE FileHandle, HANDLE Event,
+				     PVOID ApcRoutine, PVOID ApcContext,
+				     PIO_STATUS_BLOCK IoStatusBlock,
+				     PVOID FileInformation, ULONG Length,
+				     ULONG FileInformationClass,
+				     BOOLEAN ReturnSingleEntry,
+				     PUNICODE_STRING FileName,
+				     BOOLEAN RestartScan);
+
+NTSTATUS nt_svc_NtQueryDirectoryFileEx(HANDLE FileHandle, HANDLE Event,
+				       PVOID ApcRoutine, PVOID ApcContext,
+				       PIO_STATUS_BLOCK IoStatusBlock,
+				       PVOID FileInformation, ULONG Length,
+				       ULONG FileInformationClass,
+				       ULONG QueryFlags,
+				       PUNICODE_STRING FileName);
 
 NTSTATUS nt_svc_NtQueryEaFile(HANDLE FileHandle,
 			      PIO_STATUS_BLOCK IoStatusBlock,

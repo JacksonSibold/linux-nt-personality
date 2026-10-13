@@ -652,11 +652,14 @@ static void ntio_locks_drop_owner(struct nt_file_object *file)
 	spin_unlock(&ntio_lock_mutex);
 }
 
+static void ntio_dir_clear(struct nt_file_object *file);
+
 static void ntio_file_release(struct kref *ref)
 {
 	struct nt_file_object *file = container_of(ref, struct nt_file_object, ref);
 
 	ntio_locks_drop_owner(file);
+	ntio_dir_clear(file);
 	if (file->iocp) {
 		ntio_iocp_disassociate(&file->iocp);
 	}
@@ -3413,6 +3416,371 @@ NTSTATUS nt_svc_NtUnlockFile(HANDLE FileHandle,
 
 	ntio_file_put(file);
 	return ntio_complete_iosb(IoStatusBlock, status);
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Directory enumeration                                                        */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Enumeration reads the directory once per scan (first call, or a restart) and
+ * returns entries from that snapshot. The snapshot is userspace-only: the
+ * kernel branch of NtQueryDirectoryFile returns STATUS_NOT_SUPPORTED.
+ */
+
+static void ntio_dir_clear(struct nt_file_object *file)
+{
+	size_t i;
+
+	if (file->dir_names) {
+		for (i = 0; i < file->dir_count; i++)
+			kfree(file->dir_names[i]);
+		kfree(file->dir_names);
+	}
+	kfree(file->dir_pattern);
+	file->dir_names = NULL;
+	file->dir_count = 0;
+	file->dir_pos = 0;
+	file->dir_pattern = NULL;
+}
+
+#ifndef __KERNEL__
+static int ntio_ascii_lower(int c)
+{
+	return (c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c;
+}
+
+/* NT-style wildcard match: star and question mark, ASCII case-insensitive. */
+static bool ntio_wild_match(const char *p, const char *s)
+{
+	while (*p) {
+		if (*p == '*') {
+			while (*p == '*')
+				p++;
+			if (!*p)
+				return true;
+			for (; *s; s++) {
+				if (ntio_wild_match(p, s))
+					return true;
+			}
+			return ntio_wild_match(p, s);
+		}
+		if (!*s)
+			return false;
+		if (*p != '?' && ntio_ascii_lower((unsigned char)*p) !=
+				  ntio_ascii_lower((unsigned char)*s))
+			return false;
+		p++;
+		s++;
+	}
+	return *s == '\0';
+}
+
+/* Size of the fixed part of an entry, before the name, for each class. */
+static size_t ntio_dir_fixed_size(ULONG cls)
+{
+	switch (cls) {
+	case FileDirectoryInformation:
+		return offsetof(FILE_DIRECTORY_INFORMATION, FileName);
+	case FileFullDirectoryInformation:
+		return offsetof(FILE_FULL_DIRECTORY_INFORMATION, FileName);
+	case FileBothDirectoryInformation:
+		return offsetof(FILE_BOTH_DIRECTORY_INFORMATION, FileName);
+	default:
+		return offsetof(FILE_NAMES_INFORMATION, FileName);
+	}
+}
+
+/* Append one name to the snapshot if it matches the pattern. */
+static NTSTATUS ntio_dir_add(struct nt_file_object *file, const char *name,
+			     const char *pattern, size_t *cap)
+{
+	char **nn;
+	char *copy;
+
+	if (!ntio_wild_match(pattern, name))
+		return STATUS_SUCCESS;
+	if (file->dir_count == *cap) {
+		size_t ncap = *cap ? *cap * 2 : 16;
+
+		nn = realloc(file->dir_names, ncap * sizeof(char *));
+		if (!nn)
+			return STATUS_NO_MEMORY;
+		file->dir_names = nn;
+		*cap = ncap;
+	}
+	copy = kstrdup(name, GFP_KERNEL);
+	if (!copy)
+		return STATUS_NO_MEMORY;
+	file->dir_names[file->dir_count++] = copy;
+	return STATUS_SUCCESS;
+}
+
+/*
+ * Snapshot the directory entries that match pattern. NT always reports "." and
+ * ".." first, so they are added here whether or not the host listing has them.
+ */
+static NTSTATUS ntio_dir_snapshot(struct nt_file_object *file, const char *pattern)
+{
+	DIR *d;
+	struct dirent *ent;
+	size_t cap = 0;
+	NTSTATUS status;
+
+	ntio_dir_clear(file);
+	file->dir_pattern = kstrdup(pattern, GFP_KERNEL);
+	if (!file->dir_pattern)
+		return STATUS_NO_MEMORY;
+
+	d = opendir(file->linux_path);
+	if (!d)
+		return STATUS_ACCESS_DENIED;
+	status = ntio_dir_add(file, ".", pattern, &cap);
+	if (NT_SUCCESS(status))
+		status = ntio_dir_add(file, "..", pattern, &cap);
+	while (NT_SUCCESS(status) && (ent = readdir(d)) != NULL) {
+		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+			continue;
+		status = ntio_dir_add(file, ent->d_name, pattern, &cap);
+	}
+	closedir(d);
+	if (!NT_SUCCESS(status))
+		ntio_dir_clear(file);
+	return status;
+}
+
+/* Write one entry at dst. dst is zeroed first, so NextEntryOffset is 0. */
+static void ntio_dir_fill_entry(void *dst, ULONG cls, ULONG index,
+				const char *name, size_t namelen,
+				const struct kstat *st)
+{
+	FILE_BASIC_INFORMATION bi;
+	size_t i, fixed = ntio_dir_fixed_size(cls);
+	WCHAR *wname;
+	ULONG name_bytes = (ULONG)(namelen * sizeof(WCHAR));
+
+	memset(dst, 0, fixed + name_bytes);
+	ntio_basic_from_stat(&bi, st);
+	wname = (WCHAR *)((unsigned char *)dst + fixed);
+	for (i = 0; i < namelen; i++)
+		wname[i] = (WCHAR)(unsigned char)name[i];
+
+	if (cls == FileNamesInformation) {
+		PFILE_NAMES_INFORMATION n = (PFILE_NAMES_INFORMATION)dst;
+
+		n->FileIndex = index;
+		n->FileNameLength = name_bytes;
+		return;
+	}
+
+	{
+		PFILE_DIRECTORY_INFORMATION d = (PFILE_DIRECTORY_INFORMATION)dst;
+
+		d->FileIndex = index;
+		d->CreationTime = bi.CreationTime;
+		d->LastAccessTime = bi.LastAccessTime;
+		d->LastWriteTime = bi.LastWriteTime;
+		d->ChangeTime = bi.ChangeTime;
+		d->EndOfFile.QuadPart = (LONGLONG)st->size;
+		d->AllocationSize.QuadPart = (LONGLONG)st->size;
+		d->FileAttributes = bi.FileAttributes;
+		d->FileNameLength = name_bytes;
+	}
+}
+
+/*
+ * Fill buf with as many entries as fit, from the current snapshot position.
+ * Entries are 8-byte aligned. An entry that does not fit ends the call; if it
+ * is the first one the result is STATUS_BUFFER_OVERFLOW.
+ */
+static NTSTATUS ntio_query_dir_common(struct nt_file_object *file,
+				      unsigned char *buf, ULONG len, ULONG cls,
+				      bool return_single,
+				      ULONG_PTR *information)
+{
+	size_t cur_off = 0, prev_off = 0, prev_size = 0;
+	bool have_prev = false;
+	ULONG count = 0;
+	NTSTATUS status = STATUS_SUCCESS;
+
+	*information = 0;
+	while (file->dir_pos < file->dir_count) {
+		const char *name = file->dir_names[file->dir_pos];
+		size_t namelen = strlen(name);
+		size_t size = ntio_dir_fixed_size(cls) + namelen * sizeof(WCHAR);
+		char full[PATH_MAX];
+		struct kstat st;
+		int n;
+
+		/* "." is the directory itself and ".." is its parent; stat those
+		 * directly, since "dir/." and "dir/.." are not reliable paths on
+		 * every host. */
+		if (strcmp(name, ".") == 0) {
+			n = snprintf(full, sizeof(full), "%s", file->linux_path);
+		} else if (strcmp(name, "..") == 0) {
+			const char *slash = strrchr(file->linux_path, '/');
+
+			n = slash && slash != file->linux_path
+				? snprintf(full, sizeof(full), "%.*s",
+					   (int)(slash - file->linux_path), file->linux_path)
+				: snprintf(full, sizeof(full), "/");
+		} else {
+			n = snprintf(full, sizeof(full), "%s/%s", file->linux_path, name);
+		}
+		if (n < 0 || (size_t)n >= sizeof(full) ||
+		    ntio_getattr_path(full, &st) != 0) {
+			/* Entry vanished since the snapshot: skip it. */
+			file->dir_pos++;
+			continue;
+		}
+
+		cur_off = have_prev ? (prev_off + prev_size + 7) & ~(size_t)7 : 0;
+		if (cur_off + size > len) {
+			if (count == 0)
+				status = STATUS_BUFFER_OVERFLOW;
+			break;
+		}
+
+		ntio_dir_fill_entry(buf + cur_off, cls, (ULONG)(file->dir_pos + 1),
+				    name, namelen, &st);
+		if (have_prev)
+			*(ULONG *)(buf + prev_off) = (ULONG)(cur_off - prev_off);
+		have_prev = true;
+		prev_off = cur_off;
+		prev_size = size;
+		count++;
+		file->dir_pos++;
+		if (return_single)
+			break;
+	}
+
+	if (count > 0) {
+		*information = prev_off + prev_size;
+		return STATUS_SUCCESS;
+	}
+	if (status == STATUS_BUFFER_OVERFLOW)
+		return status;
+	return STATUS_NO_MORE_FILES;
+}
+
+/* Convert a UNICODE_STRING pattern to ASCII; NULL or empty means "*". */
+static NTSTATUS ntio_dir_pattern(PUNICODE_STRING pattern, char *out, size_t outlen)
+{
+	size_t i, n;
+
+	if (!pattern || pattern->Length == 0 || !pattern->Buffer) {
+		snprintf(out, outlen, "*");
+		return STATUS_SUCCESS;
+	}
+	n = pattern->Length / sizeof(WCHAR);
+	if (n + 1 > outlen)
+		return STATUS_NAME_TOO_LONG;
+	for (i = 0; i < n; i++) {
+		WCHAR wc = pattern->Buffer[i];
+
+		out[i] = wc < 0x80 ? (char)wc : '?';
+	}
+	out[n] = '\0';
+	return STATUS_SUCCESS;
+}
+
+static NTSTATUS ntio_dir_service(HANDLE FileHandle,
+				 PIO_STATUS_BLOCK IoStatusBlock,
+				 PVOID FileInformation, ULONG Length,
+				 ULONG cls, bool return_single, bool restart,
+				 PUNICODE_STRING FileName)
+{
+	struct nt_file_object *file;
+	char pattern[512];
+	ULONG_PTR information = 0;
+	NTSTATUS status;
+
+	if (!IoStatusBlock || !FileInformation)
+		return STATUS_ACCESS_VIOLATION;
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return STATUS_INVALID_HANDLE;
+	if (!file->is_directory) {
+		ntio_file_put(file);
+		return STATUS_INVALID_PARAMETER;
+	}
+	if (cls != FileDirectoryInformation && cls != FileFullDirectoryInformation &&
+	    cls != FileBothDirectoryInformation && cls != FileNamesInformation) {
+		ntio_file_put(file);
+		return STATUS_INVALID_INFO_CLASS;
+	}
+
+	/* A new scan takes the pattern from this call. */
+	status = ntio_dir_pattern(FileName, pattern, sizeof(pattern));
+	if (NT_SUCCESS(status) && (restart || !file->dir_names)) {
+		status = ntio_dir_snapshot(file, pattern);
+	}
+	if (NT_SUCCESS(status))
+		status = ntio_query_dir_common(file, FileInformation, Length, cls,
+					       return_single, &information);
+	ntio_file_put(file);
+
+	IoStatusBlock->DUMMYUNIONNAME.Status = status;
+	IoStatusBlock->Information = information;
+	return status;
+}
+#else /* __KERNEL__ */
+static NTSTATUS ntio_dir_service(HANDLE FileHandle,
+				 PIO_STATUS_BLOCK __user IoStatusBlock,
+				 PVOID __user FileInformation, ULONG Length,
+				 ULONG cls, bool return_single, bool restart,
+				 PUNICODE_STRING FileName)
+{
+	(void)FileHandle;
+	(void)FileInformation;
+	(void)Length;
+	(void)cls;
+	(void)return_single;
+	(void)restart;
+	(void)FileName;
+	/* The kernel branch has no directory snapshot yet. */
+	return ntio_complete_iosb(IoStatusBlock, STATUS_NOT_SUPPORTED);
+}
+#endif
+
+NTSTATUS nt_svc_NtQueryDirectoryFile(HANDLE FileHandle, HANDLE Event,
+				     PVOID ApcRoutine, PVOID ApcContext,
+				     PIO_STATUS_BLOCK __user IoStatusBlock,
+				     PVOID __user FileInformation, ULONG Length,
+				     ULONG FileInformationClass,
+				     BOOLEAN ReturnSingleEntry,
+				     PUNICODE_STRING FileName,
+				     BOOLEAN RestartScan)
+{
+	(void)Event;
+	(void)ApcRoutine;
+	(void)ApcContext;
+	return ntio_dir_service(FileHandle, IoStatusBlock, FileInformation, Length,
+				FileInformationClass, ReturnSingleEntry != 0,
+				RestartScan != 0, FileName);
+}
+
+NTSTATUS nt_svc_NtQueryDirectoryFileEx(HANDLE FileHandle, HANDLE Event,
+				       PVOID ApcRoutine, PVOID ApcContext,
+				       PIO_STATUS_BLOCK __user IoStatusBlock,
+				       PVOID __user FileInformation, ULONG Length,
+				       ULONG FileInformationClass,
+				       ULONG QueryFlags,
+				       PUNICODE_STRING FileName)
+{
+	(void)Event;
+	(void)ApcRoutine;
+	(void)ApcContext;
+	if (QueryFlags & ~(SL_RESTART_SCAN | SL_RETURN_SINGLE_ENTRY |
+			   SL_INDEX_SPECIFIED | SL_RETURN_ON_DISK_ENTRIES_ONLY))
+		return STATUS_INVALID_PARAMETER;
+	if (QueryFlags & SL_INDEX_SPECIFIED)
+		return STATUS_NOT_SUPPORTED;
+	return ntio_dir_service(FileHandle, IoStatusBlock, FileInformation, Length,
+				FileInformationClass,
+				(QueryFlags & SL_RETURN_SINGLE_ENTRY) != 0,
+				(QueryFlags & SL_RESTART_SCAN) != 0, FileName);
 }
 
 
