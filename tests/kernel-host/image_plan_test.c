@@ -222,6 +222,7 @@ static int test_section_over_headers(void)
     ip_plan_t p;
     pe_synth_build(buf, NULL);
     pes_put32(buf, PES_TEXT_HDR + 12, 0);           /* .text at RVA 0 covers the header page */
+    pes_put32(buf, PES_OPT_OFF + 16, 0x10);         /* entry point stays inside .text */
     CHECK(ip_plan_build(buf, PES_FILE_SIZE, &p) == IP_ERR_LAYOUT);
     return 0;
 }
