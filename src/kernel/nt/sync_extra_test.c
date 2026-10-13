@@ -32,6 +32,18 @@ NTSTATUS nt_svc_NtQueryTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR
 NTSTATUS nt_svc_NtSignalAndWaitForSingleObject(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
                                                ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
                                                ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
+NTSTATUS nt_svc_NtCreateKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                   ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                   ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
+NTSTATUS nt_svc_NtOpenKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                 ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                 ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
+NTSTATUS nt_svc_NtWaitForKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                    ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                    ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
+NTSTATUS nt_svc_NtReleaseKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                    ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                    ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +51,8 @@ NTSTATUS nt_svc_NtSignalAndWaitForSingleObject(ULONG_PTR a0, ULONG_PTR a1, ULONG
 #include <wchar.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <pthread.h>
+#include <unistd.h>
 
 static int g_pass = 0, g_fail = 0;
 #define TEST(name) static void test_##name(void)
@@ -358,6 +372,82 @@ TEST(signal_and_wait_bad_objects) {
     PASS();
 }
 
+/* ------------------------------------------------------------------ */
+/* Keyed events                                                         */
+/* ------------------------------------------------------------------ */
+static NTSTATUS t_create_keyed(HANDLE *h, ACCESS_MASK acc, POBJECT_ATTRIBUTES oa, ULONG_PTR flags) {
+    return nt_svc_NtCreateKeyedEvent((ULONG_PTR)h, acc, (ULONG_PTR)oa, flags, 0, 0, 0, 0, 0, 0, 0, 0);
+}
+static NTSTATUS t_open_keyed(HANDLE *h, ACCESS_MASK acc, POBJECT_ATTRIBUTES oa) {
+    return nt_svc_NtOpenKeyedEvent((ULONG_PTR)h, acc, (ULONG_PTR)oa, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+}
+static NTSTATUS t_wait_keyed(HANDLE h, void *key, LARGE_INTEGER *to) {
+    return nt_svc_NtWaitForKeyedEvent((ULONG_PTR)h, (ULONG_PTR)key, 0, (ULONG_PTR)to, 0, 0, 0, 0, 0, 0, 0, 0);
+}
+static NTSTATUS t_release_keyed(HANDLE h, void *key, LARGE_INTEGER *to) {
+    return nt_svc_NtReleaseKeyedEvent((ULONG_PTR)h, (ULONG_PTR)key, 0, (ULONG_PTR)to, 0, 0, 0, 0, 0, 0, 0, 0);
+}
+
+TEST(keyed_create_and_open) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_keyed(&h, 0x1F0003, NULL, 0), STATUS_SUCCESS);
+    ASSERT(h != NULL);
+    /* Flags are reserved and must be zero. */
+    HANDLE bad = NULL;
+    ASSERT_STATUS(t_create_keyed(&bad, 0x1F0003, NULL, 1), STATUS_INVALID_PARAMETER);
+    UNICODE_STRING us;
+    make_us(&us, "\\BaseNamedObjects\\ExtKeyed", wbuf1, sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, OBJ_CASE_INSENSITIVE);
+    HANDLE named = NULL;
+    ASSERT_STATUS(t_create_keyed(&named, 0x1F0003, &oa, 0), STATUS_SUCCESS);
+    HANDLE opened = NULL;
+    ASSERT_STATUS(t_open_keyed(&opened, 0x1F0003, &oa), STATUS_SUCCESS);
+    UNICODE_STRING miss;
+    make_us(&miss, "\\BaseNamedObjects\\ExtKeyedMissing", wbuf2, sizeof(wbuf2));
+    OBJECT_ATTRIBUTES oa_miss = make_oa(&miss, OBJ_CASE_INSENSITIVE);
+    HANDLE none = NULL;
+    ASSERT_STATUS(t_open_keyed(&none, 0x1F0003, &oa_miss), STATUS_OBJECT_NAME_NOT_FOUND);
+    PASS();
+}
+
+TEST(keyed_wait_times_out) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_keyed(&h, 0x1F0003, NULL, 0), STATUS_SUCCESS);
+    int key_marker = 0;
+    LARGE_INTEGER to = rel100(50);
+    ASSERT_STATUS(t_wait_keyed(h, &key_marker, &to), STATUS_TIMEOUT);
+    PASS();
+}
+
+struct keyed_wait_arg { HANDLE h; void *key; struct nt_eprocess *proc; NTSTATUS st; };
+static void *keyed_waiter_thread(void *p) {
+    struct keyed_wait_arg *a = (struct keyed_wait_arg *)p;
+    kshim_set_current_process(a->proc);
+    struct nt_thread *t = NULL;
+    if (nt_thread_create(&t) == STATUS_SUCCESS) nt_set_current_thread(t);
+    LARGE_INTEGER to = rel100(3000);
+    a->st = t_wait_keyed(a->h, a->key, &to);
+    return NULL;
+}
+
+TEST(keyed_release_wakes_waiter) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_keyed(&h, 0x1F0003, NULL, 0), STATUS_SUCCESS);
+    int key_marker = 0;
+    struct keyed_wait_arg arg = { h, &key_marker, kshim_current_process(), STATUS_UNSUCCESSFUL };
+    pthread_t pt;
+    ASSERT(pthread_create(&pt, NULL, keyed_waiter_thread, &arg) == 0);
+    usleep(200000);
+    LARGE_INTEGER to = rel100(1000);
+    ASSERT_STATUS(t_release_keyed(h, &key_marker, &to), STATUS_SUCCESS);
+    pthread_join(pt, NULL);
+    ASSERT_STATUS(arg.st, STATUS_WAIT_0);
+    PASS();
+}
+
 int main(void) {
     printf("sync extra tests starting\n");
     ObInitObjectManager();
@@ -376,6 +466,9 @@ int main(void) {
     RUN(signal_and_wait_event_pair);
     RUN(signal_and_wait_mutant_release);
     RUN(signal_and_wait_bad_objects);
+    RUN(keyed_create_and_open);
+    RUN(keyed_wait_times_out);
+    RUN(keyed_release_wakes_waiter);
     printf("sync extra tests: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) return 1;
     ObCleanupObjectManager();

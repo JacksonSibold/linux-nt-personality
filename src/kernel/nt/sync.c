@@ -2699,3 +2699,151 @@ NTSTATUS nt_svc_NtSignalAndWaitForSingleObject(ULONG_PTR a0, ULONG_PTR a1, ULONG
     ObDereferenceObject(sig_hdr);
     return st;
 }
+
+/* Keyed event body: the wait list lives in the global keyed table, so the header only needs init. */
+static void keyed_object_init(struct nt_keyed_event *k)
+{
+#ifndef __KERNEL__
+    k->header.type = NT_OBJ_KEYED_EVENT;
+    pthread_mutex_init(&k->header.lock, NULL);
+    INIT_LIST_HEAD(&k->header.waiters);
+    k->header.signal_state = 0;
+    k->header.manual_reset = false;
+    atomic_init(&k->header.refcount, 1);
+#else
+    k->header.type = NT_OBJ_KEYED_EVENT;
+    spin_lock_init(&k->header.lock);
+    INIT_LIST_HEAD(&k->header.waiters);
+    k->header.signal_state = 0;
+    k->header.manual_reset = false;
+    atomic_set(&k->header.refcount, 1);
+    init_waitqueue_head(&k->header.wq);
+#endif
+}
+
+static NTSTATUS keyed_create_internal(struct nt_eprocess *proc, ACCESS_MASK access,
+                                      POBJECT_ATTRIBUTES oa, PHANDLE out)
+{
+    if (oa && oa->ObjectName && oa->ObjectName->Length) {
+        struct nt_object_header *existing = NULL;
+        NTSTATUS st = ObReferenceObjectByName(oa->ObjectName, &nt_keyed_event_type, UserMode, access, &existing);
+        if (NT_SUCCESS(st)) {
+            ULONG hattr = 0;
+            if (oa->Attributes & OBJ_INHERIT) hattr |= OBJ_INHERIT;
+            if (oa->Attributes & OBJ_PROTECT_FROM_CLOSE) hattr |= OBJ_PROTECT_FROM_CLOSE;
+            HANDLE h = NULL;
+            st = ObCreateHandle(proc, existing, access, hattr, &h);
+            ObDereferenceObject(existing);
+            if (NT_SUCCESS(st)) { *out = h; return STATUS_OBJECT_NAME_COLLISION; }
+            return st;
+        }
+    }
+    struct nt_object_header *hdr = NULL;
+    struct nt_keyed_event *k = NULL;
+    OBJECT_ATTRIBUTES tmp = {0};
+    if (oa) tmp = *oa; else tmp.Length = sizeof(tmp);
+    NTSTATUS st = ObCreateObject(&nt_keyed_event_type, &tmp, sizeof(*k), &hdr, (void **)&k);
+    if (!NT_SUCCESS(st)) return st;
+    keyed_object_init(k);
+    st = ObInsertObject(hdr, oa, access, proc, out);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+NTSTATUS nt_svc_NtCreateKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                   ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                   ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    PHANDLE KeyedEventHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    ULONG Flags = (ULONG)a3;
+    (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (!KeyedEventHandle) return STATUS_INVALID_PARAMETER;
+    if (!access_ok(KeyedEventHandle, sizeof(*KeyedEventHandle))) return STATUS_ACCESS_VIOLATION;
+    if (Flags != 0) return STATUS_INVALID_PARAMETER;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    NTSTATUS st = sync_ensure_handle_table(proc);
+    if (!NT_SUCCESS(st)) return st;
+    OBJECT_ATTRIBUTES k_oa;
+    UNICODE_STRING k_name;
+    WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL;
+    st = sync_copy_oa(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    HANDLE h = NULL;
+    st = keyed_create_internal(proc, DesiredAccess, oa, &h);
+    if (NT_SUCCESS(st) || st == STATUS_OBJECT_NAME_COLLISION) {
+        if (copy_to_user(KeyedEventHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+    }
+    return st;
+}
+
+NTSTATUS nt_svc_NtOpenKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                 ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                 ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    PHANDLE KeyedEventHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    (void)a3; (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (!KeyedEventHandle) return STATUS_INVALID_PARAMETER;
+    if (!access_ok(KeyedEventHandle, sizeof(*KeyedEventHandle))) return STATUS_ACCESS_VIOLATION;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    NTSTATUS st = sync_ensure_handle_table(proc);
+    if (!NT_SUCCESS(st)) return st;
+    OBJECT_ATTRIBUTES k_oa;
+    UNICODE_STRING k_name;
+    WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL;
+    st = sync_copy_oa(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    HANDLE h = NULL;
+    st = sync_open_named(&h, DesiredAccess, oa, &nt_keyed_event_type, proc);
+    if (NT_SUCCESS(st) && copy_to_user(KeyedEventHandle, &h, sizeof(h))) return STATUS_ACCESS_VIOLATION;
+    return st;
+}
+
+/* Shared body of NtWaitForKeyedEvent and NtReleaseKeyedEvent. */
+static NTSTATUS keyed_event_op(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3, bool wait)
+{
+    HANDLE KeyedEventHandle = (HANDLE)a0;
+    void *Key = (void *)a1;
+    BOOLEAN Alertable = (BOOLEAN)a2;
+    PLARGE_INTEGER Timeout = (PLARGE_INTEGER)a3;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    LARGE_INTEGER k_timeout;
+    PLARGE_INTEGER p_timeout = NULL;
+    if (Timeout) {
+        if (!access_ok(Timeout, sizeof(LARGE_INTEGER))) return STATUS_ACCESS_VIOLATION;
+        if (copy_from_user(&k_timeout, Timeout, sizeof(k_timeout))) return STATUS_ACCESS_VIOLATION;
+        p_timeout = &k_timeout;
+    }
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = ObReferenceObjectByHandle(proc, KeyedEventHandle, &nt_keyed_event_type, UserMode, 0, &hdr, NULL);
+    if (!NT_SUCCESS(st)) return st;
+    struct nt_keyed_event *k = (struct nt_keyed_event *)nt_object_body(hdr);
+    if (wait) st = nt_wait_for_keyed_event(k, Key, Alertable, p_timeout);
+    else st = nt_release_keyed_event(k, Key, Alertable, p_timeout);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+NTSTATUS nt_svc_NtWaitForKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                    ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                    ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    return keyed_event_op(a0, a1, a2, a3, true);
+}
+
+NTSTATUS nt_svc_NtReleaseKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                                    ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                                    ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    return keyed_event_op(a0, a1, a2, a3, false);
+}
