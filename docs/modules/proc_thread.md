@@ -1,79 +1,110 @@
 # Module: proc_thread (Process and thread services)
 
-Sources: `src/kernel/nt/proc_thread.c`, `src/kernel/nt/proc_thread.h`
-Related: `object.md` (process and thread objects), `handle.md` (creation returns handles), `mm.md` (address space and TEB or stack setup), `sync.md` (thread alert and wait state), `iocp.md` (APC queueing), `dispatch.md` (the service table).
+Sources: `src/kernel/nt/proc_thread.c`, `src/kernel/nt/proc_thread.h`. Mirror: `arch/x86/nt/proc_thread.c` (an older copy that differs; see [tree-divergence](../analysis/tree-divergence.md)).
+Related: `object.md` (process and thread objects), `handle.md` (creation returns handles, inheritance), `mm.md` (address space and stack setup), `sync.md` (alert and wait state), `iocp.md` (`NtTestAlert` and APC queueing), `security.md` (process primary token), `dispatch.md` (service table), `process-creation.md` (plan for process creation).
 
 ## Purpose
 
-Implements NT process and thread creation, suspend and resume counts, termination, open-by-id, information-class queries, and thread context access. The file has a userspace shim (`#ifndef __KERNEL__`, pthreads) and kernel code that starts at the `#else /* __KERNEL__ */` on `proc_thread.c:950` and runs to the end of the file (line 1954). The kernel side is meant to use `kernel_clone` and the x86 GS base. The shim's service bodies are at `proc_thread.c:667-949` and the kernel's at `:1656-1954`. The header comment states that the shim and kernel branches differ, and the design notes describe the intended kernel behaviour.
+Implements NT process and thread creation, suspend and resume counts, termination, open by id, information-class set and query, alerts, and thread context access. The file has three regions:
+
+- the userspace shim, `#ifndef __KERNEL__` (pthreads), which runs to `proc_thread.c:993`;
+- the kernel branch, `#else /* __KERNEL__ */` at `proc_thread.c:994` to the `#endif` at `:2034`;
+- a common tail from `:2035` to the end, which holds the information-class services, the alert services and `pt_thread_post_alert`.
+
+## Services and their definitions
+
+Each service has a typed definition in the shim branch and a raw-argument definition (`unsigned long a0, ...`) in the kernel branch, which dispatch calls. Line numbers in the table are the shim (typed) and kernel (raw) definitions.
+
+| Service | Shim (typed) | Kernel (raw) | Kernel build |
+|---|---|---|---|
+| `NtCreateProcessEx` | `:473` | `:1441` | Stub, `STATUS_NOT_IMPLEMENTED` |
+| `NtCreateProcess` | `:482` (forwards to `NtCreateProcessEx`) | `:1442` | Stub, `STATUS_NOT_IMPLEMENTED` |
+| `NtCreateUserProcess` | `:491` | `:1454` | Validates the arguments (`proc_create_args.h`), then `STATUS_NOT_IMPLEMENTED` |
+| `NtCreateThreadEx` | `:447` | `:1255` | Implemented over `kernel_clone` (`:1265`); not built on this host |
+| `NtCreateThread` | `:462` | `:1427` | Forwards to `NtCreateThreadEx` |
+| `NtSuspendThread`, `NtResumeThread` | `:518`, `:547` | `:1470`, `:1512` | Both builds |
+| `NtSuspendProcess`, `NtResumeProcess` | `:572`, `:589` | `:1556`, `:1575` | Both builds |
+| `NtTerminateThread`, `NtTerminateProcess` | `:603`, `:645` | `:1593`, `:1640` | Both builds |
+| `NtOpenProcess`, `NtOpenThread` | `:678`, `:695` | `:1673`, `:1698` | Both builds |
+| `NtQueryInformationProcess` | `:716` | `:1726` | Both builds |
+| `NtQueryInformationThread` | `:868` | `:1904` | Both builds |
+| `NtQuerySystemInformation(Ex)`, `NtSetSystemInformation` | `:949`, `:972`, `:977` | `:1991`, `:2020`, `:2025` | Both builds |
+| `NtGetContextThread`, `NtSetContextThread` | `:983`, `:988` | `:2031`, `:2032` | `STATUS_NOT_IMPLEMENTED` in both |
+| `NtSetInformationProcess` | `:2173` (common tail, one definition) | | Both builds |
+| `NtSetInformationThread` | `:2260` (common tail, one definition) | | Both builds |
+| `NtAlertThread`, `NtAlertThreadByThreadId`, `NtAlertResumeThread` | `:2310`, `:2320`, `:2329` (common tail) | | Both builds |
+
+The `NtTestAlert` service is in `iocp.c:767`. Token open services are in `security.c`.
+
+`docs/status/SERVICES.md` lists `NtCreateProcessEx` and `NtCreateProcess` as IMPLEMENTED (userspace) and STUB-NOT-IMPLEMENTED (kernel), and `NtCreateUserProcess` as IMPLEMENTED in both builds. The last label is the inventory's reading of a body that does copy-in and then refuses; it does not create a process in the kernel build.
 
 ## Public API (proc_thread.h)
 
-Types:
+- `typedef LONG KPRIORITY` (defined here if `nt_types.h` lacks it), and the `PROCESS_BASIC_INFORMATION`, `THREAD_BASIC_INFORMATION` and `KERNEL_USER_TIMES` structures.
+- The `nt_svc_*` prototypes listed above.
+- `void nt_thread_check_suspend(void)` - blocks while the thread's suspend count is non-zero. Shim definition at `proc_thread.c:324`, kernel definition at `:1044`.
 
-- `typedef LONG KPRIORITY` (defined here if `nt_types.h` lacks it).
-- `PROCESS_BASIC_INFORMATION`, `THREAD_BASIC_INFORMATION`, `KERNEL_USER_TIMES` structures.
+## Behaviour
 
-Service entry points (native-style signatures):
+### Suspend count
 
-- `nt_svc_NtCreateProcessEx(PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes, HANDLE ParentProcess, ULONG Flags, HANDLE SectionHandle, HANDLE DebugPort, HANDLE ExceptionPort, PVOID JobMemberLevel)` - create a process object.
-- `nt_svc_NtCreateProcess(PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes, HANDLE ParentProcess, BOOLEAN InheritObjectTable, HANDLE SectionHandle, HANDLE DebugPort, HANDLE ExceptionPort)` - older form; in the shim it forwards to `NtCreateProcessEx`.
-- `nt_svc_NtCreateUserProcess(PHANDLE ProcessHandle, PHANDLE ThreadHandle, ...)` - create a process and its initial thread together.
-- `nt_svc_NtCreateThreadEx(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess, ...)` and `nt_svc_NtCreateThread(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess, ...)`.
-- `nt_svc_NtSuspendThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount)` and `nt_svc_NtResumeThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount)`.
-- `nt_svc_NtSuspendProcess(HANDLE ProcessHandle)` and `nt_svc_NtResumeProcess(HANDLE ProcessHandle)`.
-- `nt_svc_NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus)` and `nt_svc_NtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus)`.
-- `nt_svc_NtOpenProcess(PHANDLE ProcessHandle, ACCESS_MASK DesiredAccess, ...)` and `nt_svc_NtOpenThread(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess, ...)`.
-- `nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInformationClass, ...)` and `nt_svc_NtQueryInformationThread(HANDLE ThreadHandle, ULONG ThreadInformationClass, ...)`.
-- `nt_svc_NtSetInformationProcess(HANDLE ProcessHandle, ULONG Class, PVOID Info, ULONG Length)` and `nt_svc_NtSetInformationThread(HANDLE ThreadHandle, ULONG Class, PVOID Info, ULONG Length)`.
-- `nt_svc_NtGetContextThread(HANDLE ThreadHandle, PCONTEXT Context)` and `nt_svc_NtSetContextThread(HANDLE ThreadHandle, PCONTEXT Context)`.
-- `nt_svc_NtQuerySystemInformation` and `nt_svc_NtQuerySystemInformationEx`, `nt_svc_NtSetSystemInformation` are defined in this file.
+- Each thread has an integer suspend count. `NtSuspendThread` returns the previous count and increments it. `NtResumeThread` decrements it if positive and returns the previous count. The code cites golden values: suspend reports 0 then 1, and resume reports 2 then 1.
+- The kernel design sets `TIF_NTSUSPEND` on the target and blocks on return to user through `nt_thread_check_suspend`. This keeps the check off the context-switch path.
+- The shim keeps `suspend_count` as an atomic under `thr->lock`, with a condition-variable gate. It has no TIF flag. The check runs explicitly in the trampoline and after a self-suspend.
+- Both suspend and resume check `terminated` under the lock and return `STATUS_THREAD_IS_TERMINATING` if it is set.
 
-Kernel helper:
+### Process creation
 
-- `void nt_thread_check_suspend(void)` - call on return to user mode. It blocks while the thread's suspend count is non-zero (`proc_thread.c:280` for the shim and a second definition at `proc_thread.c:1000` for the kernel branch).
+- The shim (`nt_create_process_internal`, `proc_thread.c:407`) creates an `eprocess` with an empty handle table and no committed VADs. When `OBJ_INHERIT` is requested it calls `ObInheritHandles` (`proc_thread.c:426`), and it ignores the status. The shim does not `fork`, so there is no separate OS pid and all threads share one address space.
+- The shim's `NtCreateUserProcess` (`:491`) creates a process, then a thread at the dummy address `0x140001000`. If an attribute list is given, its pointer is used as the start address. This is a test hack, marked as such in the code.
+- The kernel build does not create processes. `NtCreateUserProcess` copies in and checks `PS_CREATE_INFO` and `PS_ATTRIBUTE_LIST` ([proc_create_args](proc_create_args.md)) and then refuses. `ProcessParameters` is not read ([process_params](process_params.md)).
+- The kernel `NtCreateThreadEx` (`:1255`) uses `kernel_clone` (`:1265`) and points the child at the trampoline. Its behaviour has not been run.
 
-Token slots (see `security.md`): a process object gets its primary token in `ObCreateProcessObject` (`object.c:1119`, token at `object.c:1175`). A thread object starts with a NULL impersonation token (`object.c:1214`). Both are released when the object is destroyed.
+### Thread start
 
-## Key data structures
+- A 48-byte synthetic user stub is copied into a page (`BUILD_BUG_ON` at `proc_thread.c:1162` keeps the length). It calls `NtTestAlert` (syscall 0x1c8), calls the start routine, and then calls `NtTerminateThread`. The stub is built at `:1121` to `:1165`.
+- `nt_get_ntdll_RtlUserThreadStart` (`:1176`) is a probe for an ntdll export. The export lookup it would need is not written (`:1196`), so the synthetic stub is the path used.
+- TEB: `NtTib.Self`, stack bounds, PEB pointer, client id, last error and TLS slots are filled in. Static TLS from a PE `.tls` section is not copied; the shim's static-TLS copy is a stub comment.
+- The GS base is written with `WRMSR_GS_BASE` in the kernel build (the write happens on context switch) and with `arch_prctl(ARCH_SET_GS, ...)` in the shim (`proc_thread.c:288`).
 
-The thread and process objects themselves are declared in `object.h` (`struct nt_eprocess`, `struct nt_ethread`). Relevant fields: `suspend_count`, `terminated`, `exit_status`, `teb`, `stack_base`, `stack_limit`, `process`, `tid`, `pid`, and locks and wait queues (`pthread_cond_t` or `wait_queue_head_t`).
+### Set and query information
 
-## Behaviour (as designed and as implemented)
+`NtSetInformationProcess` (`proc_thread.c:2173`) implements these classes, all needing `PROCESS_SET_INFORMATION`. Length and buffer are checked before the handle is opened.
 
-Suspend count:
+| Class | Rule |
+|---|---|
+| `ProcessBasePriority` (5) | `LONG`, clamped to 0..31. Set-only. |
+| `ProcessPriorityClass` (18) | 2 bytes (Foreground, PriorityClass). Classes 1 to 6 valid; others `STATUS_INVALID_PARAMETER`. REALTIME needs `SeIncreaseBasePriorityPrivilege`. |
+| `ProcessDefaultHardErrorMode` (12) | `ULONG`, stored as given. |
+| `ProcessAffinityMask` (21) | `ULONG_PTR`, non-zero and a subset of the system mask. |
+| `ProcessBreakOnTermination` (29) | `ULONG` as a flag. Needs `SeDebugPrivilege`. |
+| `ProcessHandleTracing` (32) | `STATUS_NOT_SUPPORTED`. |
 
-- Each thread has an integer suspend count. `NtSuspendThread` returns the previous count and increments it. `NtResumeThread` decrements it if positive and returns the previous count. The comment cites golden values: suspend reports 0 then 1, resume reports 2 then 1.
-- Kernel design (comment at the top of the file): `atomic_inc_return` on `suspend_count`, set `TIF_NTSUSPEND` on the target, and block on return to user through `nt_thread_check_suspend`. This keeps the check off the context-switch path.
-- Shim design: `suspend_count` is an `atomic_int` under `thr->lock`, with a `suspend_cond` gate. There is no TIF flag. The check runs explicitly in the trampoline and after a self-suspend.
-- Termination checks: `NtSuspendThread` and `NtResumeThread` check `terminated` under the lock and return `STATUS_THREAD_IS_TERMINATING` if set.
+Every other class, including `ProcessForegroundInformation` (25) and `ProcessWx86Information` (19), returns `STATUS_INVALID_INFO_CLASS`.
 
-Process creation:
+`NtSetInformationThread` (`:2260`) implements `ThreadPriority` (2) and `ThreadBasePriority` (3), a `LONG` in -15..15, and `ThreadAffinityMask` (4), a non-empty subset of the process mask. User buffers are read with `copy_from_user` after `access_ok`. Terminated threads return `STATUS_THREAD_IS_TERMINATING`.
 
-- The design note (top of file) says NT creates an empty process and then populates it, unlike Linux `execve`. The shim emulates this with an `eprocess` that has an empty handle table and no committed VADs (`nt_create_process_internal`, `proc_thread.c:363`, called from `proc_thread.c:435` and `:458`). It does not `fork`, so there is no separate OS pid and all threads share one address space.
-- The kernel design plans `kernel_clone(CLONE_NEWPID|VM)` with an emptied mm (`proc_thread.c:49-50`). See the gaps below: this is not implemented in the code.
+### Alerts
 
-Thread start:
-
-- A 48-byte synthetic user stub is copied into a page. It performs `NtTestAlert` (0x1c8), calls the start routine, then calls `NtTerminateThread` (trampoline comment at `proc_thread.c:1077-1090`, stub bytes from `:1105`). The design note compares this with using `RtlUserThreadStart` from ntdll and keeps the stub. A `BUILD_BUG_ON` at `proc_thread.c:1118` keeps the stub length at 48 bytes. `nt_get_ntdll_RtlUserThreadStart` (`:1132`) probes for an ntdll export, and the minimal export lookup is not written (`:1152`).
-- TEB: populated with `NtTib.Self`, stack bounds, the PEB pointer, client id, last error and TLS slots. The design note says static TLS from a PE `.tls` section is copied by `ldr_copy_static_tls()`. In the shim, the static TLS copy at `proc_thread.c:248` is a stub comment ("zero slots already"). GS base is set with `WRMSR` in the kernel and with `arch_prctl(ARCH_SET_GS, ...)` in the shim (`proc_thread.c:244`).
+- One flag. `pt_thread_post_alert` (`proc_thread.c:2073`) sets the alert on the thread's sync record (`nt_thread_alert(thr->sync_thread)`). The sync record is the flag that alertable waits test (`sync.c`, `nt_obj.c:2109`) and that `NtTestAlert` (`iocp.c:767`) consumes. A thread with no sync record gets `STATUS_NO_MEMORY`. A terminated thread gets `STATUS_THREAD_IS_TERMINATING`.
+- `NtAlertThread` and `NtAlertThreadByThreadId` (unknown id: `STATUS_INVALID_CID`) post the alert. `NtAlertResumeThread` resumes as `NtResumeThread` does, then posts it.
+- The kernel delay path honours an alert only when the wait is alertable. The kernel wait paths are not run on the host.
 
 ## Invariants and locking (as implemented)
 
-- Shim: thread state is protected by `thr->lock` (`pthread_mutex_t`), with `suspend_cond` as the gate. `pthread_cond_broadcast` is used at about 9 sites.
-- Kernel: per-thread `spinlock_t lock` plus `wait_queue_head_t` objects (`suspend_wq`, `exit_wq`), with `wake_up` at about 8 sites. The design notes say the blocking wait is done outside any lock.
-- Lock ordering: the design note says the suspend path must not hold a lock the blocked path needs. A self-suspend sets the flag and returns, and the block happens on the return path.
+- Shim: thread state is protected by `thr->lock` (`pthread_mutex_t`), with a condition variable as the suspend gate.
+- Kernel: per-thread `spinlock_t` plus wait queues. The blocking wait is done outside any lock.
+- Lock ordering (design note): a suspend path must not hold a lock the blocked path needs. A self-suspend sets the state and returns; the block happens on the return path.
+- The copy-out of `PreviousSuspendCount` in `arch/x86/nt/proc_thread.c` happens after the count changes. A fault there returns `STATUS_ACCESS_VIOLATION` with the suspend or resume already applied. A probe before the change removes the fault in the normal case; the residual race is accepted with reason (audit pass 1 item 38b1b0a).
 
 ## Known gaps (evident in code)
 
-- Kernel build, process creation: `nt_svc_NtCreateProcessEx`, `nt_svc_NtCreateProcess` and `nt_svc_NtCreateUserProcess` are one-line stubs in the kernel branch that return `STATUS_NOT_IMPLEMENTED` (`proc_thread.c:1379-1381`). The `kernel_clone` plan in the design note is therefore not in the code I read. Only the shim has a process-creation implementation (`nt_create_process_internal`, `proc_thread.c:346`, used at lines 418 and 441).
-- Kernel build, context access: `nt_svc_NtGetContextThread` and `nt_svc_NtSetContextThread` return `STATUS_NOT_IMPLEMENTED` in both branches (`proc_thread.c:923-929` shim, `1933-1934` kernel).
-- Set information: `nt_svc_NtSetInformationThread` implements `ThreadPriority` (2), `ThreadBasePriority` (3) and `ThreadAffinityMask` (4) with the rules below. `nt_svc_NtSetInformationProcess` still returns `STATUS_INVALID_INFO_CLASS` for every class in the shim branch, so process-side set operations always fail. A process affinity set needs a system affinity mask, which the object layer does not record.
-- Thread scheduling values: `ThreadBasicInformation` reports `Priority` and `BasePriority` as the process base priority plus the relative priority, clamped to 0..31 (no dynamic boost is modelled). `AffinityMask` is the thread mask, or the process mask when the thread has none. `ThreadPriority`, `ThreadBasePriority` and `ThreadAffinityMask` are set-only: query returns `STATUS_INVALID_INFO_CLASS`.
-- Alerts: `nt_svc_NtAlertThread`, `nt_svc_NtAlertThreadByThreadId` and `nt_svc_NtAlertResumeThread` set `thread->alerted`. `nt_svc_NtTestAlert` (iocp.c) consumes it and returns `STATUS_ALERTED` once. The alert state is the per-thread field in `object.h`; `sync.c` keeps a separate alert flag on its own `struct nt_thread`, which is not connected to this one.
-- Process state: `NtTerminateProcess` returns `STATUS_PROCESS_IS_TERMINATING` for a second terminate, and `NtSuspendProcess` returns the same status once the process has exited. The first exit status is kept.
-- Open by id: an unknown process or thread id returns `STATUS_INVALID_CID`. The access-policy gap (a zero `DesiredAccess` grants `0x1FFFFF`, and any caller can open any process) is still open; see `docs/decisions/0002-process-open-access-check.md`.
-- `nt_svc_NtQueryInformationProcess` has real bodies in both branches (`proc_thread.c` shim and kernel). Several classes still return fixed zero values or are not implemented: `ProcessHandleCount` (20) returns 0, and `ProcessTimes` (4) returns zeros.
-- The shim documents its limits in the design note: no copy-on-write isolation, no separate VAD, no fork pid, exit codes propagate through a condition variable rather than `waitpid`, and the image name is synthesised rather than taken from `execve`.
-- The shim's note at `proc_thread.c:1042` says it documents this as a gap, and the kernel calls the helper "if available". I did not trace that helper.
-- The trampoline design is a synthetic RWX-style page, which the design note itself flags as a W^X concern (`proc_thread.c:1080-1090`). The alternative (using ntdll's `RtlUserThreadStart`) is noted as not yet exported by ntdll.
+- **Kernel process creation is not implemented.** `NtCreateProcessEx`, `NtCreateProcess` and the process part of `NtCreateUserProcess` return `STATUS_NOT_IMPLEMENTED` in the kernel build. Only the shim creates processes ([process-creation](../architecture/process-creation.md), milestones M2 and M7).
+- `NtGetContextThread` and `NtSetContextThread` return `STATUS_NOT_IMPLEMENTED` in both builds.
+- `arch/x86/nt/proc_thread.c` (`:910`-`:921`) still returns `STATUS_INVALID_INFO_CLASS` from `NtSetInformationProcess` and `NtSetInformationThread`. The class implementation above is in `src/kernel/nt/proc_thread.c` only, so the two copies differ.
+- `NtCreateUserProcess` in the shim uses a dummy start address (`0x140001000`) and an attribute-list pointer as the entry point. Milestone M7 removes it.
+- Any caller can open any process or thread by id, with a zero `DesiredAccess` granting the full set. There is no access check (decision record 0002, open; arch P-1).
+- The kernel build of `src/kernel/nt/proc_thread.c` copies `PreviousSuspendCount` to user memory while `thr->lock` is held, in `NtSuspendThread` and `NtResumeThread` (`copy_to_user` at `:1500` and `:1541`). The arch copy no longer does this (audit pass 1, P-9 pattern).
+- The trampoline page is a synthetic RWX-style page, which the code comments flag as a W^X concern (`proc_thread.c:1125`-`:1134`). The alternative, ntdll's `RtlUserThreadStart`, is not yet exported.
+- Shim limits, from the design note: no copy-on-write isolation, no separate VAD, no fork pid, exit codes passed through a condition variable rather than `waitpid`, and the image name is synthesised rather than taken from `execve`.
+- Thread scheduling values in `NtQueryInformationThread` are the process base priority plus the relative priority, clamped to 0..31. No dynamic boost is modelled.
