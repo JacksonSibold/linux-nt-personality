@@ -3274,6 +3274,9 @@ NTSTATUS nt_svc_NtQueryFullAttributesFile(POBJECT_ATTRIBUTES ObjectAttributes,
 	if (ntio_getattr_path(path, &st) != 0)
 		return STATUS_OBJECT_NAME_NOT_FOUND;
 
+	/* Zero first: sizeof(ni) has 4 tail padding bytes after FileAttributes, and the struct is copied out. */
+	memset(&ni, 0, sizeof(ni));
+	memset(&bi, 0, sizeof(bi));
 	ntio_basic_from_stat(&bi, &st);
 	ni.CreationTime = bi.CreationTime;
 	ni.LastAccessTime = bi.LastAccessTime;
