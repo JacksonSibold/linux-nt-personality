@@ -775,6 +775,70 @@ TEST(create_symlink_type_and_path_errors)
 }
 
 /* -------------------------------------------------------------------------- */
+/* 6. NtOpenSymbolicLinkObject                                                 */
+/* -------------------------------------------------------------------------- */
+
+TEST(open_symlink_is_not_followed)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(351, "osym1");
+    ASSERT(proc != NULL);
+    HANDLE ht = make_link_target(proc, "\\BaseNamedObjects\\OSymTarget");
+    ASSERT(ht != NULL);
+
+    UNICODE_STRING us, target;
+    make_us(&us, "\\BaseNamedObjects\\OSymA", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    make_us(&target, "\\BaseNamedObjects\\OSymTarget", wbuf2, sizeof(wbuf2) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    HANDLE hl = NULL;
+    ASSERT_STATUS(nt_svc_NtCreateSymbolicLinkObject(&hl, SYMBOLIC_LINK_QUERY, &oa, &target), STATUS_SUCCESS);
+    ObCloseHandle(proc, hl);
+
+    /* Opening by name gives the link, not the object it points to. */
+    HANDLE ho = NULL;
+    ASSERT_STATUS(nt_svc_NtOpenSymbolicLinkObject(&ho, SYMBOLIC_LINK_QUERY, &oa), STATUS_SUCCESS);
+    ASSERT(ho != NULL);
+    struct nt_object_header *lhdr = NULL, *thdr = NULL;
+    ASSERT_STATUS(ObReferenceObjectByHandle(proc, ho, &nt_symlink_type, KernelMode, 0, &lhdr, NULL), STATUS_SUCCESS);
+    ASSERT(ObGetObjectType(lhdr) == &nt_symlink_type);
+    ObDereferenceObject(lhdr);
+    ASSERT_STATUS(ObReferenceObjectByHandle(proc, ho, &nt_test_type, KernelMode, 0, &thdr, NULL), STATUS_OBJECT_TYPE_MISMATCH);
+    ObCloseHandle(proc, ho);
+
+    ObCloseHandle(proc, ht);
+    teardown(proc);
+    PASS();
+}
+
+TEST(open_symlink_missing_and_wrong_type)
+{
+    reset_ob();
+    struct nt_eprocess *proc = make_proc(352, "osym2");
+    ASSERT(proc != NULL);
+    HANDLE ht = make_link_target(proc, "\\BaseNamedObjects\\OSymNotLink");
+    ASSERT(ht != NULL);
+
+    UNICODE_STRING us;
+    HANDLE h = NULL;
+    make_us(&us, "\\BaseNamedObjects\\OSymMissing", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    OBJECT_ATTRIBUTES oa = make_oa(&us, 0);
+    ASSERT_STATUS(nt_svc_NtOpenSymbolicLinkObject(&h, SYMBOLIC_LINK_QUERY, &oa), STATUS_OBJECT_NAME_NOT_FOUND);
+    ASSERT(h == NULL);
+
+    make_us(&us, "\\BaseNamedObjects\\OSymNotLink", wbuf, sizeof(wbuf) / sizeof(WCHAR));
+    oa = make_oa(&us, 0);
+    ASSERT_STATUS(nt_svc_NtOpenSymbolicLinkObject(&h, SYMBOLIC_LINK_QUERY, &oa), STATUS_OBJECT_TYPE_MISMATCH);
+    ASSERT(h == NULL);
+
+    ASSERT_STATUS(nt_svc_NtOpenSymbolicLinkObject(NULL, SYMBOLIC_LINK_QUERY, &oa), STATUS_INVALID_PARAMETER);
+    ASSERT_STATUS(nt_svc_NtOpenSymbolicLinkObject(&h, SYMBOLIC_LINK_QUERY, NULL), STATUS_INVALID_PARAMETER);
+
+    ObCloseHandle(proc, ht);
+    teardown(proc);
+    PASS();
+}
+
+/* -------------------------------------------------------------------------- */
 /* main                                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -785,6 +849,8 @@ int main(void)
     RUN(make_permanent_with_privilege);
     RUN(make_permanent_bad_handle);
     RUN(make_permanent_no_token);
+    RUN(open_symlink_is_not_followed);
+    RUN(open_symlink_missing_and_wrong_type);
     RUN(create_symlink_resolves);
     RUN(create_symlink_collision_and_openif);
     RUN(create_symlink_anonymous_and_bad_args);

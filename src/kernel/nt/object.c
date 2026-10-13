@@ -849,6 +849,8 @@ NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs,
     if (!attrs || !attrs->ObjectName || !out_handle)
         return STATUS_INVALID_PARAMETER;
     ULONG a = attrs->Attributes;
+    if (type == &nt_symlink_type)
+        a |= OBJ_OPENLINK;
     status = ObpParsePath(attrs->ObjectName, a, type, 0, &obj);
     if (!NT_SUCCESS(status))
         return status;

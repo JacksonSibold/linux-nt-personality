@@ -944,6 +944,25 @@ NTSTATUS nt_svc_NtCreateSymbolicLinkObject(PHANDLE LinkHandle, ACCESS_MASK Desir
     return st;
 }
 
+/* NtOpenSymbolicLinkObject: opens the link itself (the last component is not
+ * followed). */
+NTSTATUS nt_svc_NtOpenSymbolicLinkObject(PHANDLE LinkHandle, ACCESS_MASK DesiredAccess,
+                                         POBJECT_ATTRIBUTES ObjectAttributes)
+{
+    struct nt_eprocess *proc = kshim_current_process();
+    HANDLE h = NULL;
+    NTSTATUS st;
+    if (!LinkHandle || !ObjectAttributes || !proc)
+        return STATUS_INVALID_PARAMETER;
+    if (ObjectAttributes->Length != sizeof(*ObjectAttributes))
+        return STATUS_INVALID_PARAMETER;
+    st = ObOpenObjectByName(ObjectAttributes, &nt_symlink_type, UserMode,
+                            nt_map_symlink_access(DesiredAccess), proc, &h);
+    if (NT_SUCCESS(st))
+        *LinkHandle = h;
+    return st;
+}
+
 /* NtOpenDirectoryObject: opens the directory the name refers to. A symbolic
  * link in the path is followed; a link at the last component is a type mismatch. */
 NTSTATUS nt_svc_NtOpenDirectoryObject(PHANDLE DirectoryHandle, ACCESS_MASK DesiredAccess,
@@ -1551,6 +1570,34 @@ NTSTATUS nt_svc_NtCreateSymbolicLinkObject(unsigned long a0, unsigned long a1, u
         ObDereferenceObject(hdr);
     }
     kfree(k_tbuf);
+    if (!NT_SUCCESS(st)) return st;
+    if (copy_to_user(LinkHandle, &h, sizeof(h))) {
+        ObCloseHandle(proc, h);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return st;
+}
+
+NTSTATUS nt_svc_NtOpenSymbolicLinkObject(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
+                                         unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7,
+                                         unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+    PHANDLE LinkHandle = (PHANDLE)a0;
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)a1;
+    POBJECT_ATTRIBUTES ObjectAttributes = (POBJECT_ATTRIBUTES)a2;
+    HANDLE h = NULL; OBJECT_ATTRIBUTES k_oa; UNICODE_STRING k_name; WCHAR k_buf[256];
+    POBJECT_ATTRIBUTES oa = NULL; NTSTATUS st; struct nt_eprocess *proc;
+    (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
+    if (!LinkHandle || !access_ok(LinkHandle, sizeof(*LinkHandle)))
+        return STATUS_ACCESS_VIOLATION;
+    proc = nt_get_current_eprocess();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    st = nt_ensure_handle_table(proc);
+    if (!NT_SUCCESS(st)) return st;
+    st = k_copy_oa(ObjectAttributes, &k_oa, &k_name, k_buf, sizeof(k_buf), &oa);
+    if (!NT_SUCCESS(st)) return st;
+    if (!oa) return STATUS_INVALID_PARAMETER;
+    st = ObOpenObjectByName(oa, &nt_symlink_type, UserMode, nt_map_symlink_access(DesiredAccess), proc, &h);
     if (!NT_SUCCESS(st)) return st;
     if (copy_to_user(LinkHandle, &h, sizeof(h))) {
         ObCloseHandle(proc, h);
