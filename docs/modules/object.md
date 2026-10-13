@@ -18,6 +18,9 @@ Object manager lifecycle and creation:
 - `NTSTATUS ObCreateObject(struct nt_object_type *type, POBJECT_ATTRIBUTES attrs, SIZE_T body_size, struct nt_object_header **out_hdr, void **out_body)` - allocate header and body as one contiguous block.
 - `NTSTATUS ObInsertObject(struct nt_object_header *obj, POBJECT_ATTRIBUTES attrs, ACCESS_MASK access, struct nt_eprocess *proc, PHANDLE out_handle)` - insert into the namespace (if named) and create a handle in `proc`.
 - `NTSTATUS ObMakeTemporaryObject(struct nt_object_header *obj)` - drop the permanent flag so the name is removed when unreferenced.
+- `NTSTATUS ObMakePermanentObject(struct nt_object_header *obj)` - set the permanent flag. The privilege check (`SeCreatePermanentPrivilege`) is in `nt_obj.c`, not here.
+- `NTSTATUS ObCreateDirectoryObject(POBJECT_ATTRIBUTES oa, struct nt_object_header **out_hdr)` and `NTSTATUS ObCreateSymbolicLinkObject(POBJECT_ATTRIBUTES oa, PCUNICODE_STRING target, struct nt_object_header **out_hdr)` - build an unnamed-or-named directory or link object, not yet in the namespace. The link copies its target.
+- `NTSTATUS ObInsertOrOpenNamedObject(struct nt_object_header *obj, POBJECT_ATTRIBUTES oa, ACCESS_MASK access, struct nt_eprocess *proc, PHANDLE out_handle)` - insert with NT create-or-open rules (type mismatch, `STATUS_OBJECT_NAME_COLLISION`, `OBJ_OPENIF` giving `STATUS_OBJECT_NAME_EXISTS` with a handle, `STATUS_OBJECT_PATH_NOT_FOUND` for a missing parent). The lookup does not follow a link at the last component.
 - `NTSTATUS ObSetObjectSecurityDescriptor(struct nt_object_header *obj, const void *sd, ULONG length)` - attach a copy of a self-relative descriptor (NULL clears). The object owns the copy and frees it on the final dereference.
 - `NTSTATUS ObCopyObjectSecurityDescriptor(struct nt_object_header *obj, void **out, ULONG *out_len)` - return a heap copy of the descriptor (NULL when none); the caller frees it with `kfree`.
 
@@ -28,6 +31,14 @@ Reference counting and lookup:
 - `NTSTATUS ObOpenObjectByName(POBJECT_ATTRIBUTES attrs, struct nt_object_type *type, KPROCESSOR_MODE mode, ACCESS_MASK access, struct nt_eprocess *proc, PHANDLE out_handle)` - resolve a path and create a handle.
 - `NTSTATUS ObpIncrementHandleCount(struct nt_object_header *obj)` / `void ObpDecrementHandleCount(struct nt_object_header *obj, HANDLE handle)` - maintain `handle_count` (called from `handle.c`).
 - `struct nt_object_header *ObpLookupDirectoryEntry(struct nt_directory *dir, const UNICODE_STRING *comp)` - single-component lookup, for `handle.c` use.
+
+Namespace services (`nt_obj.c`, wrappers over the functions above):
+
+- `NtCreateDirectoryObject`, `NtOpenDirectoryObject`, `NtQueryDirectoryObject`. The query lists `OBJECT_DIRECTORY_INFORMATION` records (name and type name) under the directory read lock, with a zeroed terminator. `Context` is the index of the next entry, and `RestartScan` starts again. The kernel branch stages the listing through a kernel buffer of at most 64 KiB.
+- `NtCreateSymbolicLinkObject`, `NtOpenSymbolicLinkObject`, `NtQuerySymbolicLinkObject`. Opening a link object returns the link (`ObOpenObjectByName` sets `OBJ_OPENLINK` for the link type). Querying needs `SYMBOLIC_LINK_QUERY`.
+- `NtMakePermanentObject` checks `SeCreatePermanentPrivilege` on the effective token (`se_caller_has_privilege` in `security.c`) before the handle lookup.
+- `NtQueryObject` class `ObjectHandleFlagInformation` reads the per-handle flags with `ObGetHandleFlags` (`handle.c`).
+- Generic rights for the directory and link requests are mapped in `nt_obj.c` (`nt_map_directory_access`, `nt_map_symlink_access`).
 
 Namespace roots:
 
@@ -71,6 +82,12 @@ Inline helpers in the header: `nt_object_body`, `nt_body_to_header` (body pointe
 
 ## Known gaps (evident in code)
 
+- `OBJ_PERMANENT` has no lifetime effect yet. A named object that is not permanent is not removed from the namespace when its last handle closes (`ObpDecrementHandleCount` does nothing of the kind). `NtMakePermanentObject` only records the flag. Removal on last close would change the lifetime of every named object, so it is a separate change.
+- `NtQueryDirectoryObject` uses an index as its context. If entries are inserted or removed between calls, a listing can skip or repeat entries. NT keeps a cursor that is not index based.
+- `NtQueryObject` class `ObjectTypesInformation` (3) is still `STATUS_INVALID_INFO_CLASS`.
+- `NtCompareObjects` is not in `nt_service_list.h`, so it has no SSN entry and no handler.
+- The kernel branch of `NtDuplicateObject` still rejects a NULL `TargetHandle` with `STATUS_ACCESS_VIOLATION`. The userspace branch accepts it. The kernel code was not built on this host.
+- The kernel branches of the new services in `nt_obj.c` (directory, link, and `NtMakePermanentObject` and `NtMakeTemporaryObject` in kernel form) were written against the kernel helpers but not compiled, because there is no kernel build on this host. The userspace branches are covered by `object_extra_test`.
 - `ObCreateObjectType` is declared in `object.h` but has no definition anywhere under `src/kernel/nt/`. Callers can only use `ObRegisterObjectType` with a statically defined type.
 - Case-insensitive comparison is ASCII-only. `object.c:31` says full Unicode case folding is not implemented.
 - A symbolic link in a middle path component is not followed. `object.c:427` returns `STATUS_OBJECT_PATH_NOT_FOUND` when the component is not a directory. A symlink is resolved only when it is the final component (`object.c:438-442`, via `ObpResolveSymlink` at `object.c:348`).

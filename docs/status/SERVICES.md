@@ -39,13 +39,13 @@ hybrid, the first strong definition in file order decides the class.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 57 |
+| IMPLEMENTED | 56 |
 | STUB-NOT-IMPLEMENTED | 0 |
 | REFUSES | 0 |
 | WEAK-FALLBACK | 0 |
 | UNREACHABLE-WRAPPER-MISSING | 3 |
-| MISSING | 41 |
-| IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 64 |
+| MISSING | 34 |
+| IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 72 |
 | IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 3 |
 | REFUSES (userspace) / IMPLEMENTED (kernel) | 1 |
 | STUB-NOT-IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 2 |
@@ -57,12 +57,12 @@ hybrid, the first strong definition in file order decides the class.
 | system | 10 | 2 | 0 | 0 | 0 | 0 | 0 | 8 |
 | process-thread | 43 | 7 | 0 | 0 | 0 | 0 | 15 | 21 |
 | memory | 19 | 8 | 0 | 0 | 0 | 3 | 8 | 0 |
-| io | 30 | 24 | 0 | 0 | 0 | 0 | 6 | 0 |
+| io | 30 | 24 | 0 | 0 | 0 | 0 | 0 | 6 |
 | sync | 32 | 15 | 0 | 0 | 0 | 0 | 0 | 17 |
 | security | 10 | 0 | 0 | 0 | 0 | 0 | 1 | 9 |
 | registry | 11 | 0 | 0 | 0 | 0 | 0 | 0 | 11 |
 | ports | 10 | 0 | 0 | 0 | 0 | 0 | 10 | 0 |
-| object | 6 | 1 | 0 | 0 | 0 | 0 | 1 | 4 |
+| object | 6 | 0 | 0 | 0 | 0 | 0 | 0 | 6 |
 
 ## Area: system
 
@@ -179,12 +179,12 @@ hybrid, the first strong definition in file order decides the class.
 | 0x003d | `NtQueryAttributesFile` | 2 | IMPLEMENTED | `src/kernel/nt/io.c` |
 | 0x014c | `NtQueryFullAttributesFile` | 2 | IMPLEMENTED | `src/kernel/nt/io.c` |
 | 0x0061 | `NtCancelTimer` | 2 | IMPLEMENTED | `src/kernel/nt/sync.c` |
-| 0x00a9 | `NtCreateDirectoryObject` | 3 | MISSING |  |
-| 0x0058 | `NtOpenDirectoryObject` | 3 | MISSING |  |
-| 0x0149 | `NtQueryDirectoryObject` | 7 | MISSING |  |
-| 0x00c4 | `NtCreateSymbolicLinkObject` | 4 | MISSING |  |
-| 0x0133 | `NtOpenSymbolicLinkObject` | 3 | MISSING |  |
-| 0x0164 | `NtQuerySymbolicLinkObject` | 3 | MISSING |  |
+| 0x00a9 | `NtCreateDirectoryObject` | 3 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_obj.c` |
+| 0x0058 | `NtOpenDirectoryObject` | 3 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_obj.c` |
+| 0x0149 | `NtQueryDirectoryObject` | 7 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_obj.c` |
+| 0x00c4 | `NtCreateSymbolicLinkObject` | 4 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_obj.c` |
+| 0x0133 | `NtOpenSymbolicLinkObject` | 3 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_obj.c` |
+| 0x0164 | `NtQuerySymbolicLinkObject` | 3 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_obj.c` |
 
 ## Area: sync
 
@@ -277,5 +277,5 @@ hybrid, the first strong definition in file order decides the class.
 | 0x003c | `NtDuplicateObject` | 7 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_obj.c` |
 | 0x0010 | `NtQueryObject` | 5 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_obj.c` |
 | 0x005c | `NtSetInformationObject` | 4 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_obj.c` |
-| 0x0115 | `NtMakeTemporaryObject` | 1 | IMPLEMENTED | `src/kernel/nt/nt_obj.c` |
-| 0x0114 | `NtMakePermanentObject` | 1 | MISSING |  |
+| 0x0115 | `NtMakeTemporaryObject` | 1 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_obj.c` |
+| 0x0114 | `NtMakePermanentObject` | 1 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_obj.c` |
