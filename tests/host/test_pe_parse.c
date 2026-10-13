@@ -831,6 +831,83 @@ static void test_import_name_length_cap(void)
     }
 }
 
+/* Import walk totals (L-16).  Many descriptors share one ILT of `nthunk`
+ * ordinal thunks, so the work is ndesc * nthunk callbacks from a file that is
+ * only ~ndesc*20 + nthunk*8 bytes plus a fixed header. */
+#define IMP_FILE_LEN 0x60000u
+#define IMP_ILT_RVA  0x8000u
+#define IMP_NAME_RVA 0xB000u
+
+static uint8_t *imp_shared_ilt_image(uint32_t ndesc, uint32_t nthunk)
+{
+    uint8_t *b = calloc(1, IMP_FILE_LEN);
+    uint32_t dir_size = (ndesc + 1) * 20u;   /* descriptors plus terminator */
+    uint32_t i;
+    if (!b) return NULL;
+
+    img_build_valid(b);
+    /* .rdata covers RVA 0x2000..0x61000 (file 0x600..0x5F600). */
+    img_w32(b, IMG_SEC(1) + 8, 0x5F000);
+    img_w32(b, IMG_SEC(1) + 16, 0x5F000);
+    img_w32(b, IMG_OPT + 56, 0x61000);     /* SizeOfImage */
+
+    for (i = 0; i < ndesc; ++i) {
+        size_t d = IMG_RDATA_RAW + 20u * i;
+        img_w32(b, d + 0, IMP_ILT_RVA);    /* OriginalFirstThunk (shared ILT) */
+        img_w32(b, d + 12, IMP_NAME_RVA);  /* Name */
+        img_w32(b, d + 16, IMP_ILT_RVA);   /* FirstThunk */
+    }
+    /* Descriptor terminator is already zero (calloc). */
+
+    for (i = 0; i < nthunk; ++i)
+        img_w64(b, IMG_RDATA_RAW + (IMP_ILT_RVA - 0x2000u) + 8u * i,
+                0x8000000000000001ULL);    /* ordinal 1, no name read */
+
+    memcpy(b + IMG_RDATA_RAW + (IMP_NAME_RVA - 0x2000u), "KERNEL32.dll", 13);
+    img_set_dir(b, DIR_IMPORT, 0x2000, dir_size);
+    return b;
+}
+
+static void imp_walk_shared(uint32_t ndesc, uint32_t nthunk,
+                            pe_status_t want, uint32_t want_syms,
+                            uint32_t want_dlls)
+{
+    uint8_t *b = imp_shared_ilt_image(ndesc, nthunk);
+    walk_stats_t st;
+    pe_context_t ctx;
+    if (!b) { MT_EXPECT(0); return; }
+
+    MT_EXPECT_EQ(pe_context_init(&ctx, b, IMP_FILE_LEN), PE_OK);
+    MT_EXPECT_EQ(pe_validate(&ctx), PE_OK);
+    memset(&st, 0, sizeof st);
+    MT_EXPECT_EQ(pe_imports_walk(&ctx, cb_dll, cb_sym, &st), want);
+    MT_EXPECT_EQ(st.syms, want_syms);
+    MT_EXPECT_EQ(st.dlls, want_dlls);
+    free(b);
+}
+
+/* Exactly PE_MAX_IMPORT_THUNKS thunks in total is accepted. */
+static void test_import_thunk_budget_exact(void)
+{
+    imp_walk_shared(256, 1024, PE_OK, PE_MAX_IMPORT_THUNKS, 256);
+}
+
+/* One descriptor more is rejected before its callbacks run. */
+static void test_import_thunk_budget_exceeded(void)
+{
+    imp_walk_shared(257, 1024, PE_ERR_CORRUPT, PE_MAX_IMPORT_THUNKS, 257);
+}
+
+/* Descriptor count: PE_MAX_IMPORT_DESCRIPTORS is accepted, one more fails. */
+static void test_import_descriptor_count_bounded(void)
+{
+    imp_walk_shared(PE_MAX_IMPORT_DESCRIPTORS, 1, PE_OK,
+                    PE_MAX_IMPORT_DESCRIPTORS, PE_MAX_IMPORT_DESCRIPTORS);
+    imp_walk_shared(PE_MAX_IMPORT_DESCRIPTORS + 1, 1, PE_ERR_CORRUPT,
+                    PE_MAX_IMPORT_DESCRIPTORS, PE_MAX_IMPORT_DESCRIPTORS);
+}
+
+
 /* -------------------------------------------------------------------------- */
 /* Export table size and lookup (L-1)                                         */
 /* -------------------------------------------------------------------------- */
@@ -1311,6 +1388,9 @@ static const mt_case_t cases[] = {
     MT_CASE(test_export_forwarder_resolves),
     MT_CASE(test_export_forwarder_length_cap),
     MT_CASE(test_import_name_length_cap),
+    MT_CASE(test_import_thunk_budget_exact),
+    MT_CASE(test_import_thunk_budget_exceeded),
+    MT_CASE(test_import_descriptor_count_bounded),
     MT_CASE(test_export_counts_over_limit_rejected),
     MT_CASE(test_export_ordinal_out_of_range_rejected),
     MT_CASE(test_export_max_entries_walk),
