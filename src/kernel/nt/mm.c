@@ -1120,9 +1120,13 @@ int ntmm_check_invariants(struct nt_mm *mm) {
 /* NtAllocateVirtualMemory                                                    */
 /* -------------------------------------------------------------------------- */
 
-NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
-                                 ULONG_PTR ZeroBits, PSIZE_T RegionSize,
-                                 ULONG AllocationType, ULONG Protect) {
+/* Allocator core. req, when not NULL, places a reserved region with address
+ * requirements (see NtAllocateVirtualMemoryEx); the caller has already checked
+ * that the base is NULL and that the call reserves. */
+static NTSTATUS ntmm_alloc_core(HANDLE ProcessHandle, PVOID *BaseAddress,
+                                ULONG_PTR ZeroBits, PSIZE_T RegionSize,
+                                ULONG AllocationType, ULONG Protect,
+                                const struct nt_addr_req *req) {
     struct nt_mm *mm = &g_nt_mm;
     NTSTATUS status = STATUS_SUCCESS;
     ULONG_PTR req_base = 0, actual_base = 0, actual_end = 0;
@@ -1201,7 +1205,9 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
 
     if (reserve) {
         if (req_base == 0) {
-            if (top_down) actual_base = ntmm_find_hole_top_down(mm, req_size, NTMM_ALLOC_GRANULARITY);
+            if (req && req->present)
+                actual_base = ntmm_find_hole_in(mm, req_size, req->align, req->low, req->high, top_down);
+            else if (top_down) actual_base = ntmm_find_hole_top_down(mm, req_size, NTMM_ALLOC_GRANULARITY);
             else actual_base = ntmm_find_hole_bottom_up(mm, req_size, NTMM_ALLOC_GRANULARITY);
             if (actual_base == 0) { status = STATUS_NO_MEMORY; goto out_unlock; }
         } else {
@@ -1426,6 +1432,13 @@ out_unlock:
 /* -------------------------------------------------------------------------- */
 /* NtFreeVirtualMemory                                                        */
 /* -------------------------------------------------------------------------- */
+
+NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
+                                 ULONG_PTR ZeroBits, PSIZE_T RegionSize,
+                                 ULONG AllocationType, ULONG Protect) {
+    return ntmm_alloc_core(ProcessHandle, BaseAddress, ZeroBits, RegionSize,
+                           AllocationType, Protect, NULL);
+}
 
 NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
                              PSIZE_T RegionSize, ULONG FreeType) {
@@ -2065,20 +2078,35 @@ NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress,
 /* NtAllocateVirtualMemoryEx                                                  */
 /* -------------------------------------------------------------------------- */
 
-/* Without extended parameters this is NtAllocateVirtualMemory. Extended
- * parameters (NUMA node, address requirements) need placement support that
- * this manager does not have, so any count is STATUS_NOT_SUPPORTED. Other
- * process handles are refused here, unlike NtAllocateVirtualMemory, which
- * still ignores ProcessHandle (known gap). */
+/* Without extended parameters this is NtAllocateVirtualMemory. An address
+ * requirements entry places a reserved region inside [Lowest, Highest) at the
+ * requested alignment (see ntmm_parse_addr_req). The base must then be NULL,
+ * and the call must reserve. Other parameter types are STATUS_NOT_SUPPORTED
+ * (no NUMA or partition placement here). Other process handles are refused
+ * here, unlike NtAllocateVirtualMemory, which still ignores ProcessHandle
+ * (known gap). */
 NTSTATUS NtAllocateVirtualMemoryEx(HANDLE ProcessHandle, PVOID *BaseAddress,
                                    PSIZE_T RegionSize, ULONG AllocationType,
                                    ULONG PageProtection, PVOID ExtendedParameters,
                                    ULONG ExtendedParameterCount) {
-    (void)ExtendedParameters;
+    struct nt_addr_req req;
+    NTSTATUS st;
+    req.present = 0;
     if (ProcessHandle != (HANDLE)-1) return STATUS_NOT_SUPPORTED;
-    if (ExtendedParameterCount != 0) return STATUS_NOT_SUPPORTED;
-    return NtAllocateVirtualMemory(ProcessHandle, BaseAddress, 0, RegionSize,
-                                   AllocationType, PageProtection);
+    if (ExtendedParameterCount != 0) {
+        if (!ExtendedParameters) return STATUS_INVALID_PARAMETER;
+        if (ExtendedParameterCount > MEM_EXT_MAX_COUNT) return STATUS_NOT_SUPPORTED;
+        st = ntmm_parse_addr_req((const MEM_EXTENDED_PARAMETER *)ExtendedParameters,
+                                 ExtendedParameterCount, &req);
+        if (!NT_SUCCESS(st)) return st;
+    }
+    if (req.present) {
+        if (!BaseAddress || !RegionSize) return STATUS_INVALID_PARAMETER;
+        if (*BaseAddress != NULL) return STATUS_INVALID_PARAMETER;
+        if (!(AllocationType & MEM_RESERVE)) return STATUS_INVALID_PARAMETER;
+    }
+    return ntmm_alloc_core(ProcessHandle, BaseAddress, 0, RegionSize, AllocationType,
+                           PageProtection, req.present ? &req : NULL);
 }
 
 /* -------------------------------------------------------------------------- */

@@ -2068,6 +2068,14 @@ static int test_flush_virtual_memory(void) {
     return 1;
 }
 
+static MEM_EXTENDED_PARAMETER mk_ext(ULONG type, ULONG64 value) {
+    MEM_EXTENDED_PARAMETER p;
+    memset(&p, 0, sizeof(p));
+    p.Type = type;
+    p.ULong64 = value;
+    return p;
+}
+
 /* NtAllocateVirtualMemoryEx: without extended parameters it is
  * NtAllocateVirtualMemory. Extended parameters (NUMA, address requirements)
  * are not supported, and other process handles are STATUS_NOT_SUPPORTED. */
@@ -2085,11 +2093,11 @@ static int test_allocate_ex(void) {
     ASSERT(mbi.State == MEM_COMMIT, "ex state 0x%lx", (unsigned long)mbi.State);
     ASSERT(mbi.Protect == PAGE_READWRITE, "ex protect");
 
-    /* Extended parameters are refused, and the base is not written. */
+    /* A NUMA entry is not honoured, and the base is not written. */
     PVOID b2 = NULL;
     SIZE_T s2 = 0x1000;
-    int dummy = 0;
-    st = NtAllocateVirtualMemoryEx((HANDLE)-1, &b2, &s2, MEM_RESERVE, PAGE_READWRITE, (void *)&dummy, 1);
+    MEM_EXTENDED_PARAMETER numa = mk_ext(MemExtendedParameterNumaNode, 0);
+    st = NtAllocateVirtualMemoryEx((HANDLE)-1, &b2, &s2, MEM_RESERVE, PAGE_READWRITE, &numa, 1);
     ASSERT(st == STATUS_NOT_SUPPORTED, "ext param status 0x%lx", (unsigned long)st);
     ASSERT(b2 == NULL, "ext param base untouched");
 
@@ -2289,14 +2297,6 @@ static int test_nt_svc_extend_section(void) {
 }
 
 /* ---- NtCreateSectionEx ---- */
-
-static MEM_EXTENDED_PARAMETER mk_ext(ULONG type, ULONG64 value) {
-    MEM_EXTENDED_PARAMETER p;
-    memset(&p, 0, sizeof(p));
-    p.Type = type;
-    p.ULong64 = value;
-    return p;
-}
 
 /* Zero extended parameters is NtCreateSection. Validation of the array happens
  * before anything is created, so a refused call leaves the handle NULL. */
@@ -2535,6 +2535,103 @@ static int test_unmap_ex(void) {
     return 1;
 }
 
+/* NtAllocateVirtualMemoryEx with address requirements: the region lands inside
+ * [Lowest, Highest) at the requested alignment, top-down when asked. The base
+ * must be NULL and the call must reserve. No room is STATUS_NO_MEMORY. The
+ * window is taken from an existing region, as in test_map_ex. */
+static int test_allocate_ex_requirements(void) {
+    PVOID b1 = NULL;
+    SIZE_T s1 = 0x1000;
+    NTSTATUS st = NtAllocateVirtualMemory((HANDLE)-1, &b1, 0, &s1, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS && b1 != NULL, "req alloc anchor 0x%lx", (unsigned long)st);
+    ULONG_PTR a1 = (ULONG_PTR)b1;
+
+    MEM_ADDRESS_REQUIREMENTS rq;
+    memset(&rq, 0, sizeof(rq));
+    rq.LowestStartingAddress = (PVOID)(a1 + 0x100000);
+    rq.HighestEndingAddress = (PVOID)(a1 + 0x4000000);
+    rq.Alignment = 0x100000;
+    MEM_EXTENDED_PARAMETER ep = mk_ext(MemExtendedParameterAddressRequirements, 0);
+    ep.Pointer = &rq;
+
+    /* Bottom up, then top down, inside the window. */
+    PVOID base = NULL; SIZE_T size = 0x1000;
+    st = NtAllocateVirtualMemoryEx((HANDLE)-1, &base, &size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE, &ep, 1);
+    ASSERT(st == STATUS_SUCCESS, "req alloc 0x%lx", (unsigned long)st);
+    ULONG_PTR a2 = (ULONG_PTR)base;
+    ASSERT(a2 >= (ULONG_PTR)rq.LowestStartingAddress && a2 + size <= (ULONG_PTR)rq.HighestEndingAddress,
+           "req alloc inside window");
+    ASSERT((a2 & (rq.Alignment - 1)) == 0, "req alloc aligned");
+    MEMORY_BASIC_INFORMATION mbi;
+    ASSERT(query(base, &mbi) && mbi.State == MEM_COMMIT, "req alloc committed");
+
+    PVOID base_td = NULL; SIZE_T size_td = 0x1000;
+    st = NtAllocateVirtualMemoryEx((HANDLE)-1, &base_td, &size_td, MEM_RESERVE | MEM_TOP_DOWN, PAGE_READWRITE, &ep, 1);
+    ASSERT(st == STATUS_SUCCESS, "req top down 0x%lx", (unsigned long)st);
+    ULONG_PTR a3 = (ULONG_PTR)base_td;
+    ASSERT(a3 >= (ULONG_PTR)rq.LowestStartingAddress && a3 + size_td <= (ULONG_PTR)rq.HighestEndingAddress,
+           "req top down inside window");
+    ASSERT((a3 & (rq.Alignment - 1)) == 0, "req top down aligned");
+    ASSERT(a3 > a2, "top down sits above the bottom-up region");
+
+    /* A window that is one occupied region has no hole: STATUS_NO_MEMORY and no base. */
+    rq.LowestStartingAddress = (PVOID)a2;
+    rq.HighestEndingAddress = (PVOID)(a2 + 0x1000);
+    rq.Alignment = 0;
+    PVOID base_full = NULL; SIZE_T size_full = 0x1000;
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &base_full, &size_full, MEM_RESERVE, PAGE_READWRITE, &ep, 1)
+           == STATUS_NO_MEMORY, "req full window");
+    ASSERT(base_full == NULL, "req full window base untouched");
+
+    /* Invalid combinations: a fixed base, commit only, bad alignment, empty window,
+     * null record, invalid type, reserved bits. */
+    rq.LowestStartingAddress = (PVOID)(a1 + 0x100000);
+    rq.HighestEndingAddress = (PVOID)(a1 + 0x4000000);
+    rq.Alignment = 0x100000;
+    PVOID bad = (PVOID)a1;
+    SIZE_T bad_size = 0x1000;
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &ep, 1)
+           == STATUS_INVALID_PARAMETER, "req fixed base refused");
+    bad = NULL;
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_COMMIT, PAGE_READWRITE, &ep, 1)
+           == STATUS_INVALID_PARAMETER, "req commit only refused");
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, NULL, &bad_size, MEM_RESERVE, PAGE_READWRITE, &ep, 1)
+           == STATUS_INVALID_PARAMETER, "req null base refused");
+    rq.Alignment = 0x3000;
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &ep, 1)
+           == STATUS_INVALID_PARAMETER, "req bad alignment");
+    rq.Alignment = 0x100000;
+    rq.LowestStartingAddress = (PVOID)0x5000000UL;
+    rq.HighestEndingAddress = (PVOID)0x4000000UL;
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &ep, 1)
+           == STATUS_INVALID_PARAMETER, "req empty window");
+    rq.LowestStartingAddress = (PVOID)(a1 + 0x100000);
+    rq.HighestEndingAddress = (PVOID)(a1 + 0x4000000);
+    MEM_EXTENDED_PARAMETER null_rec = mk_ext(MemExtendedParameterAddressRequirements, 0);
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &null_rec, 1)
+           == STATUS_INVALID_PARAMETER, "req null record");
+    MEM_EXTENDED_PARAMETER invalid_type = mk_ext(MemExtendedParameterInvalidType, 0);
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &invalid_type, 1)
+           == STATUS_INVALID_PARAMETER, "invalid type");
+    MEM_EXTENDED_PARAMETER reserved = ep;
+    reserved.Reserved = 1;
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &reserved, 1)
+           == STATUS_INVALID_PARAMETER, "reserved bits");
+    ASSERT(bad == NULL, "refused requests write no base");
+
+    /* Other types, count limit, other process. */
+    MEM_EXTENDED_PARAMETER numa = mk_ext(MemExtendedParameterNumaNode, 0);
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &numa, 1)
+           == STATUS_NOT_SUPPORTED, "numa with requirements unsupported");
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)-1, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &ep, MEM_EXT_MAX_COUNT + 1)
+           == STATUS_NOT_SUPPORTED, "count over max");
+    ASSERT(NtAllocateVirtualMemoryEx((HANDLE)0x1234, &bad, &bad_size, MEM_RESERVE, PAGE_READWRITE, &ep, 1)
+           == STATUS_NOT_SUPPORTED, "other process refused");
+
+    ntmm_reset();
+    return 1;
+}
+
 int main(void) {
     printf("=== ntmm tests ===\n");
     if (!mm_setup_objects()) {
@@ -2602,6 +2699,7 @@ int main(void) {
     RUN_TEST(test_ext_copy_in);
     RUN_TEST(test_map_ex);
     RUN_TEST(test_unmap_ex);
+    RUN_TEST(test_allocate_ex_requirements);
     ntmm_reset();
     ObDestroyProcessObject(g_mm_proc);
     ObCleanupObjectManager();
