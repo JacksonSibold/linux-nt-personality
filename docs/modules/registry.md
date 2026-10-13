@@ -34,7 +34,7 @@ Value operations:
 
 Dispatch wrappers: `nt_svc_NtCreateKey`, `nt_svc_NtOpenKey`, `nt_svc_NtOpenKeyEx`, `nt_svc_NtDeleteKey`, `nt_svc_NtFlushKey`, `nt_svc_NtEnumerateKey`, `nt_svc_NtEnumerateValueKey`, `nt_svc_NtQueryKey`, `nt_svc_NtQueryValueKey`, `nt_svc_NtSetValueKey`, `nt_svc_NtDeleteValueKey`. Each takes twelve `unsigned long` arguments (the raw syscall argument block). Each wrapper is defined twice in `registry.c`, once in the `__KERNEL__` branch and once in the `#else` (host shim) branch, with the same argument handling.
 
-The services in `src/kernel/nt/nt_service_list.h` that touch the registry are the eleven listed above; `docs/status/SERVICES.md` marks all eleven IMPLEMENTED.
+The services in `src/kernel/nt/nt_service_list.h` that touch the registry are the eleven listed above; `docs/status/SERVICES.md` marks all eleven `IMPLEMENTED (userspace) / IMPLEMENTED (kernel)`.
 
 Constants declared in the header: value types `REG_NONE` through `REG_QWORD` (0 to 11), create options (`REG_OPTION_VOLATILE`, `REG_OPTION_NON_VOLATILE`, `REG_OPTION_CREATE_LINK`, `REG_OPTION_BACKUP_RESTORE`, `REG_OPTION_OPEN_LINK`), key access masks (`KEY_READ`, `KEY_WRITE`, `KEY_ALL_ACCESS`, and related bits), and the information classes and structures for `NtQueryKey`, `NtEnumerateKey`, `NtQueryValueKey` and `NtEnumerateValueKey`.
 

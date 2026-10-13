@@ -80,17 +80,32 @@ Exit status: `0` all copies agree, `1` at least one mismatch (each printed as
 
 Classifies the handler of every system service in
 `src/kernel/nt/nt_service_list.h` by scanning `src/kernel/nt/*.c`. Each
-service gets one class, first rule that applies:
+service gets one class (the full rules are in the tool's docstring and in the
+header of `docs/status/SERVICES.md`):
 
-- `IMPLEMENTED`: a strong `nt_svc_<Name>` definition with a real body.
-- `STUB-NOT-IMPLEMENTED`: a strong definition whose body only returns
-  `STATUS_NOT_IMPLEMENTED` or `STATUS_NOT_SUPPORTED` (void casts allowed).
+- `IMPLEMENTED`: a strong `nt_svc_<Name>` definition whose body is not a refusal.
+- `STUB-NOT-IMPLEMENTED`: a strong definition whose body is only a bare
+  `return STATUS_NOT_IMPLEMENTED;` or `STATUS_NOT_SUPPORTED;` (void casts allowed).
+- `REFUSES`: a strong definition that refuses after argument validation: zero or
+  more `if (...) return STATUS_INVALID_PARAMETER|INVALID_HANDLE|INVALID_ADDRESS;`
+  then one `return` of `STATUS_NOT_IMPLEMENTED`, `STATUS_NOT_SUPPORTED`,
+  `STATUS_INVALID_DEVICE_REQUEST` or `STATUS_ACCESS_DENIED`. Any other statement
+  makes the body `IMPLEMENTED`.
 - `WEAK-FALLBACK`: only a `__attribute__((weak))` definition exists. A strong
   definition in another file overrides it, as the linker does.
+- `UNREACHABLE-WRAPPER-MISSING`: no `nt_svc_<Name>` definition, but a function
+  in `src/kernel/nt/*.c` matches the name (case, underscores, leading `nt` and a
+  trailing `internal` or `impl` ignored). The implementation exists but no
+  wrapper reaches it.
 - `MISSING`: no definition; the table entry is NULL.
+- `X (userspace) / Y (kernel)`: a hybrid. The service has a strong definition in
+  each branch of a conditional on `__KERNEL__`; `X` and `Y` are the two branch
+  classes. Only `__KERNEL__` conditionals (`#ifdef`, `#ifndef`, `#if defined`,
+  with `#else`) are evaluated; other conditionals are read as one. Without a
+  hybrid, the first strong definition in file order decides.
 
 Test sources (`*_test.c`) and prototypes are ignored. Comments and string
-literals are removed before the body is read.
+literals are removed before the body is read. The CLI is unchanged.
 
 ```
 python3 tools/service_inventory.py                 # counts on stdout
