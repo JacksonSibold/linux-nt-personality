@@ -20,8 +20,11 @@ prototypes (no body) are ignored. The result is one of:
   MISSING               no definition at all; the table entry is NULL
 
 Linker rules apply: a strong definition overrides a weak one, so a service
-with both is classified by its strong definition. Only the first body that
-ends in `}` is read, with comments and string literals removed first.
+with both is classified by its strong definition. Comments and string literals
+are removed before the body is read. Preprocessor conditionals are not
+evaluated: when a service has several strong definitions (for example in the
+userspace and kernel branches of one file), the first one in file order decides
+its class.
 
 Each service is placed in an area chosen from its name (first matching
 pattern wins). The area is only for grouping in the report.

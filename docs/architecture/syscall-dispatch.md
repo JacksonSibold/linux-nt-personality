@@ -76,8 +76,8 @@ but this is not the same as the status convention above.
 `nt_service_list.h` has 171 entries. `NT_NR_SERVICES` is 476, which is the
 highest SSN (0x1db) plus one. Checked by grep at this commit:
 
-- 77 of the 171 names have a `nt_svc_` definition in `src/kernel/nt/`.
-- The other 94 names have no definition, so they return
+- 79 of the 171 names have a `nt_svc_` definition in `src/kernel/nt/`.
+- The other 92 names have no definition, so they return
   `STATUS_NOT_IMPLEMENTED`. This includes `NtAllocateVirtualMemoryEx`,
   `NtAlertResumeThread` and `NtWaitForAlertByThreadId`.
 
