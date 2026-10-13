@@ -479,6 +479,60 @@ static void test_enumerate_node(void){
     PASS();
 }
 
+/* Test 14: value information classes with 64-bit alignment (Align64).
+   Full: the data starts at an 8-byte aligned DataOffset, padding is zero.
+   Partial: Type, DataLength, then Data at offset 8 (no TitleIndex). */
+static void test_value_align64(void){
+    reset_state();
+    struct nt_eprocess *proc=make_proc(1000,"regalign");
+    struct nt_ethread *thr=make_thread(proc,1);
+    UNICODE_STRING us; make_us(&us,"\\\\Registry\\\\User\\\\Software\\\\ntpers_align_probe",wbuf1,sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us);
+    HANDLE hk=NULL; ULONG disp=0;
+    ASSERT_STATUS(NtCreateKey(&hk, KEY_ALL_ACCESS, &oa, 0, NULL, 0, &disp), STATUS_SUCCESS);
+    WCHAR vb[64]; UNICODE_STRING vn; make_us(&vn,"Big",vb,sizeof(vb));
+    static const unsigned char data[5] = {1,2,3,4,5};
+    ASSERT_STATUS(NtSetValueKey(hk, &vn, 0, REG_BINARY, (PVOID)data, sizeof(data)), STATUS_SUCCESS);
+
+    unsigned char buf[128]; ULONG rlen=0;
+    memset(buf, 0xAA, sizeof(buf));
+    ASSERT_STATUS(NtQueryValueKey(hk, &vn, KeyValueFullInformationAlign64, buf, sizeof(buf), &rlen), STATUS_SUCCESS);
+    KEY_VALUE_FULL_INFORMATION *fi=(KEY_VALUE_FULL_INFORMATION*)buf;
+    ASSERT(fi->Type == REG_BINARY);
+    ASSERT(fi->NameLength == 3*sizeof(WCHAR));
+    ASSERT(wmatch((const unsigned char*)fi->Name, fi->NameLength, "Big"));
+    ASSERT(fi->DataOffset == 32);            /* 20 + 6 name bytes, rounded up to 8 */
+    ASSERT(fi->DataLength == 5);
+    ASSERT(rlen == 37);
+    for (ULONG i=26;i<32;i++) ASSERT(buf[i] == 0);
+    ASSERT(memcmp(buf+32, data, 5) == 0);
+
+    memset(buf, 0xAA, sizeof(buf)); rlen=0;
+    ASSERT_STATUS(NtQueryValueKey(hk, &vn, KeyValuePartialInformationAlign64, buf, sizeof(buf), &rlen), STATUS_SUCCESS);
+    KEY_VALUE_PARTIAL_INFORMATION_ALIGN64 *pa=(KEY_VALUE_PARTIAL_INFORMATION_ALIGN64*)buf;
+    ASSERT(pa->Type == REG_BINARY);
+    ASSERT(pa->DataLength == 5);
+    ASSERT(rlen == 13);
+    ASSERT(memcmp(pa->Data, data, 5) == 0);
+
+    memset(buf, 0xAA, sizeof(buf)); rlen=0;
+    ASSERT_STATUS(NtEnumerateValueKey(hk, 0, KeyValueFullInformationAlign64, buf, sizeof(buf), &rlen), STATUS_SUCCESS);
+    ASSERT(((KEY_VALUE_FULL_INFORMATION*)buf)->DataOffset == 32);
+    ASSERT(rlen == 37);
+    ASSERT(memcmp(buf+32, data, 5) == 0);
+
+    /* too small for the data: the required length is still reported */
+    ASSERT_STATUS(NtQueryValueKey(hk, &vn, KeyValuePartialInformationAlign64, buf, 12, &rlen), STATUS_BUFFER_TOO_SMALL);
+    ASSERT(rlen == 13);
+    ASSERT_STATUS(NtQueryValueKey(hk, &vn, 7, buf, sizeof(buf), &rlen), STATUS_INVALID_INFO_CLASS);
+
+    ASSERT_STATUS(NtDeleteKey(hk), STATUS_SUCCESS);
+    ObCloseHandle(proc,hk);
+    ObDestroyProcessObject(proc); ObDestroyThreadObject(thr);
+    kshim_set_current_process(NULL); kshim_set_current_thread(NULL);
+    PASS();
+}
+
 int main(void){
     printf("registry shim tests starting\n");
     ntreg_init();
@@ -496,6 +550,7 @@ int main(void){
         {test_flush_snapshot,"flush_snapshot"},
         {test_delete_nested,"delete_nested"},
         {test_enumerate_node,"enumerate_node"},
+        {test_value_align64,"value_align64"},
     };
     for(size_t i=0;i<sizeof(tests)/sizeof(tests[0]);i++){
         printf(" RUN %s\n",tests[i].name);
