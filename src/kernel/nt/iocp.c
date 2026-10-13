@@ -13,6 +13,7 @@
 
 #include "iocp.h"
 #include "io.h"
+#include "object.h"
 
 #ifndef __KERNEL__
 #include <string.h>
@@ -751,22 +752,32 @@ NTSTATUS nt_svc_NtQueueApcThreadEx(HANDLE ThreadHandle,
 				       ApcArgument3);
 }
 
+#ifdef __KERNEL__
+extern struct nt_ethread *nt_current_ethread(void);
+static inline struct nt_ethread *ntio_current_ethread(void) { return nt_current_ethread(); }
+#else
+static inline struct nt_ethread *ntio_current_ethread(void) { return kshim_current_thread(); }
+#endif
+
+/* NtTestAlert delivers queued user APCs, then reports a pending alert on the
+ * current thread: STATUS_ALERTED once (the alert is consumed), else SUCCESS.
+ * NtAlertThread, NtAlertThreadByThreadId and NtAlertResumeThread set the flag
+ * and live in proc_thread.c. */
 NTSTATUS nt_svc_NtTestAlert(void)
 {
+	NTSTATUS st = STATUS_SUCCESS;
+	struct nt_ethread *thr = ntio_current_ethread();
+
 	ntio_apc_deliver_all();
-	return STATUS_SUCCESS;
-}
-
-NTSTATUS nt_svc_NtAlertThread(HANDLE ThreadHandle)
-{
-	(void)ThreadHandle;
-	return STATUS_SUCCESS;
-}
-
-NTSTATUS nt_svc_NtAlertThreadByThreadId(HANDLE ThreadId)
-{
-	(void)ThreadId;
-	return STATUS_SUCCESS;
+	if (thr) {
+		spin_lock(&thr->lock);
+		if (thr->alerted) {
+			thr->alerted = false;
+			st = STATUS_ALERTED;
+		}
+		spin_unlock(&thr->lock);
+	}
+	return st;
 }
 
 /* -------------------------------------------------------------------------- */

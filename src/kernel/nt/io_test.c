@@ -14,6 +14,7 @@
 
 #include "io.h"
 #include "iocp.h"
+#include "object.h"
 
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 #pragma GCC diagnostic ignored "-Wunused-result"
@@ -1923,6 +1924,35 @@ TEST(iocp_query_depth)
 	PASS();
 }
 
+/* NtTestAlert consumes the current thread's pending alert: the first call
+ * after an alert reports STATUS_ALERTED and clears it, later calls report
+ * STATUS_SUCCESS. The thread object is stack-local, so the current-thread
+ * pointer is cleared before any assertion can return. */
+TEST(alert_consumed_once)
+{
+	struct nt_ethread thr;
+	NTSTATUS first, plain, second;
+	bool still_set;
+
+	memset(&thr, 0, sizeof(thr));
+	spin_lock_init(&thr.lock);
+	kshim_set_current_thread(&thr);
+
+	plain = nt_svc_NtTestAlert();
+	thr.alerted = true;
+	first = nt_svc_NtTestAlert();
+	second = nt_svc_NtTestAlert();
+	still_set = thr.alerted;
+
+	kshim_set_current_thread(NULL);
+
+	ASSERT_STATUS(plain, STATUS_SUCCESS);
+	ASSERT_STATUS(first, STATUS_ALERTED);
+	ASSERT_STATUS(second, STATUS_SUCCESS);
+	ASSERT(!still_set);
+	PASS();
+}
+
 int main(void)
 {
 	setup_root();
@@ -1955,6 +1985,7 @@ int main(void)
 	RUN(set_volume_unsupported);
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);
+	RUN(alert_consumed_once);
 
 	printf("ntio tests: %d passed, %d failed\n", g_pass, g_fail);
 
