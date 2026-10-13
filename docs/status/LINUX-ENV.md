@@ -1,8 +1,9 @@
 # Linux guest on Windows 11 (QEMU, no elevation)
 
 Status: **working**. A Debian 12 (bookworm) x86_64 guest boots under QEMU for Windows, is reachable over SSH,
-and has the build dependencies for the NT-personality kernel. The NT kernel itself is **not built or booted yet**
-(see "Not done"). Host tooling lives outside the repo in `C:\Users\Jackson\repos\linux-env`; only scripts and
+and has the build dependencies for the NT-personality kernel. The NT kernel (Linux 6.18.56) is **built** in the guest
+and **boots to the M0 check** (exit 42) under a second host QEMU run with `-kernel`. See
+`docs/status/KERNEL-BOOT.md` for the result and the gaps that remain. Host tooling lives outside the repo in `C:\Users\Jackson\repos\linux-env`; only scripts and
 docs are committed under `tools/linux-env/` and `docs/status/`. No keys or images are in the repo.
 
 ## Reaching the guest
@@ -53,7 +54,22 @@ All downloads were checked against a published checksum. Each lives in its own d
 | `linux-image-6.1.0-53-cloud-amd64-unsigned_6.1.187-1_amd64.deb` | https://deb.debian.org/debian-security/pool/updates/main/l/linux/linux-image-6.1.0-53-cloud-amd64-unsigned_6.1.187-1_amd64.deb | 26,565,380 | `9001721c6ba33401f95bbeeb0e41ec91ce2cdb5aaceac6133cb9d093734bba0e` | `bookworm-security` `Packages.xz` SHA256 (OK) | Source of `vmlinuz-6.1.0-53-cloud-amd64` (kernel) and the virtio `.ko` modules |
 | `busybox-static_1.35.0-4+deb12u1+b1_amd64.deb` | https://deb.debian.org/debian/pool/main/b/busybox/busybox-static_1.35.0-4+deb12u1+b1_amd64.deb | 928,188 | `3d3fdbe91d4660c873e14b092c213fe81c1da6362daa236eb25d0171eb108744` | bookworm `Packages.xz` SHA256 (OK) | Static busybox for the initramfs |
 
-Not downloaded in this step: the Linux 6.18 kernel tarball the NT tree needs (see Not done).
+Kernel source for the NT build (downloaded inside the guest to `~/ntpers/`, 2026-10-13):
+
+| File | Source URL | Size (bytes) | SHA256 | Verified against | Use |
+|---|---|---|---|---|---|
+| `sha256sums.asc` | https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc | 253,076 | (signed file, not hashed here) | PGP signature: **not verified**, see below | Source of the tarball hash |
+| `linux-6.18.56.tar.xz` | https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.56.tar.xz | 154,807,564 | `4633bbda2ab95eaf2a7af4041236451d6759c72e6946265531af4b3aacefbf89` | `sha256sums.asc` line for `linux-6.18.56.tar.xz` (match) | Newest 6.18.y in the checksum file; extracted to `~/ntpers/linux-6.18.56` (905 MB) |
+| `signatures.html` | https://www.kernel.org/category/signatures.html | 19,036 | (not hashed) | none (page with fingerprints) | Source of the fingerprints below |
+| `k.asc` (key B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1) | https://keys.openpgp.org/vks/v1/by-fingerprint/B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1 | 854 | (not hashed) | none | Key that signed `sha256sums.asc`; see gap |
+
+Signature status. Keys for Linus Torvalds (`ABAF 11C6 5A29 70B1 30AB E3C4 79BE 3E43 0041 1886`) and Greg
+Kroah-Hartman (`647F 2865 4894 E3BD 4571 99BE 38DB BDC8 6092 693E`) were fetched over the kernel.org WKD and
+their fingerprints match the page. `sha256sums.asc` is signed by key `B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1`
+(RSA 4096, 2013, no user ID on keys.openpgp.org). That key has no certification from either verified key in
+the copy fetched, so `gpg --verify` reports "No public key" and the signature is **not verified**. The
+tarball hash was checked against the file's line only. Open: confirm B8868C80 belongs to a kernel.org release
+signer (out of band) and re-run `gpg --verify sha256sums.asc`.
 
 Local artifacts (generated, not downloaded): `linux-env\keys\id_ed25519{,.pub}` (ed25519, no passphrase,
 generated with `ssh-keygen`), `linux-env\disk\ntpers-guest.qcow2` (overlay), `linux-env\disk\work.qcow2`
@@ -135,10 +151,11 @@ specified. Kernel source is not present yet.
 
 ## Not done
 
-- The NT kernel is not built or booted. The `vm/` workflow expects `~/ntpers/linux-6.18` plus
-  `~/ntpers/linux-6.18.tar.xz` (kernel.org vanilla 6.18). Neither exists. Next step: download the official
-  kernel.org tarball (record it here with SHA256), extract to `~/ntpers/`, then run
-  `vm/rebuild_kdir.sh`. Its `runvm.sh`-based M0 gate still needs a 9p-free replacement.
+- Done since this file was written: the kernel.org tarball is downloaded and logged above, extracted to
+  `~/ntpers/linux-6.18.56`, patched by `tools/ntpers_kpatch.py`, configured and built (bzImage), and the
+  M0 gate ran on a 9p-free path (`tools/linux-env/m0-initramfs.sh`, `tools/linux-env/boot-m0-host.ps1`).
+  Remaining: the repo's completeness gate fails and the `vm/` 9p scripts are unused. See
+  `docs/status/KERNEL-BOOT.md`.
 - `runvm.sh` and the 9p share do not work on QEMU for Windows. Options: an SSH-driven boot test, or a guest
   build/run inside this VM with the results copied back over `scp`.
 - WHPX acceleration is not verified; `-accel tcg` is what runs.

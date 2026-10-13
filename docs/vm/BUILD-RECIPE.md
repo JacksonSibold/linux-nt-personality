@@ -156,11 +156,14 @@ this before `alloc_thread_stack_node()`; the script places it after the copy.
 **5i. `KDIR/arch/x86/entry/syscall_64.c`** (G6). Prototypes for `do_nt_syscall`
 and `nt_can_sysret` (both defined in `arch/x86/nt/dispatch.c`) go before
 `do_syscall_64`. After `add_random_kstack_offset();`, the NT branch is:
-`enter_from_user_mode(regs)`, `instrumentation_begin()`,
-`do_nt_syscall(regs, (unsigned int)nr)`, `instrumentation_end()`,
-`syscall_exit_to_user_mode(regs)`, then `return nt_can_sysret(regs)`. The
-argument is `nr`, as in `rebuild_kdir.sh`. The enter and exit calls follow the
-Linux path's own bracket.
+`nr = syscall_enter_from_user_mode(regs, nr)`, then (if `nr != -1`)
+`instrumentation_begin()`, `do_nt_syscall(regs, (unsigned int)nr)`,
+`instrumentation_end()`, then `syscall_exit_to_user_mode(regs)` and
+`return nt_can_sysret(regs)`. `syscall_enter_from_user_mode()` is the 6.18
+generic entry: it enables IRQs and runs seccomp, ptrace, audit and tracepoints,
+with `syscall_get_arch()` reporting `AUDIT_ARCH_NTX86_64` for NT tasks. The
+earlier form called `enter_from_user_mode()` with IRQs still off and ran no
+seccomp, ptrace or audit hook (commit 9512d20 fixes this).
 
 **5j. `KDIR/include/uapi/linux/audit.h` and `KDIR/arch/x86/include/asm/syscall.h`**
 (patch 0002's audit change). After the `AUDIT_ARCH_X86_64` line, define
@@ -172,8 +175,9 @@ NT tasks, but NT syscalls do not reach seccomp yet (G3).
 **5k. `KDIR/arch/x86/nt/kernel_stubs.c`** (G10). Adds `#include <linux/init.h>`
 and a `late_initcall(nt_banner_initcall)` that calls `nt_banner_init()`.
 
-**5l. `KDIR/arch/x86/entry/nt/enter.c`: still a todo** (G3). Patch 0002's enter
-hooks for NT syscalls (seccomp, audit and ptrace). The run stops on this edit.
+**5l. `KDIR/arch/x86/entry/nt/enter.c`: not needed** (G3, closed). Patch 0002
+wanted a separate NT entry file for seccomp, audit and ptrace. Section 5i now
+reaches those hooks through the 6.18 generic entry, so no such file is written.
 
 Check before building: `TIF_NTABI` and `TIF_NTSUSPEND` exist in `thread_info.h`,
 and `do_nt_syscall` is in `syscall_64.c`. Step 5 of `guest-bootstrap.sh` checks
@@ -188,8 +192,11 @@ these, and it also checks `nt_thread` and `nt_banner_initcall`.
 KDIR=~/ntpers/linux-6.18 bash vm/make-kernel-config.sh
 ```
 
-It starts from `make defconfig` for x86_64 and enables these options with
-`scripts/config --enable`:
+It starts from `make ARCH=x86_64 tinyconfig` (`BASE` overrides the target),
+forces 64-bit (`--disable X86_32 --enable 64BIT`, because tinyconfig on x86
+comes out 32-bit and X86_64 gates NT_PERSONALITY and BINFMT_PE), and enables
+these options with `scripts/config --enable`. `scripts/config` is a bash script
+and is run with `bash`:
 
 | Option | Reason (from the repository) |
 |---|---|
@@ -212,8 +219,12 @@ After `make olddefconfig` the script requires every listed symbol to read
 are unmet. The config is written to `$KDIR/.config`, and the script takes an
 optional path for a copy.
 
-`tinyconfig` is not used. It lacks NET, PCI, VIRTIO and 9P, and enabling
-those with their dependencies one at a time is error-prone (decision G19).
+`tinyconfig` is the base. It lacks NET, BLOCK, PRINTK, TTY, SHMEM, VIRTIO_MENU,
+PCI and 9P; the script enables the ones the required list needs and lets
+`olddefconfig` resolve the rest, then fails if any required symbol is not `=y`
+(decision G19, closed in commit efa2ae7). Options with no
+prompt, such as VIRTIO, are selected by their drivers and are not enabled
+directly.
 
 ## 7. Build
 
@@ -352,8 +363,13 @@ Each gap lists the minimal decision needed. G1 stops the bootstrap at step 1
 until a checksum is supplied. G3 stops step 4 by design (the enter.c todo).
 G4 stops step 4 only when a bit the edits need is already in use.
 
-**G1. SHA256 of the tarball is not in the repository.** Decision: approve the
-value from the gpg-verified `sha256sums.asc` and pass it as `KERNEL_SHA256`, or
+**G1. SHA256 of the tarball is not in the repository. Partly closed.** For
+6.18.56 (the newest 6.18.y in kernel.org's `sha256sums.asc`) the tarball matches
+`4633bbda2ab95eaf2a7af4041236451d6759c72e6946265531af4b3aacefbf89`. The PGP
+signature on `sha256sums.asc` is not verified: its key (`B8868C80...`) is not
+certified by the fingerprint-checked Torvalds and Kroah-Hartman keys in this
+session. Details are in `docs/status/LINUX-ENV.md`. Decision still open: approve
+the value from a verified `sha256sums.asc` and pass it as `KERNEL_SHA256`, or
 commit it as a pinned file that the bootstrap reads.
 
 **G2. Patch 0001 does not apply. Closed** by `tools/ntpers_kpatch.py`
@@ -362,19 +378,19 @@ commit it as a pinned file that the bootstrap reads.
 calls `git apply` (commit ce79967). A regenerated diff would need the 6.18 tree,
 which the repository does not contain.
 
-**G3. Patch 0002 does not apply, and its enter hooks are not wired. Open.** The
-audit and seccomp arch change is wired (5j, commit 5b5fb47). The `enter.c` hooks
-are a todo (5l) and stop step 4. `enter.c` calls `syscall_trace_enter()`, which
-the repository does not declare as a kernel API, so the hooks cannot be derived
-with certainty. Until they exist, an NT syscall never reaches seccomp, audit or
-ptrace, so a seccomp filter cannot see or stop it. Decision: must the NT path run
-seccomp and audit for M0? If yes, derive `enter.c` from the 6.18 headers and add
-an `arch/x86/entry/Makefile` line for it. If no, say so in the M0 claim. The
-self-test named in patch 0002 (`tools/testing/selftests/ntpers/seccomp_arch.c`)
-does not exist in the repository.
+**G3. Patch 0002's enter hooks. Closed** (commit 9512d20). The 6.18 tree declares
+`syscall_trace_enter()` in `include/linux/entry-common.h` (defined in
+`kernel/entry/syscall-common.c`), so the hooks did not need to be guessed. The NT
+branch now calls `syscall_enter_from_user_mode()`, which runs seccomp, ptrace,
+audit and tracepoints with the NT arch, and no `enter.c` is written. M0 therefore
+runs NT syscalls through seccomp and audit. The self-test named in patch 0002
+(`tools/testing/selftests/ntpers/seccomp_arch.c`) still does not exist in the
+repository, so that behavior is not yet tested.
 
-**G4. Bit assignments in `thread_info.h` are unverified. Open, checked at run
-time.** The script uses 29 for `TIF_NTABI` and 30 for `TIF_NTSUSPEND`, and it
+**G4. Bit assignments in `thread_info.h`. Closed for 6.18.56**: the arch header
+defines `TIF_*` only up to bit 28 (`TIF_ADDR32`), and no `TIF_*` in `include/linux`
+or `arch/x86` uses bits 29, 30 or 31, so 29 and 30 are free. The run-time check
+still blocks if that changes. The text below is the original analysis. The script uses 29 for `TIF_NTABI` and 30 for `TIF_NTSUSPEND`, and it
 blocks if either bit is already defined in the tree. The repository does not
 hold 6.18's `thread_info.h`, so whether 29 and 30 are free is unknown. Upstream
 numbering may put `TIF_ADDR32` at 29; that would block the run, as intended.

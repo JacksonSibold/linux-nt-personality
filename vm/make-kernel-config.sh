@@ -6,7 +6,8 @@
 # (arch/x86/Kconfig.nt exists and arch/x86/Kconfig sources it). Without that the
 # NT symbols do not exist, and scripts/config would drop them silently.
 #
-# Method: x86_64 defconfig, then scripts/config --enable for the option list
+# Method: x86_64 tinyconfig (BASE, default tinyconfig; BASE=defconfig for the
+# larger config), then scripts/config --enable for the option list
 # below, then olddefconfig. The result is accepted only if every listed symbol
 # is "=y" after olddefconfig, because olddefconfig silently drops options whose
 # dependencies are not met.
@@ -51,12 +52,27 @@ grep -qF 'source "arch/x86/Kconfig.nt"' "${KDIR}/arch/x86/Kconfig" \
 #   EARLY_PRINTK                      earlyprintk=serial,ttyS0 on the command line
 #   BLK_DEV_INITRD, RD_GZIP           the initramfs is a gzip-compressed cpio
 #   BINFMT_ELF                        busybox and init are static ELF binaries
+#   BINFMT_SCRIPT                     #! scripts (the M0 initramfs /init is a shell script);
+#                                     off in tinyconfig, so exec returned ENOEXEC (-8)
 #   PCI                               prerequisite of VIRTIO_PCI
 #   TMPFS, PROC_FS, SYSFS             mounted by init.c
 #   MAGIC_SYSRQ                       init.c powers off through /proc/sysrq-trigger
 #   SECCOMP, AUDIT                    the seccomp/audit ABI the NT patches touch
 #   DEBUG_FS, DYNAMIC_DEBUG           /sys/kernel/debug used by init.c and the guest tests
+#   NET, BLOCK                        prerequisites of NET_9P and VIRTIO_BLK (tinyconfig has neither)
+#   64BIT                             tinyconfig on x86 comes out 32-bit (CONFIG_X86_32=y);
+#                                     X86_64 (and so NT_PERSONALITY, BINFMT_PE) needs 64BIT
+#   PRINTK, TTY, SHMEM, VIRTIO_MENU   off in tinyconfig; the console, 8250 serial, tmpfs and
+#                                     virtio drivers depend on them. VIRTIO itself has no prompt
+#                                     and is selected by VIRTIO_PCI
 REQUIRED=(
+    64BIT
+    PRINTK
+    TTY
+    SHMEM
+    VIRTIO_MENU
+    NET
+    BLOCK
     NT_PERSONALITY
     BINFMT_PE
     VIRTIO
@@ -73,6 +89,7 @@ REQUIRED=(
     BLK_DEV_INITRD
     RD_GZIP
     BINFMT_ELF
+    BINFMT_SCRIPT
     PCI
     TMPFS
     PROC_FS
@@ -84,18 +101,19 @@ REQUIRED=(
     DYNAMIC_DEBUG
 )
 
-echo "Starting from x86_64 defconfig ..."
-make -C "${KDIR}" defconfig
+BASE="${BASE:-tinyconfig}"
+echo "Starting from x86_64 ${BASE} ..."
+make -C "${KDIR}" ARCH=x86_64 "${BASE}"
 
 enable_args=()
 for sym in "${REQUIRED[@]}"; do
     enable_args+=(--enable "${sym}")
 done
 echo "Enabling ${#REQUIRED[@]} options with scripts/config ..."
-sh "${SCRIPTS_CONFIG}" --file "${CONFIG_FILE}" "${enable_args[@]}"
+bash "${SCRIPTS_CONFIG}" --file "${CONFIG_FILE}" --disable X86_32 "${enable_args[@]}"
 
 echo "Resolving dependencies with olddefconfig ..."
-make -C "${KDIR}" olddefconfig
+make -C "${KDIR}" ARCH=x86_64 olddefconfig
 
 missing=0
 for sym in "${REQUIRED[@]}"; do

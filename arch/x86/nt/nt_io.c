@@ -567,6 +567,30 @@ void ntio_file_put(struct nt_file_object *file)
 		kref_put(&file->ref, ntio_file_release);
 }
 
+/* File-backed sections: the file's size, and growing it for a read-write
+ * section larger than the file. src/kernel/nt/io.c has the same pair, but that
+ * file is not part of the kernel build (BUILD-RECIPE G24). */
+NTSTATUS ntio_file_section_size(struct nt_file_object *file, LONGLONG *size)
+{
+	struct kstat st;
+
+	if (!file || !file->filp)
+		return STATUS_INVALID_PARAMETER;
+	if (vfs_getattr(&file->filp->f_path, &st, STATX_BASIC_STATS, AT_STATX_SYNC_AS_STAT))
+		return STATUS_UNSUCCESSFUL;
+	*size = (LONGLONG)st.size;
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS ntio_file_section_extend(struct nt_file_object *file, LONGLONG size)
+{
+	if (!file || !file->filp)
+		return STATUS_INVALID_PARAMETER;
+	if (vfs_truncate(&file->filp->f_path, size))
+		return STATUS_UNSUCCESSFUL;
+	return STATUS_SUCCESS;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Share-access registry                                                        */
 /* -------------------------------------------------------------------------- */

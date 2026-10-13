@@ -32,7 +32,9 @@
 
 #include "job.h"
 #include "handle.h"
+#ifndef __KERNEL__
 #include <stddef.h>
+#endif
 
 /* Kernel ABI wrappers copy information through a kernel buffer of at most
  * this many bytes. The largest class (extended limits) is far below it. */

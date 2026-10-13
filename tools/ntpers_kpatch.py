@@ -104,15 +104,20 @@ DISPATCH = (
     "#ifdef CONFIG_NT_PERSONALITY\n"
     "\t/*\n"
     "\t * Second system-call ABI. NT tasks are routed here before the Linux\n"
-    "\t * service table is consulted, so no Linux seccomp or audit rule sees an\n"
-    "\t * NT service number as a Linux number (BUILD-RECIPE G3). Entry and exit\n"
-    "\t * bracket the NT dispatch the way the Linux path brackets its own.\n"
+    "\t * service table is consulted. syscall_enter_from_user_mode() is the 6.18\n"
+    "\t * generic entry: it enables IRQs and runs seccomp, ptrace, audit and\n"
+    "\t * tracepoints. It reports AUDIT_ARCH_NTX86_64 for NT tasks, so no Linux\n"
+    "\t * filter sees an NT service number as a Linux number (BUILD-RECIPE G3).\n"
+    "\t * A return of -1 skips the dispatch; RAX then holds whatever the filter\n"
+    "\t * or tracer set.\n"
     "\t */\n"
     "\tif (unlikely(test_thread_flag(TIF_NTABI))) {\n"
-    "\t\tenter_from_user_mode(regs);\n"
-    "\t\tinstrumentation_begin();\n"
-    "\t\tdo_nt_syscall(regs, (unsigned int)nr);\n"
-    "\t\tinstrumentation_end();\n"
+    "\t\tnr = syscall_enter_from_user_mode(regs, nr);\n"
+    "\t\tif (nr != -1) {\n"
+    "\t\t\tinstrumentation_begin();\n"
+    "\t\t\tdo_nt_syscall(regs, (unsigned int)nr);\n"
+    "\t\t\tinstrumentation_end();\n"
+    "\t\t}\n"
     "\t\tsyscall_exit_to_user_mode(regs);\n"
     "\t\treturn nt_can_sysret(regs);\n"
     "\t}\n"
@@ -494,13 +499,9 @@ def build_plan(project):
                             "late_initcall(nt_banner_initcall)",
                             "boot-time caller for nt_banner_init", gap="G10"))
 
-    # 11. Still undecided. Fails every run until BUILD-RECIPE G3 is closed.
-    edits.append(TodoEdit(
-        eid(), "arch/x86/entry/nt/enter.c",
-        "NT entry hooks (patch 0002, enter.c)", "G3",
-        "not applied: the NT branch calls no seccomp, audit or ptrace hook; "
-        "enter.c needs syscall_trace_enter(), which is not a declared kernel "
-        "API in this repository, and it needs an arch/x86/entry Makefile line"))
+    # 11. No arch/x86/entry/nt/enter.c (patch 0002). The generic entry in the
+    # NT branch (section 5i) runs seccomp, ptrace and audit with the NT arch,
+    # so the hooks that file held are not needed (BUILD-RECIPE G3, closed).
     return edits, warnings
 
 

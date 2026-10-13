@@ -2019,6 +2019,7 @@ NTSTATUS nt_wait_on_address(void *addr, void *cmp, size_t size, LARGE_INTEGER *t
     spin_unlock_irqrestore(&g_addr_lock_kernel, flags);
 
     /* recheck after insertion to avoid lost wake */
+    bool equal;
     if (size==1) equal = (*(volatile uint8_t*)addr == *(uint8_t*)cmp);
     else if (size==2) equal = (*(volatile uint16_t*)addr == *(uint16_t*)cmp);
     else if (size==4) equal = (*(volatile uint32_t*)addr == *(uint32_t*)cmp);

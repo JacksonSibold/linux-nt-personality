@@ -58,6 +58,7 @@ typedef const UNICODE_STRING *PCUNICODE_STRING;
 #include <linux/list.h>
 #include <linux/atomic.h>
 #include <linux/printk.h>
+#include <linux/uaccess.h>
 #include <linux/kernel.h>
 #include <linux/bug.h>
 #define KASSERT(x) BUG_ON(!(x))
@@ -286,9 +287,11 @@ static inline void kfree(const void *p) { free((void*)p); }
 
 #endif /* __KERNEL__ else */
 
+#ifndef __KERNEL__
 /* kstrdup allocates through kmalloc, so the tagged leak counter sees both the
  * allocation and the kfree that releases it. A strdup here was never counted,
- * and every kfree of it drove the counter negative. */
+ * and every kfree of it drove the counter negative. The kernel has its own
+ * kstrdup(const char *, gfp_t) in <linux/string.h>; this shim is userspace only. */
 static inline char *kstrdup(const char *s, int flags) {
     size_t n = strlen(s) + 1;
     char *d;
@@ -297,6 +300,7 @@ static inline char *kstrdup(const char *s, int flags) {
     if (d) memcpy(d, s, n);
     return d;
 }
+#endif
 
 /* Per-call diagnostic tracing, off by default. Build with -DNT_DEBUG_TRACE to
  * restore the old unconditional prints: same message text, same log levels.

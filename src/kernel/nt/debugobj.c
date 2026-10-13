@@ -42,8 +42,12 @@
 #include "debugobj.h"
 #include "handle.h"
 #include "sync.h"
+#ifndef __KERNEL__
 #include <stddef.h>
+#endif
+#ifndef __KERNEL__
 #include <string.h>
+#endif
 
 /* Kernel ABI wrappers copy the set-information payload through a kernel buffer
  * of at most this many bytes. The only class takes a BOOLEAN. */

@@ -74,6 +74,10 @@ struct nt_eprocess *nt_get_current_eprocess(void) { return kshim_current_process
 /* This file provides Set/Reset/Pulse/Release/Query wrappers           */
 /* ------------------------------------------------------------------ */
 
+/* NtRaiseHardError argument limit. Defined here, outside the userspace guard,
+ * because the kernel branch below validates against it too. */
+#define NT_MAX_HARDERROR_PARAMETERS 4UL
+
 #ifndef __KERNEL__
 /* Userspace shim: Set/Reset/Release are already in nt_obj.c, keep only Pulse+Query here */
 NTSTATUS nt_svc_NtPulseEvent(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
@@ -146,7 +150,6 @@ NTSTATUS nt_svc_NtQueryTimerResolution(PULONG MaximumTime, PULONG MinimumTime, P
  * bring the system down, and this kernel has neither. The argument count is
  * still validated (at most MAXIMUM_HARDERROR_PARAMETERS). No user memory is
  * read or written, and no response is produced. */
-#define NT_MAX_HARDERROR_PARAMETERS 4UL
 NTSTATUS nt_svc_NtRaiseHardError(NTSTATUS ErrorStatus, ULONG NumberOfParameters, ULONG UnicodeStringParameterMask, ULONG_PTR *Parameters, ULONG ValidResponseOptions, PULONG Response)
 {
     (void)ErrorStatus; (void)UnicodeStringParameterMask; (void)Parameters; (void)ValidResponseOptions; (void)Response;
@@ -369,7 +372,7 @@ NTSTATUS nt_svc_NtQueryPerformanceCounter(unsigned long a0, unsigned long a1, un
 }
 NTSTATUS nt_svc_NtSetTimerResolution(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {
-    ULONG DesiredTime = (ULONG)a0; BOOLEAN SetResolution = a1 ? TRUE : FALSE; PULONG ActualTime = (PULONG)a2;
+    ULONG DesiredTime = (ULONG)a0; BOOLEAN SetResolution = (a1 != 0); PULONG ActualTime = (PULONG)a2;
     ULONG actual;
     (void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
     if (!ActualTime) return STATUS_ACCESS_VIOLATION;

@@ -147,8 +147,11 @@ class FullPlanTest(unittest.TestCase):
         self.assertEqual(sc.count("void do_nt_syscall(struct pt_regs *regs, unsigned int ssn);"), 1)
         self.assertLess(sc.index("do_nt_syscall(struct pt_regs"),
                         sc.index("__visible noinstr bool do_syscall_64"))
-        self.assertIn("enter_from_user_mode(regs);", sc)
-        self.assertIn("return nt_can_sysret(regs);", sc)
+        # NT branch uses the 6.18 generic entry (IRQs on, seccomp/ptrace/audit)
+        self.assertEqual(sc.count("nr = syscall_enter_from_user_mode(regs, nr);"), 2)
+        self.assertIn("if (nr != -1) {", sc)
+        self.assertIn("syscall_exit_to_user_mode(regs);\n\t\treturn nt_can_sysret(regs);", sc)
+        self.assertFalse((t / "arch/x86/entry/nt").exists())
         self.assertIn("late_initcall(nt_banner_initcall);",
                       (t / "arch/x86/nt/kernel_stubs.c").read_text())
         self.assertIn("tsk->nt_thread = NULL;", (t / "kernel/fork.c").read_text())
@@ -182,29 +185,24 @@ class FullPlanTest(unittest.TestCase):
         self.apply()
         self.assertEqual((self.tree / "arch/x86/nt/mm.c").read_text(), "/* src copy of mm */\n")
 
-    def test_todo_gate_blocks_strict_apply_and_writes_nothing(self):
-        before = snapshot(self.tree)
+    def test_strict_apply_succeeds_with_no_todo_edits(self):
         rc, out = self.apply(allow_todo=False)
-        self.assertEqual(rc, 1)
-        self.assertIn("NOT APPLIED", out)
-        self.assertIn("G3", out)
-        self.assertEqual(snapshot(self.tree), before)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("[todo", out)
+        self.assertNotIn("enter.c", out)
 
-    def test_check_reports_todo_and_each_state(self):
+    def test_check_reports_each_state_and_writes_nothing(self):
         rc, out = run_main("--project", str(self.project), "--tree", str(self.tree), "--check")
-        self.assertEqual(rc, 1)
-        self.assertIn("[todo      ] ", out)
-        self.assertIn("arch/x86/entry/nt/enter.c", out)
-        self.assertIn("see docs/vm/BUILD-RECIPE.md G3", out)
-        self.assertIn("CHECK FAILED", out)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("[todo", out)
         self.assertIn("[applicable]", out)
         self.assertFalse((self.tree / "arch/x86/nt").exists(), "--check wrote files")
 
-    def test_check_passes_after_apply_when_todo_allowed(self):
+    def test_check_is_clean_after_apply(self):
         self.apply()
         rc, out = run_main("--project", str(self.project), "--tree", str(self.tree),
                            "--check")
-        self.assertEqual(rc, 1)  # the G3 todo still fails --check
+        self.assertEqual(rc, 0, out)
         self.assertNotIn("[applicable]", out)
         self.assertNotIn("[blocked", out)
 

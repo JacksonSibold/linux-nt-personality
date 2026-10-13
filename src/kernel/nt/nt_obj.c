@@ -35,6 +35,33 @@
 #include <linux/sched.h>
 #include <linux/delay.h>
 struct nt_eprocess *nt_get_current_eprocess(void);
+
+/*
+ * Copy a user OBJECT_ATTRIBUTES, and its name, into kernel memory. The same
+ * logic is the static k_copy_oa in registry.c, which the kernel build does not
+ * include (BUILD-RECIPE G9), so the kernel branch carries its own copy.
+ */
+static NTSTATUS k_copy_oa(POBJECT_ATTRIBUTES uptr, OBJECT_ATTRIBUTES *koa, UNICODE_STRING *kname, WCHAR *kbuf, size_t kbuf_bytes, POBJECT_ATTRIBUTES *out)
+{
+    if (!uptr){ memset(koa,0,sizeof(*koa)); koa->Length=sizeof(OBJECT_ATTRIBUTES); *out=NULL; return STATUS_SUCCESS; }
+    if (!access_ok(uptr,sizeof(OBJECT_ATTRIBUTES))) return STATUS_ACCESS_VIOLATION;
+    if (copy_from_user(koa,uptr,sizeof(OBJECT_ATTRIBUTES))) return STATUS_ACCESS_VIOLATION;
+    if (koa->Length != sizeof(OBJECT_ATTRIBUTES)) return STATUS_INVALID_PARAMETER;
+    if (koa->ObjectName){
+        UNICODE_STRING tmp;
+        if (!access_ok(koa->ObjectName,sizeof(UNICODE_STRING))) return STATUS_ACCESS_VIOLATION;
+        if (copy_from_user(&tmp,koa->ObjectName,sizeof(tmp))) return STATUS_ACCESS_VIOLATION;
+        if (tmp.Length){
+            if (!access_ok(tmp.Buffer,tmp.Length)) return STATUS_ACCESS_VIOLATION;
+            if ((size_t)tmp.Length > kbuf_bytes) return STATUS_NAME_TOO_LONG;
+            if (copy_from_user(kbuf,tmp.Buffer,tmp.Length)) return STATUS_ACCESS_VIOLATION;
+            kname->Buffer=kbuf; kname->Length=tmp.Length; kname->MaximumLength=tmp.Length;
+            koa->ObjectName=kname;
+        } else koa->ObjectName=NULL;
+    }
+    *out=koa;
+    return STATUS_SUCCESS;
+}
 #endif
 
 /* ------------------------------------------------------------------ */
