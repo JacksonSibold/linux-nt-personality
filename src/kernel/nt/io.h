@@ -408,6 +408,20 @@ NTSTATUS nt_svc_NtSetInformationFile(HANDLE FileHandle,
 NTSTATUS nt_svc_NtFlushBuffersFile(HANDLE FileHandle,
 				   PIO_STATUS_BLOCK IoStatusBlock);
 
+NTSTATUS nt_svc_NtDeviceIoControlFile(HANDLE FileHandle, HANDLE Event,
+				      PVOID ApcRoutine, PVOID ApcContext,
+				      PIO_STATUS_BLOCK IoStatusBlock,
+				      ULONG IoControlCode,
+				      PVOID InputBuffer, ULONG InputBufferLength,
+				      PVOID OutputBuffer, ULONG OutputBufferLength);
+
+NTSTATUS nt_svc_NtFsControlFile(HANDLE FileHandle, HANDLE Event,
+				PVOID ApcRoutine, PVOID ApcContext,
+				PIO_STATUS_BLOCK IoStatusBlock,
+				ULONG FsControlCode,
+				PVOID InputBuffer, ULONG InputBufferLength,
+				PVOID OutputBuffer, ULONG OutputBufferLength);
+
 #ifdef __KERNEL__
 NTSTATUS nt_svc_NtClose(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11);
 #else

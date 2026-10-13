@@ -1259,6 +1259,48 @@ TEST(set_info_classes)
 	PASS();
 }
 
+/* Unknown device and filesystem control codes are refused with
+ * STATUS_INVALID_DEVICE_REQUEST, and the IoStatusBlock is completed. */
+TEST(device_fs_control_unsupported)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+
+	reset_state();
+	ASSERT(write_file_at("ioctl.txt", "x"));
+	ASSERT_STATUS(open_test_file("ioctl.txt", FILE_GENERIC_READ, FILE_SHARE_READ,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+
+	iosb.Information = 0xDEAD;
+	iosb.DUMMYUNIONNAME.Status = STATUS_SUCCESS;
+	ASSERT_STATUS(nt_svc_NtDeviceIoControlFile(h, NULL, NULL, NULL, &iosb,
+						   0x00390000, NULL, 0, NULL, 0),
+		      STATUS_INVALID_DEVICE_REQUEST);
+	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_INVALID_DEVICE_REQUEST);
+	ASSERT(iosb.Information == 0);
+
+	iosb.DUMMYUNIONNAME.Status = STATUS_SUCCESS;
+	ASSERT_STATUS(nt_svc_NtFsControlFile(h, NULL, NULL, NULL, &iosb,
+					     0x00090000, NULL, 0, NULL, 0),
+		      STATUS_INVALID_DEVICE_REQUEST);
+	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_INVALID_DEVICE_REQUEST);
+	ASSERT(iosb.Information == 0);
+
+	ASSERT_STATUS(nt_svc_NtDeviceIoControlFile(NULL, NULL, NULL, NULL, &iosb,
+						   0x00390000, NULL, 0, NULL, 0),
+		      STATUS_INVALID_HANDLE);
+	ASSERT_STATUS(nt_svc_NtFsControlFile(NULL, NULL, NULL, NULL, &iosb,
+					     0x00090000, NULL, 0, NULL, 0),
+		      STATUS_INVALID_HANDLE);
+	ASSERT_STATUS(nt_svc_NtDeviceIoControlFile(h, NULL, NULL, NULL, NULL,
+						   0x00390000, NULL, 0, NULL, 0),
+		      STATUS_ACCESS_VIOLATION);
+
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 /* NtOpenIoCompletion: names are not registered by NtCreateIoCompletion in
  * this build, so every name lookup misses. The NULL object-attributes case
  * is rejected before any lookup. */
@@ -1362,6 +1404,7 @@ int main(void)
 	RUN(ci_component_length_limit);
 	RUN(query_info_classes);
 	RUN(set_info_classes);
+	RUN(device_fs_control_unsupported);
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);
 

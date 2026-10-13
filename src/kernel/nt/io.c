@@ -2888,6 +2888,86 @@ NTSTATUS nt_svc_NtClose(HANDLE Handle)
 }
 #endif
 
+/*
+ * Device and filesystem control. This build has no device objects and no
+ * IOCTL or FSCTL codes for regular file handles, so every code is refused
+ * with STATUS_INVALID_DEVICE_REQUEST, the status NT drivers return for an
+ * unrecognised control code. The IoStatusBlock is completed synchronously;
+ * Event and ApcRoutine are not signalled or queued.
+ */
+static NTSTATUS ntio_control_common(HANDLE FileHandle,
+				    PIO_STATUS_BLOCK __user IoStatusBlock)
+{
+	struct nt_file_object *file;
+	NTSTATUS status;
+
+	if (!IoStatusBlock)
+		return STATUS_ACCESS_VIOLATION;
+#ifdef __KERNEL__
+	if (!access_ok(IoStatusBlock, sizeof(IO_STATUS_BLOCK)))
+		return STATUS_ACCESS_VIOLATION;
+#endif
+
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file) {
+		status = STATUS_INVALID_HANDLE;
+	} else {
+		ntio_file_put(file);
+		status = STATUS_INVALID_DEVICE_REQUEST;
+	}
+
+#ifdef __KERNEL__
+	{
+		IO_STATUS_BLOCK kiosb;
+
+		kiosb.DUMMYUNIONNAME.Status = status;
+		kiosb.Information = 0;
+		if (copy_to_user(IoStatusBlock, &kiosb, sizeof(kiosb)))
+			status = STATUS_ACCESS_VIOLATION;
+	}
+#else
+	IoStatusBlock->DUMMYUNIONNAME.Status = status;
+	IoStatusBlock->Information = 0;
+#endif
+	return status;
+}
+
+NTSTATUS nt_svc_NtDeviceIoControlFile(HANDLE FileHandle, HANDLE Event,
+				      PVOID ApcRoutine, PVOID ApcContext,
+				      PIO_STATUS_BLOCK __user IoStatusBlock,
+				      ULONG IoControlCode,
+				      PVOID InputBuffer, ULONG InputBufferLength,
+				      PVOID OutputBuffer, ULONG OutputBufferLength)
+{
+	(void)Event;
+	(void)ApcRoutine;
+	(void)ApcContext;
+	(void)IoControlCode;
+	(void)InputBuffer;
+	(void)InputBufferLength;
+	(void)OutputBuffer;
+	(void)OutputBufferLength;
+	return ntio_control_common(FileHandle, IoStatusBlock);
+}
+
+NTSTATUS nt_svc_NtFsControlFile(HANDLE FileHandle, HANDLE Event,
+				PVOID ApcRoutine, PVOID ApcContext,
+				PIO_STATUS_BLOCK __user IoStatusBlock,
+				ULONG FsControlCode,
+				PVOID InputBuffer, ULONG InputBufferLength,
+				PVOID OutputBuffer, ULONG OutputBufferLength)
+{
+	(void)Event;
+	(void)ApcRoutine;
+	(void)ApcContext;
+	(void)FsControlCode;
+	(void)InputBuffer;
+	(void)InputBufferLength;
+	(void)OutputBuffer;
+	(void)OutputBufferLength;
+	return ntio_control_common(FileHandle, IoStatusBlock);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Module init / fini (userspace shim)                                          */
 /* -------------------------------------------------------------------------- */
