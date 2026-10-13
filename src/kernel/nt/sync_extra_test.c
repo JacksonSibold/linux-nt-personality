@@ -537,6 +537,22 @@ TEST(cancel_timer_is_prompt) {
     PASS();
 }
 
+/* A user APC routine cannot be delivered (no APC queue exists), so NtSetTimer
+ * must refuse it before arming and the routine must never run from the timer. */
+static _Atomic int g_apc_calls;
+static void test_timer_apc(void *ctx) { (void)ctx; atomic_fetch_add(&g_apc_calls, 1); }
+TEST(set_timer_rejects_user_apc) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, SynchronizationTimer), STATUS_SUCCESS);
+    atomic_store(&g_apc_calls, 0);
+    LARGE_INTEGER due = rel100(20);
+    ASSERT_STATUS(t_set_timer(h, &due, test_timer_apc, NULL, 0, NULL), STATUS_NOT_IMPLEMENTED);
+    LARGE_INTEGER poll = rel100(200);
+    ASSERT_STATUS(t_wait_handle(h, &poll), STATUS_TIMEOUT);
+    ASSERT(atomic_load(&g_apc_calls) == 0);
+    PASS();
+}
 
 /* ------------------------------------------------------------------ */
 /* NtYieldExecution                                                     */
@@ -567,6 +583,7 @@ int main(void) {
     RUN(set_timer_long_due_time_honoured);
     RUN(set_timer_period_repeats);
     RUN(cancel_timer_is_prompt);
+    RUN(set_timer_rejects_user_apc);
     RUN(signal_and_wait_event_pair);
     RUN(signal_and_wait_mutant_release);
     RUN(signal_and_wait_bad_objects);

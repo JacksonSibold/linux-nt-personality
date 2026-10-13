@@ -1609,10 +1609,8 @@ static void timer_callback(struct timer_list *tl)
     t->header.signal_state = 1;
     spin_unlock_irqrestore(&t->header.lock, flags);
     kernel_wake_waiters(&t->header);
-    if (t->apc_routine) {
-        if (t->apc_thread) nt_thread_queue_apc(t->apc_thread);
-        else t->apc_routine(t->apc_ctx);
-    }
+    /* Never call a user APC routine from timer context: nt_set_timer refuses
+     * them, so there is nothing to run here. */
     spin_lock_irqsave(&t->timer_lock, flags);
     if (t->period_ms > 0 && !t->cancel_requested) {
         spin_unlock_irqrestore(&t->timer_lock, flags);
@@ -1635,6 +1633,7 @@ NTSTATUS nt_set_timer(struct nt_timer *timer, const LARGE_INTEGER *due_time, LON
                       void (*apc_routine)(void*), void *apc_ctx)
 {
     if (!timer || !due_time) return STATUS_INVALID_PARAMETER;
+    if (apc_routine) return STATUS_NOT_IMPLEMENTED; /* see timer_callback */
     BOOLEAN dummy;
     nt_cancel_timer(timer, &dummy);
     unsigned long flags;
@@ -2463,6 +2462,12 @@ NTSTATUS nt_svc_NtSetTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a
     struct nt_object_header *hdr = NULL;
     NTSTATUS st = timer_ref(proc, TimerHandle, &t, &hdr);
     if (!NT_SUCCESS(st)) return st;
+    /* No APC queue exists to deliver a user routine, and it must never run in
+     * kernel context, so refuse it before the timer is touched. */
+    if (TimerApcRoutine) {
+        ObDereferenceObject(hdr);
+        return STATUS_NOT_IMPLEMENTED;
+    }
     BOOLEAN prev = 0;
     st = nt_cancel_timer(t, &prev);   /* stop any earlier arming and read the old state */
     if (NT_SUCCESS(st)) st = nt_set_timer(t, &due, Period, TimerApcRoutine, TimerContext);
