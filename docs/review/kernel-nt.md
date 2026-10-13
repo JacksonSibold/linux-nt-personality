@@ -286,6 +286,55 @@ Each open Medium and Low finding was re-read against the code on this branch. St
 
 - SEC-1: needs owner. The fix either stores capacity in the ACL allocation (a layout change) or returns errors from the registration call sites (six sites in `security.c`). The choice is a design decision. Design record 0035 (blocked, recommended: return an error from registration; grep finds five call sites, not six).
 
+## Stress pass: token, section, namespace, SD, registry, timers (branch haiku/stress2)
+
+Six programs were added to `make stress`, each run with 16 workers and seeds 1 to 3 (`KSHIM_POISON=1`). Commits: tests `f23a857`, `29236dd`, `56a4481`, `7ac3e45`, `62b7199`, `097bc60`, wiring `bbc99e3`; fixes `6707c84` (SEC-3) and `2bac4c0` (MM-1).
+
+### SEC-3 [Medium] ACL capacity table updated without a lock (fixed 6707c84)
+
+- Found by `stress_token_test` (`f23a857`). Before the fix, seeds 1 to 3 gave 90 to 464 violations each: `NtOpenProcessToken` and `NtDuplicateToken` returned `STATUS_BUFFER_TOO_SMALL` under load.
+- Minimised: eight threads that open and close the process token, with nothing else running, fail 150 to 320 times in 24000 opens. One thread never fails.
+- Cause: `acl_capacity_register`, `acl_capacity_unregister` and `acl_capacity_lookup` (`security.c`) read and wrote `g_acl_caps` and `g_acl_cap_used` with no lock. A lost registration makes the lookup fall back to `AclSize`, and `acl_has_space` then rejects the ACE.
+- Fix: one spinlock around all three functions (kernel: `DEFINE_SPINLOCK`; userspace: a pthread mutex). After the fix, `stress_token_test` passes seeds 1 to 3 at 16 workers with 0 violations, and the eight-thread repro is clean.
+
+### MM-1 [Medium] NtUnmapViewOfSection releases the VAD lock before the host unmap (userspace fixed 2bac4c0; kernel open)
+
+- Found by `stress_section_test` (`29236dd`). Two threads that loop on map and unmap fault on the first write to a view. Seed 1 at 8 workers and 1024 ops fails, and so does a two-thread repro (3 of 3 runs before the fix, 0 of 3 after). A live-range check in the repro found no overlapping returned ranges before the fault, so the freed range was reused and then unmapped under the other view.
+- Cause: `NtUnmapViewOfSection` removes the VAD under `ntmm_lock`, releases the lock, then calls `kshim_munmap`. In that window another `NtMapViewOfSection` can take the freed range, and the late unmap removes its view.
+- Fix (userspace branch only, `#ifndef __KERNEL__`): `kshim_munmap` runs before `ntmm_unlock`. Section stress seeds 1 to 3 at 16 workers pass after the fix.
+- Open: the kernel branch keeps the old order. `vm_munmap` takes `mmap_lock`, and moving it under the VAD lock changes the lock order. That is a design decision.
+- Not kept: a shim self-test for the granule case. It could not be built, because Windows rejects a `MEM_RESERVE` at an address that is not 64K aligned, so a shared allocation base cannot be made from a fixed mapping.
+
+### REG-1 [Medium] NtSetValueKey persists a value after releasing the key lock (open)
+
+- `stress_registry_test` (`7ac3e45`) faults under `KSHIM_POISON=1` at every seed run in `make stress` (seeds 1 to 3). `addr2line` puts the fault at `registry.c:294`, the read of `v->name.Buffer` in `persist_write_value`, with a bad read address of -1.
+- Cause: both branches of `NtSetValueKey` call `persist_write_value(k, target)` or `(k, nv)` after `write_unlock(&k->lock)`. `NtDeleteValueKey` removes the value under the lock and frees it, so a set that is still persisting reads freed memory. Without poison the freed memory usually still holds the old values, which is why unpoisoned runs pass.
+- Not fixed: moving the persist under the lock is not safe in the kernel. `k->lock` is an `rwlock_t`, and the persist path does file I/O. A fix needs a sleepable per-key lock covering set persistence and value free, or a deferred free. That is a design decision.
+- Related, not a memory error: `NtDeleteValueKey` persists the deletion after unlocking, so a concurrent set of the same name can be unlinked on disk after it was written. Not tested.
+
+### OB-1 [Medium] ObpRemoveFromDirectory reads the parent directory without a reference (open, suspected)
+
+- `stress_namespace_test` under `KSHIM_POISON=1` faulted in `libwinpthread-1.dll`, reading address -1 inside a lock. Three of six poisoned runs faulted with 16 workers (seed 1, 16 workers, 4096 ops). In `make stress`, seeds 1 and 3 faulted and seed 2 passed. Without poison, no fault in the runs tried.
+- Suspected cause, from the code and not reproduced by a minimal test: `ObpRemoveFromDirectory` (`object.c`, around line 312) reads `obj->parent_dir` and then takes `dir->lock`. Nothing holds a reference on the directory across that gap, so a concurrent `ObMakeTemporaryObject` of the directory can free it first.
+- Open: the fix needs a parent-directory lifetime rule, either a reference taken under a lock that `directory_delete` also takes, or a parent pointer guarded by the child's lock. That is a design decision.
+
+### OB-2 [Low] Symbolic links are followed only as the last path component (open)
+
+- `object.c` resolves a symlink only when it is the final component (around line 446). A link in the middle of a path returns `STATUS_OBJECT_PATH_NOT_FOUND`, because the link type has no parse routine. `stress_namespace_test` counts successful opens through a link, and that count is 0 on every run.
+- Not fixed: a parse routine for links changes path semantics. Not a concurrency issue.
+
+### SYNC-3 [Medium] stress_sync_test fails about half its runs at seed 2 (open, pre-existing, not minimised)
+
+- With 16 workers, the failing runs report `owned wait` and `close` returning `STATUS_INVALID_HANDLE` on handles the worker still holds (1 to 6 violations per run). On the current tree 5 of 7 runs failed at seed 2, with and without poison. The base commit `45a70b4` failed 1 of 4 runs with the same messages, so this predates this work. Changes `6707c84` and `2bac4c0` do not touch the sync path.
+- Not minimised. A handle slot being freed twice, or reused during the race round, is a guess and is not confirmed.
+
+### Confirmed, no change
+
+- SEC-1 (ACL table overflow) reproduces as stated: with 300 live ACLs, `acl_add_allowed_ace` on the 300th returns `STATUS_BUFFER_TOO_SMALL`, and the first ACL still grows. Design record 0035 still applies.
+- The host shim maps file-backed section views as zero-filled anonymous memory (`tests/kernel-host/shim/mman_win.c`). `stress_section_test` therefore checks that file views map and read, not their contents.
+- Passing with 16 workers and seeds 1 to 3: `stress_token_test` (after the fix), `stress_section_test` (after the fix), `stress_sd_test` (no torn or unknown descriptors), `stress_timer_test`. `stress_namespace_test` passed seed 2 in `make stress` and 3 of 3 unpoisoned runs at 16 workers (it fails under poison, OB-1).
+- `make check-quick` passes after both fixes. `tools/update_doc_counts.py` and the Python unit suite were not run: this host has no working Python, so the count blocks in `docs/review/INDEX.md` are not regenerated.
+
 ## Not verified / out of scope
 
 - Nothing was compiled, linked, sanitized, fuzzed, or executed. Overflow and wrap claims come from the arithmetic at the cited lines.
