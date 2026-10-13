@@ -54,6 +54,11 @@ struct subkey_entry {
 };
 
 struct nt_key {
+    /* Sleepable. Held across one value set or delete, including the disk
+       write, so a value cannot be freed while a set is still persisting it,
+       and disk writes for a value happen in the order they were applied.
+       Lock order: persist_lock, then lock. Readers take only lock. */
+    struct mutex persist_lock;
     rwlock_t lock;
     struct list_head subkeys;
     struct list_head values;
@@ -524,6 +529,7 @@ NTSTATUS ntreg_init(void) {
             NTSTATUS s = ObCreateObject(&nt_key_type, &oa, sizeof(*k), &hdr, (void**)&k);
             if (!NT_SUCCESS(s)) continue;
             INIT_LIST_HEAD(&k->subkeys); INIT_LIST_HEAD(&k->values);
+            mutex_init(&k->persist_lock);
             rwlock_init(&k->lock);
             k->deleted=false;
             /* full path \Registry\<hive> */
@@ -793,7 +799,7 @@ NTSTATUS NtCreateKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess,
                     NTSTATUS ns = ObCreateObject(&nt_key_type,&tmp2,sizeof(*nk),&nhdr,(void**)&nk);
                     if (NT_SUCCESS(ns)) {
                         INIT_LIST_HEAD(&nk->subkeys); INIT_LIST_HEAD(&nk->values);
-                        rwlock_init(&nk->lock); nk->deleted=false; nk->last_write_time.QuadPart=(LONGLONG)now_100ns();
+                        mutex_init(&nk->persist_lock); rwlock_init(&nk->lock); nk->deleted=false; nk->last_write_time.QuadPart=(LONGLONG)now_100ns();
                         WCHAR pfull[512]; size_t pp= (size_t)gparent.Length/sizeof(WCHAR);
                         for(size_t i=0;i<pp;i++) pfull[i]=gparent.Buffer[i];
                         pfull[pp]='\\'; for(size_t i=0;i<pleafLen;i++) pfull[pp+1+i]=pleaf.Buffer[i];
@@ -844,6 +850,7 @@ NTSTATUS NtCreateKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess,
     st = ObCreateObject(&nt_key_type, &tmp, sizeof(*k), &hdr, (void**)&k);
     if (!NT_SUCCESS(st)) { ObDereferenceObject(parentHdr); return st; }
     INIT_LIST_HEAD(&k->subkeys); INIT_LIST_HEAD(&k->values);
+    mutex_init(&k->persist_lock);
     rwlock_init(&k->lock);
     k->deleted=false;
     k->last_write_time.QuadPart = (LONGLONG)now_100ns();
@@ -1184,6 +1191,7 @@ NTSTATUS NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleI
         st=dup_us(ValueName,&vname);
         if (!NT_SUCCESS(st)) { ObDereferenceObject(hdr); return st; }
     } else { vname.Buffer=NULL; vname.Length=0; vname.MaximumLength=0; }
+    mutex_lock(&k->persist_lock);
     write_lock(&k->lock);
     struct reg_value *iter=NULL;
     struct reg_value *target=NULL;
@@ -1200,7 +1208,7 @@ NTSTATUS NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleI
         uint8_t *nd=NULL;
         if (DataSize) {
             nd=(uint8_t*)kmalloc(DataSize,GFP_KERNEL);
-            if (!nd){ write_unlock(&k->lock); free_us(&vname); ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
+            if (!nd){ write_unlock(&k->lock); mutex_unlock(&k->persist_lock); free_us(&vname); ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
             if (Data) memcpy(nd,Data,DataSize);
         }
         if (target->data) kfree(target->data);
@@ -1211,19 +1219,20 @@ NTSTATUS NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleI
         write_unlock(&k->lock);
         REG_TEST_PERSIST_HOOK();
         persist_write_value(k,target);
+        mutex_unlock(&k->persist_lock);
         free_us(&vname);
         ObDereferenceObject(hdr);
         return STATUS_SUCCESS;
     } else {
         struct reg_value *nv=(struct reg_value*)kmalloc(sizeof(*nv),GFP_KERNEL);
-        if (!nv){ write_unlock(&k->lock); free_us(&vname); ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
+        if (!nv){ write_unlock(&k->lock); mutex_unlock(&k->persist_lock); free_us(&vname); ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
         INIT_LIST_HEAD(&nv->link);
         nv->name=vname; // take ownership
         nv->type=Type;
         nv->data_len=DataSize;
         if (DataSize){
             nv->data=(uint8_t*)kmalloc(DataSize,GFP_KERNEL);
-            if (!nv->data){ kfree(nv); write_unlock(&k->lock); /* vname already moved, avoid double free */ ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
+            if (!nv->data){ free_us(&nv->name); kfree(nv); write_unlock(&k->lock); mutex_unlock(&k->persist_lock); ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
             if (Data) memcpy(nv->data,Data,DataSize);
         } else nv->data=NULL;
         list_add_tail(&nv->link,&k->values);
@@ -1231,6 +1240,7 @@ NTSTATUS NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleI
         write_unlock(&k->lock);
         REG_TEST_PERSIST_HOOK();
         persist_write_value(k,nv);
+        mutex_unlock(&k->persist_lock);
         ObDereferenceObject(hdr);
         return STATUS_SUCCESS;
     }
@@ -1355,16 +1365,18 @@ NTSTATUS NtDeleteValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName) {
     NTSTATUS st=ObReferenceObjectByHandle(proc,KeyHandle,&nt_key_type,UserMode,KEY_SET_VALUE,&hdr,NULL);
     if (!NT_SUCCESS(st)) return st;
     struct nt_key *k=(struct nt_key*)nt_object_body(hdr);
+    mutex_lock(&k->persist_lock);
     write_lock(&k->lock);
     struct reg_value *target=NULL, *iter;
     list_for_each_entry(iter,&k->values,link){
         UNICODE_STRING vn={0}; if (ValueName){ vn.Buffer=ValueName->Buffer; vn.Length=ValueName->Length; vn.MaximumLength=ValueName->MaximumLength; }
         if (us_equal_ci(&iter->name,&vn)){ target=iter; break; }
     }
-    if (!target) { write_unlock(&k->lock); ObDereferenceObject(hdr); return STATUS_OBJECT_NAME_NOT_FOUND; }
+    if (!target) { write_unlock(&k->lock); mutex_unlock(&k->persist_lock); ObDereferenceObject(hdr); return STATUS_OBJECT_NAME_NOT_FOUND; }
     list_del(&target->link);
     write_unlock(&k->lock);
     persist_delete_value(k, ValueName);
+    mutex_unlock(&k->persist_lock);
     if (target->name.Buffer) kfree(target->name.Buffer);
     if (target->data) kfree(target->data);
     kfree(target);
