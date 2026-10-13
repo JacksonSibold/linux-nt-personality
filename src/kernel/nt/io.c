@@ -3077,6 +3077,51 @@ NTSTATUS nt_svc_NtFlushBuffersFileEx(HANDLE FileHandle, ULONG Flags,
 }
 
 
+/*
+ * Cancel. Every request completes synchronously in this build, so a file never
+ * has a pending request to cancel: the async request list stays empty and each
+ * cancel returns STATUS_NOT_FOUND, the status NT reports when no matching I/O
+ * is pending. If a request list is ever populated before cancel support lands,
+ * the call is refused with STATUS_NOT_SUPPORTED rather than reporting a false
+ * NOT_FOUND.
+ */
+static NTSTATUS ntio_cancel_common(HANDLE FileHandle,
+				   PIO_STATUS_BLOCK __user IoStatusBlock)
+{
+	struct nt_file_object *file;
+	NTSTATUS status;
+
+	if (!IoStatusBlock)
+		return STATUS_ACCESS_VIOLATION;
+#ifdef __KERNEL__
+	if (!access_ok(IoStatusBlock, sizeof(IO_STATUS_BLOCK)))
+		return STATUS_ACCESS_VIOLATION;
+#endif
+
+	file = ntio_handle_lookup(FileHandle, 0);
+	if (!file)
+		return ntio_complete_iosb(IoStatusBlock, STATUS_INVALID_HANDLE);
+	status = list_empty(&file->async_requests) ? STATUS_NOT_FOUND
+						   : STATUS_NOT_SUPPORTED;
+	ntio_file_put(file);
+	return ntio_complete_iosb(IoStatusBlock, status);
+}
+
+NTSTATUS nt_svc_NtCancelIoFile(HANDLE FileHandle,
+			       PIO_STATUS_BLOCK __user IoStatusBlock)
+{
+	return ntio_cancel_common(FileHandle, IoStatusBlock);
+}
+
+NTSTATUS nt_svc_NtCancelIoFileEx(HANDLE FileHandle,
+				 PIO_STATUS_BLOCK __user IoRequestToCancel,
+				 PIO_STATUS_BLOCK __user IoStatusBlock)
+{
+	(void)IoRequestToCancel;
+	return ntio_cancel_common(FileHandle, IoStatusBlock);
+}
+
+
 /* -------------------------------------------------------------------------- */
 /* Module init / fini (userspace shim)                                          */
 /* -------------------------------------------------------------------------- */

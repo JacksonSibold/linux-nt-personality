@@ -355,6 +355,10 @@ struct nt_file_object {
 	char *linux_path;
 };
 
+#ifndef STATUS_NOT_FOUND
+#define STATUS_NOT_FOUND ((NTSTATUS)0xC0000225L)
+#endif
+
 /* NtFlushBuffersFileEx flags. */
 #define FLUSH_FLAGS_FILE_DATA_ONLY      0x00000001
 #define FLUSH_FLAGS_NO_SYNC             0x00000002
@@ -419,6 +423,13 @@ NTSTATUS nt_svc_NtFlushBuffersFile(HANDLE FileHandle,
 NTSTATUS nt_svc_NtFlushBuffersFileEx(HANDLE FileHandle, ULONG Flags,
 				     PVOID Parameters, ULONG ParametersSize,
 				     PIO_STATUS_BLOCK IoStatusBlock);
+
+NTSTATUS nt_svc_NtCancelIoFile(HANDLE FileHandle,
+			       PIO_STATUS_BLOCK IoStatusBlock);
+
+NTSTATUS nt_svc_NtCancelIoFileEx(HANDLE FileHandle,
+				 PIO_STATUS_BLOCK IoRequestToCancel,
+				 PIO_STATUS_BLOCK IoStatusBlock);
 
 NTSTATUS nt_svc_NtQueryEaFile(HANDLE FileHandle,
 			      PIO_STATUS_BLOCK IoStatusBlock,

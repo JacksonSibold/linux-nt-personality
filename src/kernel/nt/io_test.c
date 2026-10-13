@@ -1382,6 +1382,36 @@ TEST(flush_buffers_ex)
 	PASS();
 }
 
+/* With every request completed synchronously there is never a pending I/O
+ * to cancel, so both cancel services report STATUS_NOT_FOUND. */
+TEST(cancel_io_no_pending)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb, req;
+
+	reset_state();
+	ASSERT(write_file_at("cancel.txt", "x"));
+	ASSERT_STATUS(open_test_file("cancel.txt", FILE_GENERIC_READ, FILE_SHARE_READ,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+
+	iosb.DUMMYUNIONNAME.Status = STATUS_SUCCESS;
+	ASSERT_STATUS(nt_svc_NtCancelIoFile(h, &iosb), STATUS_NOT_FOUND);
+	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_NOT_FOUND);
+	ASSERT(iosb.Information == 0);
+
+	req.DUMMYUNIONNAME.Status = STATUS_SUCCESS;
+	ASSERT_STATUS(nt_svc_NtCancelIoFileEx(h, &req, &iosb), STATUS_NOT_FOUND);
+	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_NOT_FOUND);
+
+	ASSERT_STATUS(nt_svc_NtCancelIoFile(NULL, &iosb), STATUS_INVALID_HANDLE);
+	ASSERT_STATUS(nt_svc_NtCancelIoFileEx(NULL, &req, &iosb), STATUS_INVALID_HANDLE);
+	ASSERT_STATUS(nt_svc_NtCancelIoFile(h, NULL), STATUS_ACCESS_VIOLATION);
+
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 /* NtOpenIoCompletion: names are not registered by NtCreateIoCompletion in
  * this build, so every name lookup misses. The NULL object-attributes case
  * is rejected before any lookup. */
@@ -1488,6 +1518,7 @@ int main(void)
 	RUN(device_fs_control_unsupported);
 	RUN(ea_unsupported);
 	RUN(flush_buffers_ex);
+	RUN(cancel_io_no_pending);
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);
 
