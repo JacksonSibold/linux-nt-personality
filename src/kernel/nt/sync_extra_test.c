@@ -24,6 +24,9 @@ NTSTATUS nt_svc_NtSetTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a
 NTSTATUS nt_svc_NtCancelTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
                               ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
                               ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
+NTSTATUS nt_svc_NtQueryTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                             ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                             ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11);
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,6 +104,11 @@ static NTSTATUS t_wait_handle(HANDLE h, LARGE_INTEGER *timeout) {
     st = nt_wait_for_single_object((struct nt_dispatcher_header *)nt_object_body(hdr), 0, timeout);
     ObDereferenceObject(hdr);
     return st;
+}
+/* TIMER_BASIC_INFORMATION, as NtQueryTimer returns it. */
+struct test_timer_basic_info { LARGE_INTEGER RemainingTime; BOOLEAN TimerState; };
+static NTSTATUS t_query_timer(HANDLE h, ULONG_PTR cls, void *buf, ULONG_PTR len, ULONG *ret) {
+    return nt_svc_NtQueryTimer((ULONG_PTR)h, cls, (ULONG_PTR)buf, len, (ULONG_PTR)ret, 0, 0, 0, 0, 0, 0, 0);
 }
 static LARGE_INTEGER rel100(int64_t ms) { LARGE_INTEGER li; li.QuadPart = -ms * 10000LL; return li; }
 
@@ -254,6 +262,49 @@ TEST(cancel_timer_reports_signalled) {
     PASS();
 }
 
+/* ------------------------------------------------------------------ */
+/* NtQueryTimer                                                         */
+/* ------------------------------------------------------------------ */
+TEST(query_timer_state_and_remaining) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, NotificationTimer), STATUS_SUCCESS);
+    struct test_timer_basic_info info;
+    ULONG ret = 0;
+    /* Unarmed: not signalled, nothing remaining. */
+    ASSERT_STATUS(t_query_timer(h, 0, &info, sizeof(info), &ret), STATUS_SUCCESS);
+    ASSERT(ret == sizeof(info));
+    ASSERT(info.TimerState == 0);
+    ASSERT(info.RemainingTime.QuadPart == 0);
+    /* Armed for 300 ms: still pending, some time remaining, at most the full interval. */
+    LARGE_INTEGER due = rel100(300);
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, 0, NULL), STATUS_SUCCESS);
+    ASSERT_STATUS(t_query_timer(h, 0, &info, sizeof(info), &ret), STATUS_SUCCESS);
+    ASSERT(info.TimerState == 0);
+    ASSERT(info.RemainingTime.QuadPart > 0);
+    ASSERT(info.RemainingTime.QuadPart <= 300LL * 10000LL);
+    /* After it fires, the state is signalled and nothing remains. */
+    LARGE_INTEGER wait = rel100(3000);
+    ASSERT_STATUS(t_wait_handle(h, &wait), STATUS_WAIT_0);
+    ASSERT_STATUS(t_query_timer(h, 0, &info, sizeof(info), &ret), STATUS_SUCCESS);
+    ASSERT(info.TimerState == 1);
+    ASSERT(info.RemainingTime.QuadPart == 0);
+    PASS();
+}
+
+TEST(query_timer_bad_arguments) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, SynchronizationTimer), STATUS_SUCCESS);
+    struct test_timer_basic_info info;
+    ULONG ret = 0;
+    ASSERT_STATUS(t_query_timer(h, 1, &info, sizeof(info), &ret), STATUS_INVALID_INFO_CLASS);
+    ASSERT_STATUS(t_query_timer(h, 0, &info, 8, &ret), STATUS_INFO_LENGTH_MISMATCH);
+    ASSERT(ret == sizeof(info));
+    ASSERT_STATUS(t_query_timer(NULL, 0, &info, sizeof(info), &ret), STATUS_INVALID_HANDLE);
+    PASS();
+}
+
 int main(void) {
     printf("sync extra tests starting\n");
     ObInitObjectManager();
@@ -267,6 +318,8 @@ int main(void) {
     RUN(set_timer_wrong_type);
     RUN(cancel_timer_before_fire);
     RUN(cancel_timer_reports_signalled);
+    RUN(query_timer_state_and_remaining);
+    RUN(query_timer_bad_arguments);
     printf("sync extra tests: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) return 1;
     ObCleanupObjectManager();

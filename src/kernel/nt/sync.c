@@ -939,12 +939,20 @@ static void *timer_thread_func(void *arg) {
     }
 }
 
+/* Absolute NT expiry (100 ns since 1601) for a due time; negative is relative. */
+static int64_t timer_expiry_100ns(const LARGE_INTEGER *due) {
+    if (due->QuadPart >= 0) return due->QuadPart;
+    struct timespec now;
+    now_realtime(&now);
+    return timespec_to_100ns(&now) + 116444736000000000LL - due->QuadPart;
+}
 NTSTATUS nt_set_timer(struct nt_timer *timer, const LARGE_INTEGER *due_time, LONG period_ms, void (*apc_routine)(void*), void *apc_ctx) {
     if (!timer || !due_time) return STATUS_INVALID_PARAMETER;
     BOOLEAN dummy;
     nt_cancel_timer(timer, &dummy);
     pthread_mutex_lock(&timer->timer_lock);
     timer->due_time = *due_time;
+    timer->expiry_100ns = timer_expiry_100ns(due_time);
     timer->period_ms = period_ms;
     timer->apc_routine = apc_routine;
     timer->apc_ctx = apc_ctx;
@@ -1679,6 +1687,15 @@ static void timer_callback(struct timer_list *tl)
         spin_unlock_irqrestore(&t->timer_lock, flags);
     }
 }
+/* Absolute NT expiry (100 ns since 1601) for a due time; negative is relative. */
+static int64_t timer_expiry_100ns(const LARGE_INTEGER *due)
+{
+    struct timespec64 ts;
+    if (due->QuadPart >= 0) return due->QuadPart;
+    ktime_get_real_ts64(&ts);
+    return (int64_t)ts.tv_sec * 10000000LL + ts.tv_nsec / 100 + 116444736000000000LL - due->QuadPart;
+}
+
 NTSTATUS nt_set_timer(struct nt_timer *timer, const LARGE_INTEGER *due_time, LONG period_ms,
                       void (*apc_routine)(void*), void *apc_ctx)
 {
@@ -1688,6 +1705,7 @@ NTSTATUS nt_set_timer(struct nt_timer *timer, const LARGE_INTEGER *due_time, LON
     unsigned long flags;
     spin_lock_irqsave(&timer->timer_lock, flags);
     timer->due_time = *due_time;
+    timer->expiry_100ns = timer_expiry_100ns(due_time);
     timer->period_ms = period_ms;
     timer->apc_routine = apc_routine;
     timer->apc_ctx = apc_ctx;
@@ -2312,6 +2330,7 @@ static void timer_object_init(struct nt_timer *t, bool manual)
     t->active = false;
     t->cancel_requested = false;
     t->period_ms = 0;
+    t->expiry_100ns = 0;
     t->apc_routine = NULL;
     t->apc_ctx = NULL;
     t->apc_thread = NULL;
@@ -2543,6 +2562,91 @@ NTSTATUS nt_svc_NtCancelTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PT
         if (!access_ok(CurrentState, sizeof(BOOLEAN)) || copy_to_user(CurrentState, &cur, sizeof(cur)))
             st = STATUS_ACCESS_VIOLATION;
     }
+    ObDereferenceObject(hdr);
+    return st;
+}
+
+/* Current time in NT units (100 ns since 1601-01-01). */
+static int64_t timer_now_100ns(void)
+{
+#ifndef __KERNEL__
+    struct timespec now;
+    now_realtime(&now);
+    return timespec_to_100ns(&now) + 116444736000000000LL;
+#else
+    struct timespec64 ts;
+    ktime_get_real_ts64(&ts);
+    return (int64_t)ts.tv_sec * 10000000LL + ts.tv_nsec / 100 + 116444736000000000LL;
+#endif
+}
+
+/* Read the fields NtQueryTimer reports, each under its own lock. */
+static void timer_snapshot(struct nt_timer *t, bool *active, int64_t *expiry, bool *signalled)
+{
+#ifndef __KERNEL__
+    pthread_mutex_lock(&t->timer_lock);
+    *active = t->active;
+    *expiry = t->expiry_100ns;
+    pthread_mutex_unlock(&t->timer_lock);
+    pthread_mutex_lock(&t->header.lock);
+    *signalled = t->header.signal_state != 0;
+    pthread_mutex_unlock(&t->header.lock);
+#else
+    unsigned long flags;
+    spin_lock_irqsave(&t->timer_lock, flags);
+    *active = t->active;
+    *expiry = t->expiry_100ns;
+    spin_unlock_irqrestore(&t->timer_lock, flags);
+    spin_lock_irqsave(&t->header.lock, flags);
+    *signalled = t->header.signal_state != 0;
+    spin_unlock_irqrestore(&t->header.lock, flags);
+#endif
+}
+
+/* TIMER_BASIC_INFORMATION, the only class NtQueryTimer supports. */
+struct sync_timer_basic_info {
+    LARGE_INTEGER RemainingTime;
+    BOOLEAN       TimerState;
+};
+
+NTSTATUS nt_svc_NtQueryTimer(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, ULONG_PTR a3,
+                             ULONG_PTR a4, ULONG_PTR a5, ULONG_PTR a6, ULONG_PTR a7,
+                             ULONG_PTR a8, ULONG_PTR a9, ULONG_PTR a10, ULONG_PTR a11)
+{
+    HANDLE TimerHandle = (HANDLE)a0;
+    ULONG TimerInformationClass = (ULONG)a1;
+    PVOID TimerInformation = (PVOID)a2;
+    ULONG TimerInformationLength = (ULONG)a3;
+    PULONG ReturnLength = (PULONG)a4;
+    (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+    if (TimerInformationClass != 0) return STATUS_INVALID_INFO_CLASS;
+    const ULONG needed = sizeof(struct sync_timer_basic_info);
+    if (ReturnLength) {
+        if (!access_ok(ReturnLength, sizeof(ULONG))) return STATUS_ACCESS_VIOLATION;
+        ULONG n = needed;
+        if (copy_to_user(ReturnLength, &n, sizeof(n))) return STATUS_ACCESS_VIOLATION;
+    }
+    if (TimerInformationLength != needed) return STATUS_INFO_LENGTH_MISMATCH;
+    if (!TimerInformation || !access_ok(TimerInformation, needed)) return STATUS_ACCESS_VIOLATION;
+    struct nt_eprocess *proc = SYNC_CURRENT_PROCESS();
+    if (!proc) return STATUS_INVALID_PARAMETER;
+    struct nt_timer *t = NULL;
+    struct nt_object_header *hdr = NULL;
+    NTSTATUS st = timer_ref(proc, TimerHandle, &t, &hdr);
+    if (!NT_SUCCESS(st)) return st;
+    bool active = false, signalled = false;
+    int64_t expiry = 0;
+    timer_snapshot(t, &active, &expiry, &signalled);
+    struct sync_timer_basic_info info;
+    int64_t remaining = 0;
+    if (active) {
+        int64_t now = timer_now_100ns();
+        if (expiry > now) remaining = expiry - now;
+    }
+    info.RemainingTime.QuadPart = remaining;
+    info.TimerState = signalled ? 1 : 0;
+    st = STATUS_SUCCESS;
+    if (copy_to_user(TimerInformation, &info, needed)) st = STATUS_ACCESS_VIOLATION;
     ObDereferenceObject(hdr);
     return st;
 }
