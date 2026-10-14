@@ -1,0 +1,26 @@
+LIBRARY gdi32
+EXPORTS
+    DllMain
+    _DllMainCRTStartup
+    DllMainCRTStartup
+    CreateCompatibleDC
+    DeleteDC
+    CreateDIBSection
+    CreateSolidBrush
+    CreatePen
+    SelectObject
+    DeleteObject
+    GetObjectType
+    GetStockObject
+    BitBlt
+    StretchBlt
+    SetPixel
+    GetPixel
+    TextOutW
+    GetTextExtentPoint32W
+    SetTextColor
+    GetTextColor
+    SetBkColor
+    GetBkColor
+    SetBkMode
+    GetDeviceCaps

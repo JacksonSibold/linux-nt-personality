@@ -27,6 +27,11 @@
 #   test_k32_sys_pure     thread and process priority, handle flags, PE binary type (k32_sys_pure.h)
 #   test_k32_str_pure     UTF-8 and Windows-1252 conversions, buffer sizes, default character (k32_str_pure.h)
 #   test_k32_env_pure     environment block length, lookup, set/delete build, %NAME% expansion (k32_env_pure.h)
+#   test_w32k_window      win32k model: classes, window lifecycle, properties, create/destroy message order
+#   test_w32k_msg         win32k model: queues, post/send/get/peek order, timers, focus, capture, hooks
+#   test_w32k_input       win32k model: keyboard and mouse routing, async state, evdev decoding
+#   test_w32k_sys         win32k model: clipboard, metrics, monitors, display settings, stations, cursors
+#   test_w32k_gdi         win32k model: DC, surfaces, blits, stock and selectable objects, arena
 #
 # SANITIZE=auto (default) enables -fsanitize=address,undefined only when a
 # probe program both links and runs with it. The MSYS2 UCRT64 gcc on the
@@ -85,13 +90,14 @@ SAN_FLAGS :=
 $(info ntdll-host: sanitizers unavailable, building without them)
 endif
 
-CPPFLAGS := -I$(SRC) -I$(LOADER)
+W32K     := ../../src/ntdll/win32k
+CPPFLAGS := -I$(SRC) -I$(LOADER) -I$(W32K)
 # _GNU_SOURCE: except.c and the headers it shares with the tests need siginfo_t,
 # sigaction and ucontext REG_* on glibc. Under -std=c11 they are hidden unless it is
 # defined before the first system header, which minitest.h's stdio.h already is.
 CFLAGS   := -std=c11 -g $(OPT_LEVEL) -Wall -Wextra -Werror -D_GNU_SOURCE $(COV_FLAGS) $(SAN_FLAGS)
 
-TESTS    := test_ntstatus_to_dos test_advapi_pure test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure test_ldr_mapped_pure test_ldr_sched test_k32_module_pure test_k32_io_pure test_k32_file_pure test_k32_sync_pure test_k32_mm_pure test_k32_thread_pure test_k32_find_pure test_k32_sys_pure test_k32_str_pure test_k32_env_pure
+TESTS    := test_ntstatus_to_dos test_advapi_pure test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure test_ldr_mapped_pure test_ldr_sched test_k32_module_pure test_k32_io_pure test_k32_file_pure test_k32_sync_pure test_k32_mm_pure test_k32_thread_pure test_k32_find_pure test_k32_sys_pure test_k32_str_pure test_k32_env_pure test_w32k_window test_w32k_msg test_w32k_input test_w32k_sys test_w32k_gdi
 TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 
 # test_pe_bounds is build-only on this host: Windows Application Control blocks
@@ -101,7 +107,7 @@ TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 RUN_TESTS := $(filter-out test_pe_bounds,$(TESTS))
 RUN_BINS  := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(RUN_TESTS)))
 
-.PHONY: all test test-pe-bounds build clean print-run-bins
+.PHONY: all test test-pe-bounds build clean print-run-bins w32k-abi
 
 all: build test
 
@@ -110,6 +116,13 @@ build: $(TEST_BINS)
 test: $(RUN_BINS)
 	@for t in $(RUN_BINS); do ./$$t || exit 1; done
 	@echo "ntdll-host: all tests passed (test_pe_bounds build-only on this host)"
+
+# Compile-time ABI check of the win32k shims against the MinGW headers (w32k_abi.h). Build-only:
+# the checked file is never run (Windows Application Control, MAIN-1).
+MINGW_CC ?= x86_64-w64-mingw32-gcc
+w32k-abi:
+	$(MINGW_CC) -std=c11 -fsyntax-only -Wall -Wextra -I$(SRC) -I$(W32K) check_w32k_abi.c
+	@echo "w32k-abi: layouts match the MinGW headers"
 
 test-pe-bounds: $(OUT)/test_pe_bounds$(EXE_SUFFIX)
 	./$(OUT)/test_pe_bounds$(EXE_SUFFIX)
@@ -219,6 +232,15 @@ $(OUT)/test_runtime$(EXE_SUFFIX): $(OUT)/ntdll_runtime.o $(OUT)/test_runtime.o
 # -Wno-error=attributes: ntdll_runtime.c declares "int errno" and "_errno", which
 # clash with the dllimport attribute on MinGW's _errno (see docs/review/ntdll.md).
 $(OUT)/ntdll_runtime.o: EXTRA_CFLAGS := -fno-builtin -fno-tree-loop-distribute-patterns -Wno-error=attributes
+
+# win32k model (src/ntdll/win32k): one object per source, shared by the w32k tests.
+W32K_SRCS := w32k_core.c w32k_msg.c w32k_input.c w32k_sys.c w32k_gdi.c
+W32K_OBJS := $(addprefix $(OUT)/,$(W32K_SRCS:.c=.o))
+$(OUT)/w32k_%.o: $(W32K)/w32k_%.c $(W32K)/w32k.h $(W32K)/w32k_int.h $(W32K)/w32k_evdev.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(OUT)/test_w32k_%$(EXE_SUFFIX): test_w32k_%.c minitest.h $(W32K_OBJS) $(W32K)/w32k.h $(W32K)/w32k_evdev.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< $(W32K_OBJS) -o $@ $(LDFLAGS)
 
 $(OUT)/%.o: $(SRC)/%.c | $(OUT)
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(CPPFLAGS) -c $< -o $@
