@@ -22,6 +22,7 @@
 #include "image_plan.h"
 #include "image_reloc.h"
 #else
+#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
@@ -1082,10 +1083,35 @@ void ntmm_destroy(struct nt_mm *mm) {
 #endif
 }
 
-void ntmm_reset(void) {
-    ntmm_destroy(&g_nt_mm);
+#ifdef __KERNEL__
+/* The global table is initialised once, at boot, so a first call on two CPUs
+ * cannot both run ntmm_init on a live address space. */
+static int __init ntmm_kernel_init(void) {
     ntmm_init(&g_nt_mm);
     g_nt_mm_initialized = 1;
+    return 0;
+}
+core_initcall(ntmm_kernel_init);
+#else
+static pthread_once_t ntmm_global_once = PTHREAD_ONCE_INIT;
+
+static void ntmm_global_init_once(void) {
+    ntmm_init(&g_nt_mm);
+    g_nt_mm_initialized = 1;
+}
+#endif
+
+/* Makes sure the global table exists. Kernel: a no-op, core_initcall did it. */
+static void ntmm_global_ensure(void) {
+#ifndef __KERNEL__
+    pthread_once(&ntmm_global_once, ntmm_global_init_once);
+#endif
+}
+
+void ntmm_reset(void) {
+    ntmm_global_ensure();
+    ntmm_destroy(&g_nt_mm);
+    ntmm_init(&g_nt_mm);
 }
 
 int ntmm_check_invariants(struct nt_mm *mm) {
@@ -1186,7 +1212,7 @@ static void ntmm_host_decommit(struct nt_mm *mm, ULONG_PTR base, SIZE_T size) {
 }
 
 static NTSTATUS ntmm_global_space(struct ntmm_space_ref *ref) {
-    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
+    ntmm_global_ensure();
     ref->mm = &g_nt_mm;
     return STATUS_SUCCESS;
 }
@@ -3162,7 +3188,7 @@ NTSTATUS ntmm_add_region(ULONG_PTR base, SIZE_T size, ULONG protect, ULONG type,
     struct nt_mm *mm = &g_nt_mm;
     ULONG_PTR end;
     if (!base || !size) return STATUS_INVALID_PARAMETER;
-    if (!g_nt_mm_initialized) { ntmm_init(mm); g_nt_mm_initialized = 1; }
+    ntmm_global_ensure();
     base = ntmm_round_down(base, NTMM_PAGE_SIZE);
     size = ntmm_round_up(size, NTMM_PAGE_SIZE);
     end = base + size;
