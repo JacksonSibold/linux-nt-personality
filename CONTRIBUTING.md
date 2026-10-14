@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for looking at ntpers. It is an experimental research prototype, so
+Thanks for looking at linux-nt-personality (ntpers). It is an experimental research prototype with two goals, stated in [docs/GOAL.md](docs/GOAL.md), so
 please read the [README](README.md) first for its status and limits.
 
 ## Before you open a change

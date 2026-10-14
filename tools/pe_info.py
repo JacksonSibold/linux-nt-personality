@@ -170,6 +170,7 @@ def parse_pe(data):
         "size_of_image": size_of_image,
         "dll_flags": dll_flags,
         "sections": sections,
+        "data_dirs": dirs,
         "imports": None,
         "import_note": None,
     }

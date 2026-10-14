@@ -396,3 +396,38 @@ python3 tools/vm_initrd_pack.py --base BASE.cpio.gz --out OUT.cpio.gz \
 Exit status: `0` written, `1` size cap or missing source, `2` usage or a bad
 archive. The dry run that used it is recorded in
 [docs/vm/TRANSPORTS.md](../docs/vm/TRANSPORTS.md).
+
+## import_gap.py
+
+Measures the gap between the imports of PE files and what the personality
+provides. It reads import tables as bytes: the import directory and the
+delay-load directory, for PE32 and PE32+. Nothing is run or loaded, and nothing
+is downloaded. The inputs are the paths the owner gives.
+
+- User-mode imports are checked against the export tables in `src/ntdll/*.def`.
+  An `Nt*` or `Zw*` export is a gap when `docs/status/SERVICES.md` does not
+  classify that service IMPLEMENTED in every area.
+- Kernel-mode imports (`ntoskrnl`, `hal`, and the other driver modules in the
+  `.sys` files given) are checked against the names that
+  `--write-ntoskrnl-surface` lists in `docs/status/NTOSKRNL-SURFACE.md`.
+- A DLL that is not provided and is among the inputs is `bundled`, not a gap.
+- Functions are grouped into categories: graphics, audio, input, window, shell,
+  networking, com, crypto, core, anti-cheat/driver and other.
+
+```
+python3 tools/import_gap.py "<local install directory>"      # writes the two reports
+python3 tools/import_gap.py FILE.exe --no-write               # summary only
+python3 tools/import_gap.py --list paths.txt --out-md X.md --out-json X.json
+python3 tools/import_gap.py --write-ntoskrnl-surface          # regenerate the kernel surface
+```
+
+Default outputs: `docs/status/GAME-IMPORT-GAP.md` and `docs/status/GAME-IMPORT-GAP.json`.
+The report includes import names and input hashes from the files given, so the
+owner decides whether a generated report is committed. The kernel surface is a
+repository document and is committed.
+
+Options: `--root` (repository root), `--max-md-functions` (functions listed per
+DLL in the Markdown), `--max-size-mb` (inputs over this size are skipped; default 1024).
+
+Exit status: `0` report written, `1` no PE file could be read, `2` usage error,
+including a path that does not exist.

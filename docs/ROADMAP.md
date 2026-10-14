@@ -9,6 +9,16 @@ Work is tracked as GitHub issues (#1 to #113 at the time of writing). The
 project board is [ntpers: road to 423/423](https://github.com/users/JacksonSibold/projects/11).
 Milestones are listed below. To pick up work, read [CONTRIBUTING.md](../CONTRIBUTING.md#how-to-pick-an-issue).
 
+## Goals
+
+The end goals are stated in [GOAL.md](GOAL.md). In short: play Rainbow Six Siege
+offline on Linux from the owner's local install, and run the vendor's NVIDIA
+Windows kernel-mode display driver on the personality as the GPU path. Both are
+early stage. Neither is reached, and none of the tables below measures them
+directly. The import gap tool ([tools/README.md](../tools/README.md)) is the
+measure for the Win32 and driver-import layers. Its output for an owner's local
+install is written on the owner's machine and is not part of this roadmap.
+
 ## Where things stand
 
 | Measure | Value | Source |
@@ -43,27 +53,27 @@ different times, so the review counts may not include later fixes.
   missing `C:\tmp`), and VAD coalescing. Several causes are hypotheses in the
   document.
 - Owner decisions for the P1 security and data-integrity group, OD-01 to OD-11.
-- The harness integrity gate: four goldens hard-code a build that the gate rejects, so dodrun does not run ([#100](https://github.com/JacksonSibold/ntpers-research/issues/100)).
+- The harness integrity gate: four goldens hard-code a build that the gate rejects, so dodrun does not run ([#100](https://github.com/JacksonSibold/linux-nt-personality/issues/100)).
 
 ## Next
 
 In dependency order, from the criteria roadmap ([status/CRITERIA-ROADMAP.md](status/CRITERIA-ROADMAP.md), section 3):
 
-1. M-A: make dodrun run on this host ([#100](https://github.com/JacksonSibold/ntpers-research/issues/100)), decide the golden publication policy ([#98](https://github.com/JacksonSibold/ntpers-research/issues/98)), and name the external inputs: signing key ([#101](https://github.com/JacksonSibold/ntpers-research/issues/101)), time-stamp authority ([#102](https://github.com/JacksonSibold/ntpers-research/issues/102)), audit board ([#103](https://github.com/JacksonSibold/ntpers-research/issues/103)) and the MS-ERREF source ([#104](https://github.com/JacksonSibold/ntpers-research/issues/104)).
-2. M-A: the owner decisions OD-01 to OD-11 (security and data integrity), starting with [OD-01](https://github.com/JacksonSibold/ntpers-research/issues/1).
-3. M-A: NTSTATUS to Win32 table completeness, starting with [#53](https://github.com/JacksonSibold/ntpers-research/issues/53).
-4. M-B: loader and kernel foundations, the largest set ([#107](https://github.com/JacksonSibold/ntpers-research/issues/107)).
+1. M-A: make dodrun run on this host ([#100](https://github.com/JacksonSibold/linux-nt-personality/issues/100)), decide the golden publication policy ([#98](https://github.com/JacksonSibold/linux-nt-personality/issues/98)), and name the external inputs: signing key ([#101](https://github.com/JacksonSibold/linux-nt-personality/issues/101)), time-stamp authority ([#102](https://github.com/JacksonSibold/linux-nt-personality/issues/102)), audit board ([#103](https://github.com/JacksonSibold/linux-nt-personality/issues/103)) and the MS-ERREF source ([#104](https://github.com/JacksonSibold/linux-nt-personality/issues/104)).
+2. M-A: the owner decisions OD-01 to OD-11 (security and data integrity), starting with [OD-01](https://github.com/JacksonSibold/linux-nt-personality/issues/1).
+3. M-A: NTSTATUS to Win32 table completeness, starting with [#53](https://github.com/JacksonSibold/linux-nt-personality/issues/53).
+4. M-B: loader and kernel foundations, the largest set ([#107](https://github.com/JacksonSibold/linux-nt-personality/issues/107)).
 
 ## Milestones
 
 | Milestone | Scope | Tracking issue |
 |---|---|---|
-| [M-A: repository-local work](https://github.com/JacksonSibold/ntpers-research/milestone/1) | 5 criteria; owner decisions | [#106](https://github.com/JacksonSibold/ntpers-research/issues/106) |
-| [M-B: loader and kernel foundations](https://github.com/JacksonSibold/ntpers-research/milestone/2) | 20 criteria | [#107](https://github.com/JacksonSibold/ntpers-research/issues/107) |
-| [M-C: core loader and kernel objects](https://github.com/JacksonSibold/ntpers-research/milestone/3) | 103 criteria | [#108](https://github.com/JacksonSibold/ntpers-research/issues/108) |
-| [M-D: process creation, filesystem, sync, pipes, windowing base](https://github.com/JacksonSibold/ntpers-research/milestone/4) | 145 criteria | [#109](https://github.com/JacksonSibold/ntpers-research/issues/109) |
-| [M-E: services, COM, networking, graphics, input, audio, CLR, WOW64](https://github.com/JacksonSibold/ntpers-research/milestone/5) | 110 criteria | [#110](https://github.com/JacksonSibold/ntpers-research/issues/110) |
-| [M-F: WinRT, hardware, boot and installer chain](https://github.com/JacksonSibold/ntpers-research/milestone/6) | 21 criteria | [#111](https://github.com/JacksonSibold/ntpers-research/issues/111) |
+| [M-A: repository-local work](https://github.com/JacksonSibold/linux-nt-personality/milestone/1) | 5 criteria; owner decisions | [#106](https://github.com/JacksonSibold/linux-nt-personality/issues/106) |
+| [M-B: loader and kernel foundations](https://github.com/JacksonSibold/linux-nt-personality/milestone/2) | 20 criteria | [#107](https://github.com/JacksonSibold/linux-nt-personality/issues/107) |
+| [M-C: core loader and kernel objects](https://github.com/JacksonSibold/linux-nt-personality/milestone/3) | 103 criteria | [#108](https://github.com/JacksonSibold/linux-nt-personality/issues/108) |
+| [M-D: process creation, filesystem, sync, pipes, windowing base](https://github.com/JacksonSibold/linux-nt-personality/milestone/4) | 145 criteria | [#109](https://github.com/JacksonSibold/linux-nt-personality/issues/109) |
+| [M-E: services, COM, networking, graphics, input, audio, CLR, WOW64](https://github.com/JacksonSibold/linux-nt-personality/milestone/5) | 110 criteria | [#110](https://github.com/JacksonSibold/linux-nt-personality/issues/110) |
+| [M-F: WinRT, hardware, boot and installer chain](https://github.com/JacksonSibold/linux-nt-personality/milestone/6) | 21 criteria | [#111](https://github.com/JacksonSibold/linux-nt-personality/issues/111) |
 
 The release rungs v0.5.0 (25 criteria passing), v0.6.0 (50), v0.7.0 (100),
 v0.8.0 (200), v0.9.0 (300) and v1.0.0 (423 of 423) are milestones 7 to 12.
@@ -75,10 +85,10 @@ are not changed.
 
 ## Good first issues
 
-- [#54](https://github.com/JacksonSibold/ntpers-research/issues/54): `snprintf` return value.
-- [#99](https://github.com/JacksonSibold/ntpers-research/issues/99): reconcile the golden status of `probe_sharemode_direct`.
-- [#112](https://github.com/JacksonSibold/ntpers-research/issues/112): the kernel-nt summary table.
-- [#113](https://github.com/JacksonSibold/ntpers-research/issues/113): the decision-record count in the review index.
+- [#54](https://github.com/JacksonSibold/linux-nt-personality/issues/54): `snprintf` return value.
+- [#99](https://github.com/JacksonSibold/linux-nt-personality/issues/99): reconcile the golden status of `probe_sharemode_direct`.
+- [#112](https://github.com/JacksonSibold/linux-nt-personality/issues/112): the kernel-nt summary table.
+- [#113](https://github.com/JacksonSibold/linux-nt-personality/issues/113): the decision-record count in the review index.
 
 Each one names its source file, its acceptance criteria and the command that
 verifies it.
