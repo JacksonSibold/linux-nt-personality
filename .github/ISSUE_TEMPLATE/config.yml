@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Roadmap and milestones
+    url: https://github.com/JacksonSibold/ntpers-research/blob/main/docs/ROADMAP.md
+    about: What is done, in progress and next, with links to the issues and milestones.
+  - name: Contributing guide
+    url: https://github.com/JacksonSibold/ntpers-research/blob/main/CONTRIBUTING.md
+    about: How to pick an issue, run the tests and record a criterion result.

@@ -8,8 +8,8 @@
 param(
     [string]$LinuxEnv = 'C:\Users\Jackson\repos\linux-env',
     [switch]$Shell,
-    [int]$Mem = 4096,
-    [int]$Cpus = 4,
+    [int]$Mem = 24576,
+    [int]$Cpus = 24,
     [int]$SshPort = 2222,
     [int]$MonPort = 4444,
     [int]$SerialPort = 5555
@@ -47,7 +47,7 @@ if (-not (Test-Path $disk)) {
 $cmdline = if ($Shell) { 'console=ttyS0,115200 rw ntpers.shell=bash' } else { 'console=ttyS0,115200 rw' }
 $argString = @(
     '-name ntpers-guest',
-    '-accel tcg',
+    '-accel tcg,thread=multi',
     '-machine q35',
     '-cpu max',
     "-m $Mem",

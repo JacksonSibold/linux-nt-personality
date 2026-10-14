@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a defect in the personality, the loader, ntdll, the harness or the docs.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. ntpers is an experimental research prototype. Please keep the report to the repository: do not paste machine-specific paths, tokens or personal data.
+  - type: input
+    id: location
+    attributes:
+      label: File and line
+      description: Repository path and line, for example src/kernel/nt/sync.c:123 (relative to the repository root).
+      placeholder: "src/kernel/nt/sync.c:123"
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What is wrong
+      description: One or two sentences. Quote the code or the status if it helps.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behaviour
+      description: Name the Windows behaviour if you know it, and say where the reference came from (for example a golden file or an MS-ERREF entry).
+  - type: dropdown
+    id: how-checked
+    attributes:
+      label: How was this checked?
+      options:
+        - Read only (static review, no build or run)
+        - Host unit or C test (name the test)
+        - Ran in the personality kernel or the Linux guest (say which)
+        - Other (describe)
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps or command to reproduce
+      description: Relative paths only. Prefer a command that runs from the repository root.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the existing issues and did not find a duplicate.
+          required: true
+        - label: The report uses relative repository paths and no secrets or personal data.
+          required: true

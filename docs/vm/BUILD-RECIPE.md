@@ -189,42 +189,70 @@ these, and it also checks `nt_thread` and `nt_banner_initcall`.
 `kbuild.sh` and `rebuild_kdir.sh` copy it into `$KDIR/.config`. Instead, run:
 
 ```sh
-KDIR=~/ntpers/linux-6.18 bash vm/make-kernel-config.sh
+KDIR=~/kfast/linux-src bash vm/make-kernel-config.sh          # PROFILE=min (default)
+PROFILE=full KDIR=~/kfast/linux-src bash vm/make-kernel-config.sh
+bash vm/make-kernel-config.sh --check ~/kfast/linux-src/.config   # check only, no tree needed
 ```
 
-It starts from `make ARCH=x86_64 tinyconfig` (`BASE` overrides the target),
-forces 64-bit (`--disable X86_32 --enable 64BIT`, because tinyconfig on x86
-comes out 32-bit and X86_64 gates NT_PERSONALITY and BINFMT_PE), and enables
-these options with `scripts/config --enable`. `scripts/config` is a bash script
-and is run with `bash`:
+Two profiles, chosen with `PROFILE` (default `min`):
 
-| Option | Reason (from the repository) |
-|---|---|
-| NT_PERSONALITY, BINFMT_PE | the NT ABI and PE loader (`kbuild.sh` required list) |
-| VIRTIO, VIRTIO_PCI, VIRTIO_BLK | QEMU devices used by `runvm.sh` |
-| NET_9P, NET_9P_VIRTIO, 9P_FS | the `share` mount in `init.c` |
-| DEVTMPFS, DEVTMPFS_MOUNT | `/dev` mounted by `init.c` |
-| SERIAL_8250, SERIAL_8250_CONSOLE | `console=ttyS0` in `runvm.sh` |
-| EARLY_PRINTK | `earlyprintk=serial,ttyS0` in `runvm.sh` (not in `kbuild.sh`; G19) |
-| BLK_DEV_INITRD, RD_GZIP | initramfs is a gzip cpio (`mkinitramfs.sh` uses `gzip -9`; RD_GZIP is not in `kbuild.sh`) |
-| BINFMT_ELF | busybox and `init` are static ELF |
-| PCI | prerequisite of VIRTIO_PCI |
-| TMPFS, PROC_FS, SYSFS | mounted by `init.c` |
-| MAGIC_SYSRQ | `init.c` powers off through `/proc/sysrq-trigger` |
-| SECCOMP, AUDIT | the seccomp and audit ABI that patch 0002 is about |
-| DEBUG_FS, DYNAMIC_DEBUG | `/sys/kernel/debug` used by `init.c` and guest tests |
+- `PROFILE=min` is the profile for the host-boot path: `-kernel` with a cpio
+  initramfs, the serial console, no network. M0 and the console steps S1-S4 run
+  on it (`tools/linux-env/boot-m0-host.ps1`, `tools/linux-env/step-initramfs.sh`).
+- `PROFILE=full` is the earlier configuration. It adds the virtio transport and the
+  9p share that `vm/runvm.sh` mounts, which needs NET and BLOCK.
 
-After `make olddefconfig` the script requires every listed symbol to read
-`CONFIG_X=y`, because olddefconfig silently drops options whose dependencies
-are unmet. The config is written to `$KDIR/.config`, and the script takes an
-optional path for a copy.
+The script starts from `make ARCH=x86_64 tinyconfig` (`BASE` overrides the target),
+forces 64-bit (`--disable X86_32 --enable 64BIT`, because tinyconfig on x86 comes
+out 32-bit and X86_64 gates NT_PERSONALITY and BINFMT_PE), disables the profile's
+disable list and enables its required list with `scripts/config` (a bash script,
+run with `bash`), then runs `olddefconfig` and checks the result. olddefconfig
+fills every unset symbol with its default, so a default-y subsystem (BLOCK, BPF,
+VT) comes back unless it is set to "is not set" first. The check requires every
+required symbol to read `=y` and fails on any forbidden symbol that is `=y` or
+`=m`, so a `select` that turns a disabled option back on is caught.
+`--check [file]` runs the same check on an existing `.config` (default
+`$KDIR/.config`); `tests/unit/test_make_kernel_config.py` covers it.
 
-`tinyconfig` is the base. It lacks NET, BLOCK, PRINTK, TTY, SHMEM, VIRTIO_MENU,
-PCI and 9P; the script enables the ones the required list needs and lets
-`olddefconfig` resolve the rest, then fails if any required symbol is not `=y`
-(decision G19, closed in commit efa2ae7). Options with no
-prompt, such as VIRTIO, are selected by their drivers and are not enabled
-directly.
+### 6a. Profile contents
+
+| Profile | Required | Forbidden (must not be `=y` or `=m`) |
+|---|---|---|
+| min | 64BIT, PRINTK, TTY, SERIAL_8250, SERIAL_8250_CONSOLE, EARLY_PRINTK, BLK_DEV_INITRD, RD_GZIP, BINFMT_ELF, BINFMT_SCRIPT, NT_PERSONALITY, BINFMT_PE, SHMEM, TMPFS, PROC_FS, SYSFS, DEVTMPFS, DEVTMPFS_MOUNT, MAGIC_SYSRQ, SECCOMP, DEBUG_FS, DEBUG_INFO_NONE, KERNEL_GZIP, PROCESSOR_SELECT | NET, BLOCK, PCI, VIRTIO, VIRTIO_PCI, VIRTIO_BLK, VIRTIO_MENU, NET_9P, NET_9P_VIRTIO, 9P_FS, BPF, BPF_SYSCALL, MODULES, INET, IPV6, WIRELESS, AUDIT, DYNAMIC_DEBUG, VT, INPUT, SERIO, UNIX98_PTYS, CPU_SUP_HYGON, CPU_SUP_CENTAUR, CPU_SUP_ZHAOXIN, KERNEL_XZ, KERNEL_BZIP2, KERNEL_LZMA, KERNEL_LZO, KERNEL_LZ4, KERNEL_ZSTD, RD_XZ, RD_LZMA, RD_BZIP2, RD_LZO, RD_LZ4, RD_ZSTD; any debug info except DEBUG_INFO_NONE |
+| full | the shared list, plus VIRTIO_MENU, VIRTIO, VIRTIO_PCI, VIRTIO_BLK, PCI, NET, BLOCK, NET_9P, NET_9P_VIRTIO, 9P_FS, AUDIT, DYNAMIC_DEBUG | none |
+
+Facts found while setting the boundary (6.18.56 tree):
+
+- `arch/x86/Kconfig` selects PERF_EVENTS unconditionally, so perf stays on for x86_64.
+- AUDIT depends on NET (`init/Kconfig`). The kpatch audit edits only add uapi constants
+  (`AUDIT_ARCH_NTX86_64`), which build without CONFIG_AUDIT. SECCOMP does not depend on
+  NET, so it stays in the min profile.
+- MICROCODE is `def_bool` on CPU_SUP_INTEL or CPU_SUP_AMD and cannot be turned off alone.
+- The CPU_SUP_* vendor prompts only exist when PROCESSOR_SELECT=y. With it off, a
+  setting of "is not set" is ignored and the vendor stays on. The min profile
+  enables PROCESSOR_SELECT for this reason.
+- KERNEL_XZ=y wins the boot-compression choice unless it is also set to "is not set".
+- The earlier list had NET and BLOCK only as prerequisites of NET_9P and VIRTIO_BLK. No
+  file in `src/kernel/nt`, `arch/x86/nt` or `src/kernel/fs` includes a net or block header
+  (checked with grep).
+- `tinyconfig` lacks NET, BLOCK, PRINTK, TTY, SHMEM, VIRTIO_MENU, PCI and 9P. Options
+  with no prompt, such as VIRTIO, are selected by their drivers and are not enabled
+  directly (decision G19, closed in commit efa2ae7).
+
+### 6b. Measured effect (Debian guest, NT wiring applied, 2026-10-14)
+
+| | full | min |
+|---|---|---|
+| enabled options (`=y` or `=m`) | 611 | 469 |
+| compile steps for `make bzImage` (dry run, unique objects) | 1044 | 608 |
+| compile lines in the build log | not run | 607 |
+| `bzImage` size | 1.9 MB (earlier build, KERNEL-BOOT.md) | 1.1 MB |
+| wall time, `make -j2`, ccache cold | estimate: about 3 h 40 min | 7,720 s (2 h 8 min) |
+
+The full-profile wall time was not measured. At the min build's rate (607 compile
+lines in 7,720 s), 1044 steps take about 13,300 s under the same load. That is an
+estimate. The work order cited about 8,500 compile steps; the dry run of this
+configuration gives 1044 for full and 608 for min, so that figure was not reproduced.
 
 ## 7. Build
 
@@ -247,6 +275,42 @@ Outputs: `arch/x86/boot/bzImage`, `vmlinux`. The completeness check looks for
 
 `kbuild.sh` and `rebuild_kdir.sh` run a full `make -j$(nproc)` that also
 builds modules. Only `bzImage` is needed for the VM.
+
+## 8a. Incremental rebuild after editing NT sources
+
+After the tree is built once, edit only files under `src/kernel/nt/`,
+`src/kernel/fs/binfmt_pe.c`, `src/kernel/fs/kshim.[ch]` or `arch/x86/nt/`, then run:
+
+```sh
+vm/incremental-kernel.sh          # copy the changed NT sources, then the steps below
+vm/incremental-kernel.sh --dry    # list the files and the steps, change nothing
+vm/incremental-kernel.sh --all    # copy every NT source (forces the NT objects to rebuild)
+```
+
+The script compares each NT file's content (CRLF removed, sha256) with the manifest
+in the guest, `~/kfast/nt-sync.manifest`. It copies the files that differ, with tar
+over ssh (the Windows host has no rsync), then runs in the guest:
+
+1. `python3 tools/ntpers_kpatch.py --tree ~/kfast/linux-src`, which copies the
+   sources into `arch/x86/nt` and the other build inputs (idempotent);
+2. `make -j2 ARCH=x86_64 CC="ccache gcc" arch/x86/nt/`, the NT objects only;
+3. `make -j2 ARCH=x86_64 CC="ccache gcc" bzImage`, which relinks `vmlinux` and
+   rebuilds the image.
+
+The manifest is written only when 1 to 3 succeed. The comparison is with the guest's
+last build and not with git, so an edit that is reverted is copied back. A guest with
+no manifest gets every NT source copied (the first run).
+
+Measured on the min profile (2026-10-14; the guest is shared, load average about 4):
+
+| Change | Compiled | Wall time |
+|---|---|---|
+| one NT source edited (`src/kernel/nt/handle.c`), then reverted | `arch/x86/nt/handle.o`, plus three objects that every link rebuilds: `init/version-timestamp.o`, `arch/x86/boot/version.o`, `arch/x86/boot/compressed/misc.o` | 2 min 39 s (each run) |
+| nothing changed | none | 13 s |
+| first run in a guest with no manifest | every NT source: about 40 objects in `arch/x86/nt` | not measured |
+
+Plan on about three minutes for a one-file NT change. The first run in a new guest
+costs about one NT object set plus the link; that was not timed.
 
 ## 8. PE test binaries
 

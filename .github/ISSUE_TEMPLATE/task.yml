@@ -1,0 +1,60 @@
+name: Task (roadmap item)
+description: A small, well-scoped piece of work from the roadmap, with acceptance criteria and a verify command.
+title: "[task] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for work that comes from a repository document. Link the source file (relative path or a permalink to main) so the task can be traced.
+  - type: input
+    id: source
+    attributes:
+      label: Source document
+      description: The repository file the task comes from, with a line or section, for example docs/review/ntdll.md (CRT-2).
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Task
+      description: What to change, in a few sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Concrete, checkable outcomes.
+      placeholder: |
+        - [ ] ...
+    validations:
+      required: true
+  - type: input
+    id: verify
+    attributes:
+      label: Verify command
+      description: The exact command to run from the repository root, for example python -m unittest discover tests/unit
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+    validations:
+      required: true
+  - type: dropdown
+    id: blocked
+    attributes:
+      label: Blocked on the owner?
+      description: Choose yes when the work needs an owner decision recorded in docs/OWNER-DECISIONS.md first.
+      options:
+        - "No"
+        - "Yes"
+    validations:
+      required: true

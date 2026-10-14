@@ -3,6 +3,49 @@
 Kernel: Linux **6.18.56** (newest 6.18.y in kernel.org `sha256sums.asc`), built in the Debian 12 guest
 (`~/ntpers/linux-6.18.56`) with the NT wiring from `tools/ntpers_kpatch.py`. Session date 2026-10-13.
 
+## Min profile (2026-10-14): smaller kernel, same M0 and S1-S4 result
+
+The default `.config` is now `PROFILE=min` (`vm/make-kernel-config.sh`, BUILD-RECIPE 6). It drops the
+networking stack, the block layer, the 9p and virtio transports, BPF, VT and the input stack, the extra
+decompressors and CPU vendors, and modules. Measured in a separate guest tree, `~/kfast/linux-src`, extracted
+from the same `linux-6.18.56.tar.xz` (the other agents' trees were not touched):
+
+| | full | min |
+|---|---|---|
+| enabled options | 611 | 469 |
+| compile steps, `make bzImage` (unique objects, dry run) | 1044 | 608 |
+| wall time, `make -j2`, ccache cold | estimate about 3 h 40 min | 7,720 s (607 compile lines, 2 h 8 min) |
+| `bzImage` | 1.9 MB (earlier) | 1.1 MB |
+
+Boots on host QEMU (`tools/linux-env/boot-m0-host.ps1`, TCG, `-kernel`, the initramfs images from `~/ntpers`,
+`step-initramfs.sh` and `m0-initramfs.sh`), run twice: once after the first build, and again on the image
+produced by the incremental rebuild (BUILD-RECIPE 8a), which is the final state:
+
+| Test | Initramfs | Expected | Result (final image) | Serial line |
+|---|---|---|---|---|
+| M0 | `m0-initramfs.cpio.gz` | 42 | PASS | `M0 exit status: 42 (expected 42)`, `M0 PASS` |
+| S1 | `s1-initramfs.cpio.gz` | 0 | PASS | `hello from NT` |
+| S2 | `s2-initramfs.cpio.gz` | 0 | PASS | `hello from NT via ntdll` |
+| S3 | `s3-initramfs.cpio.gz` | 0 | PASS | `hello from kernel32`, `file payload from S3` |
+| S4 | `s4-initramfs.cpio.gz` | 0 | PASS | `hello from msvcrt 4 printf`, `hello from msvcrt puts` |
+
+The userspace images (PEs, ntdll, kernel32, msvcrt) were not rebuilt; they are the ones that passed S1-S4 on the
+full kernel. Only the kernel changed.
+
+Incremental rebuild (`vm/incremental-kernel.sh`): a one-file edit in `src/kernel/nt/handle.c`, then the revert:
+2 min 39 s each run, one NT object recompiled, and the manifest brought the guest back to the committed source
+(the first version of the script compared with git and missed the revert; fixed before the timed run).
+
+Unit suite (`python3 -m unittest discover tests/unit`, in the guest): 758 tests, 1 failure, 1 skipped (WSL).
+The failure is `test_golden_accepted_builds.ShippedAcceptedListTest.test_shipped_list_validates_and_matches_corpus`.
+The accepted list records the sha256 of the CRLF form of `windows-26200.9457/version.json` and
+`manifest.json` (`822d95...`). The guest copy is LF, because `tools/linux-env/sync-repo.sh` normalises
+line endings, so it fails there. The same test passes on a CRLF copy of the pre-change commit `6582899`.
+This is not caused by the profile change, but the test needs a CRLF checkout to pass.
+
+The completeness gate (`tests/kernel/check_kernel_complete.sh`) was not run on the min image; the open
+threshold question in the section below is unchanged.
+
 ## Summary (the five-line report)
 
 1. Downloaded: yes. `linux-6.18.56.tar.xz`, SHA256 matches the kernel.org checksum file. The PGP signature on that file is **not** verified (see LINUX-ENV.md).
