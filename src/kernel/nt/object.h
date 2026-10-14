@@ -133,6 +133,9 @@ struct nt_object_type {
     const char             *name;
     struct nt_object_type_ops ops;
     ULONG                   pool_tag;
+    /* Generic-to-specific access mapping, as Windows GENERIC_MAPPING. NULL
+     * means the type maps no generic rights, so they pass through unchanged. */
+    const struct _GENERIC_MAPPING *generic_map;
 };
 
 extern struct nt_object_type nt_directory_type;
@@ -141,6 +144,7 @@ extern struct nt_object_type nt_process_type;
 extern struct nt_object_type nt_thread_type;
 extern struct nt_object_type nt_test_type; /* generic test object type */
 extern struct nt_object_type nt_token_type; /* access token object (security.c) */
+extern struct nt_object_type nt_file_type;  /* file object (nt_obj.c) */
 
 /* Token object body: one reference to an ACCESS_TOKEN, released when the     */
 /* object is deleted (see security.c, token_create_primary).                  */

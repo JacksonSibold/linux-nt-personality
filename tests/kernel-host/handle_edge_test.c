@@ -187,9 +187,10 @@ TEST(invalid_values_rejected)
     ASSERT_STATUS(ObCloseHandle(p, alias), STATUS_INVALID_HANDLE);
     ASSERT_STATUS(ObReferenceObjectByHandle(p, alias, NULL, KernelMode, 0, &got, NULL), STATUS_INVALID_HANDLE);
 
-    /* Pseudo-handles are not table entries and cannot be closed. */
-    ASSERT_STATUS(ObCloseHandle(p, NtCurrentProcess()), STATUS_INVALID_HANDLE);
-    ASSERT_STATUS(ObCloseHandle(p, NtCurrentThread()), STATUS_INVALID_HANDLE);
+    /* Pseudo-handles are not table entries: closing one is a no-op that
+     * succeeds (probe_handles golden). */
+    ASSERT_STATUS(ObCloseHandle(p, NtCurrentProcess()), STATUS_SUCCESS);
+    ASSERT_STATUS(ObCloseHandle(p, NtCurrentThread()), STATUS_SUCCESS);
 
     /* None of the failed calls touched the live entry. */
     ASSERT(ObHandleTableCount(p->handle_table) == 1);

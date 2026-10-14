@@ -139,10 +139,16 @@ struct nt_object_type nt_semaphore_type = {
     .pool_tag = 0,
 };
 
+/* File generic mapping, as io.c ntio_map_generic_access. */
+static const GENERIC_MAPPING nt_file_generic_map = {
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_GENERIC_EXECUTE, FILE_ALL_ACCESS,
+};
+
 struct nt_object_type nt_file_type = {
     .name = "File",
     .ops = { .delete_obj = NULL, .close = NULL, },
     .pool_tag = 0,
+    .generic_map = &nt_file_generic_map,
 };
 
 /* Ensure types are registered on first use */
@@ -1426,6 +1432,8 @@ NTSTATUS nt_svc_NtDuplicateObject(unsigned long a0, unsigned long a1, unsigned l
         extern struct nt_file_object *ntio_file_get(struct nt_file_object*);
         struct nt_file_object *f = (struct nt_file_object*)ntio_handle_lookup(SourceHandle, 0);
         if (f) {
+            extern ACCESS_MASK ntio_map_generic_access_ex(ACCESS_MASK);
+            DesiredAccess = ntio_map_generic_access_ex(DesiredAccess);
             ACCESS_MASK new_access = DesiredAccess;
             if (Options & DUPLICATE_SAME_ACCESS) new_access = f->granted_access;
             else {
@@ -1755,7 +1763,8 @@ NTSTATUS nt_svc_NtClose(unsigned long a0, unsigned long a1, unsigned long a2, un
 {
     HANDLE Handle = (HANDLE)a0;
     (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;(void)a6;(void)a7;(void)a8;(void)a9;(void)a10;(void)a11;
-    if (Handle == NtCurrentProcess() || Handle == NtCurrentThread()) return STATUS_INVALID_HANDLE;
+    /* Closing a pseudo handle is a successful no-op (probe_handles golden). */
+    if (Handle == NtCurrentProcess() || Handle == NtCurrentThread()) return STATUS_SUCCESS;
     if (Handle == NULL) return STATUS_INVALID_HANDLE;
     struct nt_eprocess *proc = nt_get_current_eprocess();
     if (!proc) return STATUS_INVALID_PARAMETER;

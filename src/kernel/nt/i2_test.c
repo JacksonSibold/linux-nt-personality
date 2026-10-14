@@ -412,10 +412,62 @@ TEST(handle_table_lifetime) {
     PASS();
 }
 
+NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInformationClass,
+                                        PVOID ProcessInformation, ULONG ProcessInformationLength,
+                                        PULONG ReturnLength);
+/* DuplicateHandle maps a generic right through the object type's GENERIC_MAPPING
+ * before the granted-access check. nt_file_type maps GENERIC_READ to
+ * FILE_GENERIC_READ (0x120089, probe_handles golden). Before the mapping, the
+ * generic bit was never granted and the duplicate failed with ACCESS_DENIED. */
+TEST(dup_generic_maps_file_type) {
+    reset_ob();
+    struct nt_eprocess *procA=make_proc(2300,"dupgen");
+    OBJECT_ATTRIBUTES oa; memset(&oa,0,sizeof(oa)); oa.Length=sizeof(oa);
+    struct nt_object_header *obj=NULL; void *body=NULL;
+    ASSERT_STATUS(ObCreateObject(&nt_file_type,&oa,16,&obj,&body), STATUS_SUCCESS);
+    HANDLE h=NULL;
+    ASSERT_STATUS(ObCreateHandle(procA, obj, 0x00120089, 0, &h), STATUS_SUCCESS);
+    HANDLE hd=NULL;
+    ASSERT_STATUS(nt_svc_NtDuplicateObject(NtCurrentProcess(), h, NtCurrentProcess(), &hd, 0x80000000UL, 0, 0), STATUS_SUCCESS);
+    struct nt_object_header *hdr=NULL; ACCESS_MASK granted=0;
+    ASSERT_STATUS(ObReferenceObjectByHandle(procA, hd, NULL, UserMode, 0, &hdr, &granted), STATUS_SUCCESS);
+    ASSERT(granted==0x00120089);
+    ObDereferenceObject(hdr);
+    ObCloseHandle(procA, hd);
+    ObCloseHandle(procA, h);
+    ObDereferenceObject(obj);
+    ObDestroyProcessObject(procA);
+    PASS();
+}
+
+/* ProcessHandleCount (class 20) is the live count of the target's handle table:
+ * it rises by one per open handle and falls back on close. */
+TEST(process_handle_count) {
+    reset_ob();
+    struct nt_eprocess *proc=make_proc(2200,"hcount");
+    ULONG before=0, after=0, after_close=0, rl=0;
+    ASSERT_STATUS(nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 20, &before, sizeof(before), &rl), STATUS_SUCCESS);
+    ASSERT(rl==4);
+    UNICODE_STRING us; make_us(&us, "\\BaseNamedObjects\\HCountEvent", wbuf1, sizeof(wbuf1));
+    OBJECT_ATTRIBUTES oa=make_oa(&us,0);
+    HANDLE h;
+    ASSERT_STATUS(nt_svc_NtCreateEvent(&h, 0x03, &oa, NotificationEvent, 0), STATUS_SUCCESS);
+    ASSERT_STATUS(nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 20, &after, sizeof(after), &rl), STATUS_SUCCESS);
+    ASSERT(after==before+1);
+    nt_svc_NtClose(h);
+    ASSERT_STATUS(nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 20, &after_close, sizeof(after_close), &rl), STATUS_SUCCESS);
+    ASSERT(after_close==before);
+    ASSERT_STATUS(nt_svc_NtQueryInformationProcess(NtCurrentProcess(), 20, &after_close, 2, &rl), STATUS_INFO_LENGTH_MISMATCH);
+    ObDestroyProcessObject(proc);
+    PASS();
+}
+
 int main(void) {
     printf("I2 tests starting\n");
     ObInitObjectManager();
     RUN(event_create_query);
+    RUN(dup_generic_maps_file_type);
+    RUN(process_handle_count);
     RUN(mutant_abandon);
     RUN(semaphore_basic);
     RUN(duplicate_access);

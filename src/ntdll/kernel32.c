@@ -307,7 +307,7 @@ HANDLE WINAPI CreateFileW(const WCHAR *name, DWORD access, DWORD share, void *sa
 }
 
 BOOL WINAPI CloseHandle(HANDLE h) {
-    if (!h || h==(HANDLE)(intptr_t)-1) { SetLastError(6); return 0; }
+    if (!h) { SetLastError(6); return 0; }
     NTSTATUS s = NtClose(h);
     if (s==STATUS_SUCCESS) { SetLastError(0); return 1; }
     SetLastErrorFromStatus(s);
@@ -1260,7 +1260,8 @@ BOOL WINAPI DuplicateHandle(HANDLE srcP, HANDLE src, HANDLE dstP, HANDLE *dst, D
     NTSTATUS s = NtDuplicateObject(srcP, src, dstP, &out, access, inh ? 0x2 : 0, opts);
     if (s != STATUS_SUCCESS) { SetLastErrorFromStatus(s); return 0; }
     if (dst) *dst = out;
-    SetLastError(0);
+    /* Success leaves the last error alone, as Windows does (probe_handles golden:
+     * a successful DuplicateHandle keeps the stale 32 from an earlier failure). */
     return 1;
 }
 

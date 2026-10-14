@@ -431,6 +431,50 @@ existing HKLM child on the golden host; the guest registry is empty. No registry
 Checks: `make -C tests/ntdll-host test_msvcrt_policy` 16 of 16; `python -m unittest discover tests/unit` 840 tests OK
 (one skip, WSL); `tests/unit/test_sync_repo_guard.py` covers the `GUEST_DEST` guard in `tools/linux-env/sync-repo.sh`.
 
+## virtualquery and handles: root causes, fixes, measured counts (diff4, 2026-10-15)
+
+Before: the `main` kernel at 4b012b4, NONVM probes, host QEMU (`boot-m0-host.ps1 -Mem 2048 -Initrd probes-nonvm-main.cpio.gz`, `log_buf_len=16M`), `NTPERS_ALL_DONE`, 15 probes. After: the kernel at `main` b942f80 plus this change, the same boot arguments, rebuilt NONVM DLLs and initramfs. Measured counts (matched / golden leaves):
+
+| probe | before (4b012b4) | after (b942f80 + change) | note |
+|---|---|---|---|
+| probe_virtualquery | 128 / 139 (11 S1) | **139 / 139 PASS** | fixed here |
+| probe_handles | 82 / 111 (29) | **99 / 111 (12)** | fixed here, see below |
+| probe_directory | 19 / 67 | 56 / 67 (11) | main's enumeration commits, not this change |
+| probe_path | 51355 / 72523 | 55105 / 72523 | main's path commits, not this change |
+| probe_teb_peb | 81 / 104 | 81 / 104 | no change |
+| probe_fileinfo | 183 / 221 | 183 / 221 | no change |
+| probe_ntstatus | 2191 / 2199 | 2191 / 2199 | no change |
+| probe_section | 128 / 129 | 128 / 129 | vacuous, harness (below) |
+| probe_sharemode | 458857 / 458857 PASS | PASS | no change |
+| probe_registry, probe_namedpipe, probe_peloader, probe_process_thread, probe_sync, probe_exception | unchanged | unchanged | no regression |
+
+Caveat: the before boot is at 4b012b4 and the after boot at b942f80. The probe_directory and probe_path gains and part of the handles gain come from main's commits in between, and this cycle did not run a before boot at b942f80 (one boot per the coordinator). No probe lost a match relative to either baseline.
+
+**probe_virtualquery (11 S1 fixed, now 139/139).** Root cause: `NtQueryVirtualMemory_in` (`src/kernel/nt/mm.c`) reported one VAD at a time. Windows reports the maximal run of adjacent pages with the same AllocationBase, State, Type and Protect (golden: two read-only committed pages are one 8192-byte region; after a decommit three reserved pages are one 12288-byte region). Fix: neighbours with the same attributes are merged (`ntmm_region_same`, bounded by AllocationBase and contiguity), and free regions report PAGE_NOACCESS (golden `free_query`). Three `mm_test.c` cases expected the per-VAD behaviour, with comments citing an older oracle; they now expect the golden rule, and `test_query_coalesce_adjacent_commit` mirrors the probe layout.
+
+**probe_handles (+17 matched, 12 S1/S2 left).** Fixed:
+
+- `GetProcessHandleCount` returned ERROR_CALL_NOT_IMPLEMENTED. `NtQueryInformationProcess(ProcessHandleCount)` now returns the live handle-table count, and kernel32 uses it. The count is still S1 (Windows 63, VM 2), environmental: startup handles.
+- `DuplicateHandle(GENERIC_READ)` on a file was denied. Two paths: the object-manager path (`handle.c`, mapped through `nt_object_type.generic_map`), and the file-handle path in `nt_obj.c` (`nt_svc_NtDuplicateObject`), which checked `DesiredAccess & ~granted` without mapping. The file path now maps through `ntio_map_generic_access_ex` (exported from `io.c`).
+- Closing a pseudo handle: `nt_svc_NtClose` (kernel) returned INVALID_HANDLE before `ObCloseHandle` ran, and kernel32 `CloseHandle(-1)` returned error 6. Both now succeed, as the golden shows (TRUE).
+- `DuplicateHandle` cleared the last error on success. Windows keeps it, so `SetLastError(0)` is removed.
+
+Left, with reasons:
+
+- `close_tests[2].lasterror` (S1, golden 6, VM 0): `CloseHandle` sets 0 on success. Windows keeps the stale last error, as for `DuplicateHandle`. A one-line change, not built in this cycle.
+- `duplicate_handle` length (6 against 7) and `duplicate_handle[3].lasterror`: the golden records a `dup2_granted` entry that the VM run now takes a different shape for. Not diagnosed further in this cycle.
+- `nt_query_object` `PointerCount` (2 against 32769) and the name and `retLen` (host temp path): environmental.
+- `handles[0..3].value` (S2): handle base and Event/Mutex numbering depend on startup handles.
+- `duplicate_handle[4]` CLOSE_SOURCE (S2): Windows reuses the freed slot (dst equals src). The table allocates through a FIFO quarantine (`docs/decisions/0003`), a deliberate design. Not changed. Owner decision.
+
+**probe_directory (11 S1, not fixed this cycle).** Golden (verified in `probe_directory.json`, `query_tests[0..3]`, classes FileDirectoryInformation, FileFullDirectoryInformation, FileBothDirectoryInformation, FileNamesInformation): a NULL buffer and an undersized buffer both return `0xC0000004` (STATUS_INFO_LENGTH_MISMATCH). The VM returns `0xC0000005` for NULL and `0x80000005` (BUFFER_OVERFLOW) for undersized. Eight of the eleven fields. The other three (`test_dir` host path, `win32_find.pattern` path, `win32_find.count` 0 against 7) are environmental or not verified. The fix belongs in the directory enumeration path that `b942f80` rewrote in `io.c`, with a host test, and needs its own build and boot.
+
+**probe_section, vacuous (documented only, `dualrun.py` not changed).** `tests/differential/dualrun.py` line 85 sets `MANDATORY_KEYS["probe_section"] = ["tests"]`. Neither the golden nor the VM output has a `tests` key. The golden has four keys the VM does not emit (`map_file_commit`, `map_real_image`, `vquery_file_mapped`, `vquery_real_image`), and the VM emits no key the golden lacks. So the requirement cannot be met by any kernel change. Looks like the stale-key harness bug PR #120 fixed for probe_sync. Owner decision.
+
+**Test evidence.** Windows host unit-test binaries are blocked by the local Application Control policy. The suite ran on the guest with `make KHOST_OS=linux check` on the rebased tree before the final fix: `EXIT=0`, 25 programs rc=0, `mm_test` 75/75, `i2_test` 11/11. The final fix touches `nt_obj.c`, `io.c` and `kernel32.c`, which compile in the kernel and DLL builds, but have no new host test (the file-handle path is covered only by this probe).
+
+**Not started:** probe_teb_peb (23 S1) and probe_fileinfo (38 S1), as before.
+
 ## Reproduce
 
 Guest (SSH via `tools/linux-env/ssh-guest.sh`, repo synced with `GUEST_DEST=dualrun tools/linux-env/sync-repo.sh`):
