@@ -8,11 +8,13 @@ Severity: High / Medium / Low / Info. "Latent" means the defect is real in the c
 
 ## Summary
 
+Counts of the finding headings as of 2026-10-13.
+
 | Severity | Count |
 |---|---|
-| High | 8 |
-| Medium | 10 |
-| Low | 19 |
+| High | 9 |
+| Medium | 18 |
+| Low | 21 |
 | Info | 1 |
 
 The C-* findings are the exception to the static method above. They were found by the concurrency stress programs in `tests/kernel-host` (`make stress`, branch `haiku/stress`, 2026-10-12, 16 workers, seeds 1 to 3). C-1 was reproduced and fixed. C-2 was not reproduced. The stress run also found no handle-table, sync, or allocation-leak defects.
