@@ -1888,10 +1888,16 @@ NTSTATUS nt_cancel_timer(struct nt_timer *timer, BOOLEAN *current_state)
 
 /* keyed events – global registry */
 static LIST_HEAD(g_keyed_waiters_kernel);
+static LIST_HEAD(g_keyed_releasers_kernel); /* NtReleaseKeyedEvent calls blocked until a waiter takes them */
 static spinlock_t g_keyed_lock_kernel;
 static bool g_keyed_init = false;
 static inline void ensure_keyed_init(void) {
-    if (!g_keyed_init) { spin_lock_init(&g_keyed_lock_kernel); INIT_LIST_HEAD(&g_keyed_waiters_kernel); g_keyed_init = true; }
+    if (!g_keyed_init) {
+        spin_lock_init(&g_keyed_lock_kernel);
+        INIT_LIST_HEAD(&g_keyed_waiters_kernel);
+        INIT_LIST_HEAD(&g_keyed_releasers_kernel);
+        g_keyed_init = true;
+    }
 }
 struct keyed_waiter_k {
     struct list_head entry;
@@ -1900,45 +1906,87 @@ struct keyed_waiter_k {
     struct nt_wait_ctx *ctx;
     struct nt_wait_block blk;
 };
+/* A release that found no waiter. It stays queued until a waiter with the same
+ * key takes it (matched is set under g_keyed_lock_kernel) or its timeout ends. */
+struct keyed_releaser_k {
+    struct list_head entry;
+    struct nt_keyed_event *kev;
+    void *key;
+    struct nt_wait_ctx *ctx;
+    bool matched;
+};
+
+/* Takes a pending APC (always) or alert (only when alertable) off thr and
+ * returns its status, or STATUS_SUCCESS when there is none. */
+static NTSTATUS keyed_take_alert(struct nt_thread *thr, BOOLEAN alertable)
+{
+    NTSTATUS st = STATUS_SUCCESS;
+    unsigned long flags;
+    spin_lock_irqsave(&thr->lock, flags);
+    if (thr->alert_pending) { thr->alert_pending = false; st = STATUS_USER_APC; }
+    else if (thr->alerted && alertable) { thr->alerted = false; st = STATUS_ALERTED; }
+    spin_unlock_irqrestore(&thr->lock, flags);
+    return st;
+}
+
+/* Sleeps on ctx until it is woken or j jiffies pass. */
+static void keyed_sleep(struct nt_wait_ctx *ctx, long j)
+{
+    DEFINE_WAIT(wait);
+    prepare_to_wait(&ctx->wq, &wait, TASK_INTERRUPTIBLE);
+    if (j == MAX_SCHEDULE_TIMEOUT) schedule();
+    else schedule_timeout(j);
+    finish_wait(&ctx->wq, &wait);
+}
+
+static struct nt_wait_ctx *keyed_ctx_alloc(struct nt_thread *thr)
+{
+    struct nt_wait_ctx *ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+    if (!ctx) return NULL;
+    ctx->thread = thr; ctx->woken = false;
+    spin_lock_init(&ctx->lock);
+    init_waitqueue_head(&ctx->wq);
+    atomic_set(&ctx->refcount, 1);
+    return ctx;
+}
+
 NTSTATUS nt_wait_for_keyed_event(struct nt_keyed_event *kev, void *key, BOOLEAN alertable, LARGE_INTEGER *timeout)
 {
     ensure_keyed_init();
     struct nt_thread *thr = nt_current_thread();
     if (!thr || !kev) return STATUS_INVALID_PARAMETER;
-    /* alert/APC fast check */
-    {
-        unsigned long flags; spin_lock_irqsave(&thr->lock, flags);
-        bool apc = thr->alert_pending, al = thr->alerted;
-        spin_unlock_irqrestore(&thr->lock, flags);
-        if (apc) { spin_lock_irqsave(&thr->lock, flags); thr->alert_pending = false; spin_unlock_irqrestore(&thr->lock, flags); return STATUS_USER_APC; }
-        if (al && alertable) { spin_lock_irqsave(&thr->lock, flags); thr->alerted = false; spin_unlock_irqrestore(&thr->lock, flags); return STATUS_ALERTED; }
-    }
+    NTSTATUS al = keyed_take_alert(thr, alertable);
+    if (al != STATUS_SUCCESS) return al;
     bool is_poll = false;
     long j = timeout_to_jiffies(timeout, &is_poll);
     if (is_poll) return STATUS_TIMEOUT;
 
-    struct nt_wait_ctx *ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+    struct nt_wait_ctx *ctx = keyed_ctx_alloc(thr);
     if (!ctx) return STATUS_NO_MEMORY;
-    ctx->thread = thr; ctx->woken = false;
-    spin_lock_init(&ctx->lock);
-    init_waitqueue_head(&ctx->wq);
-    atomic_set(&ctx->refcount, 1);
 
     struct keyed_waiter_k w;
     w.kev = kev; w.key = key; w.ctx = ctx;
     w.blk.ctx = ctx; w.blk.object = &kev->header;
     INIT_LIST_HEAD(&w.entry);
 
+    /* A release already queued for this key is taken here, without blocking,
+     * and its caller is woken. Checking the queue and joining the waiters are
+     * one step under the lock, so a release cannot slip between them. Waking
+     * under the lock keeps the releaser from freeing its context first. */
     unsigned long flags;
+    struct keyed_releaser_k *rel = NULL;
+    struct list_head *rpos;
     spin_lock_irqsave(&g_keyed_lock_kernel, flags);
-    list_add_tail(&w.entry, &g_keyed_waiters_kernel);
+    for (rpos = g_keyed_releasers_kernel.next; rpos != &g_keyed_releasers_kernel; rpos = rpos->next) {
+        struct keyed_releaser_k *r = list_entry(rpos, struct keyed_releaser_k, entry);
+        if (r->kev == kev && r->key == key) { rel = r; list_del(&r->entry); r->matched = true; break; }
+    }
+    if (rel) kernel_wake_ctx(rel->ctx);
+    else list_add_tail(&w.entry, &g_keyed_waiters_kernel);
     spin_unlock_irqrestore(&g_keyed_lock_kernel, flags);
+    if (rel) { kfree(ctx); return STATUS_SUCCESS; }
 
-    DEFINE_WAIT(wait);
-    prepare_to_wait(&ctx->wq, &wait, TASK_INTERRUPTIBLE);
-    if (j == MAX_SCHEDULE_TIMEOUT) schedule();
-    else schedule_timeout(j);
-    finish_wait(&ctx->wq, &wait);
+    keyed_sleep(ctx, j);
 
     bool got;
     spin_lock_irqsave(&ctx->lock, flags);
@@ -1952,31 +2000,69 @@ NTSTATUS nt_wait_for_keyed_event(struct nt_keyed_event *kev, void *key, BOOLEAN 
     if (atomic_dec_and_test(&ctx->refcount)) kfree(ctx);
 
     if (!got) {
-        unsigned long f2; spin_lock_irqsave(&thr->lock, f2);
-        bool apc = thr->alert_pending, al = thr->alerted;
-        if (apc) { thr->alert_pending = false; spin_unlock_irqrestore(&thr->lock, f2); return STATUS_USER_APC; }
-        if (al && alertable) { thr->alerted = false; spin_unlock_irqrestore(&thr->lock, f2); return STATUS_ALERTED; }
-        spin_unlock_irqrestore(&thr->lock, f2);
-        return STATUS_TIMEOUT;
+        al = keyed_take_alert(thr, alertable);
+        return al != STATUS_SUCCESS ? al : STATUS_TIMEOUT;
     }
     return STATUS_SUCCESS;
 }
+/* Release one waiter with this key. As in NT, a release with no waiter
+ * blocks until a waiter takes it, or fails with STATUS_TIMEOUT when the
+ * timeout ends first (zero timeout: at once). */
 NTSTATUS nt_release_keyed_event(struct nt_keyed_event *kev, void *key, BOOLEAN alertable, LARGE_INTEGER *timeout)
 {
-    (void)alertable; (void)timeout;
     ensure_keyed_init();
+    struct nt_thread *thr = nt_current_thread();
     if (!kev) return STATUS_INVALID_PARAMETER;
+    NTSTATUS al;
+    if (thr) {
+        al = keyed_take_alert(thr, alertable);
+        if (al != STATUS_SUCCESS) return al;
+    }
+    bool is_poll = false;
+    long j = timeout_to_jiffies(timeout, &is_poll);
+    if (j < 0) return STATUS_ACCESS_VIOLATION; /* timeout copy failed */
+
+    struct nt_wait_ctx *ctx = NULL;
+    if (!is_poll) {
+        ctx = keyed_ctx_alloc(thr);
+        if (!ctx) return STATUS_NO_MEMORY;
+    }
+    struct keyed_releaser_k r;
+    r.kev = kev; r.key = key; r.ctx = ctx; r.matched = false;
+    INIT_LIST_HEAD(&r.entry);
+
+    /* A waiter that is already blocked takes the release without waiting. It is
+     * woken under the lock, so it cannot free its context first. */
     struct nt_wait_ctx *target = NULL;
     unsigned long flags;
-    spin_lock_irqsave(&g_keyed_lock_kernel, flags);
     struct list_head *pos;
+    spin_lock_irqsave(&g_keyed_lock_kernel, flags);
     for (pos = g_keyed_waiters_kernel.next; pos != &g_keyed_waiters_kernel; pos = pos->next) {
         struct keyed_waiter_k *w = list_entry(pos, struct keyed_waiter_k, entry);
         if (w->kev == kev && w->key == key) { target = w->ctx; list_del(&w->entry); w->entry.next = NULL; break; }
     }
-    spin_unlock_irqrestore(&g_keyed_lock_kernel, flags);
     if (target) kernel_wake_ctx(target);
-    return STATUS_SUCCESS;
+    else if (!is_poll) list_add_tail(&r.entry, &g_keyed_releasers_kernel);
+    spin_unlock_irqrestore(&g_keyed_lock_kernel, flags);
+    if (target) { kfree(ctx); return STATUS_SUCCESS; }
+    if (is_poll) return STATUS_TIMEOUT;
+
+    keyed_sleep(ctx, j);
+
+    /* Decide under the lock: a waiter may have matched us after the sleep
+     * ended. Matching sets r.matched and wakes ctx under this lock, so after
+     * this block nothing refers to ctx. */
+    spin_lock_irqsave(&g_keyed_lock_kernel, flags);
+    bool matched = r.matched;
+    if (!matched) list_del(&r.entry);
+    spin_unlock_irqrestore(&g_keyed_lock_kernel, flags);
+    kfree(ctx);
+    if (matched) return STATUS_SUCCESS;
+    if (thr) {
+        al = keyed_take_alert(thr, alertable);
+        if (al != STATUS_SUCCESS) return al;
+    }
+    return STATUS_TIMEOUT;
 }
 
 /* address waits – kernel version uses wait queue per address */
