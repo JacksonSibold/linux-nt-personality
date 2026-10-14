@@ -17,6 +17,7 @@
 #include "object.h"
 #include "handle.h"
 #include "io.h"
+#include "security.h"
 #include "../../../tests/kernel-host/pe_synth.h"
 #include <limits.h>
 #include <fcntl.h>
@@ -610,6 +611,51 @@ static int test_lock_forget_split_no_memory(void) {
         PVOID rb = base; SIZE_T rs = 0;
         ASSERT(NtFreeVirtualMemory((HANDLE)-1, &rb, &rs, MEM_RELEASE) == STATUS_SUCCESS, "n=%d release", n);
     }
+    return 1;
+}
+
+/* MAP_SYSTEM succeeds when the process token holds SeLockMemoryPrivilege. The
+ * test grants it to the process for the duration of the test. Pages locked as
+ * MAP_SYSTEM are not unlocked as MAP_PROCESS, nor re-locked as MAP_PROCESS. */
+static int test_lock_map_system(void) {
+    PSID user = NULL;
+    LUID_AND_ATTRIBUTES priv;
+    ASSERT(sid_from_string("S-1-5-21-0-0-0-1000", &user) == STATUS_SUCCESS, "sid");
+    priv.Luid.LowPart = SE_LOCK_MEMORY_PRIVILEGE;
+    priv.Luid.HighPart = 0;
+    priv.Attributes = SE_PRIVILEGE_ENABLED;
+    ACCESS_TOKEN *tok = token_create_primary(user, NULL, 0, &priv, 1, NULL, NULL, NULL, NULL, 0);
+    sid_free(user);
+    ASSERT(tok != NULL, "token with privilege");
+    ACCESS_TOKEN *saved = g_mm_proc->primary_token;
+    g_mm_proc->primary_token = tok;
+
+    PVOID base = NULL;
+    SIZE_T size = 2 * 4096;
+    PVOID lb;
+    SIZE_T ls;
+    NTSTATUS st = NtAllocateVirtualMemory((HANDLE)-1, &base, 0, &size, MEM_COMMIT, PAGE_READWRITE);
+    int ok = st == STATUS_SUCCESS;
+    if (ok) {
+        lb = base; ls = size;
+        st = NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 2);
+        ok = st == STATUS_SUCCESS && lb == base && ls == size;
+        if (ok) {
+            lb = base; ls = size;
+            ok = NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_INVALID_PARAMETER;
+            lb = base; ls = size;
+            ok = ok && NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_NOT_LOCKED;
+            lb = base; ls = size;
+            ok = ok && NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 2) == STATUS_SUCCESS;
+            lb = base; ls = size;
+            ok = ok && NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 2) == STATUS_NOT_LOCKED;
+        }
+        PVOID rb = base; SIZE_T rs = 0;
+        NtFreeVirtualMemory((HANDLE)-1, &rb, &rs, MEM_RELEASE);
+    }
+    g_mm_proc->primary_token = saved;
+    token_dereference(tok);
+    ASSERT(ok, "MAP_SYSTEM lock/unlock with the privilege held");
     return 1;
 }
 
@@ -3055,6 +3101,7 @@ int main(void) {
     RUN_TEST(test_alloc_size_wrap);
     RUN_TEST(test_lock_virtual_memory);
     RUN_TEST(test_lock_forget_split_no_memory);
+    RUN_TEST(test_lock_map_system);
     mmf_setup();
     RUN_TEST(test_file_section_shared_write_reaches_file);
     RUN_TEST(test_file_section_cow_does_not_modify_file);
