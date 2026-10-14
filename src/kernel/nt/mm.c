@@ -879,31 +879,35 @@ static int nt_lock_needs_split(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e) {
     return 0;
 }
 
+/* Allocates the node a split of [s, e) will need, or leaves *spare NULL when
+ * no run is split. Call it before any change, so that a failure leaves the
+ * runs and the address space as they were. Caller holds the mm lock. */
+static NTSTATUS nt_lock_reserve(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e, struct nt_lock_range **spare) {
+    *spare = NULL;
+    if (!nt_lock_needs_split(mm, s, e)) return STATUS_SUCCESS;
+    *spare = (struct nt_lock_range *)kzalloc(sizeof(**spare), GFP_KERNEL);
+    return *spare ? STATUS_SUCCESS : STATUS_NO_MEMORY;
+}
+
 /* Removes [s, e) from the runs. No host call: the caller releases the host lock
- * first when that applies. *spare is the node for the right half of a split and
- * is consumed (set to NULL) when used. With no spare, a split drops the whole
- * run; nt_lock_forget accepts that case (see its comment). Caller holds the mm
- * lock. */
+ * first when that applies. *spare, from nt_lock_reserve, is the node for the
+ * right half of a split and is consumed (set to NULL) when used. Caller holds
+ * the mm lock. */
 static void nt_lock_carve(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e, struct nt_lock_range **spare) {
     struct nt_lock_range **pp = &mm->locks;
     while (*pp) {
         struct nt_lock_range *r = *pp;
         if (r->end <= s || r->start >= e) { pp = &r->next; continue; }
         if (r->start < s && r->end > e) {
-            if (*spare) {
-                struct nt_lock_range *right = *spare;
-                *spare = NULL;
-                right->start = e;
-                right->end = r->end;
-                right->map_type = r->map_type;
-                right->next = r->next;
-                r->next = right;
-                r->end = s;
-                pp = &r->next;
-                continue;
-            }
-            *pp = r->next;
-            kfree(r);
+            struct nt_lock_range *right = *spare;
+            *spare = NULL;
+            right->start = e;
+            right->end = r->end;
+            right->map_type = r->map_type;
+            right->next = r->next;
+            r->next = right;
+            r->end = s;
+            pp = &r->next;
             continue;
         }
         if (r->start < s) { r->end = s; pp = &r->next; continue; }
@@ -914,15 +918,10 @@ static void nt_lock_carve(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e, struct nt_
 }
 
 /* Drops the runs in [s, e) once the pages are freed or decommitted. The OS has
- * already released those pages, so the host is not called. If a split needs a
- * node and none can be allocated, the whole containing run is dropped: a page
- * that stays locked then has no record, which is a bookkeeping loss, not a
- * crash. Caller holds the mm lock. */
-static void nt_lock_forget(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e) {
-    struct nt_lock_range *spare = NULL;
-    if (!mm->locks) return;
-    if (nt_lock_needs_split(mm, s, e))
-        spare = (struct nt_lock_range *)kzalloc(sizeof(*spare), GFP_KERNEL);
+ * already released those pages, so the host is not called. spare is from
+ * nt_lock_reserve for the same range; it is freed here when unused. Caller
+ * holds the mm lock. */
+static void nt_lock_forget(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e, struct nt_lock_range *spare) {
     nt_lock_carve(mm, s, e, &spare);
     if (spare) kfree(spare);
 }
@@ -1637,6 +1636,9 @@ static NTSTATUS NtFreeVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
             right = nt_vad_right_neighbor(mm, right);
         }
         /* Expand to cover all contiguous nodes with same alloc_base */
+        struct nt_lock_range *spare;
+        status = nt_lock_reserve(mm, rel_start, rel_end, &spare);
+        if (!NT_SUCCESS(status)) { ntmm_unlock(mm); return status; }
 #ifndef __KERNEL__
         struct nt_vad *cur = mm->vad_head;
         while (cur) {
@@ -1658,7 +1660,7 @@ static NTSTATUS NtFreeVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
             }
             cur = next;
         }
-        nt_lock_forget(mm, rel_start, rel_end);
+        nt_lock_forget(mm, rel_start, rel_end, spare);
         ntmm_unlock(mm);
         kshim_munmap((void *)rel_start, (size_t)(rel_end - rel_start));
 #else
@@ -1683,7 +1685,7 @@ static NTSTATUS NtFreeVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
             }
             n = next;
         }
-        nt_lock_forget(mm, rel_start, rel_end);
+        nt_lock_forget(mm, rel_start, rel_end, spare);
         ntmm_unlock(mm);
         /* Kernel: drop mapping with mmap_lock and vm_munmap.
          * R1 integration note: caller must hold mmap_write_lock or use vm_munmap()
@@ -1711,16 +1713,19 @@ static NTSTATUS NtFreeVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
     struct nt_vad *first = nt_vad_find(mm, base);
     if (!first || first->state != MEM_COMMIT) { ntmm_unlock(mm); return STATUS_INVALID_PARAMETER; }
     if (base < first->start) { ntmm_unlock(mm); return STATUS_INVALID_PARAMETER; }
+    struct nt_lock_range *spare;
+    status = nt_lock_reserve(mm, base, end, &spare);
+    if (!NT_SUCCESS(status)) { ntmm_unlock(mm); return status; }
     ULONG_PTR pos = base;
     struct nt_vad *vad = first;
     while (pos < end && vad) {
-        if (vad->state != MEM_COMMIT) { ntmm_unlock(mm); return STATUS_INVALID_PARAMETER; }
+        if (vad->state != MEM_COMMIT) { status = STATUS_INVALID_PARAMETER; goto fail; }
         ULONG_PTR piece_start = pos > vad->start ? pos : vad->start;
         ULONG_PTR piece_end = vad->end < end ? vad->end : end;
         struct nt_vad *next = nt_vad_right_neighbor(mm, vad);
         if (piece_start < piece_end) {
             struct nt_vad *mid = nt_vad_split(mm, vad, piece_start, piece_end);
-            if (!mid) { ntmm_unlock(mm); return STATUS_NO_MEMORY; }
+            if (!mid) { status = STATUS_NO_MEMORY; goto fail; }
             mid->state = MEM_RESERVE;
             mid->protect = mid->alloc_protect;
             mid->guard = 0;
@@ -1728,10 +1733,10 @@ static NTSTATUS NtFreeVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
         pos = piece_end;
         if (pos >= end) break;
         vad = next;
-        if (!vad || vad->start != pos) { ntmm_unlock(mm); return STATUS_INVALID_PARAMETER; }
+        if (!vad || vad->start != pos) { status = STATUS_INVALID_PARAMETER; goto fail; }
     }
     nt_coalesce_all(mm);
-    nt_lock_forget(mm, base, end);
+    nt_lock_forget(mm, base, end, spare);
     ntmm_unlock(mm);
 #ifdef __KERNEL__
     /* Kernel: use mprotect_fixup or vm_mprotect with mmap_lock.
@@ -1740,6 +1745,10 @@ static NTSTATUS NtFreeVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
      */
 #endif
     ntmm_host_decommit(mm, base, size);
+    return status;
+fail:
+    kfree(spare);
+    ntmm_unlock(mm);
     return status;
 }
 
@@ -1931,14 +1940,12 @@ static NTSTATUS NtUnlockVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress, P
 #ifdef __KERNEL__
     return STATUS_NOT_SUPPORTED;
 #else
-    struct nt_lock_range *spare = NULL;
+    struct nt_lock_range *spare;
     struct nt_lock_range *r;
     ntmm_lock(mm);
     if (!nt_lock_covered(mm, base, end, (ULONG)MapType)) { ntmm_unlock(mm); return STATUS_NOT_LOCKED; }
-    if (nt_lock_needs_split(mm, base, end)) {
-        spare = (struct nt_lock_range *)kzalloc(sizeof(*spare), GFP_KERNEL);
-        if (!spare) { ntmm_unlock(mm); return STATUS_NO_MEMORY; }
-    }
+    st = nt_lock_reserve(mm, base, end, &spare);
+    if (!NT_SUCCESS(st)) { ntmm_unlock(mm); return st; }
     for (r = mm->locks; r; r = r->next) {
         if (r->map_type == (ULONG)MapType && r->start < end && r->end > base) {
             ULONG_PTR ps = r->start > base ? r->start : base;
@@ -3107,6 +3114,9 @@ static NTSTATUS NtUnmapViewOfSection_in(struct nt_mm *mm, PVOID BaseAddress) {
         if (right->end > unmap_end) unmap_end = right->end;
         right = nt_vad_right_neighbor(mm, right);
     }
+    struct nt_lock_range *spare;
+    NTSTATUS st = nt_lock_reserve(mm, unmap_start, unmap_end, &spare);
+    if (!NT_SUCCESS(st)) { ntmm_unlock(mm); return st; }
     struct nt_vad *cur;
 #ifndef __KERNEL__
     cur = mm->vad_head;
@@ -3131,7 +3141,7 @@ static NTSTATUS NtUnmapViewOfSection_in(struct nt_mm *mm, PVOID BaseAddress) {
         n = next;
     }
 #endif
-    nt_lock_forget(mm, unmap_start, unmap_end);
+    nt_lock_forget(mm, unmap_start, unmap_end, spare);
 #ifdef __KERNEL__
     /* Kernel: vm_munmap takes mmap_lock, so it stays outside the VAD lock. */
     ntmm_unlock(mm);

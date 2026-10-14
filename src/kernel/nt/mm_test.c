@@ -576,6 +576,43 @@ static int test_lock_virtual_memory(void) {
     return 1;
 }
 
+/* A failed allocation in the lock bookkeeping must not lose the lock runs.
+ * Decommit the middle page of three locked pages while the nth allocation
+ * fails, for each n up to past the last one the call makes. A refused call
+ * leaves the whole range locked; a successful one leaves the outer pages locked
+ * and the middle one not. */
+static int test_lock_forget_split_no_memory(void) {
+    for (int n = 1; n <= 6; n++) {
+        PVOID base = NULL;
+        SIZE_T size = 3 * 4096;
+        PVOID lb;
+        SIZE_T ls;
+        ASSERT(NtAllocateVirtualMemory((HANDLE)-1, &base, 0, &size, MEM_COMMIT, PAGE_READWRITE) == STATUS_SUCCESS, "commit");
+        lb = base; ls = size;
+        ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "lock");
+        PVOID mid = (char *)base + 4096;
+        SIZE_T ms = 4096;
+        kshim_fail_alloc_nth(n);
+        NTSTATUS st = NtFreeVirtualMemory((HANDLE)-1, &mid, &ms, MEM_DECOMMIT);
+        kshim_fail_alloc_nth(0);
+        ASSERT(st == STATUS_SUCCESS || st == STATUS_NO_MEMORY, "n=%d decommit status 0x%x", n, (unsigned)st);
+        if (st == STATUS_NO_MEMORY) {
+            lb = base; ls = size;
+            ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "n=%d refused decommit kept the whole lock", n);
+        } else {
+            lb = base; ls = 4096;
+            ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "n=%d first page still locked", n);
+            lb = (char *)base + 2 * 4096; ls = 4096;
+            ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "n=%d last page still locked", n);
+            lb = mid; ls = 4096;
+            ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_NOT_LOCKED, "n=%d middle page unlocked", n);
+        }
+        PVOID rb = base; SIZE_T rs = 0;
+        ASSERT(NtFreeVirtualMemory((HANDLE)-1, &rb, &rs, MEM_RELEASE) == STATUS_SUCCESS, "n=%d release", n);
+    }
+    return 1;
+}
+
 static char g_mmf_root[512];
 
 /* Defined in tests/kernel-host/shim/posix_host.c; declared here as the prelude does. */
@@ -3017,6 +3054,7 @@ int main(void) {
     RUN_TEST(test_vad_matrix);
     RUN_TEST(test_alloc_size_wrap);
     RUN_TEST(test_lock_virtual_memory);
+    RUN_TEST(test_lock_forget_split_no_memory);
     mmf_setup();
     RUN_TEST(test_file_section_shared_write_reaches_file);
     RUN_TEST(test_file_section_cow_does_not_modify_file);

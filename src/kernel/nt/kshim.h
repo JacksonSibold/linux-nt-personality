@@ -279,6 +279,8 @@ void kshim_free_tagged(const void *p);
 void kshim_leak_report(void);
 /* Live tagged allocations whose __FILE__ ends with file_suffix (e.g. "sync.c"). */
 long kshim_live_site_count(const char *file_suffix);
+/* Makes the nth kmalloc/kzalloc from now (n >= 1) return NULL, once. 0 cancels. */
+void kshim_fail_alloc_nth(int n);
 #define kmalloc(size, flags) kshim_alloc_tagged((size), 0, __FILE__, __LINE__)
 #define kzalloc(size, flags) kshim_alloc_tagged((size), 1, __FILE__, __LINE__)
 #define kfree(p)             kshim_free_tagged((p))
