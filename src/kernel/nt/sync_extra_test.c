@@ -346,6 +346,20 @@ TEST(set_timer_int64_min_due_does_not_fire) {
     PASS();
 }
 
+/* A wait timeout of INT64_MIN is 2^63 units, which cannot be negated in int64_t.
+ * It must not overflow into a past deadline: the wait lasts until the timer fires. */
+TEST(wait_int64_min_timeout_does_not_expire) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, NotificationTimer), STATUS_SUCCESS);
+    LARGE_INTEGER due = rel100(100);
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, 0, NULL), STATUS_SUCCESS);
+    LARGE_INTEGER wait;
+    wait.QuadPart = INT64_MIN;
+    ASSERT_STATUS(t_wait_handle(h, &wait), STATUS_WAIT_0);
+    PASS();
+}
+
 TEST(set_timer_bad_arguments) {
     reset_ob();
     HANDLE h = NULL;
@@ -784,6 +798,7 @@ int main(void) {
     RUN(holder_after_collision_same_type_leaves_no_leak);
     RUN(set_timer_fires_and_reports_previous);
     RUN(set_timer_int64_min_due_does_not_fire);
+    RUN(wait_int64_min_timeout_does_not_expire);
     RUN(set_timer_bad_arguments);
     RUN(set_timer_wrong_type);
     RUN(cancel_timer_before_fire);

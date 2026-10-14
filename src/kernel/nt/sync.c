@@ -50,6 +50,15 @@ static int64_t nt_relative_expiry_100ns(int64_t now, int64_t due)
     return now + (int64_t)rel;
 }
 
+/* Length of a relative timeout (negative QuadPart, 100 ns units). The magnitude is
+ * taken as unsigned, so INT64_MIN is not negated in int64_t (undefined behaviour).
+ * 2^63 units does not fit int64_t, so it saturates at INT64_MAX. */
+static int64_t nt_relative_timeout_100ns(int64_t due)
+{
+    uint64_t rel = (uint64_t)0 - (uint64_t)due;
+    return rel > 0x7FFFFFFFFFFFFFFFULL ? 0x7FFFFFFFFFFFFFFFLL : (int64_t)rel;
+}
+
 #ifndef __KERNEL__
 
 /* TLS */
@@ -91,7 +100,7 @@ static bool timeout_to_deadline(LARGE_INTEGER *to, struct timespec *out, bool *i
     int64_t rel100 = 0;
     struct timespec now;
     if (to->QuadPart < 0) {
-        rel100 = -to->QuadPart;
+        rel100 = nt_relative_timeout_100ns(to->QuadPart);
     } else {
         /* absolute */
         now_realtime(&now);
@@ -1590,7 +1599,7 @@ static long timeout_to_jiffies(LARGE_INTEGER *to, bool *is_poll)
     }
     int64_t rel100;
     if (t.QuadPart < 0) {
-        rel100 = -t.QuadPart;
+        rel100 = nt_relative_timeout_100ns(t.QuadPart);
     } else {
         int64_t now100 = (ktime_get_real_ns() / 100) + 116444736000000000LL;
         int64_t due100 = t.QuadPart;
@@ -1600,7 +1609,8 @@ static long timeout_to_jiffies(LARGE_INTEGER *to, bool *is_poll)
         }
         rel100 = due100 - now100;
     }
-    /* 100ns -> ns -> jiffies */
+    /* 100ns -> ns -> jiffies. A length whose ns count overflows is infinite. */
+    if ((unsigned long long)rel100 > ULLONG_MAX / 100ULL) return MAX_SCHEDULE_TIMEOUT;
     unsigned long long ns = (unsigned long long)rel100 * 100ULL;
     return nsecs_to_jiffies(ns);
 }
