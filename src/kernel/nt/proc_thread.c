@@ -304,6 +304,12 @@ static void *thread_trampoline(void *arg)
         ret = routine(thr->start_arg);
     }
 
+    /* Release the sync thread (abandoning its mutants) before the exit is
+     * published: a waiter wakes on `terminated`, so it must not see this
+     * thread as exited while its mutants are still owned. The cleanup handler
+     * below then finds the TLS pointer cleared and does nothing. */
+    thread_sync_release();
+
     /* Normal exit: set exit code and wake waiters */
     pthread_mutex_lock(&thr->lock);
     thr->exit_status = (NTSTATUS)ret;
@@ -612,14 +618,19 @@ NTSTATUS nt_svc_NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus)
     if (h == NtCurrentThread()) {
         struct nt_ethread *thr = kshim_current_thread();
         if (!thr) return STATUS_INVALID_HANDLE;
+        /* Abandon the mutants and release the sync thread BEFORE the exit is
+         * published. A waiter on this thread wakes on `terminated`
+         * (wait_on_ethread), so publishing first let it observe the thread as
+         * exited while its mutants were still owned (flaky
+         * mutant_abandon_self_terminate). */
+        nt_abandon_for_thread(thr);
+        thread_sync_release();
         pthread_mutex_lock(&thr->lock);
         thr->exit_status = ExitStatus;
         thr->terminated = true;
         pthread_cond_broadcast(&thr->exit_cond);
         pthread_cond_broadcast(&thr->suspend_cond);
         pthread_mutex_unlock(&thr->lock);
-        nt_abandon_for_thread(thr);
-        thread_sync_release();
         nt_debug_post_event(thr->process, DbgExitThreadStateChange, thr->tid, ExitStatus);
         /* Exit current thread */
         pthread_exit((void*)(ULONG_PTR)ExitStatus);

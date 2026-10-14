@@ -60,6 +60,7 @@ NTSTATUS nt_svc_NtReleaseKeyedEvent(ULONG_PTR a0, ULONG_PTR a1, ULONG_PTR a2, UL
 #include <stdint.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <time.h>
 
 static int g_pass = 0, g_fail = 0;
 #define TEST(name) static void test_##name(void)
@@ -814,6 +815,113 @@ TEST(yield_execution_succeeds) {
     PASS();
 }
 
+/* Regression tests for the wait engine's wakeup path (see sync.c,
+ * wake_waiters_for_header and nt_wait_for_multiple_objects). Each waiter is a
+ * pthread with its own nt_thread, as in sync_test.c. Every wait has a timeout,
+ * so a lost wakeup fails the test instead of hanging it. */
+typedef struct { struct nt_thread *thr; void *(*fn)(void *); void *arg; pthread_t pt; } ext_wrap_t;
+static void *ext_wrap_run(void *p) {
+    ext_wrap_t *w = (ext_wrap_t *)p;
+    nt_set_current_thread(w->thr);
+    void *r = w->fn(w->arg);
+    nt_set_current_thread(NULL);
+    return r;
+}
+static int ext_start(ext_wrap_t *w, void *(*fn)(void *), void *arg) {
+    if (nt_thread_create(&w->thr) != STATUS_SUCCESS) return -1;
+    w->fn = fn; w->arg = arg;
+    return pthread_create(&w->pt, NULL, ext_wrap_run, w);
+}
+static void ext_join(ext_wrap_t *w) {
+    pthread_join(w->pt, NULL);
+    nt_thread_destroy(w->thr);
+}
+static LARGE_INTEGER ext_rel_ms(long ms) { LARGE_INTEGER li; li.QuadPart = -(int64_t)ms * 10000LL; return li; }
+
+/* A manual-reset set must wake every waiter. The old snapshot woke at most 64,
+ * so with 100 waiters the rest stayed asleep until their timeout. */
+#define EXT_WAKE_ALL_N 100
+static atomic_int g_ext_woken;
+static atomic_int g_ext_arrived;
+static int64_t g_ext_set_ns;
+static int64_t ext_now_ns(void) {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+/* A waiter counts as woken only if it returns promptly after the set. A
+ * waiter whose wakeup was dropped still succeeds once its 5 s timeout expires
+ * and it re-checks the (set) event, so success alone does not prove a wakeup. */
+static void *ext_wake_all_waiter(void *p) {
+    LARGE_INTEGER t = ext_rel_ms(5000);
+    atomic_fetch_add(&g_ext_arrived, 1);
+    if (nt_wait_for_single_object((struct nt_dispatcher_header *)p, false, &t) == STATUS_WAIT_0 &&
+        ext_now_ns() - g_ext_set_ns < 2000LL * 1000000LL)
+        atomic_fetch_add(&g_ext_woken, 1);
+    return NULL;
+}
+static void test_wake_all_waiters_beyond_64(void) {
+    struct nt_event *ev = NULL;
+    ASSERT_STATUS(nt_create_event(&ev, NotificationEvent, false), STATUS_SUCCESS);
+    ext_wrap_t w[EXT_WAKE_ALL_N];
+    atomic_store(&g_ext_woken, 0);
+    atomic_store(&g_ext_arrived, 0);
+    for (int i = 0; i < EXT_WAKE_ALL_N; i++) {
+        if (ext_start(&w[i], ext_wake_all_waiter, &ev->header) != 0) { fprintf(stderr, "FAIL thread start\n"); g_fail++; return; }
+    }
+    /* Wait until every waiter has reached its wait, then give them time to
+     * link into the event's wait list. Only then set the event. */
+    for (int i = 0; i < 10000 && atomic_load(&g_ext_arrived) < EXT_WAKE_ALL_N; i++) usleep(1000);
+    usleep(200 * 1000);
+    g_ext_set_ns = ext_now_ns();
+    nt_set_event(ev, NULL);
+    for (int i = 0; i < EXT_WAKE_ALL_N; i++) ext_join(&w[i]);
+    if (atomic_load(&g_ext_woken) != EXT_WAKE_ALL_N) {
+        fprintf(stderr, "FAIL wake_all: %d of %d waiters woke\n", atomic_load(&g_ext_woken), EXT_WAKE_ALL_N);
+        g_fail++; return;
+    }
+    nt_put_event(ev);
+    PASS();
+}
+
+/* Auto-reset handoff ping-pong. The signal can land in the gap between a
+ * waiter's failed try and its link into the object's wait list; that gap lost
+ * the wakeup, so one handoff in a long run would stall. 2000 rounds in each
+ * direction, each wait bounded by a timeout. */
+#define EXT_PP_ROUNDS 2000
+static struct nt_event *g_pp_a, *g_pp_b;
+static atomic_int g_pp_fail;
+static void *ext_pp_worker(void *p) {
+    (void)p;
+    for (int i = 0; i < EXT_PP_ROUNDS; i++) {
+        LARGE_INTEGER t = ext_rel_ms(5000);
+        if (nt_wait_for_single_object(&g_pp_a->header, false, &t) != STATUS_WAIT_0) {
+            atomic_store(&g_pp_fail, 1);
+            return NULL;
+        }
+        nt_set_event(g_pp_b, NULL);
+    }
+    return NULL;
+}
+static void test_auto_reset_handoff_loop(void) {
+    ASSERT_STATUS(nt_create_event(&g_pp_a, SynchronizationEvent, false), STATUS_SUCCESS);
+    ASSERT_STATUS(nt_create_event(&g_pp_b, SynchronizationEvent, false), STATUS_SUCCESS);
+    atomic_store(&g_pp_fail, 0);
+    ext_wrap_t w;
+    if (ext_start(&w, ext_pp_worker, NULL) != 0) { fprintf(stderr, "FAIL thread start\n"); g_fail++; return; }
+    int stalled = 0;
+    for (int i = 0; i < EXT_PP_ROUNDS && !stalled; i++) {
+        nt_set_event(g_pp_a, NULL);
+        LARGE_INTEGER t = ext_rel_ms(5000);
+        if (nt_wait_for_single_object(&g_pp_b->header, false, &t) != STATUS_WAIT_0) stalled = 1;
+    }
+    ext_join(&w);
+    nt_put_event(g_pp_a);
+    nt_put_event(g_pp_b);
+    g_pp_a = g_pp_b = NULL;
+    if (stalled || atomic_load(&g_pp_fail)) { fprintf(stderr, "FAIL handoff: lost wakeup\n"); g_fail++; return; }
+    PASS();
+}
+
 int main(void) {
     printf("sync extra tests starting\n");
     ObInitObjectManager();
@@ -855,6 +963,8 @@ int main(void) {
     RUN(keyed_release_blocks_until_waiter);
     RUN(keyed_release_null_timeout_matched_by_waiter);
     RUN(yield_execution_succeeds);
+    RUN(wake_all_waiters_beyond_64);
+    RUN(auto_reset_handoff_loop);
     printf("sync extra tests: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) return 1;
     ObCleanupObjectManager();

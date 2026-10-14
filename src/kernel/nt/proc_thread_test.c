@@ -53,13 +53,21 @@ static void test_thread_create_join(void){
     struct nt_eprocess *proc=kshim_current_process();
     g_counter=0;
     HANDLE th;
-    NTSTATUS st=nt_svc_NtCreateThreadEx(&th,0,NULL,NtCurrentProcess(),thr_simple,NULL,0,0,0,0,NULL);
+    /* Created suspended, so the thread cannot run (and exit) before the first
+     * query. Without this gate the query raced the thread: it could read the
+     * terminated status (777) instead of STILL_ACTIVE (259). The thread is
+     * resumed after the query, and every check below still runs. */
+    NTSTATUS st=nt_svc_NtCreateThreadEx(&th,0,NULL,NtCurrentProcess(),thr_simple,NULL,CREATE_SUSPENDED_FLAG,0,0,0,NULL);
     ASSERT(st==STATUS_SUCCESS);
     // query before wait should be STILL_ACTIVE
     THREAD_BASIC_INFORMATION tbi; ULONG ret=0;
     NTSTATUS q=nt_svc_NtQueryInformationThread(th,0,&tbi,48,&ret);
     ASSERT(q==STATUS_SUCCESS);
     ASSERT(tbi.ExitStatus==259);
+    ULONG prev=0;
+    NTSTATUS rst=nt_svc_NtResumeThread(th,&prev);
+    ASSERT(rst==STATUS_SUCCESS);
+    ASSERT(prev==1);
     NTSTATUS wst=nt_svc_NtWaitForSingleObject(th,0,NULL);
     ASSERT(wst==STATUS_SUCCESS);
     q=nt_svc_NtQueryInformationThread(th,0,&tbi,48,&ret);
@@ -307,9 +315,22 @@ static void test_mutant_abandon_process_exit(void){
  * frees it on return. Self-termination (pthread_exit) skips that return path,
  * so the nt_thread must be released by a cleanup handler instead. */
 static ULONG thr_self_term(PVOID a){ (void)a; nt_svc_NtTerminateThread(NtCurrentThread(), 0); return 0; }
+/* Returns the sync.c live count once it has been unchanged for 50 ms. A thread
+ * from an earlier test may still be releasing its nt_thread, and taking the
+ * baseline in the middle of that moved the count (flaky thread_exit). */
+static long sync_live_settled(void){
+    long last = kshim_live_site_count("sync.c");
+    int stable = 0;
+    for(int i=0; i<200 && stable<5; i++){
+        usleep(10000);
+        long now = kshim_live_site_count("sync.c");
+        if(now==last) stable++; else { stable=0; last=now; }
+    }
+    return last;
+}
 static void test_thread_exit_frees_sync_thread(void){
     setup_proc();
-    long before = kshim_live_site_count("sync.c");
+    long before = sync_live_settled();
     HANDLE th;
     NTSTATUS st = nt_svc_NtCreateThreadEx(&th,0,NULL,NtCurrentProcess(),thr_self_term,NULL,0,0,0,0,NULL);
     ASSERT(st==STATUS_SUCCESS);
