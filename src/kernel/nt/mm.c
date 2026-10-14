@@ -2215,17 +2215,24 @@ NTSTATUS NtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
 #ifndef __KERNEL__
 /* Host shim only. A file view is a copy (kshim_section_map_file), so a shared
  * writable view is written back to its file for [from, to). Copy-on-write and
- * read-only views are not written back. The kernel maps the file's own pages. */
-static void nt_view_writeback(const struct nt_vad *vad, ULONG_PTR from, ULONG_PTR to) {
+ * read-only views are not written back. The kernel maps the file's own pages.
+ * A short write is continued; a failed write is STATUS_IO_DEVICE_ERROR. */
+static NTSTATUS nt_view_writeback(const struct nt_vad *vad, ULONG_PTR from, ULONG_PTR to) {
     ULONG prot;
-    if (!vad->section || !vad->section->is_file || vad->state != MEM_COMMIT) return;
+    off_t off;
+    if (!vad->section || !vad->section->is_file || vad->state != MEM_COMMIT) return STATUS_SUCCESS;
     prot = vad->protect & 0xFFUL;
-    if (prot != PAGE_READWRITE && prot != PAGE_EXECUTE_READWRITE) return;
+    if (prot != PAGE_READWRITE && prot != PAGE_EXECUTE_READWRITE) return STATUS_SUCCESS;
     if (from < vad->start) from = vad->start;
     if (to > vad->end) to = vad->end;
-    if (from >= to) return;
-    pwrite(vad->section->backing.fd, (void *)from, (size_t)(to - from),
-           (off_t)(vad->section_offset + (from - vad->start)));
+    off = (off_t)(vad->section_offset + (from - vad->start));
+    while (from < to) {
+        ssize_t n = pwrite(vad->section->backing.fd, (void *)from, (size_t)(to - from), off);
+        if (n <= 0) return STATUS_IO_DEVICE_ERROR;
+        from += (ULONG_PTR)n;
+        off += (off_t)n;
+    }
+    return STATUS_SUCCESS;
 }
 #endif
 
@@ -2263,7 +2270,8 @@ static NTSTATUS NtFlushVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
         for (cur = start; cur < end; ) {
             struct nt_vad *vad = nt_vad_find(mm, cur);
             ULONG_PTR stop = vad->end < end ? vad->end : end;
-            nt_view_writeback(vad, cur, stop);
+            st = nt_view_writeback(vad, cur, stop);
+            if (!NT_SUCCESS(st)) break;
             cur = stop;
         }
     }
@@ -3108,12 +3116,14 @@ static NTSTATUS NtUnmapViewOfSection_in(struct nt_mm *mm, PVOID BaseAddress) {
         right = nt_vad_right_neighbor(mm, right);
     }
     struct nt_vad *cur;
+    NTSTATUS wb = STATUS_SUCCESS;
 #ifndef __KERNEL__
     cur = mm->vad_head;
     while (cur) {
         struct nt_vad *next = cur->list_next;
         if (cur->alloc_base == base && cur->start >= unmap_start && cur->end <= unmap_end) {
-            nt_view_writeback(cur, cur->start, cur->end);
+            NTSTATUS st = nt_view_writeback(cur, cur->start, cur->end);
+            if (!NT_SUCCESS(st) && NT_SUCCESS(wb)) wb = st;
             nt_list_remove(mm, cur);
             nt_vad_free(cur);
         }
@@ -3143,7 +3153,7 @@ static NTSTATUS NtUnmapViewOfSection_in(struct nt_mm *mm, PVOID BaseAddress) {
     kshim_munmap((void *)unmap_start, (size_t)(unmap_end - unmap_start));
     ntmm_unlock(mm);
 #endif
-    return STATUS_SUCCESS;
+    return wb; /* the view is unmapped even when its write-back failed */
 }
 
 NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
