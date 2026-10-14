@@ -3,3 +3,4 @@
 *.py text eol=lf
 tools/linux-env/** text eol=lf
 vm/** text eol=lf
+tests/kernel/s10/console_s10.stdin -text

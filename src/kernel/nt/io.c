@@ -1246,14 +1246,42 @@ static struct nt_file_object *ntio_alloc_file_object(void)
 	return file;
 }
 
+/* Drops one reference to a standard handle's file: fput in the kernel, the
+ * shim's filp_close in the host model (which keeps no fput). */
 #ifdef __KERNEL__
+#define NTIO_STD_DROP(f) fput(f)
+#else
+#define NTIO_STD_DROP(f) kshim_filp_close(f)
+#endif
+
+/*
+ * Granted access of a standard handle: the read and write rights the fd was
+ * opened with (FILE_GENERIC_READ / FILE_GENERIC_WRITE), so a StandardInput
+ * handle cannot be written and a StandardOutput handle cannot be read.
+ */
+static ACCESS_MASK ntio_std_granted_access(struct file *filp)
+{
+#ifdef __KERNEL__
+	ACCESS_MASK a = 0;
+	if (filp->f_mode & FMODE_READ)
+		a |= FILE_GENERIC_READ;
+	if (filp->f_mode & FMODE_WRITE)
+		a |= FILE_GENERIC_WRITE;
+	return a;
+#else
+	(void)filp;
+	return 0x001F01FF; /* FILE_ALL_ACCESS: the host model keeps no f_mode */
+#endif
+}
+
 /*
  * Kernel-side install of a standard handle (process-creation.md, section 1,
- * step 9). binfmt_pe calls this for the exec-ing task's fd 1 so that
- * RTL_USER_PROCESS_PARAMETERS.StandardOutput names a File handle in the table.
- * Takes ownership of one reference to filp (from fget): on every path the
- * reference is dropped by ntio_file_put -> ntio_file_release -> filp_close.
- * Returns 0 and the handle in *out_handle, or -ENOMEM when the table is full.
+ * step 9). binfmt_pe calls this for the exec-ing task's fd 0, 1 and 2 so that
+ * RTL_USER_PROCESS_PARAMETERS.StandardInput/StandardOutput/StandardError name
+ * File handles in the table. Takes ownership of one reference to filp (from
+ * fget): on every path the reference is dropped by ntio_file_put ->
+ * ntio_file_release -> filp_close. Returns 0 and the handle in *out_handle, or
+ * -ENOMEM when the table is full.
  */
 int ntio_install_std_file(struct file *filp, u64 *out_handle)
 {
@@ -1262,16 +1290,16 @@ int ntio_install_std_file(struct file *filp, u64 *out_handle)
 
 	if (!filp || !out_handle) {
 		if (filp)
-			fput(filp);
+			NTIO_STD_DROP(filp);
 		return -EINVAL;
 	}
 	file = ntio_alloc_file_object();
 	if (!file) {
-		fput(filp);
+		NTIO_STD_DROP(filp);
 		return -ENOMEM;
 	}
 	file->filp = filp;
-	file->granted_access = 0x001F01FF; /* FILE_ALL_ACCESS */
+	file->granted_access = ntio_std_granted_access(filp);
 	file->synchronous = true;
 
 	spin_lock(&ntio_handle_lock);
@@ -1290,7 +1318,30 @@ int ntio_install_std_file(struct file *filp, u64 *out_handle)
 	ntio_file_put(file);
 	return -ENOMEM;
 }
-#endif /* __KERNEL__ */
+
+/*
+ * Undo ntio_install_std_file for a handle that exec did not hand to the PE
+ * (a later standard handle failed to install or to copy out). Frees the slot
+ * and drops the handle's reference, which closes the file.
+ */
+void ntio_release_std_handle(u64 h)
+{
+	ULONG_PTR idx = (ULONG_PTR)h >> 2;
+	struct nt_file_object *file = NULL;
+
+	if (idx == 0 || idx >= NTIO_MAX_HANDLES)
+		return;
+	spin_lock(&ntio_handle_lock);
+	if (ntio_handles[idx].used) {
+		file = ntio_handles[idx].object;
+		ntio_handles[idx].used = false;
+		ntio_handles[idx].object = NULL;
+		atomic_dec_and_test(&ntio_handle_inuse);
+	}
+	spin_unlock(&ntio_handle_lock);
+	if (file)
+		ntio_file_put(file);
+}
 
 /*
  * Apply CreateDisposition semantics on top of a POSIX open.
@@ -4034,11 +4085,34 @@ NTSTATUS nt_svc_NtQueryDirectoryFileEx(HANDLE FileHandle, HANDLE Event,
 
 
 /*
- * NtQueryVolumeInformationFile. FileFsDeviceInformation reports a disk device
- * with no characteristics, which is what every file in this build is on. The
- * other volume classes need filesystem statistics this build does not gather
- * yet, so they return STATUS_NOT_IMPLEMENTED. Unknown classes return
- * STATUS_INVALID_INFO_CLASS.
+ * Device type reported by FileFsDeviceInformation for a file object. A pipe or
+ * socket is a named-pipe device, a character device is a console device (the
+ * kernel32 layer maps these to FILE_TYPE_PIPE and FILE_TYPE_CHAR), and every
+ * other file is a disk. The host model keeps no inode, so it reports disk.
+ */
+static ULONG ntio_device_type_of(struct file *filp)
+{
+#ifdef __KERNEL__
+	umode_t mode;
+
+	if (!filp)
+		return FILE_DEVICE_DISK;
+	mode = file_inode(filp)->i_mode;
+	if (S_ISFIFO(mode) || S_ISSOCK(mode))
+		return FILE_DEVICE_NAMED_PIPE;
+	if (S_ISCHR(mode))
+		return FILE_DEVICE_CONSOLE;
+#else
+	(void)filp;
+#endif
+	return FILE_DEVICE_DISK;
+}
+
+/*
+ * NtQueryVolumeInformationFile. FileFsDeviceInformation reports the device type
+ * of the file (ntio_device_type_of) with no characteristics. The other volume
+ * classes need filesystem statistics this build does not gather yet, so they
+ * return STATUS_NOT_IMPLEMENTED. Unknown classes return STATUS_INVALID_INFO_CLASS.
  */
 static NTSTATUS ntio_complete_iosb_info(PIO_STATUS_BLOCK __user IoStatusBlock,
 					NTSTATUS status, ULONG_PTR information)
@@ -4081,7 +4155,7 @@ NTSTATUS nt_svc_NtQueryVolumeInformationFile(HANDLE FileHandle,
 		if (Length < sizeof(di))
 			return ntio_complete_iosb_info(IoStatusBlock,
 						       STATUS_INFO_LENGTH_MISMATCH, 0);
-		di.DeviceType = FILE_DEVICE_DISK;
+		di.DeviceType = ntio_device_type_of(file->filp);
 		di.Characteristics = 0;
 #ifdef __KERNEL__
 		if (copy_to_user(FsInformation, &di, sizeof(di)))

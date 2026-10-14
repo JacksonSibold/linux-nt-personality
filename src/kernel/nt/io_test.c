@@ -2034,6 +2034,46 @@ TEST(query_volume_device)
 	PASS();
 }
 
+/* Standard handles (ntio_install_std_file, binfmt_pe's fd 0/1/2): each file
+ * becomes a File handle at a multiple of 4, from index 64, distinct from the
+ * others. Reads go through the handle, and ntio_release_std_handle frees the
+ * slot (a second release is a no-op, and the released value is then invalid). */
+TEST(std_handle_install_release)
+{
+	char full[PATH_MAX];
+	struct file *f;
+	u64 h1 = 0, h2 = 0;
+	IO_STATUS_BLOCK iosb;
+	char buf[8] = { 0 };
+
+	reset_state();
+	ASSERT(write_file_at("std_in.txt", "stdin!"));
+	snprintf(full, sizeof(full), "%s/%s", g_test_root, "std_in.txt");
+
+	f = kshim_filp_open(full, O_RDONLY, 0);
+	ASSERT(f != NULL);
+	ASSERT(ntio_install_std_file(f, &h1) == 0);
+	ASSERT(h1 >= (64u << 2) && (h1 & 3) == 0);
+
+	f = kshim_filp_open(full, O_RDONLY, 0);
+	ASSERT(f != NULL);
+	ASSERT(ntio_install_std_file(f, &h2) == 0);
+	ASSERT(h2 != h1 && h2 >= (64u << 2) && (h2 & 3) == 0);
+
+	ASSERT_STATUS(nt_svc_NtReadFile((HANDLE)(ULONG_PTR)h1, NULL, NULL, NULL, &iosb,
+					buf, 5, NULL, NULL),
+		      STATUS_SUCCESS);
+	ASSERT(iosb.Information == 5);
+	ASSERT(memcmp(buf, "stdin", 5) == 0);
+
+	ntio_release_std_handle(h1);
+	ASSERT(ntio_handle_lookup((HANDLE)(ULONG_PTR)h1, 0) == NULL);
+	ntio_release_std_handle(h1);
+	ntio_release_std_handle(h2);
+	ASSERT(ntio_handle_lookup((HANDLE)(ULONG_PTR)h2, 0) == NULL);
+	PASS();
+}
+
 /* No volume information can be set: valid classes are not implemented and
  * unknown classes are invalid. */
 TEST(set_volume_unsupported)
@@ -2253,6 +2293,7 @@ int main(void)
 	RUN(query_directory_utf8_name);
 	RUN(query_directory_replaced_by_file);
 	RUN(query_volume_device);
+	RUN(std_handle_install_release);
 	RUN(set_volume_unsupported);
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);

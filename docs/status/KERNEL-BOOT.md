@@ -3,6 +3,86 @@
 Kernel: Linux **6.18.56** (newest 6.18.y in kernel.org `sha256sums.asc`), built in the Debian 12 guest
 (`~/ntpers/linux-6.18.56`) with the NT wiring from `tools/ntpers_kpatch.py`. Session date 2026-10-13.
 
+## Standard handles: fd 0, 1, 2 at exec, S10 (2026-10-14)
+
+Branch `haiku/stdio` on main `4b012b4` (rebased from `256571a`). Kernel: `bzImage` sha256 `936c64e7d5e67617bc806ff8641b8679ffd212586d62147dd52f7e9a6e3916c9`
+(1,135,616 bytes), built in the guest from `~/syncfix/linux-src` with `vm/incremental-kernel.sh` on the rebased tree
+(CCACHE=0, JOBS=4): 2 NT files copied, `CC fs/binfmt_pe.o` and `CC arch/x86/nt/io.o`, `INCREMENTAL_OK`. (The first build on `256571a` copied all 88 and had the sha256 `a9372827...`.)
+
+**What changed.**
+- `binfmt_pe.c`: at exec, the task's fd 0, 1 and 2 each become a File handle. They are written to
+  `RTL_USER_PROCESS_PARAMETERS.StandardInput/StandardOutput/StandardError` (+0x20, +0x28, +0x30). An fd that is
+  not open leaves its field 0. If a later step fails, the handles already installed are released
+  (`ntio_release_std_handle`).
+- `io.c`: a standard handle's granted access is FILE_GENERIC_READ and/or FILE_GENERIC_WRITE from the fd's mode, so
+  a write to a read-only stdin fails. FileFsDeviceInformation reports a named pipe (FIFO or socket), a console
+  (character device) or disk. kernel32 maps these to FILE_TYPE_PIPE, FILE_TYPE_CHAR and FILE_TYPE_DISK.
+- `msvcrt.c` / `msvcrt.def`: stdout no longer falls back to the stdin handle. fprintf, vfprintf, fputc and fputs send
+  `&g_iob[2]` (stderr) to the standard error handle. `fread` on stdin is new (reads the input handle).
+- kernel32 (`GetStdHandle`, `SetStdHandle`, `ReadFile`, `WriteFile`, `WriteConsole`, `GetFileType`) already read the
+  PEB slots and needed no change.
+
+**Limits, not fixed.**
+- The handle table is still global (`ntio_handles` in `io.c`), not per process. Each PE exec takes up to three of its
+  1024 slots (64 are reserved), and nothing releases them at process exit. About 320 PE execs fill the table, and then
+  exec fails with ENOMEM. A PE's pipe ends stay open after it exits.
+- No runtime test covers a pipe standard handle (FILE_TYPE_PIPE). The boots use a regular-file stdin and the console.
+- The kernel-host test `std_handle_install_release` covers install, read through the handle, and release. It cannot
+  check the device type or the access split, because the host model keeps no `f_mode` or inode.
+
+**Tests.**
+- Kernel-host, in the guest: `make -C tests/kernel-host check` exits 0. `io_test rc=0` (including the new test),
+  `binfmt_pe_test rc=0`, 25 programs rc=0 in total.
+- ntdll-host, in the guest: `make -C tests/ntdll-host test` exits 0, all tests passed.
+- Host unit suite: `python -m unittest discover tests/unit`, 836 tests OK, 1 skipped (WSL).
+- Guest builds: `make -C src/ntdll all kernel32 msvcrt advapi32 user32` and `make -C tests/kernel all s2..s10` exit 0.
+
+**Boots (host QEMU, `boot-m0-host.ps1`, the bzImage above).**
+
+| step | expected | result | serial line |
+|---|---|---|---|
+| M0 | 42 | 42, PASS | `M0 exit status: 42 (expected 42)` |
+| S1 | 0 | 0, PASS | `hello from NT` |
+| S2 | 0 | 0, PASS | `hello from NT via ntdll` |
+| S3 | 0 | 0, PASS | `hello from kernel32`, `file payload from S3` |
+| S4 | 0 | 0, PASS | `hello from msvcrt 4 printf`, `hello from msvcrt puts` |
+| S5 | 53 | 53, PASS | `STEP exit status: 53 (expected 53)` |
+| S6 | 0 | 0, PASS | `S6 GetProcAddress kernel32 GetCurrentProcessId: match` |
+| S7 | 0 | 0, PASS | `STEP PASS` |
+| S8 | 0 | 0, PASS | `S8 command line: 5 args ok; environment NTPERS_S8 ok` |
+| S9 | 0 | 0, PASS | `S9 environment: get, set, delete, expand, command line ok` |
+| S10 | 0 | 0, PASS | `S10 out: alpha` / `S10 err: alpha` (and the same for `beta gamma` and `3`), then `S10 stdin/stdout/stderr round trip ok` |
+
+S10 is `tests/kernel/s10/console_s10.c`. Its stdin is `tests/kernel/s10/console_s10.stdin` (19 bytes, three lines),
+fed through the new `STEP_STDIN` option of `tools/linux-env/step-initramfs.sh`. It checks the file types, reads to
+end of input, echoes each line to stdout and stderr, checks that a write to stdin fails, and checks
+`SetStdHandle`. Exit codes 10 to 25 name the failed check.
+
+The first S2 to S10 images were packed without `ntdll.dll`, `kernel32.dll`, `msvcrt.dll`, `advapi32.dll` and
+`user32.dll`. Those boots exited 139. The images were rebuilt with the five DLLs under `/windows/system32`, the
+recipe these steps use, and all of them pass. The 139s were a packing error, not the kernel change.
+
+**NONVM probes (`NONVM=1 probes-initramfs.sh`, `log_buf_len=16M`, host timeout 1800 s).** All 15 reach
+`NTPERS_ALL_DONE`. `probe_peloader` now receives its three stdin paths and returns three records. Before this change its
+output was empty. Counts against `tests/differential/golden/windows-26200.9457` (`probe_results.py split` and `compare`)
+on main `4b012b4` (`probe_fileinfo` 183 and `probe_ntstatus` 2191 are from that commit; the other 13 equal the 252fa28 table above):
+
+| probe | matched / golden | verdict |
+|---|---|---|
+| probe_sharemode | 458857 / 458857 | PASS |
+| probe_peloader | 33 / 34 | FAIL (`S1 divergences 1 > allowed 0`) |
+| probe_path | 51355 / 72523 | FAIL |
+| probe_ntstatus | 2191 / 2199 | FAIL |
+| the other 11 | see `compare.json` | FAIL |
+
+**probe_peloader is not a match, and its 33 of 34 is not a meaningful count.** The one divergence is the
+`vacuous` guard in `tests/differential/dualrun.py`. Its mandatory key for this probe is `tests`, which neither side
+has. The comparator then does not descend into the `results` list. The first record shows the difference: the Windows
+golden for `C:/Windows/System32/notepad.exe` has `sec_image_accept: true`, `loadlibrary_accept: true` and
+`bin_type: 6`. The VM record has `false`, `false` and `0`, with `file_open_error: 2`. The image does not ship those
+Windows files, and the batch lists them. So the probe reads its stdin correctly, and it cannot match the golden with
+this image. Thresholds, goldens and the comparator are unchanged.
+
 ## kernel32 environment API, msvcrt argv, probe argv (2026-10-14)
 
 Branch `haiku/k32a` on the kernel boot at `252fa28` (same bzImage, sha256 starts `16b98d6e887d6a45`, unchanged kernel).
@@ -549,7 +629,7 @@ matched of golden leaves:
 | probe_fileinfo | 165 / 221 | FAIL |
 | probe_handles | 82 / 111 | FAIL |
 | probe_namedpipe | 3 / 45 | FAIL |
-| probe_ntstatus | 2190 / 2199 | FAIL |
+| probe_ntstatus | 2191 / 2199 | FAIL |
 | probe_path | 51355 / 72523 | FAIL |
 | probe_peloader | 33 / 34 | FAIL |
 | probe_process_thread | 0 / 182 | FAIL |

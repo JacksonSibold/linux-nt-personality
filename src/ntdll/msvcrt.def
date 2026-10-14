@@ -26,6 +26,7 @@ EXPORTS
     _exit
     _Exit
     fgets
+    fread
     fprintf
     fputc
     fputs

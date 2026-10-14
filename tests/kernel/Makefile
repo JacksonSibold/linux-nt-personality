@@ -69,6 +69,13 @@ $(BINDIR)/console_s9.exe: s9/console_s9.c $(BINDIR)/libkernel32_imp.a
 
 s9: $(BINDIR)/console_s9.exe
 
+# S10: the standard handles (GetStdHandle, ReadFile on stdin, WriteFile on stdout and
+# stderr, GetFileType) in a booted kernel. Needs the kernel's std-handle install.
+$(BINDIR)/console_s10.exe: s10/console_s10.c $(BINDIR)/libkernel32_imp.a
+	$(CC) -nostdlib -Wl,-e,_start -Wl,--no-seh -Wl,--no-insert-timestamp -Os -s -ffreestanding -fno-builtin -fno-stack-protector -o $@ $< -L$(BINDIR) -lkernel32_imp
+
+s10: $(BINDIR)/console_s10.exe
+
 $(BINDIR)/libmsvcrt_imp.a: ../../src/ntdll/msvcrt.def | $(BINDIR)
 	x86_64-w64-mingw32-dlltool -d $< -l $@ -D msvcrt.dll
 

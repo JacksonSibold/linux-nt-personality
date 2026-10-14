@@ -216,6 +216,8 @@ extern "C" {
 #define FileFsSectorSizeInformation     11
 #define FileFsDataCopyInformation       12
 #define FILE_DEVICE_DISK                0x00000007
+#define FILE_DEVICE_NAMED_PIPE          0x00000011
+#define FILE_DEVICE_CONSOLE             0x00000050
 
 /* -------------------------------------------------------------------------- */
 /* Information structures                                                       */
@@ -614,6 +616,9 @@ void ntio_unregister_share(struct nt_file_object *file);
 NTSTATUS ntio_handle_create(void *obj, ACCESS_MASK granted, HANDLE *out);
 void *ntio_handle_lookup(HANDLE h, ACCESS_MASK required);
 void *ntio_handle_lookup_any_of(HANDLE h, ACCESS_MASK mask);
+/* Standard handles for exec (binfmt_pe): install a file as a handle, release one. */
+int ntio_install_std_file(struct file *filp, u64 *out_handle);
+void ntio_release_std_handle(u64 h);
 NTSTATUS ntio_handle_close(HANDLE h);
 NTSTATUS ntio_duplicate_file_handle(struct nt_file_object *f, ACCESS_MASK new_access, HANDLE *out_handle);
 ACCESS_MASK ntio_handle_granted(HANDLE h);

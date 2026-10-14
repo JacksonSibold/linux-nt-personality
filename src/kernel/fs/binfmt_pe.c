@@ -33,6 +33,7 @@ static struct linux_binfmt pe_format;
 extern int ntmm_add_region(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long);
 extern void ntmm_reset(void);
 extern int ntio_install_std_file(struct file *filp, u64 *out_handle);
+extern void ntio_release_std_handle(u64 h);
 #else
 #ifndef KSHIM_H /* the userspace model (kshim.h) provides its own */
 static inline void nt_enter_personality(struct task_struct *tsk) { (void)tsk; }
@@ -571,7 +572,9 @@ static int pe_apply_relocs(struct pe_load_state *st)
 #define PP_SIZE                 0x470
 #define PP_OFF_MAXIMUM_LENGTH   0x00
 #define PP_OFF_LENGTH           0x04
+#define PP_OFF_STANDARD_INPUT   0x20
 #define PP_OFF_STANDARD_OUTPUT  0x28
+#define PP_OFF_STANDARD_ERROR   0x30
 #define PP_OFF_IMAGE_PATH_NAME  0x60   /* UNICODE_STRING */
 #define PP_OFF_COMMAND_LINE     0x70   /* UNICODE_STRING */
 #define PP_OFF_ENVIRONMENT      0x80
@@ -758,25 +761,42 @@ static int pe_build_process_parameters(struct pe_load_state *st)
 
 #ifdef CONFIG_NT_PERSONALITY
     /*
-     * StandardOutput (S1): the exec-ing task's fd 1 becomes a File handle in
-     * the NT handle table, which is global and has NTIO_MAX_HANDLES slots, so
-     * one slot per exec is taken. StandardInput (+0x20) and StandardError
-     * (+0x30) stay 0 until a per-process table exists (process-creation.md
-     * step 5). fd 1 closed in the parent leaves the field 0.
+     * Standard handles: the exec-ing task's fd 0, 1 and 2 each become a File
+     * handle in the NT handle table (StandardInput +0x20, StandardOutput +0x28,
+     * StandardError +0x30). The table is global, with NTIO_MAX_HANDLES slots,
+     * so up to three slots are taken per exec. An fd that is not open leaves
+     * its field 0, which is how Windows reports an unset standard handle. If a
+     * later step fails, the handles already installed are released.
      */
     {
-        u64 h = 0;
-        struct file *stdout_file = fget(1);
-        if (stdout_file) {
-            if (ntio_install_std_file(stdout_file, &h)) {
+        static const unsigned long std_off[3] = {
+            PP_OFF_STANDARD_INPUT, PP_OFF_STANDARD_OUTPUT, PP_OFF_STANDARD_ERROR,
+        };
+        u64 installed[3] = { 0, 0, 0 };
+        int fd;
+
+        for (fd = 0; fd < 3; fd++) {
+            struct file *f = fget(fd);
+            u64 h = 0;
+
+            if (!f)
+                continue;
+            if (ntio_install_std_file(f, &h)) {
                 ret = -ENOMEM;
-                goto done;
+                break;
             }
-            if (copy_to_user((void __user *)(p + PP_OFF_STANDARD_OUTPUT), &h, 8)) {
+            installed[fd] = h;
+            if (copy_to_user((void __user *)(p + std_off[fd]), &h, 8)) {
                 ret = -EFAULT;
-                goto done;
+                break;
             }
-            pr_err("binfmt_pe: StandardOutput handle=0x%llx\n", (unsigned long long)h);
+        }
+        if (ret) {
+            for (fd = 0; fd < 3; fd++) {
+                if (installed[fd])
+                    ntio_release_std_handle(installed[fd]);
+            }
+            goto done;
         }
     }
 #endif

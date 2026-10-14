@@ -158,9 +158,11 @@ struct lconv* localeconv(void){ return &g_lconv; }
 typedef void (*sighandler_t)(int);
 sighandler_t signal(int sig, sighandler_t h){ (void)sig;(void)h; return NULL; }
 
+/* The standard output handle (StandardOutput). An unset handle (NULL) makes the
+ * WriteFile fail and the text is dropped, as in the Windows CRT. It never falls
+ * back to the input handle. */
 static void write_stdout(const char *s, size_t len){
     HANDLE h=GetStdHandle((DWORD)-11);
-    if(!h || h==(HANDLE)(intptr_t)-1) h=GetStdHandle((DWORD)-10);
     DWORD w=0;
     WriteFile(h, s, (DWORD)len, &w, NULL);
 }
@@ -169,22 +171,26 @@ static void write_stderr(const char *s, size_t len){
     DWORD w=0;
     WriteFile(h, s, (DWORD)len, &w, NULL);
 }
+/* &g_iob[2] (stderr) goes to the standard error handle; any other stream goes to
+ * the standard output handle (the probes use stdout and stderr only). */
+static void write_stream(void *stream, const char *s, size_t len){
+    if(stream == (void*)&g_iob[2]) write_stderr(s,len);
+    else write_stdout(s,len);
+}
 
-/* FILE* based - ignore file, always write to stdout */
+/* FILE* based output: the stream picks the handle (write_stream). */
 int fprintf(void *stream, const char *fmt, ...){
-    (void)stream;
     char buf[4096];
     va_list ap; va_start(ap,fmt);
     int n=(int)ms_stored(my_vsprintf(buf,sizeof(buf),fmt,ap),sizeof(buf));
     va_end(ap);
-    if(n>0) write_stdout(buf,(size_t)n);
+    if(n>0) write_stream(stream,buf,(size_t)n);
     return n;
 }
 int vfprintf(void *stream, const char *fmt, va_list ap){
-    (void)stream;
     char buf[4096];
     int n=(int)ms_stored(my_vsprintf(buf,sizeof(buf),fmt,ap),sizeof(buf));
-    if(n>0) write_stdout(buf,(size_t)n);
+    if(n>0) write_stream(stream,buf,(size_t)n);
     return n;
 }
 int printf(const char *fmt, ...){
@@ -209,12 +215,11 @@ int puts(const char *s){
 }
 int putchar(int c){ char ch=(char)c; write_stdout(&ch,1); return c; }
 int fputc(int c, void *stream){
-    (void)stream;
     char ch=(char)c;
-    write_stdout(&ch,1);
+    write_stream(stream,&ch,1);
     return c;
 }
-int fputs(const char *s, void *stream){ (void)stream; size_t l=strlen(s); write_stdout(s,l); return (int)l; }
+int fputs(const char *s, void *stream){ size_t l=strlen(s); write_stream(stream,s,l); return (int)l; }
 int fflush(void *s){ (void)s; return 0; }
 void* fopen(const char *a, const char *b){ (void)a;(void)b; return NULL; }
 int fclose(void *f){ (void)f; return 0; }
@@ -239,6 +244,24 @@ char* fgets(char *s, int n, void *stream){
     if(i==0) return NULL;
     s[i]='\0';
     return s;
+}
+/* fread on stdin reads the standard input handle until count items of size bytes
+ * are read or the input ends. Returns the number of whole items read. Any other
+ * stream reads nothing. */
+SIZE_T fread(void *p, SIZE_T size, SIZE_T count, void *stream){
+    SIZE_T total=0, got=0;
+    if(!p || !ms_mul_size(size, count, &total) || total==0) return 0;
+    if(stream != (void*)&g_iob[0]) return 0;
+    HANDLE h=GetStdHandle((DWORD)-10);
+    if(!h || h==(HANDLE)(intptr_t)-1) return 0;
+    while(got < total){
+        SIZE_T left = total - got;
+        DWORD want = left > 0x10000 ? 0x10000u : (DWORD)left;
+        DWORD r=0;
+        if(!ReadFile(h, (char*)p + got, want, &r, NULL) || r==0) break;
+        got += r;
+    }
+    return got / size;
 }
 int sscanf(const char *a, const char *b, ...){ (void)a;(void)b; return 0; }
 /* CRT-1: format into a local buffer of MS_SPRINTF_LIMIT bytes, then copy only

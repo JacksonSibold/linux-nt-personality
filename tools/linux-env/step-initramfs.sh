@@ -13,6 +13,8 @@
 #   PE_NAME      basename without .exe, e.g. console_s1
 #   EXPECT_RC    expected exit status of the PE
 #   EXTRA_*      extra files packed at the given absolute path, e.g. /ntdll.dll:... (see below)
+#   STEP_STDIN   optional env: repo-relative file fed to the exe as its standard input
+#                (copied to /tests_kernel/NAME.stdin and redirected; S10 uses it)
 set -eu
 
 REPO="${1:?usage: step-initramfs.sh REPO_DIR PE_NAME EXPECT_RC OUT_CPIO_GZ [SRC:DEST...]}"
@@ -56,6 +58,17 @@ STEP_ENV="${STEP_ENV:-}"
 ENV_LINE=""
 if [ -n "$STEP_ENV" ]; then ENV_LINE="export $STEP_ENV"; fi
 
+# STEP_STDIN: a repo-relative file the exe reads as standard input. Copied in as
+# /tests_kernel/NAME.stdin; empty leaves standard input as the console (S1-S9).
+STEP_STDIN="${STEP_STDIN:-}"
+STDIN_REDIR=""
+if [ -n "$STEP_STDIN" ]; then
+    [ -f "$REPO/$STEP_STDIN" ] || { echo "step-initramfs: missing stdin $REPO/$STEP_STDIN" >&2; exit 1; }
+    cp "$REPO/$STEP_STDIN" "$W/tests_kernel/$NAME.stdin"
+    chmod 644 "$W/tests_kernel/$NAME.stdin"
+    STDIN_REDIR="< /tests_kernel/$NAME.stdin"
+fi
+
 cat > "$W/init" <<EOF
 #!/bin/sh
 mount -t proc proc /proc
@@ -63,7 +76,7 @@ mount -t sysfs sysfs /sys
 mount -t tmpfs tmpfs /tmp
 echo "=== STEP init: $NAME (no 9p share) ==="
 $ENV_LINE
-/tests_kernel/$NAME.exe $STEP_ARGS
+/tests_kernel/$NAME.exe $STEP_ARGS $STDIN_REDIR
 RC=\$?
 echo "STEP exit status: \$RC (expected $EXPECT)"
 if [ "\$RC" -eq $EXPECT ]; then echo "STEP PASS"; else echo "STEP FAIL"; fi
