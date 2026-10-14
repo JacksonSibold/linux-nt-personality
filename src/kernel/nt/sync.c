@@ -1310,26 +1310,25 @@ void nt_wake_by_address_all(void *addr) {
 /* abandonment */
 void nt_abandon_owned_mutants(struct nt_thread *thread) {
     if (!thread) return;
-    // snapshot list to avoid holding thread lock while locking mutant
-    struct nt_mutant *arr[64]; int n=0;
-    pthread_mutex_lock(&thread->lock);
-    struct list_head *pos;
-    for (pos=thread->owned_mutants.next; pos!=&thread->owned_mutants && n<64; pos=pos->next) {
-        struct nt_mutant *m=list_entry(pos, struct nt_mutant, owned_entry);
-        arr[n++]=m;
-    }
-    // clear list
-    INIT_LIST_HEAD(&thread->owned_mutants);
-    pthread_mutex_unlock(&thread->lock);
-    for (int i=0;i<n;i++) {
-        struct nt_mutant *m=arr[i];
+    /* Detach one owned mutant at a time under the thread lock, until the list is
+     * empty. No fixed-size snapshot, so every owned mutant is abandoned however
+     * many the thread holds; the thread lock is not held while a mutant is locked. */
+    for (;;) {
+        struct nt_mutant *m = NULL;
+        pthread_mutex_lock(&thread->lock);
+        if (!list_empty(&thread->owned_mutants)) {
+            m = list_entry(thread->owned_mutants.next, struct nt_mutant, owned_entry);
+            list_del(&m->owned_entry);
+            INIT_LIST_HEAD(&m->owned_entry);
+        }
+        pthread_mutex_unlock(&thread->lock);
+        if (!m) break;
         struct nt_dispatcher_header *h=&m->header;
         pthread_mutex_lock(&h->lock);
         m->abandoned = true;
         m->owner = NULL;
         m->recursion = 0;
         h->signal_state = 1;
-        INIT_LIST_HEAD(&m->owned_entry);
         pthread_mutex_unlock(&h->lock);
         wake_waiters_for_header(h);
     }
@@ -2249,25 +2248,26 @@ void nt_wake_by_address_all(void *addr)
 void nt_abandon_owned_mutants(struct nt_thread *thread)
 {
     if (!thread) return;
-    struct nt_mutant *arr[64]; int n = 0;
-    unsigned long flags;
-    spin_lock_irqsave(&thread->lock, flags);
-    struct list_head *pos;
-    for (pos = thread->owned_mutants.next; pos != &thread->owned_mutants && n < 64; pos = pos->next) {
-        struct nt_mutant *m = list_entry(pos, struct nt_mutant, owned_entry);
-        arr[n++] = m;
-    }
-    INIT_LIST_HEAD(&thread->owned_mutants);
-    spin_unlock_irqrestore(&thread->lock, flags);
-    for (int i = 0; i < n; i++) {
-        struct nt_mutant *m = arr[i];
+    /* Same protocol as the userspace variant: detach one owned mutant at a time
+     * under the thread lock until the list is empty, so no mutant is left owned
+     * by a dead thread however many it holds. */
+    for (;;) {
+        struct nt_mutant *m = NULL;
+        unsigned long flags;
+        spin_lock_irqsave(&thread->lock, flags);
+        if (!list_empty(&thread->owned_mutants)) {
+            m = list_entry(thread->owned_mutants.next, struct nt_mutant, owned_entry);
+            list_del(&m->owned_entry);
+            INIT_LIST_HEAD(&m->owned_entry);
+        }
+        spin_unlock_irqrestore(&thread->lock, flags);
+        if (!m) break;
         struct nt_dispatcher_header *h = &m->header;
         spin_lock_irqsave(&h->lock, flags);
         m->abandoned = true;
         m->owner = NULL;
         m->recursion = 0;
         h->signal_state = 1;
-        INIT_LIST_HEAD(&m->owned_entry);
         spin_unlock_irqrestore(&h->lock, flags);
         kernel_wake_waiters(h);
     }

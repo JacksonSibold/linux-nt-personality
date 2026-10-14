@@ -17,7 +17,12 @@ extern _Atomic long kshim_alloc_count;
 
 static int g_pass=0, g_fail=0;
 #define TEST(name) static void test_##name(void)
-#define RUN(name) do { printf("  RUN %s\n", #name); test_##name(); } while(0)
+/* SYNC_TEST_ONLY=<name> runs just that test (for loops over one regression). */
+static int sync_test_selected(const char *name) {
+    const char *only = getenv("SYNC_TEST_ONLY");
+    return !only || !*only || strcmp(only, name) == 0;
+}
+#define RUN(name) do { if (sync_test_selected(#name)) { printf("  RUN %s\n", #name); test_##name(); } } while(0)
 #define ASSERT(cond) do { if (!(cond)) { fprintf(stderr,"FAIL %s:%d: %s\n",__FILE__,__LINE__,#cond); g_fail++; return; } } while(0)
 #define ASSERT_STATUS(expr, expect) do { NTSTATUS _s=(expr); if(_s!=(expect)){ fprintf(stderr,"FAIL %s:%d: expect 0x%lx got 0x%lx for %s\n",__FILE__,__LINE__,(unsigned long)(expect),(unsigned long)_s,#expr); g_fail++; return; } } while(0)
 #define PASS() do { g_pass++; printf("  PASS %s\n", __func__); } while(0)
@@ -676,6 +681,42 @@ static int sync_iterations(void){
     return (int)v;
 }
 
+/* ---- Regression: a thread owning more than 64 mutants abandons all of them ----
+ * nt_abandon_owned_mutants used to snapshot at most 64 entries and then clear the
+ * whole owned list, so the mutants past the 64th stayed owned by the dead thread
+ * forever. Every one of OWNED_MANY mutants must come out abandoned and unowned,
+ * and a waiter must see each one as STATUS_ABANDONED_WAIT_0. */
+#define OWNED_MANY 200
+TEST(abandon_many_owned_mutants){
+    struct nt_thread *owner; ASSERT_STATUS(nt_thread_create(&owner),STATUS_SUCCESS);
+    struct nt_mutant *ms[OWNED_MANY];
+    nt_set_current_thread(owner);
+    for(int i=0;i<OWNED_MANY;i++){
+        ASSERT_STATUS(nt_create_mutant(&ms[i],0),STATUS_SUCCESS);
+        ASSERT_STATUS(nt_wait_for_single_object((struct nt_dispatcher_header*)ms[i],0,NULL),STATUS_WAIT_0);
+    }
+    nt_set_current_thread(NULL);
+    nt_abandon_owned_mutants(owner);
+    ASSERT(list_empty(&owner->owned_mutants));
+    int bad=0;
+    for(int i=0;i<OWNED_MANY;i++){
+        if(!ms[i]->abandoned || ms[i]->owner!=NULL || ms[i]->header.signal_state!=1) bad++;
+    }
+    if(bad){ fprintf(stderr,"FAIL abandon_many_owned: %d of %d mutants not abandoned\n",bad,OWNED_MANY); g_fail++; }
+    struct nt_thread *waiter; ASSERT_STATUS(nt_thread_create(&waiter),STATUS_SUCCESS);
+    nt_set_current_thread(waiter);
+    int wrong=0;
+    for(int i=0;i<OWNED_MANY;i++){
+        NTSTATUS s=nt_wait_for_single_object((struct nt_dispatcher_header*)ms[i],0,NULL);
+        if(s!=STATUS_ABANDONED_WAIT_0) wrong++;
+        else nt_release_mutant(ms[i],NULL);
+    }
+    if(wrong){ fprintf(stderr,"FAIL abandon_many_owned: %d waits not STATUS_ABANDONED_WAIT_0\n",wrong); g_fail++; }
+    for(int i=0;i<OWNED_MANY;i++) nt_put_mutant(ms[i]);
+    nt_set_current_thread(NULL); nt_thread_destroy(waiter); nt_thread_destroy(owner);
+    if(!bad && !wrong) PASS();
+}
+
 int main(void){
     printf("ntsync tests starting\n");
     long before = atomic_load(&kshim_alloc_count);
@@ -698,9 +739,10 @@ int main(void){
     RUN(mutant_abandon_process_exit);
     RUN(zero_poll_abandoned);
     RUN(wait_any_caller_order);
+    RUN(abandon_many_owned_mutants);
     RUN(stress_random);
     /* Extended overlapping wait-set permutations — toward DOD-SYNC-A007/B007 (10^6 shuffles, 0 mismatches) and B001/B002 */
-    {
+    if (sync_test_selected("wmo_overlapping_permutations")) {
         printf("  RUN wmo_overlapping_permutations (scaled)\n");
         struct nt_thread *thr; NTSTATUS st=nt_thread_create(&thr); if(st==STATUS_SUCCESS){ nt_set_current_thread(thr);
             struct nt_event *ev[8]; struct nt_dispatcher_header *hdrs[8];
@@ -737,7 +779,7 @@ int main(void){
         }
     }
     /* WaitOnAddress extended torture — toward 10^7 transitions (20000 by default, see SYNC_TEST_ITERATIONS; 10^7 is nightly KASAN soak) */
-    {
+    if (sync_test_selected("wait_on_address_extended")) {
         printf("  RUN wait_on_address_extended\n");
         struct nt_thread *thr; if(nt_thread_create(&thr)==STATUS_SUCCESS){ nt_set_current_thread(thr);
             volatile uint32_t val=0;
