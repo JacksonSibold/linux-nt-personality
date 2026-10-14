@@ -3,6 +3,84 @@
 Kernel: Linux **6.18.56** (newest 6.18.y in kernel.org `sha256sums.asc`), built in the Debian 12 guest
 (`~/ntpers/linux-6.18.56`) with the NT wiring from `tools/ntpers_kpatch.py`. Session date 2026-10-13.
 
+## 252fa28: PE process parameters, boot verification (2026-10-14)
+
+Commit `252fa28` (loader: fill PEB process parameters) changed `binfmt_pe.c`: `pe_build_process_parameters`
+fills ImagePathName, CommandLine and Environment from argv and envp (read from `mm->arg_start`). The kernel
+had compiled but never been booted. This section boots it.
+
+Kernel: `bzImage` built incrementally in the guest at `~/loader` (the `~/kfast/linux-src` tree, rebuilt
+16:55 with `vm/incremental-kernel.sh`), sha256 `16b98d6e887d6a45c5efeb50e760d234cb1eb97fefe5534e78ad648b7de5e6dc`,
+1,135,616 bytes. Its NT sources match `252fa28`: all 87 entries of the guest manifest hash to the same
+content as the blobs at `252fa28` (CRLF removed). Userspace PEs and DLLs were built in `~/loader/repo` from
+the same tree (`make -C src/ntdll all kernel32 msvcrt advapi32 user32`, `make -C tests/kernel all s2..s8`).
+Host boots: `tools/linux-env/boot-m0-host.ps1` with `-KernelDir` set to a copy of the bzImage and the
+initramfs images (`C:\Users\Jackson\repos\linux-env\kernel-252fa28`), QEMU TCG, `-nic none`.
+
+| step | PE | exit status (expected) | verdict | serial line |
+|---|---|---|---|---|
+| M0 | `minimal.exe` | 42 (42) | PASS | `M0 exit status: 42 (expected 42)`, `M0 PASS` |
+| S1 | `console_s1.exe` | 0 (0) | PASS | `hello from NT` |
+| S2 | `console_s2.exe` | 0 (0) | PASS | `hello from NT via ntdll` |
+| S3 | `console_s3.exe` | 0 (0) | PASS | `hello from kernel32`, `file payload from S3` |
+| S4 | `console_s4.exe` | 0 (0) | PASS | `hello from msvcrt 4 printf`, `hello from msvcrt puts` |
+| S5 | `console_s5.exe` | 53 (53) | PASS | `STEP exit status: 53 (expected 53)` |
+| S6 | `console_s6.exe` | 0 (0) | PASS | `S6 GetProcAddress kernel32 GetCurrentProcessId: match` |
+| S7 | `console_s7.exe` | 0 (0) | PASS | `STEP exit status: 0 (expected 0)`, `STEP PASS` |
+| S8 | `console_s8.exe` (new, below) | 0 (0) | PASS | `S8 command line: 5 args ok; environment NTPERS_S8 ok` |
+
+S1-S7 were booted with `log_buf_len=16M` appended to the kernel command line (an extra argument in the
+loop, not the S-step default). It only sizes the printk ring. S8 and M0 used the default command line.
+
+**S8: the exe sees its own command line and environment.** New fixture `tests/kernel/s8/console_s8.c`
+(`make -C tests/kernel s8`). It starts with argv `alpha 'beta gamma' 3 'say"hi'` and the environment
+`NTPERS_S8=alpha-env` (both through `STEP_ARGS` and `STEP_ENV` in `tools/linux-env/step-initramfs.sh`).
+The exe reads `PEB->ProcessParameters` (`%gs:0x60`, `+0x20`) and checks, with values written in the
+source and not read from a recorded output: five arguments split by the Windows rules; argv[0] ends with
+`console_s8.exe`; argv[1..4] are `alpha`, `beta gamma` (quoted by the kernel), `3`, and `say"hi` (the
+kernel writes the quote as `\"`); the environment block contains `NTPERS_S8=alpha-env` and its
+`EnvironmentSize` covers the block up to its double NUL; ImagePathName ends with `console_s8.exe`;
+`GetCommandLineW` and `GetEnvironmentStringsW` return the same buffers as the PEB. Exit codes 10 to 22
+name the failed check. Negative control: the same image with `STEP_ENV` unset exits 18 (the environment
+check fails and says so), as expected.
+
+**Gap found and fixed.** The kernel32 shim did not export `GetCommandLineW` or `GetEnvironmentStringsW`,
+so a PE that called them could not link. Added in `src/ntdll/kernel32.c` (they return
+`PEB->ProcessParameters` CommandLine.Buffer and Environment) and in `src/ntdll/kernel32.def`.
+`GetCommandLineA` is still missing. The S8 image was rebuilt with the new kernel32.dll and booted again
+(PASS above).
+
+**NONVM probes** (`NONVM=1 tools/linux-env/probes-initramfs.sh`, `log_buf_len=16M`, host timeout 1800 s).
+All 15 reach `NTPERS_ALL_DONE`; 14 exit 0 and `probe_exception` exits 139, as before. Compared with the
+goldens in `tests/differential/golden/windows-26200.9457` (`probe_results.py split` and `compare`):
+
+| probe | matched / golden | 0d19a62 |
+|---|---|---|
+| probe_directory | 19 / 67 | 19 / 67 |
+| probe_exception | 0 / 76 | 0 / 76 |
+| probe_fileinfo | 165 / 221 | 165 / 221 |
+| probe_handles | 82 / 111 | 82 / 111 |
+| probe_namedpipe | 3 / 45 | 3 / 45 |
+| probe_ntstatus | 2190 / 2199 | 2190 / 2199 |
+| probe_path | 51355 / 72523 | 51355 / 72523 |
+| probe_peloader | 33 / 34 | 33 / 34 |
+| probe_process_thread | 0 / 182 | 0 / 182 |
+| probe_registry | 128 / 140 | 128 / 140 |
+| probe_section | 128 / 129 | 128 / 129 |
+| probe_sharemode | 458857 / 458857 (PASS) | 458857 / 458857 (PASS) |
+| probe_sync | 0 / 74 | 0 / 74 |
+| probe_teb_peb | 81 / 104 | 79 / 104 |
+| probe_virtualquery | 128 / 139 | 128 / 139 |
+
+No regression. `probe_teb_peb` gained two fields. The NONVM image was packed with the kernel32.dll built
+before the two new exports; the exports do not change any probe's path.
+
+**Finding, not fixed: `probe_peloader` runs without an argument.** Its output is
+`no path provided, usage: probe_pe...`, so its one-field match (33 of 34) compares an empty result with the
+golden and is vacuous (`compare.json` marks the field `vacuous`, severity S1). The NONVM framework starts
+every probe with no arguments. A probe that needs an argument can only be given one by extending the
+probes init, which is out of scope here.
+
 ## Min profile (2026-10-14): smaller kernel, same M0 and S1-S4 result
 
 The default `.config` is now `PROFILE=min` (`vm/make-kernel-config.sh`, BUILD-RECIPE 6). It drops the

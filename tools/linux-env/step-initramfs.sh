@@ -48,13 +48,22 @@ for pair in "$@"; do
     chmod 755 "$W$dest"
 done
 
+# STEP_ARGS: shell words appended to the exe's command line, inserted verbatim into /init
+# (e.g. STEP_ARGS="alpha 'beta gamma'"). STEP_ENV: one NAME=VALUE exported to the exe
+# (e.g. STEP_ENV="NTPERS_S8=alpha-env"). Both default to empty (S1-S7, M0 start with no arguments).
+STEP_ARGS="${STEP_ARGS:-}"
+STEP_ENV="${STEP_ENV:-}"
+ENV_LINE=""
+if [ -n "$STEP_ENV" ]; then ENV_LINE="export $STEP_ENV"; fi
+
 cat > "$W/init" <<EOF
 #!/bin/sh
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t tmpfs tmpfs /tmp
 echo "=== STEP init: $NAME (no 9p share) ==="
-/tests_kernel/$NAME.exe
+$ENV_LINE
+/tests_kernel/$NAME.exe $STEP_ARGS
 RC=\$?
 echo "STEP exit status: \$RC (expected $EXPECT)"
 if [ "\$RC" -eq $EXPECT ]; then echo "STEP PASS"; else echo "STEP FAIL"; fi

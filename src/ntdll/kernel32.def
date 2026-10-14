@@ -2,6 +2,8 @@ LIBRARY kernel32
 EXPORTS
     GetStdHandle
     SetStdHandle
+    GetCommandLineW
+    GetEnvironmentStringsW
     WriteFile
     ReadFile
     WriteConsoleA

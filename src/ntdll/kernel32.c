@@ -144,6 +144,24 @@ BOOL WINAPI SetStdHandle(DWORD which, HANDLE h) {
     return 1;
 }
 
+/* The command line and environment block that binfmt_pe wrote into the PEB's
+ * process parameters (pe_build_process_parameters). NULL without parameters. */
+static RTL_USER_PROCESS_PARAMETERS *k32_process_parameters(void) {
+    PTEB teb = NtCurrentTebMingw();
+    PEB *peb = teb ? teb->ProcessEnvironmentBlock : NULL;
+    return peb ? peb->ProcessParameters : NULL;
+}
+
+WCHAR *WINAPI GetCommandLineW(void) {
+    RTL_USER_PROCESS_PARAMETERS *pp = k32_process_parameters();
+    return pp ? pp->CommandLine.Buffer : NULL;
+}
+
+WCHAR *WINAPI GetEnvironmentStringsW(void) {
+    RTL_USER_PROCESS_PARAMETERS *pp = k32_process_parameters();
+    return pp ? (WCHAR *)pp->Environment : NULL;
+}
+
 /* Shared body of ReadFile and WriteFile. A pending request is waited for on
  * the handle, so the result is the final status either way. An overlapped
  * request is treated as synchronous (the offset is used, nothing is queued). */

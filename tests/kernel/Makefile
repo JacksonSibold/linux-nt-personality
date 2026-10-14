@@ -56,6 +56,12 @@ $(BINDIR)/console_s7.exe: s7/console_s7.c $(BINDIR)/libkernel32_imp.a
 
 s7: $(BINDIR)/console_s7.exe
 
+# S8: the exe sees its own command line and environment through the PEB (binfmt_pe.c).
+$(BINDIR)/console_s8.exe: s8/console_s8.c $(BINDIR)/libkernel32_imp.a
+	$(CC) -nostdlib -Wl,-e,_start -Wl,--no-seh -Wl,--no-insert-timestamp -Os -s -ffreestanding -fno-builtin -fno-stack-protector -o $@ $< -L$(BINDIR) -lkernel32_imp
+
+s8: $(BINDIR)/console_s8.exe
+
 $(BINDIR)/libmsvcrt_imp.a: ../../src/ntdll/msvcrt.def | $(BINDIR)
 	x86_64-w64-mingw32-dlltool -d $< -l $@ -D msvcrt.dll
 
