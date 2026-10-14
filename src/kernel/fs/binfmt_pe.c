@@ -5,6 +5,7 @@
  * kernel_read based headers/reloc, and stack sizes.
  */
 
+#ifndef KSHIM_H /* the userspace unit-test build takes these names from kshim.h */
 #include <linux/kernel.h>
 #include <linux/fs.h>
 #include <linux/file.h>
@@ -21,6 +22,8 @@
 #include <asm/processor.h>
 #include <asm/fsgsbase.h>
 #include <asm/cpufeature.h>
+#endif
+#include "../../ntdll/os_identity.h"
 
 /* Forward from arch/x86/nt */
 static struct linux_binfmt pe_format;
@@ -608,6 +611,19 @@ static int pe_build_process_parameters(struct pe_load_state *st)
     return 0;
 }
 
+/* The PEB's OS identity block (ADR 0075). Offsets and types match
+ * OSMajorVersion..OSPlatformId in struct _PEB (src/ntdll/nt_types.h); the
+ * unit test checks them against that struct. */
+#define PEB_OFF_OS_IDENTITY 0x118
+struct pe_peb_os_identity {
+    u32 OSMajorVersion;   /* +0x118 */
+    u32 OSMinorVersion;   /* +0x11c */
+    u16 OSBuildNumber;    /* +0x120 */
+    u16 OSCSDVersion;     /* +0x122: service pack, 0 */
+    u32 OSPlatformId;     /* +0x124 */
+};
+_Static_assert(sizeof(struct pe_peb_os_identity) == 0x10, "PEB OS identity block size");
+
 static int pe_init_peb(struct pe_load_state *st)
 {
     unsigned long p = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, 0);
@@ -626,7 +642,13 @@ static int pe_init_peb(struct pe_load_state *st)
     if (copy_to_user((void __user *)(p+0x10), &img, 8)) return -EFAULT;
     if (copy_to_user((void __user *)(p+0x20), &params, 8)) return -EFAULT;
     // BeingDebugged at 0x02 =0 already
-    // OS version etc not needed
+    // OS identity: the values RtlGetVersion reports, from the shared header.
+    struct pe_peb_os_identity os = {0};
+    os.OSMajorVersion = NT_OS_MAJOR_VERSION;
+    os.OSMinorVersion = NT_OS_MINOR_VERSION;
+    os.OSBuildNumber = NT_OS_BUILD_NUMBER;
+    os.OSPlatformId = NT_OS_PLATFORM_ID;
+    if (copy_to_user((void __user *)(p+PEB_OFF_OS_IDENTITY), &os, sizeof(os))) return -EFAULT;
     u32 flag=0;
     if (copy_to_user((void __user *)(p+0xbc), &flag, 4)) return -EFAULT;
     st->peb = (void *)p;
@@ -1206,7 +1228,9 @@ extern u32 nt_svc_NtTerminateProcess(unsigned long, unsigned long, unsigned long
  * This fallback does not look at the handle, so it must not terminate the
  * caller for a foreign handle. It reports STATUS_NOT_IMPLEMENTED instead
  * (docs/decisions/0015, kernel-fs K-12). */
+#ifndef KSHIM_H
 #include <linux/sched/signal.h>
+#endif
 #ifndef STATUS_NOT_IMPLEMENTED
 #define STATUS_NOT_IMPLEMENTED ((u32)0xC0000002UL)
 #endif

@@ -7,6 +7,8 @@
 #include "kshim.h"
 #include "binfmt_pe.c"
 #include "../../loader/pe_prot.h"
+#include "../../loader/pe_text.h"
+#include "../../ntdll/os_identity.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -19,6 +21,9 @@
 /* -------------------------------------------------------------------------- */
 /* Tiny test harness                                                          */
 /* -------------------------------------------------------------------------- */
+/* The loader reads the file size through f->f_inode, as with a real open(). */
+static struct inode test_inode;
+
 static int tests_run = 0;
 static int tests_pass = 0;
 static int tests_fail = 0;
@@ -357,7 +362,7 @@ static void test_reloc_dir64(void)
     fd = open(path, O_RDONLY);
     ASSERT(fd >= 0);
     f.fd = fd;
-    f.size = pb.size;
+    f.size = pb.size; f.f_inode = &test_inode; test_inode.i_size = pb.size;
 
     bprm.file = &f;
     bprm.mm = &mm;
@@ -438,7 +443,7 @@ static void test_reloc_absolute_skip(void)
     ASSERT_EQ(pb_write_file(&pb, path), 0);
     fd = open(path, O_RDONLY);
     ASSERT(fd >= 0);
-    f.fd = fd; f.size = pb.size;
+    f.fd = fd; f.size = pb.size; f.f_inode = &test_inode; test_inode.i_size = pb.size;
     bprm.file = &f; bprm.mm = &mm;
     bprm.buf = pb.data; bprm.buf_len = pb.size > 512 ? 512 : pb.size;
     st.file = &f; st.bprm = &bprm;
@@ -497,7 +502,7 @@ static void test_reloc_unsupported_type(void)
     ASSERT_EQ(pb_write_file(&pb, path), 0);
     fd = open(path, O_RDONLY);
     ASSERT(fd >= 0);
-    f.fd = fd; f.size = pb.size;
+    f.fd = fd; f.size = pb.size; f.f_inode = &test_inode; test_inode.i_size = pb.size;
     bprm.file = &f; bprm.mm = &mm;
     bprm.buf = pb.data; bprm.buf_len = pb.size > 512 ? 512 : pb.size;
     st.file = &f; st.bprm = &bprm;
@@ -532,7 +537,7 @@ static void test_cmdline_and_env(void)
     bprm.envc = 2;
     bprm.envp = envp;
 
-    n = pe_build_command_line(&bprm, buf, 256);
+    n = pe_build_command_line(bprm.argc, bprm.argv, buf, 256);
     ASSERT(n > 0);
     /* First char is 'p' */
     ASSERT(buf[0] == (WCHAR)'p');
@@ -543,7 +548,7 @@ static void test_cmdline_and_env(void)
         ASSERT(found_quote);
     }
 
-    n = pe_build_environment(&bprm, buf, 256);
+    n = pe_build_environment(bprm.envc, bprm.envp, buf, 256);
     ASSERT(n > 0);
     ASSERT(buf[0] == (WCHAR)'F');
     /* Find double-null terminator */
@@ -598,7 +603,7 @@ static void test_peb_teb_population(void)
     st.bprm = &bprm;
     st.actual_base = PE_PREFERRED_BASE;
     st.entry_point = 0x1000;
-    st.pe.subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI;
+    st.subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI;
     st.image_base = PE_PREFERRED_BASE;
     st.size_of_image = 0x10000;
     st.dynamic_base = 1;
@@ -627,8 +632,14 @@ static void test_peb_teb_population(void)
     ASSERT(peb->ProcessParameters == (PRTL_USER_PROCESS_PARAMETERS)st.params);
     ASSERT_EQ(peb->BeingDebugged, 0);
     ASSERT_EQ(peb->NtGlobalFlag, 0);
-    ASSERT_EQ(peb->OSMajorVersion, 10);
-    ASSERT_EQ(peb->OSBuildNumber, 26200);
+    /* OS identity: the shared constants (ADR 0075), at the PEB offsets
+     * that struct _PEB declares. */
+    _Static_assert(offsetof(PEB, OSMajorVersion) == 0x118, "PEB.OSMajorVersion offset");
+    _Static_assert(offsetof(PEB, OSPlatformId) == 0x124, "PEB.OSPlatformId offset");
+    ASSERT_EQ(peb->OSMajorVersion, NT_OS_MAJOR_VERSION);
+    ASSERT_EQ(peb->OSMinorVersion, NT_OS_MINOR_VERSION);
+    ASSERT_EQ(peb->OSBuildNumber, NT_OS_BUILD_NUMBER);
+    ASSERT_EQ(peb->OSPlatformId, NT_OS_PLATFORM_ID);
 
     ASSERT((struct _NT_TIB *)teb == teb->NtTib.Self);
     ASSERT_EQ(teb->ProcessEnvironmentBlock, (struct _PEB *)peb);
@@ -669,7 +680,7 @@ static void test_stack_alignment_and_size(void)
     int ret;
     bprm.argc = 1; bprm.argv = argv; bprm.envc = 1; bprm.envp = envp;
     st.bprm = &bprm;
-    st.pe.subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI;
+    st.subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI;
     kshim_mapping_reset();
     ret = pe_setup_stack(&st);
     ASSERT_EQ(ret, 0);
@@ -693,7 +704,7 @@ static void test_process_parameters_layout(void)
     const char *envp[] = {"ONE=1", "TWO=2"};
     bprm.argc = 2; bprm.argv = argv; bprm.envc = 2; bprm.envp = envp;
     st.bprm = &bprm;
-    st.pe.subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI;
+    st.subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI;
     kshim_mapping_reset();
     int ret = pe_build_process_parameters(&st);
     ASSERT_EQ(ret, 0);
@@ -742,7 +753,7 @@ static void test_pe_validate_rejects_dll(void)
     fd = mkstemp(path); ASSERT(fd>=0); close(fd);
     ASSERT_EQ(pb_write_file(&pb, path), 0);
     fd = open(path, O_RDONLY); ASSERT(fd>=0);
-    f.fd = fd; f.size = pb.size;
+    f.fd = fd; f.size = pb.size; f.f_inode = &test_inode; test_inode.i_size = pb.size;
     bprm.file = &f; bprm.mm = &mm;
     bprm.buf = pb.data; bprm.buf_len = pb.size > 512 ? 512 : pb.size;
     st.file = &f; st.bprm = &bprm;
@@ -774,7 +785,7 @@ static void test_cleanup_on_map_failure(void)
     fd = mkstemp(path); ASSERT(fd>=0); close(fd);
     ASSERT_EQ(pb_write_file(&pb, path), 0);
     fd = open(path, O_RDONLY); ASSERT(fd>=0);
-    f.fd = fd; f.size = pb.size;
+    f.fd = fd; f.size = pb.size; f.f_inode = &test_inode; test_inode.i_size = pb.size;
     bprm.file = &f; bprm.mm = &mm;
     bprm.buf = pb.data; bprm.buf_len = pb.size > 512 ? 512 : pb.size;
     st.file = &f; st.bprm = &bprm;

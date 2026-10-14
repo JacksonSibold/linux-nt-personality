@@ -186,5 +186,103 @@ class Policy(unittest.TestCase):
             self.assertTrue((REPO / site["file"]).is_file(), site["file"])
 
 
+HEADER = "src/id.h"
+HEADER_TEXT = "#define NT_OS_BUILD 26200\n#define NT_OS_TYPE 1\n"
+
+
+def _symbolic_policy(sites):
+    return {
+        "reference_build": "test",
+        "identity_header": HEADER,
+        "fields": {
+            "dwBuildNumber": {"value": 26200, "symbol": "NT_OS_BUILD"},
+            "wProductType": {"value": 1, "symbol": "NT_OS_TYPE"},
+        },
+        "sites": sites,
+        "scan_roots": ["src"],
+    }
+
+
+class SymbolicIdentity(unittest.TestCase):
+    """Identity macros from the policy's identity_header (ADR 0075)."""
+
+    def _run(self, files, sites, header=HEADER_TEXT):
+        files = dict(files)
+        if header is not None:
+            files[HEADER] = header
+        t = _Tree(files, _symbolic_policy(sites))
+        try:
+            return t.run()
+        finally:
+            t.close()
+
+    def test_macro_at_declared_site_is_clean(self):
+        src = (
+            "int get_version(void) {\n"
+            "    info->dwBuildNumber = NT_OS_BUILD;\n"
+            "    info->wProductType = NT_OS_TYPE;\n"
+            "    return 0;\n}\n"
+        )
+        code, out = self._run({"src/a.c": src}, [SITE_BUILD, SITE_TYPE])
+        self.assertEqual(code, 0, out)
+        self.assertIn("ok        src/a.c:get_version.dwBuildNumber = 26200", out)
+        self.assertIn("violations: 0", out)
+
+    def test_header_disagreeing_with_policy_is_reported(self):
+        src = "int get_version(void) {\n    info->dwBuildNumber = NT_OS_BUILD;\n    info->wProductType = NT_OS_TYPE;\n}\n"
+        code, out = self._run({"src/a.c": src}, [SITE_BUILD, SITE_TYPE],
+                              header="#define NT_OS_BUILD 20348\n#define NT_OS_TYPE 1\n")
+        self.assertEqual(code, 1)
+        self.assertRegex(out, r"mismatch\s+src/id\.h:NT_OS_BUILD found=20348 declared=26200")
+
+    def test_macro_missing_from_header_is_reported(self):
+        src = "int get_version(void) {\n    info->dwBuildNumber = NT_OS_BUILD;\n    info->wProductType = NT_OS_TYPE;\n}\n"
+        code, out = self._run({"src/a.c": src}, [SITE_BUILD, SITE_TYPE],
+                              header="#define NT_OS_BUILD 26200\n")
+        self.assertEqual(code, 1)
+        self.assertIn("missing-symbol src/id.h:NT_OS_TYPE", out)
+
+    def test_site_using_undefined_macro_is_reported(self):
+        src = "int get_version(void) {\n    info->dwBuildNumber = NT_OS_NOPE;\n    info->wProductType = NT_OS_TYPE;\n}\n"
+        code, out = self._run({"src/a.c": src}, [SITE_BUILD, SITE_TYPE])
+        self.assertEqual(code, 1)
+        self.assertIn("unknown-symbol", out)
+
+    def test_correct_macro_outside_declared_site_is_allowed(self):
+        src = (
+            "int get_version(void) {\n    info->dwBuildNumber = NT_OS_BUILD;\n    info->wProductType = NT_OS_TYPE;\n}\n"
+            "int other(void) {\n    info->dwBuildNumber = NT_OS_BUILD;\n    return 0;\n}\n"
+        )
+        code, out = self._run({"src/a.c": src}, [SITE_BUILD, SITE_TYPE])
+        self.assertEqual(code, 0, out)
+
+    def test_wrong_macro_outside_declared_site_is_flagged(self):
+        src = (
+            "int get_version(void) {\n    info->dwBuildNumber = NT_OS_BUILD;\n    info->wProductType = NT_OS_TYPE;\n}\n"
+            "int rogue(void) {\n    info->dwBuildNumber = NT_OS_OTHER;\n    return 0;\n}\n"
+        )
+        code, out = self._run({"src/a.c": src}, [SITE_BUILD, SITE_TYPE],
+                              header=HEADER_TEXT + "#define NT_OS_OTHER 20348\n")
+        self.assertEqual(code, 1)
+        self.assertIn("undeclared src/a.c:6 dwBuildNumber = NT_OS_OTHER", out)
+
+    def test_undefined_macro_outside_declared_site_is_flagged(self):
+        src = (
+            "int get_version(void) {\n    info->dwBuildNumber = NT_OS_BUILD;\n    info->wProductType = NT_OS_TYPE;\n}\n"
+            "int rogue(void) {\n    info->dwBuildNumber = NT_OS_NOPE;\n    return 0;\n}\n"
+        )
+        code, out = self._run({"src/a.c": src}, [SITE_BUILD, SITE_TYPE])
+        self.assertEqual(code, 1)
+        self.assertIn("undeclared src/a.c:6 dwBuildNumber = NT_OS_NOPE", out)
+
+
+class RepositoryTree(unittest.TestCase):
+    def test_repository_tree_is_clean(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = audit.main(["--root", str(REPO)])
+        self.assertEqual(code, 0, buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

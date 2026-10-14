@@ -39,14 +39,21 @@
 #include <stdint.h>
 #include <signal.h>
 #include <sys/syscall.h>
-#include <linux/cred.h>
+#include <sys/stat.h>
+#include <sys/random.h>
+#include <stdbool.h>
 
 /* Matches tests/syntax/shim/kernel_compat.h; the typedef may repeat. */
+#ifndef __GLIBC__ /* glibc <sys/types.h> (_GNU_SOURCE) already defines loff_t */
 typedef long long loff_t;
+#endif
 
 /* pe_format.h defines u8/u16/u32/u64 in userspace.  Include it first so the
  * shim can use those names without redeclaring them. */
 #include "../../loader/pe_format.h"
+/* PEB, TEB, RTL_USER_PROCESS_PARAMETERS and HANDLE (the layouts the loader
+ * writes into the process page). */
+#include "../../ntdll/nt_types.h"
 
 /* -------------------------------------------------------------------------- */
 /* Minimal kernel types                                                       */
@@ -73,7 +80,11 @@ struct mm_struct {
     unsigned long start_stack;
 };
 
-struct inode;
+struct inode {
+    u64 i_size;
+    unsigned int i_mode;
+    unsigned int i_uid;
+};
 
 struct file {
     int fd;
@@ -81,7 +92,16 @@ struct file {
     struct inode *f_inode;
 };
 
-typedef unsigned short WCHAR;
+/* kuid_t/kgid_t: the loader compares uid.val and euid.val. */
+typedef struct { unsigned int val; } kuid_t;
+typedef struct { unsigned int val; } kgid_t;
+
+struct cred {
+    kuid_t uid, euid;
+    kgid_t gid, egid;
+};
+
+struct module;
 
 struct pt_regs {
     unsigned long cx;
@@ -164,6 +184,23 @@ static inline struct task_struct *kshim_current_task(void)
 #define GFP_ATOMIC 0
 #define BINPRM_BUF_SIZE 128
 
+/* Kernel spellings the loader uses. __user is an address-space annotation
+ * that is empty in userspace. */
+#define __user
+#define __init
+#define __exit
+#define THIS_MODULE ((struct module *)0)
+/* Values from src/kernel/patches/0001-nt-personality-dispatch.patch. */
+#ifndef TIF_NTABI
+#define TIF_NTABI 29
+#endif
+#define TASK_SIZE_MAX 0x00007ffffffff000UL
+#define STACK_TOP TASK_SIZE_MAX
+#define EXSTACK_DEFAULT 0
+#define core_initcall(fn)
+#define module_exit(fn)
+#define module_init(fn)
+
 /* errno already from <errno.h>; ensure ENOEXEC etc available */
 #ifndef ENOEXEC
 #define ENOEXEC 8
@@ -215,6 +252,23 @@ static inline void kfree(const void *p)
     free((void *)p);
 }
 
+static inline void get_random_bytes(void *buf, int nbytes)
+{
+    size_t done = 0;
+    while (done < (size_t)nbytes) {
+        ssize_t n = getrandom((char *)buf + done, (size_t)nbytes - done, 0);
+        if (n <= 0) break;
+        done += (size_t)n;
+    }
+}
+
+/* ERR_PTR convention: small negative errno values encoded as pointers. */
+#ifndef IS_ERR
+#define IS_ERR(x) IS_ERR_VALUE((unsigned long)(x))
+#endif
+static inline void *ERR_PTR(long err) { return (void *)(long)err; }
+static inline long PTR_ERR(const void *p) { return (long)p; }
+
 /* -------------------------------------------------------------------------- */
 /* Access helpers                                                             */
 /* -------------------------------------------------------------------------- */
@@ -226,6 +280,12 @@ static inline int access_ok(const void *addr, size_t size)
 }
 
 static inline unsigned long copy_to_user(void *to, const void *from, unsigned long n)
+{
+    memcpy(to, from, n);
+    return 0;
+}
+
+static inline unsigned long copy_from_user(void *to, const void *from, unsigned long n)
 {
     memcpy(to, from, n);
     return 0;
@@ -441,6 +501,100 @@ static inline int force_sigsegv(int sig)
     (void)sig;
     return 0;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Files and inodes (kernel_read() above is the only read path the tests use) */
+/* -------------------------------------------------------------------------- */
+static inline u64 i_size_read(const struct inode *inode)
+{
+    return inode->i_size;
+}
+
+static inline unsigned int i_uid_read(const struct inode *inode)
+{
+    return inode->i_uid;
+}
+
+static inline struct inode *file_inode(const struct file *f)
+{
+    return f->f_inode;
+}
+
+/* Opens name like the kernel's filp_open(); errors come back as ERR_PTR(-errno). */
+static inline struct file *filp_open(const char *name, int flags, unsigned int mode)
+{
+    struct stat sb;
+    struct file *f;
+    struct inode *inode;
+    int fd = open(name, flags, mode);
+    if (fd < 0)
+        return ERR_PTR(-errno);
+    f = calloc(1, sizeof(*f));
+    inode = calloc(1, sizeof(*inode));
+    if (!f || !inode || fstat(fd, &sb) != 0) {
+        int err = errno ? errno : ENOMEM;
+        close(fd);
+        free(f);
+        free(inode);
+        return ERR_PTR(-err);
+    }
+    inode->i_size = (u64)sb.st_size;
+    inode->i_mode = (unsigned int)sb.st_mode;
+    inode->i_uid = (unsigned int)sb.st_uid;
+    f->fd = fd;
+    f->size = (u64)sb.st_size;
+    f->f_inode = inode;
+    return f;
+}
+
+static inline int filp_close(struct file *f, void *owner)
+{
+    (void)owner;
+    if (!f) return 0;
+    close(f->fd);
+    free(f->f_inode);
+    free(f);
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Exec-commit and registration entry points                                  */
+/*                                                                            */
+/* load_pe_binary() calls these after begin_new_exec(). The unit tests drive  */
+/* the helper functions directly and never reach the commit path, so these    */
+/* report success without changing any state. They exist so that the loader   */
+/* compiles and links in the userspace model.                                 */
+/* -------------------------------------------------------------------------- */
+static inline int begin_new_exec(struct linux_binprm *bprm) { (void)bprm; return 0; }
+static inline int setup_new_exec(struct linux_binprm *bprm) { (void)bprm; return 0; }
+static inline void finalize_exec(struct linux_binprm *bprm) { (void)bprm; }
+static inline int setup_arg_pages(struct linux_binprm *bprm, unsigned long top, unsigned long exstack)
+{
+    (void)bprm; (void)top; (void)exstack;
+    return 0;
+}
+static inline unsigned long randomize_stack_top(unsigned long top) { return top; }
+static inline void set_binfmt(void *fmt) { (void)fmt; }
+static inline void register_binfmt(void *fmt) { (void)fmt; }
+static inline void unregister_binfmt(void *fmt) { (void)fmt; }
+static inline void preempt_disable(void) {}
+static inline void preempt_enable(void) {}
+
+static struct pt_regs kshim_regs;
+static inline struct pt_regs *task_pt_regs(struct task_struct *t) { (void)t; return &kshim_regs; }
+static inline int test_thread_flag(int flag) { (void)flag; return 0; }
+static inline void start_thread(struct pt_regs *regs, unsigned long ip, unsigned long sp)
+{
+    regs->ip = ip;
+    regs->sp = sp;
+}
+static inline void x86_gsbase_write_cpu_inactive(unsigned long gsbase) { (void)gsbase; }
+
+/* linux_binfmt: the loader's registration record. */
+struct linux_binfmt {
+    struct module *module;
+    int (*load_binary)(struct linux_binprm *bprm);
+};
 
 /* Misc */
 #ifndef _Static_assert

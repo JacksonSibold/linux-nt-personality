@@ -12,6 +12,7 @@
 #undef DUMMYSTRUCTNAME
 #endif
 #include "nt_types.h"
+#include "os_identity.h"
 #include "ntstatus.h"
 #include "nt_syscalls.h"
 #include "ldr.h"
@@ -1024,11 +1025,11 @@ typedef struct _OSVERSIONINFOEXW {
 
 NTSTATUS NTAPI RtlGetVersion(OSVERSIONINFOEXW *info) {
     if (!info || info->dwOSVersionInfoSize < sizeof(*info)) return STATUS_INVALID_PARAMETER;
-    info->dwMajorVersion = 10;
-    info->dwMinorVersion = 0;
-    info->dwBuildNumber = 26200;
-    info->dwPlatformId = 2;
-    info->wProductType = 1;
+    info->dwMajorVersion = NT_OS_MAJOR_VERSION;
+    info->dwMinorVersion = NT_OS_MINOR_VERSION;
+    info->dwBuildNumber = NT_OS_BUILD_NUMBER;
+    info->dwPlatformId = NT_OS_PLATFORM_ID;
+    info->wProductType = NT_OS_PRODUCT_TYPE;
     for (int i=0;i<128;i++) info->szCSDVersion[i]=0;
     return STATUS_SUCCESS;
 }

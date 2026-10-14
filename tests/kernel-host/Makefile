@@ -32,6 +32,7 @@ CC      := gcc
 NT      := ../../src/kernel/nt
 NTDLL   := ../../src/ntdll
 LOADER  := ../../src/loader
+FS      := ../../src/kernel/fs
 SHIM    := shim
 # COVERAGE=1: gcov instrumentation, -O0, objects in build-cov/ so the
 # instrumented and plain builds never share .o files. See tools/c_coverage.sh.
@@ -100,6 +101,16 @@ LOCAL_TESTS := port_test job_test handle_edge_test registry_ops_test process_par
 STRESS_TESTS := stress_handle_test stress_object_test stress_sync_test stress_token_test stress_section_test stress_namespace_test stress_sd_test stress_registry_test stress_timer_test
 LOCAL_TESTS += $(STRESS_TESTS)
 
+# binfmt_pe_test (src/kernel/fs): the PE loader's unit test. It #includes
+# binfmt_pe.c against the userspace model in src/kernel/fs/kshim.h, which
+# models the Linux x86-64 LP64 kernel API and uses glibc's <sys/*.h> and
+# linux/types.h. So it is built only where those exist: the Linux host (the
+# dev guest). On Windows (LLP64, UCRT) it is not part of TESTS.
+FS_TESTS := binfmt_pe_test
+ifeq ($(KHOST_OS),linux)
+TESTS += $(FS_TESTS)
+endif
+
 # Built but not run by "check" (none at present).
 BUILD_ONLY :=
 ALL_PROGS := $(TESTS) $(BUILD_ONLY) $(STRESS_TESTS)
@@ -136,6 +147,9 @@ stress_namespace_test_OBJS := security object handle nt_obj sync kshim
 stress_sd_test_OBJS := security object handle nt_obj sync kshim
 stress_registry_test_OBJS := security registry object handle nt_obj sync kshim
 stress_timer_test_OBJS := security object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
+# Loader units linked into binfmt_pe_test: PE protection mapping, UTF-16 and
+# command-line/environment builders, and the userspace kernel model's globals.
+binfmt_pe_test_OBJS := pe_parse pe_prot pe_text fs_kshim
 
 # Shim self-tests (shim/mman_test.c). Run by "check"; not kernel module tests.
 SHIM_TESTS := mman_test
@@ -195,6 +209,20 @@ $(BUILD)/nt_obj_weak.o: $(BUILD)/nt_obj.o
 $(BUILD)/khost_linux.o: $(SHIM)/linux/khost_linux.c | $(BUILD)
 	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -c $< -o $@
 
+# PE loader units from src/loader, built plain like pe_parse.o.
+$(BUILD)/pe_prot.o: $(LOADER)/pe_prot.c $(LOADER)/pe_prot.h $(LOADER)/pe_parse.h $(LOADER)/pe_format.h | $(BUILD)
+	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -I$(LOADER) -c $< -o $@
+
+$(BUILD)/pe_text.o: $(LOADER)/pe_text.c $(LOADER)/pe_text.h $(LOADER)/pe_prot.h | $(BUILD)
+	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -I$(LOADER) -c $< -o $@
+
+# binfmt_pe_test and its userspace kernel model, both from src/kernel/fs.
+$(BUILD)/fs_kshim.o: $(FS)/kshim.c $(FS)/kshim.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/binfmt_pe_test.o: $(FS)/binfmt_pe_test.c $(FS)/binfmt_pe.c $(FS)/kshim.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # Shim self-test: plain host C against the shim, without the module prelude.
 # On Linux it includes the glibc sys/mman.h, so it checks the real kernel's mmap.
 $(BUILD)/mman_test.o: $(SHIM)/mman_test.c | $(BUILD)
@@ -210,7 +238,7 @@ $(BUILD)/$(1).exe: $(BUILD)/$(1).o $(addprefix $(BUILD)/,$(addsuffix .o,$($(1)_O
 endef
 
 # Test translation units: NT/<name>.c -> build/<name>.o.
-$(foreach t,$(filter-out $(LOCAL_TESTS),$(ALL_PROGS)),$(eval $(BUILD)/$(t).o: $(NT)/$(t).c | $(BUILD); $$(CC) $$(CFLAGS) -c $$< -o $$@))
+$(foreach t,$(filter-out $(LOCAL_TESTS) $(FS_TESTS),$(ALL_PROGS)),$(eval $(BUILD)/$(t).o: $(NT)/$(t).c | $(BUILD); $$(CC) $$(CFLAGS) -c $$< -o $$@))
 $(foreach t,$(LOCAL_TESTS),$(eval $(BUILD)/$(t).o: $(t).c | $(BUILD); $$(CC) $$(CFLAGS) -c $$< -o $$@))
 $(foreach t,$(ALL_PROGS),$(eval $(call PROG_RULE,$(t))))
 

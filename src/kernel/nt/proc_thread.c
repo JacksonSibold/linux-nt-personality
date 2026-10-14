@@ -81,6 +81,7 @@
 #include "security.h"
 #include "proc_create_args.h"
 #include "../../ntdll/nt_types.h"
+#include "../../ntdll/os_identity.h"
 #include "../../ntdll/ntstatus.h"
 
 #ifndef __KERNEL__
@@ -190,9 +191,10 @@ static NTSTATUS ensure_peb(struct nt_eprocess *proc)
     proc->peb->ImageBaseAddress = (PVOID)(ULONG_PTR)0x140000000ULL;
     proc->peb->ProcessHeap = (PVOID)(ULONG_PTR)0x10000;
     proc->peb->NtGlobalFlag = 0;
-    proc->peb->OSMajorVersion = 10;
-    proc->peb->OSMinorVersion = 0;
-    proc->peb->OSBuildNumber = 26200;
+    proc->peb->OSMajorVersion = NT_OS_MAJOR_VERSION;
+    proc->peb->OSMinorVersion = NT_OS_MINOR_VERSION;
+    proc->peb->OSBuildNumber = NT_OS_BUILD_NUMBER;
+    proc->peb->OSPlatformId = NT_OS_PLATFORM_ID;
     proc->peb_base = (ULONG_PTR)proc->peb;
     return STATUS_SUCCESS;
 }
