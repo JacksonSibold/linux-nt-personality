@@ -7,6 +7,7 @@
 #include "msvcrt_policy.h"
 #include "msvcrt_format.h"
 #include <stdarg.h>
+#include <string.h>
 
 #define MS_SIZE_MAX ((SIZE_T)-1)
 
@@ -107,6 +108,61 @@ static void stored_length_is_clamped_to_the_buffer(void)
     MT_EXPECT_EQ(ms_stored(100, 4), 3);
 }
 
+/* Startup argv split (ms_split_cmdline, msvcrt_policy.h): the Windows rules, with
+ * expected tokens written here by hand. */
+static int split_is(const char *cmd, const char *const *want, int nwant)
+{
+    char buf[256];
+    char *argv[16];
+    int n = ms_split_cmdline(cmd, buf, sizeof(buf), argv, 16);
+    if (n != nwant) return 0;
+    for (int i = 0; i < nwant; i++) {
+        if (strcmp(argv[i], want[i]) != 0) return 0;
+    }
+    return argv[nwant] == NULL;
+}
+
+static void split_plain_and_quoted(void)
+{
+    const char *w1[] = { "a", "b" };
+    MT_EXPECT(split_is("a b", w1, 2));
+    MT_EXPECT(split_is("  a 	 b  ", w1, 2));
+    const char *w2[] = { "beta gamma", "3" };
+    MT_EXPECT(split_is("\"beta gamma\" 3", w2, 2));
+    const char *w3[] = { "prog", "say\"hi" };
+    MT_EXPECT(split_is("prog say\\\"hi", w3, 2));
+    const char *w4[] = { "a", "", "b" };
+    MT_EXPECT(split_is("a \"\" b", w4, 3));
+}
+
+static void split_backslashes(void)
+{
+    /* a\\"b: two backslashes then a quote give one backslash and a quote toggle. */
+    const char *w1[] = { "a\\b" };
+    MT_EXPECT(split_is("a\\\\\"b", w1, 1));
+    /* x\\\"y: three backslashes then a quote give one backslash and a literal quote. */
+    const char *w2[] = { "x\\\"y" };
+    MT_EXPECT(split_is("x\\\\\\\"y", w2, 1));
+    /* Backslashes not before a quote stay literal. */
+    const char *w3[] = { "c:\\dir\\f" };
+    MT_EXPECT(split_is("c:\\dir\\f", w3, 1));
+}
+
+static void split_empty_and_limits(void)
+{
+    char buf[256];
+    char *argv[4];
+    MT_EXPECT(ms_split_cmdline("", buf, sizeof(buf), argv, 4) == 0);
+    MT_EXPECT(argv[0] == NULL);
+    MT_EXPECT(ms_split_cmdline("   	 ", buf, sizeof(buf), argv, 4) == 0);
+    /* Three tokens need four slots with the NULL. */
+    MT_EXPECT(ms_split_cmdline("a b c", buf, sizeof(buf), argv, 3) == -1);
+    MT_EXPECT(ms_split_cmdline("a b c", buf, sizeof(buf), argv, 4) == 3);
+    /* The token copies must fit in cap, NUL included. */
+    MT_EXPECT(ms_split_cmdline("abcdef", buf, 6, argv, 4) == -1);
+    MT_EXPECT(ms_split_cmdline("abcde", buf, 6, argv, 4) == 1);
+}
+
 static const mt_case_t cases[] = {
     MT_CASE(mul_accepts_products_that_fit),
     MT_CASE(mul_rejects_wrapping_products),
@@ -116,6 +172,9 @@ static const mt_case_t cases[] = {
     MT_CASE(snprintf_fitting_output_is_unchanged),
     MT_CASE(snprintf_truncates_and_still_returns_needed_length),
     MT_CASE(stored_length_is_clamped_to_the_buffer),
+    MT_CASE(split_plain_and_quoted),
+    MT_CASE(split_backslashes),
+    MT_CASE(split_empty_and_limits),
 };
 
 int main(void)

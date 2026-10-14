@@ -219,7 +219,27 @@ int fflush(void *s){ (void)s; return 0; }
 void* fopen(const char *a, const char *b){ (void)a;(void)b; return NULL; }
 int fclose(void *f){ (void)f; return 0; }
 int fgets_dummy(char *s, int n, void *stream){ (void)s;(void)n;(void)stream; return 0; }
-char* fgets(char *s, int n, void *stream){ (void)stream; if(n>0) s[0]='\0'; return NULL; }
+/* fgets on stdin reads the standard input handle one byte at a time until a
+ * newline (kept) or n-1 bytes, then NUL-terminates. Any other stream returns NULL,
+ * as before. End of input or a read error with nothing read returns NULL. */
+__declspec(dllimport) BOOL WINAPI ReadFile(HANDLE, void*, DWORD, DWORD*, void*);
+char* fgets(char *s, int n, void *stream){
+    if(n<=0 || !s) return NULL;
+    s[0]='\0';
+    if(stream != (void*)&g_iob[0]) return NULL;
+    HANDLE h=GetStdHandle((DWORD)-10);
+    if(!h || h==(HANDLE)(intptr_t)-1) return NULL;
+    int i=0;
+    while(i < n-1){
+        char c=0; DWORD r=0;
+        if(!ReadFile(h,&c,1,&r,NULL) || r==0) break;
+        s[i++]=c;
+        if(c=='\n') break;
+    }
+    if(i==0) return NULL;
+    s[i]='\0';
+    return s;
+}
 int sscanf(const char *a, const char *b, ...){ (void)a;(void)b; return 0; }
 /* CRT-1: format into a local buffer of MS_SPRINTF_LIMIT bytes, then copy only
  * the bytes the output needs. The caller's buffer is still unsized, so this
@@ -273,12 +293,19 @@ void* __C_specific_handler_wrapper = __C_specific_handler;
 
 /* Startup helpers */
 void ms_load_cmdline(void);
+/* argv is split from the process command line by the Windows rules (see
+ * ms_startup_argv, defined with the command line below). An empty line or a
+ * line that does not fit gives argv {"prog"}. */
+int ms_startup_argv(char ***out);
 int __getmainargs(int *argc, char ***argv, char ***envp, int expand, void *si){
     ms_load_cmdline();
     (void)expand;(void)si;
-    static char *args[] = {"prog", NULL};
     static char *env[] = {NULL};
-    if(argc) *argc=1;
+    static char *fallback[] = {"prog", NULL};
+    char **args = NULL;
+    int n = ms_startup_argv(&args);
+    if(n < 1){ n = 1; args = fallback; }
+    if(argc) *argc=n;
     if(argv) *argv=args;
     if(envp) *envp=env;
     return 0;
@@ -381,6 +408,15 @@ void ms_load_cmdline(void){
     if(!pp || !pp->CommandLine.Buffer) g_ms_cmdline[0] = '\0';
     else ms_narrow(pp->CommandLine.Buffer, pp->CommandLine.Length / sizeof(WCHAR), g_ms_cmdline, sizeof(g_ms_cmdline));
     _acmdln = g_ms_cmdline;
+}
+
+/* The startup argv: g_ms_cmdline split by ms_split_cmdline. Returns argc or -1. */
+static char g_ms_args[4096];
+static char *g_ms_argv[129];
+int ms_startup_argv(char ***out){
+    int n = ms_split_cmdline(g_ms_cmdline, g_ms_args, sizeof(g_ms_args), g_ms_argv, 128);
+    *out = g_ms_argv;
+    return n;
 }
 
 /* Environment snapshot for getenv: NAME=value entries, each NUL terminated,

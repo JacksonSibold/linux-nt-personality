@@ -35,4 +35,61 @@ static inline SIZE_T ms_sprintf_write_size(SIZE_T formatted_len)
     return formatted_len + 1;
 }
 
+/* Startup argv (__getmainargs). Splits a narrow command line into argv by the
+ * Windows rules: spaces and tabs separate arguments outside quotes; a quote
+ * toggles quoting and is not copied; 2n backslashes before a quote give n
+ * backslashes and a quote toggle; 2n+1 give n backslashes and a literal quote;
+ * other backslashes are literal. Each argument is a NUL-terminated copy in buf,
+ * and argv[argc] is NULL. Returns argc (0 for an empty line), or -1 if the
+ * tokens do not fit in buf (cap bytes) or in argv (max_args entries, including
+ * the NULL). */
+static inline int ms_split_cmdline(const char *cmd, char *buf, SIZE_T cap, char **argv, int max_args)
+{
+    SIZE_T bo = 0, i = 0;
+    int argc = 0;
+    for (;;) {
+        while (cmd[i] == ' ' || cmd[i] == '\t')
+            i++;
+        if (cmd[i] == '\0')
+            break;
+        if (argc + 1 >= max_args)
+            return -1;
+        argv[argc++] = buf + bo;
+        int inq = 0;
+        for (;;) {
+            SIZE_T nb = 0;
+            while (cmd[i] == '\\') {
+                nb++;
+                i++;
+            }
+            if (cmd[i] == '"') {
+                for (SIZE_T k = 0; k < nb / 2; k++) {
+                    if (bo + 1 > cap) return -1;
+                    buf[bo++] = '\\';
+                }
+                if (nb % 2 == 0) {
+                    inq = !inq;
+                } else {
+                    if (bo + 1 > cap) return -1;
+                    buf[bo++] = '"';
+                }
+                i++;
+                continue;
+            }
+            for (SIZE_T k = 0; k < nb; k++) {
+                if (bo + 1 > cap) return -1;
+                buf[bo++] = '\\';
+            }
+            if (cmd[i] == '\0' || (!inq && (cmd[i] == ' ' || cmd[i] == '\t')))
+                break;
+            if (bo + 1 > cap) return -1;
+            buf[bo++] = cmd[i++];
+        }
+        if (bo + 1 > cap) return -1;
+        buf[bo++] = '\0';
+    }
+    argv[argc] = NULL;
+    return argc;
+}
+
 #endif /* NTDLL_MSVCRT_POLICY_H */

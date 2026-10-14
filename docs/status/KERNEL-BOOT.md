@@ -3,6 +3,50 @@
 Kernel: Linux **6.18.56** (newest 6.18.y in kernel.org `sha256sums.asc`), built in the Debian 12 guest
 (`~/ntpers/linux-6.18.56`) with the NT wiring from `tools/ntpers_kpatch.py`. Session date 2026-10-13.
 
+## kernel32 environment API, msvcrt argv, probe argv (2026-10-14)
+
+Branch `haiku/k32a` on the kernel boot at `252fa28` (same bzImage, sha256 starts `16b98d6e887d6a45`, unchanged kernel).
+Userspace only: no kernel source changed.
+
+**kernel32 environment API (`src/ntdll/kernel32_env.c`, rules in `k32_env_pure.h`).** Added GetCommandLineA,
+GetEnvironmentStringsA, FreeEnvironmentStringsA/W, GetEnvironmentVariableA/W, SetEnvironmentVariableA/W,
+ExpandEnvironmentStringsA/W. ANSI means CP_ACP, which is Windows-1252 in this shim (same as MultiByteToWideChar),
+not UTF-8. Divergences, documented in the file: GetEnvironmentStringsW returns the live block (S8 asserts that),
+and FreeEnvironmentStringsW accepts only that block. Set replaces a variable in place, appends new ones, and
+replaces the process block with a heap copy as RtlSetEnvironmentVariable does.
+
+**msvcrt argv (`src/ntdll/msvcrt.c`, `ms_split_cmdline` in `msvcrt_policy.h`).** `__getmainargs` hard-coded
+argc=1, so no program ever saw its arguments. It now splits the command line by the Windows quoting rules.
+**msvcrt stdin.** `fgets` was a stub that returned NULL. It now reads the standard input handle.
+
+**Probe argv (`tools/linux-env/probes-argv.manifest`, `probes-initramfs.sh`).** One line per probe gives argv
+and a stdin file. probe_peloader runs as `--batch` with the three golden inputs on stdin.
+
+**Results (host QEMU, `boot-m0-host.ps1`, bzImage `252fa28`):**
+
+| step | expected | result |
+|---|---|---|
+| S4 console_s4 (msvcrt startup change) | 0 | 0, `STEP PASS` |
+| S8 console_s8 | 0 | 0, `STEP PASS` |
+| S9 console_s9 (new) | 0 | 0, `STEP PASS` |
+| NONVM probes | all 15 reach `NTPERS_ALL_DONE` | yes; 14 exit 0, probe_exception 139 as before |
+
+Golden match (`probe_results.py compare`), the same counts as the 252fa28 section for every probe:
+probe_sharemode 458857 of 458857 (PASS); the other 14 FAIL, with the same matched counts as before.
+
+**probe_peloader is not matched.** Its argv now reaches `main` and it enters `--batch`. Its stdin
+does not: `binfmt_pe` leaves `PEB->ProcessParameters->StandardInput` at 0 until a per-process handle table exists
+(`src/kernel/fs/binfmt_pe.c`, the comment at the StandardOutput block). So `fgets` gets no input and the
+result list is empty. The 33 of 34 match is the empty result against the golden, so it is not a pass. Wiring
+stdin needs a kernel change and a rebuild, which this change does not make.
+
+**Tests run.** ntdll-host suite in the Linux guest (`make -C tests/ntdll-host test`, ASan and UBSan),
+all suites pass, including `test_k32_env_pure` and the new `test_msvcrt_policy` split cases. The Windows-host
+build of `test_k32_env_pure.exe` and `test_unwind_pure.exe` was refused at run time by Application Control
+(the MAIN-1 policy, `src/ntdll/Makefile`); those binaries were not renamed or moved. Host unit suite
+`python -m unittest discover tests/unit`: 832 tests OK, 1 skipped (WSL).
+
+
 ## 252fa28: PE process parameters, boot verification (2026-10-14)
 
 Commit `252fa28` (loader: fill PEB process parameters) changed `binfmt_pe.c`: `pe_build_process_parameters`

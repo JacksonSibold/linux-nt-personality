@@ -62,6 +62,13 @@ $(BINDIR)/console_s8.exe: s8/console_s8.c $(BINDIR)/libkernel32_imp.a
 
 s8: $(BINDIR)/console_s8.exe
 
+# S9: the kernel32 environment API (GetEnvironmentVariable, SetEnvironmentVariable,
+# ExpandEnvironmentStrings, GetCommandLineA) in a booted kernel. Needs the new kernel32 exports.
+$(BINDIR)/console_s9.exe: s9/console_s9.c $(BINDIR)/libkernel32_imp.a
+	$(CC) -nostdlib -Wl,-e,_start -Wl,--no-seh -Wl,--no-insert-timestamp -Os -s -ffreestanding -fno-builtin -fno-stack-protector -o $@ $< -L$(BINDIR) -lkernel32_imp
+
+s9: $(BINDIR)/console_s9.exe
+
 $(BINDIR)/libmsvcrt_imp.a: ../../src/ntdll/msvcrt.def | $(BINDIR)
 	x86_64-w64-mingw32-dlltool -d $< -l $@ -D msvcrt.dll
 

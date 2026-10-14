@@ -25,6 +25,8 @@
 # Usage: [NONVM=1] sh probes-initramfs.sh REPO_DIR OUT_CPIO_GZ [PROBE ...]
 #   PROBE names are without .c (default: every probes/*_direct.c with an NTPERS_VM branch in VM mode,
 #   every other probes/probe_*.c that is not freestanding in NONVM mode).
+#   Per-probe argv and stdin come from tools/linux-env/probes-argv.manifest (PROBES_MANIFEST overrides
+#   it). probe_peloader runs as "--batch" with its path list on stdin, as capture_golden.py runs it.
 set -eu
 
 REPO="${1:?usage: probes-initramfs.sh REPO_DIR OUT_CPIO_GZ [PROBE...]}"
@@ -77,6 +79,22 @@ else
 fi
 [ -n "$LIST" ] || { echo "probes-initramfs: no probes" >&2; exit 1; }
 
+# Per-probe argv and stdin (tools/linux-env/probes-argv.manifest, or PROBES_MANIFEST). A line is
+# "probe | argv words | stdin file". Prints "argv|stdin" for probe $1, nothing if it has no line.
+MANIFEST="${PROBES_MANIFEST:-$REPO/tools/linux-env/probes-argv.manifest}"
+manifest_entry() {
+    [ -f "$MANIFEST" ] || return 0
+    awk -F'|' -v p="$1" '
+        /^[ \t]*#/ || NF == 0 { next }
+        { n = $1; gsub(/^[ \t]+|[ \t]+$/, "", n)
+          if (n == p) {
+              a = $2; s = $3
+              gsub(/^[ \t]+|[ \t]+$/, "", a); gsub(/^[ \t]+|[ \t]+$/, "", s)
+              print a "|" s
+              exit
+          } }' "$MANIFEST"
+}
+
 if [ "$NONVM" = 1 ]; then
     for d in $SYSTEM_DLLS; do
         [ -f "$NTDLL_OUT/$d.dll" ] || { echo "probes-initramfs: missing $NTDLL_OUT/$d.dll" >&2; exit 1; }
@@ -110,6 +128,17 @@ else
     done
 fi
 
+# Stdin files named by the manifest go into the image next to the probe.
+for P in $LIST; do
+    ENTRY="$(manifest_entry "$P")"
+    STDIN_SRC="${ENTRY#*|}"
+    if [ -n "$STDIN_SRC" ]; then
+        [ -f "$REPO/$STDIN_SRC" ] || { echo "probes-initramfs: missing stdin $REPO/$STDIN_SRC for $P" >&2; exit 1; }
+        cp "$REPO/$STDIN_SRC" "$W/tests_kernel/$P.stdin"
+        chmod 644 "$W/tests_kernel/$P.stdin"
+    fi
+done
+
 cp -L "$BUSYBOX" "$W/bin/busybox"
 chmod 755 "$W/bin/busybox"
 for applet in sh mount echo sleep timeout; do
@@ -133,8 +162,12 @@ done
         echo 'mark "=== NT probes initramfs init (no 9p share) ==="'
     fi
     for P in $LIST; do
+        ENTRY="$(manifest_entry "$P")"
+        PARGS="${ENTRY%%|*}"
+        REDIR=""
+        if [ -f "$W/tests_kernel/$P.stdin" ]; then REDIR="< /tests_kernel/$P.stdin"; fi
         echo "mark \"NTPERS_PROBE_BEGIN $P\""
-        echo "timeout $PROBE_TIMEOUT /tests_kernel/$P.exe"
+        echo "timeout $PROBE_TIMEOUT /tests_kernel/$P.exe $PARGS $REDIR"
         echo "RC=\$?"
         echo "mark \"NTPERS_PROBE_RC $P \$RC\""
         echo "mark \"NTPERS_PROBE_END $P\""

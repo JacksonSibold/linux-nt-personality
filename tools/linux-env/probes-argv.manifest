@@ -1,0 +1,11 @@
+# tools/linux-env/probes-argv.manifest - argv and stdin for the probes that
+# tools/linux-env/probes-initramfs.sh runs in the image.
+#
+# One line per probe:  probe name | argv words | stdin file (repo-relative, may be empty)
+# Argv words are split on spaces; quoting is not supported. The stdin file is copied into
+# the image as /tests_kernel/<probe>.stdin and redirected to the probe. A probe with no
+# line runs with no argument and no stdin, as before.
+#
+# probe_peloader takes --batch and reads one path per line from stdin. The stdin file is
+# the input list that tests/differential/capture_golden.py gives it (pe_inputs, in that order).
+probe_peloader | --batch | tools/linux-env/probes-stdin/probe_peloader.batch

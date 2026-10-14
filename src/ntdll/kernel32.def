@@ -4,6 +4,16 @@ EXPORTS
     SetStdHandle
     GetCommandLineW
     GetEnvironmentStringsW
+    GetCommandLineA
+    GetEnvironmentStringsA
+    FreeEnvironmentStringsA
+    FreeEnvironmentStringsW
+    GetEnvironmentVariableA
+    GetEnvironmentVariableW
+    SetEnvironmentVariableA
+    SetEnvironmentVariableW
+    ExpandEnvironmentStringsA
+    ExpandEnvironmentStringsW
     WriteFile
     ReadFile
     WriteConsoleA
