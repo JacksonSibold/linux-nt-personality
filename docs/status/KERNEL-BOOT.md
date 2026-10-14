@@ -371,3 +371,80 @@ Other checks on the merged tree: unit suite `python -m unittest discover -s test
 `check_doc_links.py` 0 broken; `update_doc_counts.py --check` current; `check_syscall_tables.py` parity for 171 services;
 `tests/harness/lint_integrity.py` PASS; `dodrun.py`: DOD-SEC-A008 PASS, 3 ERROR (DOD-ARCH-A001, A002, B001: WSL not
 installed on the host, environmental, not regressions), 0 regressions.
+
+## Main 0d19a62: flake fixes and reproof (2026-10-14)
+
+Source: `main` at `0d19a62` (flake fixes `675cc54`, merged as `069c9f5`; thread-exit hook `d7edb90`). Main has since moved (`252fa28` and later are not in this build).
+Kernel: a private copy of `~/integ5/linux` in the guest (`~/main-proof-kernel/linux-6.18.56`), with
+`tools/ntpers_kpatch.py` applied from `~/main-proof` at `0d19a62` (76 applied, 0 blocked, 0 todo) and
+`vm/make-kernel-config.sh` (PROFILE=min, PASS). Built `make -j20 ARCH=x86_64 bzImage` (BUILD_RC=0).
+Userspace PEs and DLLs built from the same tree (ntdll, kernel32, msvcrt, advapi32, user32 with mingw,
+tests/kernel, probes). Boots on host QEMU through `tools/linux-env/boot-m0-host.ps1`.
+
+**Flake fixes (userspace shim, `src/kernel/nt`).** The wait engine lost a wakeup when a signal landed
+between a failed acquire and the wait-block link, and dropped waiters beyond 64 on one object. Thread-exit
+ordering published `terminated` before the mutants were abandoned. Both fixes apply to the kernel branch of
+`sync.c` too; the proc_thread ordering fix is userspace only (see follow-ups).
+
+Loops (`build/port_test.exe` and `build/proc_thread_test.exe` in the guest, 4 in parallel, 60 s per run):
+
+| test | before | after |
+|---|---|---|
+| port_test, 200 runs | 9 of 40 runs deadlocked (rc 124) | 200 of 200 pass |
+| proc_thread_test, 200 runs (run 1) | not measured | 11 of 200 fail (`self_terminate`, `thread_exit`) |
+| proc_thread_test, 200 runs (run 2) | 11 of 200 fail | 200 of 200 pass |
+
+Regression tests: `sync_extra_test` `wake_all_waiters_beyond_64` and `auto_reset_handoff_loop` fail on the
+old engine (`FAIL wake_all: 64 of 100 waiters woke`, `FAIL handoff: lost wakeup`) and pass on the new one.
+`make -C tests/kernel-host check-quick` (Linux guest, before the thread-exit merge): all 22 programs rc=0.
+
+**Completeness gate (`tests/kernel/check_kernel_complete.sh`): PASS** (exit 0, 171 services, 0 shortfall,
+0 kernel gaps, 9 entry points strong, 21 built-in objects).
+
+**Boots (host QEMU, serial logs in the private Windows dir `linux-env\kernel-d7edb90`):**
+
+| step | exit status (expected) | verdict |
+|---|---|---|
+| M0 | 42 (42) | PASS |
+| S1 console_s1 | 0 (0) | PASS |
+| S2 console_s2 | 0 (0) | PASS |
+| S3 console_s3 | 0 (0) | PASS |
+| S4 console_s4 | 0 (0) | PASS |
+| S5 console_s5 | 53 (53) | PASS |
+| S6 console_s6 | 0 (0) | PASS |
+| S7 console_s7 | 0 (0) | PASS |
+
+**NONVM probes** (`NONVM=1 tools/linux-env/probes-initramfs.sh`, boot with `log_buf_len=16M`): all 15 reach
+`NTPERS_ALL_DONE`. 14 exit 0; `probe_exception` exits 139 (as before).
+
+Matched against `tests/differential/golden/windows-26200.9457` (`probe_results.py split` and `compare`), fields
+matched of golden leaves:
+
+| probe | matched / golden | verdict |
+|---|---|---|
+| probe_directory | 19 / 67 | FAIL |
+| probe_exception | 0 / 76 | FAIL |
+| probe_fileinfo | 165 / 221 | FAIL |
+| probe_handles | 82 / 111 | FAIL |
+| probe_namedpipe | 3 / 45 | FAIL |
+| probe_ntstatus | 2190 / 2199 | FAIL |
+| probe_path | 51355 / 72523 | FAIL |
+| probe_peloader | 33 / 34 | FAIL |
+| probe_process_thread | 0 / 182 | FAIL |
+| probe_registry | 128 / 140 | FAIL |
+| probe_section | 128 / 129 | FAIL |
+| probe_sharemode | 458857 / 458857 | PASS |
+| probe_sync | 0 / 74 | FAIL |
+| probe_teb_peb | 79 / 104 | FAIL |
+| probe_virtualquery | 128 / 139 | FAIL |
+
+Verdict level: **1 of 15** (`probe_sharemode`), the same as the last recorded main run. For the four probes
+named in the previous section (directory, fileinfo, peloader, registry) the counts are the same as recorded there.
+
+**Follow-ups (not fixed here):**
+- Kernel branch of `NtTerminateThread`/`do_exit` still publishes `terminated` before abandoning mutants.
+  The userspace fix is in `proc_thread.c`; the kernel path needs the same ordering and a kernel build check.
+- Userspace `NtTerminateThread` on a peer thread calls `nt_abandon_for_thread`, which abandons the caller's
+  mutants, not the target's. Mutants of the peer are abandoned by its cancel cleanup, which runs after
+  `terminated` is published.
+- `nt_pulse_event` has a 64-entry snapshot in the same shape as the fixed wake path. Not changed.
