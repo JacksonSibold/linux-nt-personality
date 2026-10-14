@@ -80,7 +80,7 @@ MANDATORY_KEYS = {
     "probe_sharemode_direct": ["matrix"],
     "probe_path": ["tests"],
     "probe_path_direct": ["tests"],
-    "probe_sync": ["tests"],
+    "probe_sync": ["events", "mutant", "semaphore", "wait_multiple"],
     "probe_sync_direct": ["events", "mutant", "semaphore", "wait_multiple"],
     "probe_section": ["tests"],
     "probe_process_thread": ["process_info"],
