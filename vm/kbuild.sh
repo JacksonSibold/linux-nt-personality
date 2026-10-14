@@ -70,13 +70,23 @@ restore_nt_sources() {
   if [ ! -f "$KDIR/arch/x86/nt/dispatch.c" ] || [ ! -f "$KDIR/arch/x86/nt/proc_thread.c" ] || [ ! -f "$KDIR/fs/binfmt_pe.c" ]; then
     echo "WARNING: NT sources missing in KDIR - restoring from project..."
     mkdir -p "$KDIR/arch/x86/nt" "$KDIR/arch/ntdll" "$KDIR/fs"
-    # arch/x86/nt: copy from project arch/x86/nt (tracked) and src/kernel/nt (canonical)
-    if [ -d "$PROJECT_ROOT/arch/x86/nt" ]; then
-      cp -a "$PROJECT_ROOT/arch/x86/nt/." "$KDIR/arch/x86/nt/" 2>/dev/null || true
-      restored=1
-    fi
+    # arch/x86/nt: src/kernel/nt is the one canonical NT tree (docs/analysis/tree-divergence.md,
+    # section 5). Copy it, then the arch-only files (Makefile, kernel_stubs.c). A file in both
+    # trees is refused below, as tools/ntpers_kpatch.py does.
     if [ -d "$PROJECT_ROOT/src/kernel/nt" ]; then
       cp -a "$PROJECT_ROOT/src/kernel/nt/." "$KDIR/arch/x86/nt/" 2>/dev/null || true
+      restored=1
+    fi
+    if [ -d "$PROJECT_ROOT/arch/x86/nt" ]; then
+      for f in "$PROJECT_ROOT"/arch/x86/nt/*; do
+        [ -f "$f" ] || continue
+        bn=$(basename "$f")
+        if [ -f "$PROJECT_ROOT/src/kernel/nt/$bn" ]; then
+          echo "ERROR: arch/x86/nt/$bn duplicates src/kernel/nt/$bn; delete the arch copy" >&2
+          exit 1
+        fi
+        cp -a "$f" "$KDIR/arch/x86/nt/" 2>/dev/null || true
+      done
       restored=1
     fi
     # Ensure stubs/kernel_stubs exist (not tracked, but required for 17 objects)
@@ -168,7 +178,7 @@ for obj in "${expected_objects[@]}"; do
     exit 1
   fi
 done
-echo "Makefile OK (18 objects)"
+echo "Makefile OK (${#expected_objects[@]} objects)"
 
 # Build - with hardening against `make clean` corruption and fixdep race
 echo "Preparing host tools (fixdep, objtool) single-threaded..."

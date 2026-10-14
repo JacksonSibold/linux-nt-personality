@@ -89,12 +89,12 @@ class FixtureTests(unittest.TestCase):
     def test_missing_name_in_kernel_list(self):
         with tempfile.TemporaryDirectory() as tmp:
             checker.render_fixture(tmp, SERVICES)
-            path = pathlib.Path(tmp, checker.KERNEL_LISTS[1])
+            path = pathlib.Path(tmp, checker.KERNEL_LISTS[0])
             path.write_text("".join(ln for ln in path.read_text().splitlines(True)
                                     if "NtClose" not in ln), encoding="utf-8")
             report, _ = checker.check_tree(tmp)
             self.assertEqual(kinds(report), ["missing"])
-            self.assertIn(checker.KERNEL_LISTS[1], report.findings[0][1])
+            self.assertIn(checker.KERNEL_LISTS[0], report.findings[0][1])
 
     def test_extra_name_in_stubs(self):
         with tempfile.TemporaryDirectory() as tmp:

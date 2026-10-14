@@ -47,12 +47,10 @@ GAPS_DOC = "docs/vm/BUILD-RECIPE.md"
 
 APPLIED, APPLICABLE, BLOCKED, TODO = "applied", "applicable", "blocked", "todo"
 
-# Names that arch/x86/nt/ owns. rebuild_kdir.sh section 3 and BUILD-RECIPE 4.2
-# say the arch copy wins for these, so src/kernel/nt/ never overwrites them.
-ARCH_WINS = frozenset({
-    "dispatch.c", "nt_io.c", "nt_services.c", "proc_thread.c",
-    "nt_internal.h", "weak.c", "Makefile",
-})
+# src/kernel/nt/ is the one canonical NT source tree (docs/analysis/tree-divergence.md,
+# section 5). arch/x86/nt/ keeps only what src does not have: the Makefile and the
+# generated kernel_stubs.c. An arch/x86/nt file that src also has is a duplicate and
+# blocks the run (DuplicateEdit), so the two trees cannot disagree again.
 
 OBJ_RE = re.compile(
     r"^obj-\$\(CONFIG_NT_PERSONALITY\)\s*\+=\s*([A-Za-z0-9_.-]+)\.o\s*$", re.M)
@@ -308,6 +306,15 @@ class AppendEdit(Edit):
         return Result(APPLICABLE, "appended")
 
 
+class DuplicateEdit(Edit):
+    """An arch/x86/nt file that src/kernel/nt also has: one canonical copy only."""
+
+    def run(self, tree):
+        return Result(BLOCKED, "%s: duplicate of src/kernel/nt/%s; delete the arch "
+                      "copy (docs/analysis/tree-divergence.md, section 5)"
+                      % (self.path, pathlib.PurePosixPath(self.path).name))
+
+
 class TodoEdit(Edit):
     def __init__(self, eid, path, desc, gap, reason):
         Edit.__init__(self, eid, path, desc, gap)
@@ -347,9 +354,9 @@ def nt_resolution(project):
 
     chosen maps each file name to (path, origin) where origin is "arch" or
     "src". The walk starts from the object list in arch/x86/nt/Makefile and
-    follows quoted #include lines. Names in ARCH_WINS come from arch; every
-    other name found in src/kernel/nt/ comes from src, which overwrites the arch
-    copy the way rebuild_kdir.sh does.
+    follows quoted #include lines. A name found in src/kernel/nt/ comes from
+    src; any other name comes from arch/x86/nt/ (kernel_stubs.c, generated
+    stubs). A name in both trees is a duplicate; build_plan reports it.
     """
     arch = project / "arch/x86/nt"
     src = project / "src/kernel/nt"
@@ -363,10 +370,10 @@ def nt_resolution(project):
         if name in seen:
             continue
         seen.add(name)
-        if name in ARCH_WINS or not (src / name).is_file():
-            cand, origin = arch / name, "arch"
-        else:
+        if (src / name).is_file():
             cand, origin = src / name, "src"
+        else:
+            cand, origin = arch / name, "arch"
         if not cand.is_file():
             continue  # generated (stubs.c) or absent; handled by the caller
         chosen[name] = (cand, origin)
@@ -379,6 +386,7 @@ def build_plan(project):
     """Return (edits, warnings) for a project tree. Order matters: copies first."""
     project = pathlib.Path(project)
     arch = project / "arch/x86/nt"
+    src = project / "src/kernel/nt"
     edits = []
     warnings = []
     counter = [0]
@@ -390,22 +398,23 @@ def build_plan(project):
     chosen, _objects = nt_resolution(project)
     overrides = {n: p for n, (p, o) in chosen.items() if o == "src"}
 
-    # 1. arch/x86/nt/ as tracked, except names the src copy overrides.
+    # 1. arch/x86/nt/ files that src/kernel/nt/ does not have. A file in both
+    # trees is a duplicate and blocks the run until the arch copy is deleted.
     if arch.is_dir():
         for f in sorted(arch.iterdir()):
-            if f.is_file() and f.name not in overrides:
+            if not f.is_file():
+                continue
+            if (src / f.name).is_file():
+                edits.append(DuplicateEdit(eid(), "arch/x86/nt/" + f.name,
+                                           "arch copy of a canonical src file"))
+            else:
                 edits.append(CopyEdit(eid(), f, "arch/x86/nt/" + f.name,
-                                      "tracked NT source"))
+                                      "arch-only NT source"))
     # 2. src/kernel/nt/ files the build needs (BUILD-RECIPE 4.2).
     for name in sorted(overrides):
-        if (arch / name).is_file():
-            warnings.append(
-                "WARN G24: src/kernel/nt/%s overwrites arch/x86/nt/%s "
-                "(rebuild_kdir.sh rule; which copy is canonical is open)"
-                % (name, name))
         edits.append(CopyEdit(eid(), overrides[name],
                               "arch/x86/nt/" + name,
-                              "src/kernel/nt/%s (build dependency)" % name))
+                              "src/kernel/nt/%s (canonical)" % name))
     # 3. generated, empty stubs.c (BUILD-RECIPE 4.4).
     edits.append(WriteEdit(eid(), "arch/x86/nt/stubs.c", b"",
                            "generated empty stubs (BUILD-RECIPE 4.4)"))

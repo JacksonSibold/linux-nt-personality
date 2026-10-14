@@ -135,9 +135,110 @@ Analysis, not yet acted on:
 Decision needed (owner): fix the threshold and object list to match the repo, or implement the missing services.
 This session did not change the gate.
 
+## Completeness gate (after)
+
+The gate was rewritten to derive its expectations from the repository (commits
+`f030cf2`, `62543ae`, `ec51f20`, `9272761`, `2d60b0e`); see `tools/kernel_gate.py`,
+the header of `tests/kernel/check_kernel_complete.sh` and BUILD-RECIPE 7. Run in the
+guest on 2026-10-13: `cd ~/gate && bash tests/kernel/check_kernel_complete.sh
+~/ntpers/linux-6.18.56/vmlinux`. `~/gate` is a `git archive` of `tools/`,
+`src/kernel/nt/`, `arch/x86/nt/`, `tests/kernel/` and `docs/status/SERVICES.md` at
+`2d60b0e`. The kernel tree was only read. Exit status 1.
+
+```
+Checking NT personality in /home/ntpers/ntpers/linux-6.18.56/vmlinux (KDIR=/home/ntpers/ntpers/linux-6.18.56, repo=/home/ntpers/gate) ...
+NT kernel completeness gate
+  repo:     /home/ntpers/gate
+  nm:       /home/ntpers/ntpers/linux-6.18.56/vmlinux
+  table:    171 services (src/kernel/nt/nt_service_list.h)
+  expected: 159 kernel-branch strong handlers (IMPLEMENTED 154, REFUSES 0, STUB-NOT-IMPLEMENTED 5)
+  present:  124 strong nt_svc_* symbols in the binary
+SHORTFALL: 35 expected service(s) not strong in the binary
+  NtAlertThread                    IMPLEMENTED  absent                   src/kernel/nt/proc_thread.c
+  NtAlertThreadByThreadId          IMPLEMENTED  absent                   src/kernel/nt/proc_thread.c
+  NtAlertResumeThread              IMPLEMENTED  absent                   src/kernel/nt/proc_thread.c
+  NtWaitForAlertByThreadId         IMPLEMENTED  absent                   src/kernel/nt/proc_thread.c
+  NtFlushBuffersFileEx             IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtQueryDirectoryFile             IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtQueryDirectoryFileEx           IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtQueryVolumeInformationFile     IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtSetVolumeInformationFile       IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtQueryEaFile                    IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtSetEaFile                      IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtLockFile                       IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtUnlockFile                     IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtCancelIoFile                   IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtCancelIoFileEx                 IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtDeviceIoControlFile            IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtFsControlFile                  IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtDeleteFile                     IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtQueryAttributesFile            IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtQueryFullAttributesFile        IMPLEMENTED  absent                   src/kernel/nt/io.c
+  NtCreateKey                      IMPLEMENTED  absent                   src/kernel/nt/registry.c
+  NtOpenKey                        IMPLEMENTED  absent                   src/kernel/nt/registry.c
+  NtOpenKeyEx                      IMPLEMENTED  absent                   src/kernel/nt/registry.c
+  NtDeleteKey                      IMPLEMENTED  absent                   src/kernel/nt/registry.c
+  NtFlushKey                       IMPLEMENTED  absent                   src/kernel/nt/registry.c
+  NtEnumerateKey                   IMPLEMENTED  absent                   src/kernel/nt/registry.c
+  NtEnumerateValueKey              IMPLEMENTED  absent                   src/kernel/nt/registry.c
+  NtQueryKey                       IMPLEMENTED  absent                   src/kernel/nt/registry.c
+  NtQueryValueKey                  IMPLEMENTED  absent                   src/kernel/nt/registry.c
+  NtSetValueKey                    IMPLEMENTED  absent                   src/kernel/nt/registry.c
+  NtDeleteValueKey                 IMPLEMENTED  absent                   src/kernel/nt/registry.c
+  NtQuerySystemTime                IMPLEMENTED  absent                   src/kernel/nt/nt_services.c
+  NtContinue                       IMPLEMENTED  absent                   src/kernel/nt/proc_thread.c
+  NtContinueEx                     IMPLEMENTED  absent                   src/kernel/nt/proc_thread.c
+  NtRaiseException                 IMPLEMENTED  absent                   src/kernel/nt/proc_thread.c
+KERNEL GAPS: 12 service(s) with no kernel-branch strong handler (not failing)
+  NtAllocateVirtualMemory          WEAK-FALLBACK            defined, weak binding
+  NtAllocateVirtualMemoryEx        WEAK-FALLBACK            absent
+  NtFreeVirtualMemory              WEAK-FALLBACK            defined, weak binding
+  NtProtectVirtualMemory           WEAK-FALLBACK            defined, weak binding
+  NtQueryVirtualMemory             WEAK-FALLBACK            defined, weak binding
+  NtReadVirtualMemory              WEAK-FALLBACK            absent
+  NtWriteVirtualMemory             WEAK-FALLBACK            absent
+  NtFlushVirtualMemory             WEAK-FALLBACK            absent
+  NtLockVirtualMemory              WEAK-FALLBACK            absent
+  NtUnlockVirtualMemory            WEAK-FALLBACK            absent
+  NtReplyWaitReceivePortEx         MISSING                  absent
+  NtCloseObjectAuditAlarm          MISSING                  absent
+KERNEL STUBS: 5 expected service(s) that return not-implemented (not failing)
+  NtCreateProcess                  src/kernel/nt/proc_thread.c
+  NtCreateProcessEx                src/kernel/nt/proc_thread.c
+  NtGetContextThread               src/kernel/nt/proc_thread.c
+  NtSetContextThread               src/kernel/nt/proc_thread.c
+  NtExtendSection                  src/kernel/nt/mm.c
+note: 3 strong nt_svc_* symbol(s) not in the table: NtOpenProcess NtOpenThread NtSetInformationDebugObject
+entry points: 9 expected, 0 not strong
+built-in.a: 20 expected objects from arch/x86/nt/Makefile, 0 missing
+VERDICT: FAIL (35 expected service symbol(s) not strong in the binary)
+EXIT=1
+```
+
+Reading the result:
+
+- The gate now FAILS, as the rule says it should: 35 services that the kernel-branch
+  inventory classifies as implemented are not in vmlinux. The object check passes:
+  all 20 `arch/x86/nt/Makefile` objects are in `built-in.a`. The entry points are strong.
+- The 48 services the kernel does not implement are 35 shortfalls, 8 with no handler
+  symbol (6 weak-only handlers absent from the build, 2 with no handler in the
+  repository), and 5 stubs. Four `dispatch.c` virtual-memory handlers run through
+  weak binding. Pointers and the causes
+  are in [KERNEL-GAPS.md](KERNEL-GAPS.md): 27 services sit in `io.c` and `registry.c`,
+  which the kernel build does not compile; 8 are in `proc_thread.c` and `nt_services.c`,
+  where the build uses the `arch/` copies.
+- The old numbers could not pass. 355 matches no count the repository produces: there are
+  171 table entries, and 1217 lines in the handler and arch sources mention `nt_svc_`.
+  17 matches no list either: `arch/x86/nt/Makefile` has 20 objects. Two inventory defects had also inflated the
+  expectation: the per-branch class was not computed, and a definition after the weak
+  `NT_SERVICE` declaration in `dispatch.c` was counted as strong, which vmlinux shows as
+  `W`. Both are fixed (`f030cf2`, `62543ae`).
+
 ## Remaining failures and gaps
 
-1. **Completeness gate** fails as described above (threshold and object-count disagreement, G8).
+1. **Completeness gate** now derives its expectations from the repository and FAILS on 35 expected
+   handlers that vmlinux does not link. See "Completeness gate (after)" and [KERNEL-GAPS.md](KERNEL-GAPS.md).
+   Closing those gaps is the open work; the gate itself is no longer the blocker (G8 closed).
 2. **Warnings hidden.** `arch/x86/nt/Makefile` sets `ccflags-y += -w`. That hid the implicit-declaration
    errors that the link later reported. A build with warnings on (drop `-w`) is needed before trusting the
    NT sources. Not done here.
@@ -183,3 +284,90 @@ powershell -ExecutionPolicy Bypass -File tools\linux-env\boot-m0-host.ps1 -Timeo
 ```
 
 Expected last lines: `M0 exit status: 42 (expected 42)` and `M0 PASS`.
+
+## Unification (2026-10-13)
+
+Branch `haiku/kgaps`, after the merge of `origin/main` (`37f21c5`). The kernel was built in
+`~/kgaps/linux-6.18.56` (a private copy of the kernel tree, `nice -j2`), with
+`tools/ntpers_kpatch.py` applied. `src/kernel/nt` is the only NT source tree; the `arch/x86/nt`
+duplicates are deleted (see [tree-divergence.md](../analysis/tree-divergence.md), section 7).
+
+**Completeness gate: PASS** (`tests/kernel/check_kernel_complete.sh`, `EXIT=0`):
+
+```
+table:    171 services (src/kernel/nt/nt_service_list.h)
+expected: 171 kernel-branch strong handlers (IMPLEMENTED 160, REFUSES 0, STUB-NOT-IMPLEMENTED 11)
+present:  171 strong nt_svc_* symbols in the binary
+SHORTFALL: 0 expected service(s) not strong in the binary
+KERNEL GAPS: 0 service(s) with no kernel-branch strong handler
+KERNEL STUBS: 11 expected service(s) that return not-implemented (explicit refusals)
+built-in.a: 21 expected objects from arch/x86/nt/Makefile, 0 missing
+VERDICT: PASS
+```
+
+Services in the kernel: **171 of 171** have a strong handler in vmlinux. 160 are implemented. 11 are
+explicit refusals: NtCreateProcess, NtCreateProcessEx, NtGetContextThread, NtSetContextThread,
+NtExtendSection, NtAllocateVirtualMemoryEx, NtReadVirtualMemory, NtWriteVirtualMemory,
+NtFlushVirtualMemory, NtReplyWaitReceivePortEx and NtCloseObjectAuditAlarm. They return
+`STATUS_NOT_SUPPORTED`; the reasons are in `src/kernel/nt/dispatch.c` and `docs/status/KERNEL-GAPS.md`.
+
+**M0: PASS** (`M0 exit status: 42 (expected 42)`, `M0 PASS`), booted on the host with
+`tools/linux-env/boot-m0-host.ps1`.
+
+**Console steps: S1 PASS, S2 PASS, S3 PASS, S4 PASS** (`STEP exit status: 0 (expected 0)`, `STEP PASS`),
+each booted from `tools/linux-env/step-initramfs.sh` on the same `bzImage`. The initramfs for S2–S4 packs
+`ntdll.dll`, `kernel32.dll` and `msvcrt.dll` under `/windows/system32`.
+
+**Decisions recorded in this change:**
+- Registry: in memory only in the kernel build (`NT_REGISTRY_HOST_FILES 0`). It does not survive a reboot.
+- VAD coalescing: off, the src behaviour (matches the probe oracle). Owner decision, delegated.
+- Virtual-memory services that have no kernel implementation refuse (see above).
+
+**Unit suite** (`python3 -m unittest discover tests/unit`, guest, Python 3.11): 789 tests. Three failures,
+none in the kernel:
+- `test_check_doc_links`: the link to this section was missing; fixed by this section.
+- `test_service_inventory`: `docs/status/SERVICES.md` was stale; regenerated.
+- `test_golden_accepted_builds`: the accepted-list hash for `windows-26200.9457/version.json` matches the
+  CRLF bytes of the Windows worktree, and the committed blob is LF. The test fails in the Linux guest
+  on the base commit too. Not changed here.
+
+## Merged kernel (kgaps + main)
+
+Branch `haiku/integrate5`: merge `haiku/kgaps` (`ada9ce0`) into `main` (`6582899`), merge commit `6f91c3f`, then `db4ee08`
+(README file count). Conflicts: `arch/x86/nt/proc_thread.c` (deleted by kgaps, modified on main) took the deletion after
+checking that `src/kernel/nt/proc_thread.c` already has main's TEB-in-user-memory fix (`nt_alloc_teb_stack_kernel`,
+`nt_new_thread_peb`, `nt_teb_set_tid`, same bodies as the arch copy). `README.md` took main and was regenerated.
+Regenerated: `SERVICES.md`, `TRACEABILITY.md`, `CRITERIA.md`, `CRITERIA-ROADMAP.md` (the roadmap changed: three
+`WI-POLICY-DOCS` rows now `HAS-HARNESS-ENTRY`), and the README counts.
+
+Build: private tree `~/integ5/linux` (a copy of the built `~/kgaps/linux-6.18.56`), `tools/ntpers_kpatch.py --tree`
+(74 applied, 11 applicable, 10 files written), `vm/make-kernel-config.sh` PASS, `make -k -j20 ARCH=x86_64 bzImage`
+(incremental after the copy). Test PEs and DLLs built in `~/integ5/ntpers-research` (`tests/kernel`, `src/ntdll`).
+
+**Completeness gate: PASS** (`tests/kernel/check_kernel_complete.sh`, exit 0): 171 services in the table, 0 shortfall,
+0 kernel gaps, 11 explicit refusals, 21 built-in objects present, 9 entry points strong.
+
+Boots (host `tools/linux-env/boot-m0-host.ps1`, the QEMU VM runs the NT kernel and the PE inside it; the Windows host
+does not execute any PE):
+
+| step | exit status (expected) | verdict |
+|---|---|---|
+| M0 | 42 (42) | PASS |
+| S1 console_s1 | 0 (0) | PASS |
+| S2 console_s2 | 0 (0) | PASS |
+| S3 console_s3 | 0 (0) | PASS |
+| S4 console_s4 | 0 (0) | PASS |
+| S5 console_s5 | 53 (53), `STATUS_DLL_NOT_FOUND` | PASS |
+| S6 console_s6 | 0 (0) | PASS |
+| S7 console_s7 | 0 (0) | PASS |
+
+NONVM probes (`NONVM=1 tools/linux-env/probes-initramfs.sh`, boot with `log_buf_len=16M`): all 15 run to
+`NTPERS_ALL_DONE`. 14 exit 0; `probe_exception` exits 139 (as before). Matched at the verdict level: **1 of 15**
+(`probe_sharemode`, 458857 of 458857 fields). Against the last recorded main run (the "after" table above) there is no
+regression: every field count is the same or higher. Improved: `probe_directory` 0 to 19 of 67, `probe_fileinfo` 129 to
+165 of 221, `probe_peloader` 0 to 33 of 34, `probe_registry` 0 to 128 of 140.
+
+Other checks on the merged tree: unit suite `python -m unittest discover -s tests/unit -p "test_*.py"` 789 tests OK;
+`check_doc_links.py` 0 broken; `update_doc_counts.py --check` current; `check_syscall_tables.py` parity for 171 services;
+`tests/harness/lint_integrity.py` PASS; `dodrun.py`: DOD-SEC-A008 PASS, 3 ERROR (DOD-ARCH-A001, A002, B001: WSL not
+installed on the host, environmental, not regressions), 0 regressions.

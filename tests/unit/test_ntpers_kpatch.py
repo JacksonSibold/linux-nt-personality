@@ -42,7 +42,6 @@ def make_project(root):
     _write(root, "arch/x86/nt/nt_internal.h",
            "#ifndef NT_INTERNAL_H\n#define NT_INTERNAL_H\n"
            "#define NT_SYSCALL_SKIP ((long)-1)\n#endif\n")
-    _write(root, "arch/x86/nt/mm.c", "/* arch copy of mm */\n")
     _write(root, "arch/x86/nt/kernel_stubs.c",
            "#include <linux/kernel.h>\r\n\r\nvoid nt_banner_init(void)\r\n"
            "{\r\n\tpr_info(\"banner\\n\");\r\n}\r\n")
@@ -183,9 +182,16 @@ class FullPlanTest(unittest.TestCase):
         self.assertTrue((self.tree / "arch/x86/nt/handle.h").is_file())
         self.assertFalse((self.tree / "arch/x86/nt/debugfs_tests.c").exists())
 
-    def test_src_overwrite_is_reported_as_g24(self):
-        _, out = run_main("--project", str(self.project), "--tree", str(self.tree), "--check")
-        self.assertIn("WARN G24: src/kernel/nt/mm.c overwrites arch/x86/nt/mm.c", out)
+    def test_arch_duplicate_of_a_canonical_file_blocks_the_run(self):
+        _write(self.project, "arch/x86/nt/mm.c", "/* stale arch copy of mm */\n")
+        rc, out = run_main("--project", str(self.project), "--tree", str(self.tree), "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("duplicate of src/kernel/nt/mm.c", out)
+        rc, out = run_main("--project", str(self.project), "--tree", str(self.tree))
+        self.assertEqual(rc, 1, out)
+        self.assertFalse((self.tree / "arch/x86/nt").exists(), "a blocked run wrote files")
+
+    def test_canonical_src_copy_is_used_for_shared_names(self):
         self.apply()
         self.assertEqual((self.tree / "arch/x86/nt/mm.c").read_text(), "/* src copy of mm */\n")
 

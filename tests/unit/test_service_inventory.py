@@ -8,6 +8,7 @@ checks the counts it must have.
 import contextlib
 import importlib.util
 import io
+import json
 import pathlib
 import tempfile
 import unittest
@@ -402,6 +403,154 @@ class BranchTreeTest(unittest.TestCase):
         self.assertIn("### Classes", md)
         self.assertIn("UNREACHABLE-WRAPPER-MISSING", md)
         self.assertIn("| hybrid |", md)
+
+
+class KernelBranchTest(unittest.TestCase):
+    """Per-branch classes: what the kernel (__KERNEL__) and userspace builds see."""
+
+    def classes(self, service_list, sources):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            make_tree(root, service_list, sources)
+            rows = quiet(si.run_inventory, str(root))
+        return {r["name"]: (r["kernel_class"], r["userspace_class"]) for r in rows}
+
+    def test_userspace_only_definition_is_missing_in_kernel(self):
+        got = self.classes("NT_SERVICE(0x0001, NtFoo, 1)\n", {
+            "a.c": "#ifndef __KERNEL__\nNTSTATUS nt_svc_NtFoo(void) { return STATUS_SUCCESS; }\n#endif\n",
+        })
+        self.assertEqual(got["NtFoo"], (si.MISSING, si.IMPLEMENTED))
+
+    def test_kernel_only_definition_is_missing_in_userspace(self):
+        got = self.classes("NT_SERVICE(0x0001, NtFoo, 1)\n", {
+            "a.c": "#ifdef __KERNEL__\nNTSTATUS nt_svc_NtFoo(void) { return STATUS_SUCCESS; }\n#endif\n",
+        })
+        self.assertEqual(got["NtFoo"], (si.IMPLEMENTED, si.MISSING))
+
+    def test_unlabelled_definition_applies_to_both_branches(self):
+        got = self.classes("NT_SERVICE(0x0001, NtFoo, 1)\n", {
+            "a.c": "NTSTATUS nt_svc_NtFoo(void) { return STATUS_NOT_IMPLEMENTED; }\n",
+        })
+        self.assertEqual(got["NtFoo"], (si.STUB, si.STUB))
+
+    def test_unlabelled_strong_decides_kernel_when_userspace_label_comes_first(self):
+        got = self.classes("NT_SERVICE(0x0001, NtFoo, 1)\n", {
+            "a.c": "#ifndef __KERNEL__\nNTSTATUS nt_svc_NtFoo(void) { if (0) return STATUS_INVALID_HANDLE; return STATUS_ACCESS_DENIED; }\n#endif\n",
+            "b.c": "NTSTATUS nt_svc_NtFoo(void) { return STATUS_SUCCESS; }\n",
+        })
+        self.assertEqual(got["NtFoo"], (si.IMPLEMENTED, si.REFUSES))
+
+    def test_weak_only_is_weak_in_both_branches(self):
+        got = self.classes("NT_SERVICE(0x0001, NtFoo, 1)\n", {
+            "a.c": "__attribute__((weak)) NTSTATUS nt_svc_NtFoo(void) { return STATUS_NOT_IMPLEMENTED; }\n",
+        })
+        self.assertEqual(got["NtFoo"], (si.WEAK, si.WEAK))
+
+    def test_userspace_strong_with_weak_fallback_is_weak_in_kernel(self):
+        got = self.classes("NT_SERVICE(0x0001, NtFoo, 1)\n", {
+            "a.c": "#ifndef __KERNEL__\nNTSTATUS nt_svc_NtFoo(void) { return STATUS_SUCCESS; }\n#endif\n"
+                   "__attribute__((weak)) NTSTATUS nt_svc_NtFoo(void) { return STATUS_NOT_IMPLEMENTED; }\n",
+        })
+        self.assertEqual(got["NtFoo"], (si.WEAK, si.IMPLEMENTED))
+
+    def test_implementation_without_wrapper_is_unreachable_in_kernel(self):
+        got = self.classes("NT_SERVICE(0x0001, NtFoo, 1)\n", {
+            "a.c": "NTSTATUS FooImpl(void) { return STATUS_SUCCESS; }\n",
+        })
+        self.assertEqual(got["NtFoo"], (si.UNREACHABLE, si.UNREACHABLE))
+
+    def test_definition_after_weak_prototype_is_weak(self):
+        got = self.classes("NT_SERVICE(0x0001, NtFoo, 1)\n", {
+            "a.c": "extern NTSTATUS nt_svc_NtFoo(void) __attribute__((weak));\n"
+                   "NTSTATUS nt_svc_NtFoo(void) { return STATUS_SUCCESS; }\n",
+        })
+        self.assertEqual(got["NtFoo"], (si.WEAK, si.WEAK))
+
+    def test_definition_before_weak_prototype_stays_strong(self):
+        got = self.classes("NT_SERVICE(0x0001, NtFoo, 1)\n", {
+            "a.c": "NTSTATUS nt_svc_NtFoo(void) { return STATUS_SUCCESS; }\n"
+                   "extern NTSTATUS nt_svc_NtFoo(void) __attribute__((weak));\n",
+        })
+        self.assertEqual(got["NtFoo"], (si.IMPLEMENTED, si.IMPLEMENTED))
+
+    def test_weak_attribute_before_prototype_is_weak(self):
+        got = self.classes("NT_SERVICE(0x0001, NtFoo, 1)\n", {
+            "a.c": "__attribute__((weak)) NTSTATUS nt_svc_NtFoo(void);\n"
+                   "NTSTATUS nt_svc_NtFoo(void) { return STATUS_SUCCESS; }\n",
+        })
+        self.assertEqual(got["NtFoo"], (si.WEAK, si.WEAK))
+
+    def test_weak_prototype_of_another_service_does_not_leak(self):
+        got = self.classes("NT_SERVICE(0x0001, NtFoo, 1)\nNT_SERVICE(0x0002, NtBar, 1)\n", {
+            "a.c": "extern NTSTATUS nt_svc_NtBar(void) __attribute__((weak));\n"
+                   "NTSTATUS nt_svc_NtFoo(void) { return STATUS_SUCCESS; }\n",
+        })
+        self.assertEqual(got["NtFoo"], (si.IMPLEMENTED, si.IMPLEMENTED))
+
+    def test_macro_declared_weak_table_makes_later_definitions_weak(self):
+        got = self.classes("NT_SERVICE(0x0001, NtFoo, 1)\n", {
+            "a.c": "#define NT_SERVICE(ssn, svc_name, argc) extern NTSTATUS nt_svc_##svc_name() __attribute__((weak));\n"
+                   "#include \"nt_service_list.h\"\n"
+                   "#undef NT_SERVICE\n"
+                   "NTSTATUS nt_svc_NtFoo(void) { return STATUS_SUCCESS; }\n",
+        })
+        self.assertEqual(got["NtFoo"], (si.WEAK, si.WEAK))
+
+    def test_macro_table_without_weak_attribute_leaves_definitions_strong(self):
+        got = self.classes("NT_SERVICE(0x0001, NtFoo, 1)\n", {
+            "a.c": "#define NT_SERVICE(ssn, svc_name, nargs) [ssn] = { .fn = nt_svc_##svc_name },\n"
+                   "#include \"nt_service_list.h\"\n"
+                   "NTSTATUS nt_svc_NtFoo(void) { return STATUS_SUCCESS; }\n",
+        })
+        self.assertEqual(got["NtFoo"], (si.IMPLEMENTED, si.IMPLEMENTED))
+
+    def test_weak_macro_undefined_before_the_table_include_is_not_applied(self):
+        got = self.classes("NT_SERVICE(0x0001, NtFoo, 1)\n", {
+            "a.c": "#define NT_SERVICE(ssn, svc_name, argc) extern NTSTATUS nt_svc_##svc_name() __attribute__((weak));\n"
+                   "#undef NT_SERVICE\n"
+                   "#include \"nt_service_list.h\"\n"
+                   "NTSTATUS nt_svc_NtFoo(void) { return STATUS_SUCCESS; }\n",
+        })
+        self.assertEqual(got["NtFoo"], (si.IMPLEMENTED, si.IMPLEMENTED))
+
+
+class JsonOutputTest(unittest.TestCase):
+    SERVICES = "NT_SERVICE(0x0001, NtFoo, 1)\nNT_SERVICE(0x0002, NtBar, 0)\n"
+    SOURCES = {
+        "a.c": "#ifndef __KERNEL__\nNTSTATUS nt_svc_NtFoo(void) { return STATUS_SUCCESS; }\n#endif\n",
+        "b.c": "NTSTATUS nt_svc_NtBar(void) { return STATUS_NOT_IMPLEMENTED; }\n",
+    }
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self._tmp.name)
+        make_tree(self.root, self.SERVICES, self.SOURCES)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_render_json_has_one_record_per_entry_in_table_order(self):
+        data = json.loads(si.render_json(quiet(si.run_inventory, str(self.root))))
+        self.assertEqual([r["name"] for r in data["services"]], ["NtFoo", "NtBar"])
+        foo, bar = data["services"]
+        self.assertEqual(foo["ssn"], "0x0001")
+        self.assertEqual(foo["kernel_class"], si.MISSING)
+        self.assertEqual(foo["userspace_class"], si.IMPLEMENTED)
+        self.assertEqual(bar["kernel_class"], si.STUB)
+        self.assertEqual(bar["kernel_file"], "src/kernel/nt/b.c")
+
+    def test_cli_json_flag_writes_json_to_stdout(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = si.main(["--root", str(self.root), "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(json.loads(out.getvalue())["services"]), 2)
+
+    def test_json_and_markdown_are_mutually_exclusive(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as cm:
+                si.main(["--json", "--markdown"])
+        self.assertEqual(cm.exception.code, 2)
 
 
 class SelftestTest(unittest.TestCase):

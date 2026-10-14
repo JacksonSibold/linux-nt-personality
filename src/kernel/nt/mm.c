@@ -36,6 +36,7 @@
 #include <linux/personality.h>
 #include <linux/sched.h>
 #include <linux/fs.h>
+#include <linux/init.h>
 #ifndef ARCH_VM_PKEY_FLAGS
 #define ARCH_VM_PKEY_FLAGS 0
 #endif
@@ -57,17 +58,8 @@ static inline int kshim_munmap(void *a,size_t s){ return vm_munmap((unsigned lon
 static inline int kshim_mprotect(void *a,size_t s,int p){
     unsigned long start = (unsigned long)a;
     unsigned long len = s;
-    // Try kallsyms lookup for do_mprotect_pkey if available
-    extern unsigned long kallsyms_lookup_name(const char *name);
-    typedef int (*do_mprotect_fn)(unsigned long, size_t, unsigned long, int);
-    unsigned long addr = kallsyms_lookup_name("do_mprotect_pkey");
-    if (addr) {
-        do_mprotect_fn fn = (do_mprotect_fn)addr;
-        int ret = fn(start, len, p, -1);
-        if (ret == 0) return 0;
-        // fallback to mprotect_fixup
-    }
-    // Fallback: use mprotect_fixup path
+    /* Always the supported mprotect_fixup path. The kallsyms lookup of the
+     * internal do_mprotect_pkey() was removed (M-8). */
     unsigned long end;
     unsigned long nstart, tmp;
     struct mm_struct *mm = current->mm;
@@ -1031,6 +1023,18 @@ static int nt_lock_privilege_held(void) {
 }
 #endif /* !__KERNEL__ */
 
+#ifdef __KERNEL__
+/* Initialise the global VAD table once, at boot. The lazy checks in the
+ * service entry points then never race a first use on two CPUs (M-6). */
+static int __init ntmm_kernel_init(void)
+{
+    ntmm_init(&g_nt_mm);
+    g_nt_mm_initialized = 1;
+    return 0;
+}
+core_initcall(ntmm_kernel_init);
+#endif
+
 NTSTATUS ntmm_init(struct nt_mm *mm) {
     mm->vad_root.rb_node = NULL;
 #ifndef __KERNEL__
@@ -1335,7 +1339,7 @@ static NTSTATUS ntmm_alloc_core(struct nt_mm *mm, PVOID *BaseAddress,
     SIZE_T orig_size = *RegionSize;
     if (orig_size == 0) return STATUS_INVALID_PARAMETER;
     /* Rounding up orig_size (plus the granularity delta) must not wrap. */
-    if (orig_size > (SIZE_T)-1 - NTMM_ALLOC_GRANULARITY) return STATUS_INVALID_PARAMETER;
+    if (orig_size > (SIZE_T)-1 - 2 * NTMM_ALLOC_GRANULARITY) return STATUS_INVALID_PARAMETER;
     if (reserve) {
         if (orig_base != 0) {
             ULONG_PTR rounded = ntmm_round_down(orig_base, NTMM_ALLOC_GRANULARITY);

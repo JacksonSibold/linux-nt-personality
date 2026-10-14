@@ -19,7 +19,6 @@
 #include "nt_internal.h"
 #include "sync.h"
 #include "object.h"
-#include "mm_ext.h"
 extern void nt_thread_check_suspend(void);
 
 #ifndef STATUS_SUCCESS
@@ -71,8 +70,13 @@ void nt_host_syscall_inc(void)
 	this_cpu_inc(nt_host_syscall_count);
 }
 
-/* Weak declarations for all services - unimplemented will be NULL */
-#define NT_SERVICE(ssn, svc_name, argc) extern NTSTATUS nt_svc_##svc_name() __attribute__((weak));
+/*
+ * Every table entry needs a strong definition in this build: a missing one is a
+ * link error, not a NULL entry. The gate (tests/kernel/check_kernel_complete.sh)
+ * checks the same thing. Services that are not implemented say so with an
+ * explicit refusal below (KERNEL-GAPS.md section 2).
+ */
+#define NT_SERVICE(ssn, svc_name, argc) extern NTSTATUS nt_svc_##svc_name();
 #include "nt_service_list.h"
 #undef NT_SERVICE
 
@@ -114,10 +118,12 @@ __visible noinstr void do_nt_syscall(struct pt_regs *regs, unsigned int ssn)
 	if (ssn == 0x53 || ssn == 0x1c8 || ssn == 0xc5 || ssn == 0x1c4 || ssn == 0x52 || ssn == 0x34) {
 		pr_debug("do_nt_syscall: ssn=0x%x TIF_NTABI=%d pid=%d comm=%s\n", ssn, test_thread_flag(TIF_NTABI), current->pid, current->comm);
 	}
-	/* Exact per-CPU count - cheap, no printk, no sampling */
+	/* Per-CPU count, cheap, no printk. this_cpu_* is used because the syscall
+	 * path is preemptible: __this_cpu_* could lose or misplace counts when the
+	 * task migrates (D-2). */
 	this_cpu_inc(nt_dispatch_count);
 	if (ssn < NT_NR_SERVICES)
-		__this_cpu_add(nt_dispatch_per_ssn[ssn], 1);
+		this_cpu_add(nt_dispatch_per_ssn[ssn], 1);
 	if (unlikely(ssn >= NT_NR_SERVICES)) {
 		regs->ax = STATUS_INVALID_SYSTEM_SERVICE;
 		goto out;
@@ -151,18 +157,10 @@ out:
 
 extern NTSTATUS NtAllocateVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, ULONG_PTR ZeroBits, PSIZE_T RegionSize, ULONG AllocationType, ULONG Protect);
 extern NTSTATUS NtFreeVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG FreeType);
-/* MEM_RELEASE as defined in mm.h (this file does not include it). */
-#ifndef MEM_RELEASE
-#define MEM_RELEASE 0x00008000UL
-#endif
 extern NTSTATUS NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG NewProtect, ULONG *OldProtect);
 extern NTSTATUS NtLockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType);
 extern NTSTATUS NtUnlockVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG MapType);
 extern NTSTATUS NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, ULONG MemoryInformationClass, PVOID MemoryInformation, SIZE_T MemoryInformationLength, PSIZE_T ReturnLength);
-extern NTSTATUS NtReadVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, PVOID Buffer, SIZE_T BufferSize, PSIZE_T NumberOfBytesRead);
-extern NTSTATUS NtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, PVOID Buffer, SIZE_T BufferSize, PSIZE_T NumberOfBytesWritten);
-extern NTSTATUS NtFlushVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, PIO_STATUS_BLOCK IoStatus);
-extern NTSTATUS NtAllocateVirtualMemoryEx(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG AllocationType, ULONG PageProtection, PVOID ExtendedParameters, ULONG ExtendedParameterCount);
 
 NTSTATUS nt_svc_NtAllocateVirtualMemory(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {
@@ -327,119 +325,53 @@ NTSTATUS nt_svc_NtQueryVirtualMemory(unsigned long a0, unsigned long a1, unsigne
     return st;
 }
 
+/*
+ * Refusals. None of these services has a kernel implementation in this tree:
+ * the kernel branch of mm.c has no cross-process copy and no extended-parameter
+ * allocator, and no LPC receive-wait or audit-alarm close exists. Each returns
+ * STATUS_NOT_SUPPORTED after the arguments are ignored, so the table entry is a
+ * strong, explicit answer (KERNEL-GAPS.md section 2).
+ */
 NTSTATUS nt_svc_NtReadVirtualMemory(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {
-    HANDLE ProcessHandle = (HANDLE)a0;
-    PVOID BaseAddress = (PVOID)a1;
-    PVOID Buffer = (PVOID)a2;
-    SIZE_T BufferSize = (SIZE_T)a3;
-    PSIZE_T NumberOfBytesRead = (PSIZE_T)a4;
-    (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
-    if (NumberOfBytesRead && !access_ok(NumberOfBytesRead, sizeof(SIZE_T)))
-        return STATUS_ACCESS_VIOLATION;
-    SIZE_T done = 0;
-    NTSTATUS st = NtReadVirtualMemory(ProcessHandle, BaseAddress, Buffer, BufferSize, &done);
-    if (st != STATUS_NOT_SUPPORTED && NumberOfBytesRead &&
-        copy_to_user(NumberOfBytesRead, &done, sizeof(done)))
-        return STATUS_ACCESS_VIOLATION;
-    return st;
+	(void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+	(void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+	return STATUS_NOT_SUPPORTED;
 }
 
 NTSTATUS nt_svc_NtWriteVirtualMemory(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {
-    HANDLE ProcessHandle = (HANDLE)a0;
-    PVOID BaseAddress = (PVOID)a1;
-    PVOID Buffer = (PVOID)a2;
-    SIZE_T BufferSize = (SIZE_T)a3;
-    PSIZE_T NumberOfBytesWritten = (PSIZE_T)a4;
-    (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
-    if (NumberOfBytesWritten && !access_ok(NumberOfBytesWritten, sizeof(SIZE_T)))
-        return STATUS_ACCESS_VIOLATION;
-    SIZE_T done = 0;
-    NTSTATUS st = NtWriteVirtualMemory(ProcessHandle, BaseAddress, Buffer, BufferSize, &done);
-    if (st != STATUS_NOT_SUPPORTED && NumberOfBytesWritten &&
-        copy_to_user(NumberOfBytesWritten, &done, sizeof(done)))
-        return STATUS_ACCESS_VIOLATION;
-    return st;
+	(void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+	(void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+	return STATUS_NOT_SUPPORTED;
 }
 
 NTSTATUS nt_svc_NtFlushVirtualMemory(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {
-    HANDLE ProcessHandle = (HANDLE)a0;
-    PVOID __user *BaseAddress = (PVOID __user *)a1;
-    PSIZE_T RegionSize = (PSIZE_T)a2;
-    PIO_STATUS_BLOCK IoStatus = (PIO_STATUS_BLOCK)a3;
-    (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
-    if (!BaseAddress || !RegionSize || !IoStatus)
-        return STATUS_INVALID_PARAMETER;
-    if (!access_ok(BaseAddress, sizeof(PVOID)) || !access_ok(RegionSize, sizeof(SIZE_T)) ||
-        !access_ok(IoStatus, sizeof(IO_STATUS_BLOCK)))
-        return STATUS_ACCESS_VIOLATION;
-    PVOID base;
-    SIZE_T size;
-    if (copy_from_user(&base, BaseAddress, sizeof(base)))
-        return STATUS_ACCESS_VIOLATION;
-    if (copy_from_user(&size, RegionSize, sizeof(size)))
-        return STATUS_ACCESS_VIOLATION;
-    PVOID kbase = base;
-    SIZE_T ksize = size;
-    IO_STATUS_BLOCK kiosb = { 0 };
-    NTSTATUS st = NtFlushVirtualMemory(ProcessHandle, &kbase, &ksize, &kiosb);
-    if (st != STATUS_NOT_SUPPORTED) {
-        if (copy_to_user(BaseAddress, &kbase, sizeof(kbase)))
-            return STATUS_ACCESS_VIOLATION;
-        if (copy_to_user(RegionSize, &ksize, sizeof(ksize)))
-            return STATUS_ACCESS_VIOLATION;
-        if (copy_to_user(IoStatus, &kiosb, sizeof(kiosb)))
-            return STATUS_ACCESS_VIOLATION;
-    }
-    return st;
+	(void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+	(void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+	return STATUS_NOT_SUPPORTED;
 }
 
 NTSTATUS nt_svc_NtAllocateVirtualMemoryEx(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
 {
-    HANDLE ProcessHandle = (HANDLE)a0;
-    PVOID __user *BaseAddress = (PVOID __user *)a1;
-    PSIZE_T RegionSize = (PSIZE_T)a2;
-    ULONG AllocationType = (ULONG)a3;
-    ULONG PageProtection = (ULONG)a4;
-    PVOID ExtendedParameters = (PVOID)a5;
-    ULONG ExtendedParameterCount = (ULONG)a6;
-    (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
-    if (!BaseAddress || !RegionSize)
-        return STATUS_INVALID_PARAMETER;
-    if (!access_ok(BaseAddress, sizeof(PVOID)) || !access_ok(RegionSize, sizeof(SIZE_T)))
-        return STATUS_ACCESS_VIOLATION;
-    PVOID base;
-    SIZE_T size;
-    if (copy_from_user(&base, BaseAddress, sizeof(base)))
-        return STATUS_ACCESS_VIOLATION;
-    if (copy_from_user(&size, RegionSize, sizeof(size)))
-        return STATUS_ACCESS_VIOLATION;
-    PVOID kbase = base;
-    SIZE_T ksize = size;
-    /* The extended-parameter array and any address-requirements record are
-     * copied in before the call, once each. The native function reads only the copy. */
-    struct nt_mem_ext_snapshot snap;
-    NTSTATUS st = ntmm_ext_copy_in(ExtendedParameters, ExtendedParameterCount, &snap);
-    if (!NT_SUCCESS(st)) return st;
-    st = NtAllocateVirtualMemoryEx(ProcessHandle, &kbase, &ksize, AllocationType,
-                                   PageProtection, snap.params, snap.count);
-    if (st != STATUS_NOT_SUPPORTED) {
-        if (copy_to_user(BaseAddress, &kbase, sizeof(kbase)) ||
-            copy_to_user(RegionSize, &ksize, sizeof(ksize))) {
-            /* The caller cannot learn the address of a region it was given
-             * no way to name, so give the region back. MEM_RELEASE takes a
-             * zero size. */
-            if (NT_SUCCESS(st)) {
-                SIZE_T zero = 0;
-                PVOID rel = kbase;
-                (void)NtFreeVirtualMemory(ProcessHandle, &rel, &zero, MEM_RELEASE);
-            }
-            return STATUS_ACCESS_VIOLATION;
-        }
-    }
-    return st;
+	(void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+	(void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+	return STATUS_NOT_SUPPORTED;
+}
+
+NTSTATUS nt_svc_NtReplyWaitReceivePortEx(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+	(void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+	(void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+	return STATUS_NOT_SUPPORTED;
+}
+
+NTSTATUS nt_svc_NtCloseObjectAuditAlarm(unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7, unsigned long a8, unsigned long a9, unsigned long a10, unsigned long a11)
+{
+	(void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+	(void)a6; (void)a7; (void)a8; (void)a9; (void)a10; (void)a11;
+	return STATUS_NOT_SUPPORTED;
 }
 
 void nt_enter_personality(struct task_struct *tsk)
@@ -478,7 +410,8 @@ void nt_exit_personality(struct task_struct *tsk)
 
 void nt_report_missing_service(unsigned int ssn)
 {
-	pr_info("nt: missing service %u\n", ssn);
+	/* Any process can reach this in a loop; rate-limit the log (D-3). */
+	pr_info_ratelimited("nt: missing service %u\n", ssn);
 }
 
 bool nt_can_sysret(struct pt_regs *regs)
@@ -549,11 +482,17 @@ static const struct file_operations nt_per_ssn_fops = {
 static int __init nt_counters_debugfs_init(void)
 {
 	struct dentry *dir;
+	bool looked_up;
+
 	dir = debugfs_lookup("ntpers", NULL);
+	looked_up = dir != NULL;
 	if (!dir)
 		dir = debugfs_create_dir("ntpers", NULL);
 	if (!dir)
 		return 0;
+	/* debugfs_lookup() returns a referenced dentry; drop it (D-6). */
+	if (looked_up)
+		dput(dir);
 	/* These will fail harmlessly if already created */
 	debugfs_create_file("dispatch_count", 0444, dir, NULL, &nt_dispatch_count_fops);
 	debugfs_create_file("host_count", 0444, dir, NULL, &nt_host_count_fops);

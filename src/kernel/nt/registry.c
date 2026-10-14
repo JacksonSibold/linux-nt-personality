@@ -211,6 +211,19 @@ static bool us_equal_ci(PCUNICODE_STRING a, PCUNICODE_STRING b) {
 }
 
 
+/*
+ * Host files. The userspace build persists the registry under <root>/nt_registry.
+ * The kernel build keeps the registry in memory: each change would otherwise
+ * create or rewrite a file in the guest filesystem from kernel context (it wrote
+ * /tmp/nt_registry). The consequence, that the registry does not survive a reboot,
+ * is recorded in docs/status/KERNEL-BOOT.md.
+ */
+#ifdef __KERNEL__
+#define NT_REGISTRY_HOST_FILES 0
+#else
+#define NT_REGISTRY_HOST_FILES 1
+#endif
+
 /* path helpers */
 static void hive_base_path(char *out, size_t outlen) {
 #ifndef __KERNEL__
@@ -222,6 +235,7 @@ static void hive_base_path(char *out, size_t outlen) {
 #endif
 }
 static void ensure_hive_dir(void) {
+    if (!NT_REGISTRY_HOST_FILES) return;
     char base[PATH_MAX]; hive_base_path(base,sizeof(base));
 #ifndef __KERNEL__
     mkdir(base,0755);
@@ -277,6 +291,7 @@ static NTSTATUS nt_path_to_fs(PCUNICODE_STRING nt, char *out, size_t outlen) {
     return ret;
 }
 static NTSTATUS persist_write_value(struct nt_key *k, struct reg_value *v) {
+	if (!NT_REGISTRY_HOST_FILES) return STATUS_SUCCESS;
 #ifdef __KERNEL__
     char *dir = kmalloc(PATH_MAX, GFP_KERNEL);
     if (!dir) return STATUS_NO_MEMORY;
@@ -359,6 +374,7 @@ static NTSTATUS persist_write_value(struct nt_key *k, struct reg_value *v) {
     return STATUS_SUCCESS;
 }
 static NTSTATUS persist_delete_value(struct nt_key *k, PCUNICODE_STRING name) {
+	if (!NT_REGISTRY_HOST_FILES) return STATUS_SUCCESS;
 #ifdef __KERNEL__
     char *dir = kmalloc(PATH_MAX, GFP_KERNEL);
     if (!dir) return STATUS_NO_MEMORY;
@@ -401,6 +417,7 @@ static NTSTATUS persist_delete_value(struct nt_key *k, PCUNICODE_STRING name) {
     return STATUS_SUCCESS;
 }
 static NTSTATUS persist_create_key(struct nt_key *k) {
+	if (!NT_REGISTRY_HOST_FILES) return STATUS_SUCCESS;
 #ifdef __KERNEL__
     char *dir = kmalloc(PATH_MAX, GFP_KERNEL);
     if (!dir) return STATUS_NO_MEMORY;
@@ -441,6 +458,7 @@ static NTSTATUS persist_create_key(struct nt_key *k) {
     return STATUS_SUCCESS;
 }
 static NTSTATUS persist_delete_key(struct nt_key *k) {
+	if (!NT_REGISTRY_HOST_FILES) return STATUS_SUCCESS;
 #ifdef __KERNEL__
     char *dir = kmalloc(PATH_MAX, GFP_KERNEL);
     if (!dir) return STATUS_NO_MEMORY;
@@ -1099,6 +1117,7 @@ static NTSTATUS snap_walk_registry(struct snap_buf *b) {
 
 /* Replaces <base>/hive_snapshot.bin with the buffer. */
 static NTSTATUS snap_write_file(const uint8_t *data, size_t len) {
+	if (!NT_REGISTRY_HOST_FILES) return STATUS_SUCCESS;
 #ifdef __KERNEL__
     char *base = kmalloc(PATH_MAX, GFP_KERNEL);
     char *fpath = kmalloc(PATH_MAX, GFP_KERNEL);

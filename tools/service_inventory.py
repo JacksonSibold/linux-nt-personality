@@ -30,8 +30,11 @@ prototypes (no body) are ignored. Each service gets one class:
                         refusal, a STATUS_SUCCESS path, a loop) makes the body
                         IMPLEMENTED. A bare return of the two stub statuses is
                         STUB, not REFUSES; every other refusal body is REFUSES.
-  WEAK-FALLBACK         only a `__attribute__((weak))` definition exists, so
-                        the table entry is the weak fallback
+  WEAK-FALLBACK         only weak definitions exist, so the table entry is the weak
+                        fallback. A definition is weak when it carries the weak
+                        attribute, or when a weak declaration of the same name comes
+                        before it in the file (a prototype with the attribute, or the
+                        NT_SERVICE macro that declares the table weak, then included).
   UNREACHABLE-WRAPPER-MISSING
                         no nt_svc_<Name> definition at all, but a function
                         defined in src/kernel/nt/*.c (not an nt_svc_ wrapper)
@@ -66,6 +69,7 @@ Usage:
   python3 tools/service_inventory.py                    summary on stdout
   python3 tools/service_inventory.py --markdown         Markdown report on stdout
   python3 tools/service_inventory.py --markdown --out docs/status/SERVICES.md
+  python3 tools/service_inventory.py --json             per-service records (JSON)
   python3 tools/service_inventory.py --root PATH        scan another tree
   python3 tools/service_inventory.py --selftest         built-in fixtures
 
@@ -74,6 +78,7 @@ Exit status: 0 success, 1 a source file cannot be read or the selftest fails,
 --out is given.
 """
 import argparse
+import json
 import os
 import re
 import sys
@@ -110,6 +115,15 @@ DEF_RE = re.compile(
     r"(?P<attr>__attribute__\s*\(\(\s*weak\s*\)\)\s*)?"
     r"\bNTSTATUS\s+nt_svc_(?P<name>\w+)\s*\(", re.S)
 FUNC_HEAD_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+WEAK_ATTR_RE = re.compile(r"__attribute__\s*\(\(\s*weak\s*\)\)")
+# A prototype (no body) of nt_svc_<name> carrying the weak attribute, before or after
+# the name. Group 1 or group 2 is the service name.
+WEAK_PROTO_RE = re.compile(
+    r"__attribute__\s*\(\(\s*weak\s*\)\)[^;{}]*?\bnt_svc_(\w+)\s*\([^;{}]*\)\s*;"
+    r"|\bnt_svc_(\w+)\s*\([^;{}]*\)\s*__attribute__\s*\(\(\s*weak\s*\)\)\s*;")
+DEFINE_SERVICE_RE = re.compile(r"^\s*#\s*define\s+NT_SERVICE\b(.*)$")
+UNDEF_SERVICE_RE = re.compile(r"^\s*#\s*undef\s+NT_SERVICE\b")
+INCLUDE_LIST_RE = re.compile(r'^\s*#\s*include\s*"' + re.escape(os.path.basename(SERVICE_LIST)) + '"')
 DIRECTIVE_LINE_RE = re.compile(r"(?m)^[ \t]*#.*$")
 DIRECTIVE_RE = re.compile(r"^\s*#\s*(ifdef|ifndef|if|elif|else|endif)\b(.*)$")
 KERNEL_IF_RE = re.compile(r"(!?)\s*(defined\s*\(\s*__KERNEL__\s*\)|defined\s+__KERNEL__|__KERNEL__)")
@@ -269,10 +283,43 @@ def branch_labels(text):
     return labels
 
 
-def scan_definitions_with_branch(src_text):
-    """Yield (name, is_weak, body, label) for each nt_svc_ definition in one file."""
+def weak_declarations(src_text, service_names=()):
+    """name -> line index of the first weak declaration of nt_svc_<name> in one file.
+
+    A declaration with the weak attribute gives the symbol weak binding for the rest
+    of the translation unit, so a definition after it is weak too (a strong
+    definition elsewhere still wins at link time). Two forms appear in the NT
+    sources: a prototype carrying the attribute, and the NT_SERVICE macro that
+    declares every table entry weak and is then expanded by including
+    nt_service_list.h. Directives are read from the original text, because
+    stripping blanks the quoted include name.
+    """
+    first = {}
+    for m in WEAK_PROTO_RE.finditer(strip_comments_and_strings(src_text)):
+        name = m.group(1) or m.group(2)
+        first.setdefault(name, strip_comments_and_strings(src_text).count("\n", 0, m.start()))
+    macro_weak = False
+    for i, line in enumerate(src_text.split("\n")):
+        define = DEFINE_SERVICE_RE.match(line)
+        if define:
+            macro_weak = "nt_svc_" in define.group(1) and bool(WEAK_ATTR_RE.search(define.group(1)))
+        elif UNDEF_SERVICE_RE.match(line):
+            macro_weak = False
+        elif macro_weak and INCLUDE_LIST_RE.match(line):
+            for name in service_names:
+                first.setdefault(name, i)
+    return first
+
+
+def scan_definitions_with_branch(src_text, service_names=()):
+    """Yield (name, is_weak, body, label) for each nt_svc_ definition in one file.
+
+    service_names are the table entries, used for the macro form of a weak declaration
+    (see weak_declarations).
+    """
     text = strip_comments_and_strings(src_text)
     labels = branch_labels(text)
+    weak_from = weak_declarations(src_text, service_names)
     for m in DEF_RE.finditer(text):
         paren = text.find("(", m.end() - 1)
         close_paren = match_close(text, paren, "(", ")")
@@ -287,8 +334,10 @@ def scan_definitions_with_branch(src_text):
         if close_brace < 0:
             continue
         body = text[after + 1:close_brace]
-        label = labels[text.count("\n", 0, m.start())]
-        yield m.group("name"), bool(m.group("attr")), body, label
+        line = text.count("\n", 0, m.start())
+        name = m.group("name")
+        is_weak = bool(m.group("attr")) or (name in weak_from and weak_from[name] < line)
+        yield name, is_weak, body, labels[line]
 
 
 def scan_definitions(src_text):
@@ -339,7 +388,8 @@ def scan_tree(root):
                                "weak": file or None,
                                "labelled": {label: (file, class)}}
               "strong" is the first strong definition in file order; "labelled"
-              holds the first strong definition under each __KERNEL__ branch.
+              holds the first strong definition under each __KERNEL__ branch;
+              "plain" is the first strong definition outside any such branch.
     impls:    normalised name -> [(file, function name)] in file order, for
               functions that are not nt_svc_ wrappers.
     """
@@ -348,6 +398,7 @@ def scan_tree(root):
     hdir = os.path.join(root, HANDLER_DIR)
     if not os.path.isdir(hdir):
         raise OSError(f"no handler directory: {hdir}")
+    names = service_names_of(root)
     for fname in sorted(os.listdir(hdir)):
         if not fname.endswith(".c") or fname.endswith("_test.c"):
             continue
@@ -355,15 +406,18 @@ def scan_tree(root):
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             text = fh.read()
         rel = f"{HANDLER_DIR}/{fname}"
-        for name, is_weak, body, label in scan_definitions_with_branch(text):
-            entry = handlers.setdefault(name, {"strong": None, "weak": None, "labelled": {}})
+        for name, is_weak, body, label in scan_definitions_with_branch(text, names):
+            entry = handlers.setdefault(name, {"strong": None, "weak": None,
+                                               "labelled": {}, "plain": None})
             if is_weak:
                 entry["weak"] = entry["weak"] or rel
                 continue
             cls = body_class(body)
             if entry["strong"] is None:
                 entry["strong"] = (rel, cls)
-            if label is not None and label not in entry["labelled"]:
+            if label is None:
+                entry["plain"] = entry["plain"] or (rel, cls)
+            elif label not in entry["labelled"]:
                 entry["labelled"][label] = (rel, cls)
         for func in scan_functions(text):
             impls.setdefault(norm_name(func), []).append((rel, func))
@@ -373,6 +427,14 @@ def scan_tree(root):
 def collect_handlers(root):
     """Map service name -> handler record (see scan_tree)."""
     return scan_tree(root)[0]
+
+
+def service_names_of(root):
+    """Table entry names in order, or [] when the service list is absent."""
+    try:
+        return [svc["name"] for svc in parse_services(root)]
+    except OSError:
+        return []
 
 
 def parse_services(root):
@@ -401,8 +463,10 @@ def classify(services, handlers, impls=None):
     impls = impls or {}
     rows = []
     for svc in services:
-        h = handlers.get(svc["name"]) or {"strong": None, "weak": None, "labelled": {}}
+        h = handlers.get(svc["name"]) or {"strong": None, "weak": None, "labelled": {}, "plain": None}
         lab = h["labelled"]
+        key = norm_name(svc["name"])
+        unreachable_file = impls[key][0][0] if key in impls else None
         if USERSPACE in lab and KERNEL in lab:
             user_file, user_cls = lab[USERSPACE]
             kernel_file, kernel_cls = lab[KERNEL]
@@ -412,13 +476,37 @@ def classify(services, handlers, impls=None):
             file, status = h["strong"]
         elif h["weak"] is not None:
             file, status = h["weak"], WEAK
-        elif norm_name(svc["name"]) in impls:
-            file, _func = impls[norm_name(svc["name"])][0]
+        elif key in impls:
+            file, _func = impls[key][0]
             status = UNREACHABLE
         else:
             file, status = "", MISSING
-        rows.append({**svc, "status": status, "file": file, "area": area_of(svc["name"])})
+        kernel_file, kernel_cls = branch_class(h, unreachable_file, KERNEL)
+        user_file, user_cls = branch_class(h, unreachable_file, USERSPACE)
+        rows.append({**svc, "status": status, "file": file, "area": area_of(svc["name"]),
+                     "kernel_class": kernel_cls, "kernel_file": kernel_file,
+                     "userspace_class": user_cls})
     return rows
+
+
+def branch_class(h, unreachable_file, branch):
+    """(file, class) that one build branch sees for a service.
+
+    branch is KERNEL or USERSPACE. A definition under a __KERNEL__ label belongs
+    to that branch only. An unlabelled strong definition is compiled into both
+    builds. Without one, the branch falls back to the weak definition (WEAK),
+    then to an unreferenced implementation (UNREACHABLE), then to nothing (MISSING).
+    """
+    lab = h["labelled"]
+    if branch in lab:
+        return lab[branch]
+    if h.get("plain") is not None:
+        return h["plain"]
+    if h["weak"] is not None:
+        return h["weak"], WEAK
+    if unreachable_file is not None:
+        return unreachable_file, UNREACHABLE
+    return "", MISSING
 
 
 def ordered_statuses(counts):
@@ -440,6 +528,24 @@ def area_order(rows):
         seen.append(area)
     seen.append(OTHER_AREA)
     return [a for a in seen if any(r["area"] == a for r in rows)]
+
+
+def render_json(rows):
+    """One record per table entry, in table order. kernel_class is the class the
+    kernel build (__KERNEL__ branch) sees; userspace_class the userspace one."""
+    records = []
+    for r in rows:
+        records.append({
+            "ssn": f"0x{r['ssn']:04x}",
+            "name": r["name"],
+            "argc": r["argc"],
+            "area": r["area"],
+            "status": r["status"],
+            "kernel_class": r["kernel_class"],
+            "kernel_file": r["kernel_file"],
+            "userspace_class": r["userspace_class"],
+        })
+    return json.dumps({"services": records}, indent=2) + "\n"
 
 
 def render_text(rows):
@@ -468,7 +574,10 @@ RULES_MD = (
     "  then exactly one `return R;` with `R` one of `STATUS_NOT_IMPLEMENTED`,",
     "  `STATUS_NOT_SUPPORTED`, `STATUS_INVALID_DEVICE_REQUEST`, `STATUS_ACCESS_DENIED`.",
     "  Any other statement makes the body `IMPLEMENTED`. A bare stub return is `STUB`.",
-    "- `WEAK-FALLBACK`: only a `__attribute__((weak))` definition exists.",
+    "- `WEAK-FALLBACK`: only weak definitions exist. A definition is weak when it",
+    "  carries `__attribute__((weak))`, or when a weak declaration of the same name",
+    "  comes before it in the file (a prototype with the attribute, or the `NT_SERVICE`",
+    "  macro that declares the table weak, followed by `#include` of the list).",
     "- `UNREACHABLE-WRAPPER-MISSING`: no `nt_svc_<Name>` definition, but a function",
     "  in `src/kernel/nt/*.c` matches the name (lower case, no underscores, leading",
     "  `nt` and trailing `internal` or `impl` removed). The implementation exists",
@@ -734,6 +843,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     fmt = parser.add_mutually_exclusive_group()
     fmt.add_argument("--markdown", action="store_true", help="emit Markdown")
+    fmt.add_argument("--json", action="store_true", help="emit per-service JSON records")
     parser.add_argument("--out", help="write output to this file instead of stdout")
     parser.add_argument("--root", default=None, help="repository root (default: this repo)")
     parser.add_argument("--selftest", action="store_true", help="run built-in checks and exit")
@@ -748,7 +858,12 @@ def main(argv=None):
     except OSError as exc:
         print(f"service_inventory: {exc}", file=sys.stderr)
         return 1
-    text = render_markdown(rows) if args.markdown else render_text(rows)
+    if args.markdown:
+        text = render_markdown(rows)
+    elif args.json:
+        text = render_json(rows)
+    else:
+        text = render_text(rows)
     if args.out:
         with open(args.out, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)

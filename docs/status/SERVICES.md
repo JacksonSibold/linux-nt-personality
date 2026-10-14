@@ -19,7 +19,10 @@ removed first. Linker rules apply: a strong definition overrides a weak one.
   then exactly one `return R;` with `R` one of `STATUS_NOT_IMPLEMENTED`,
   `STATUS_NOT_SUPPORTED`, `STATUS_INVALID_DEVICE_REQUEST`, `STATUS_ACCESS_DENIED`.
   Any other statement makes the body `IMPLEMENTED`. A bare stub return is `STUB`.
-- `WEAK-FALLBACK`: only a `__attribute__((weak))` definition exists.
+- `WEAK-FALLBACK`: only weak definitions exist. A definition is weak when it
+  carries `__attribute__((weak))`, or when a weak declaration of the same name
+  comes before it in the file (a prototype with the attribute, or the `NT_SERVICE`
+  macro that declares the table weak, followed by `#include` of the list).
 - `UNREACHABLE-WRAPPER-MISSING`: no `nt_svc_<Name>` definition, but a function
   in `src/kernel/nt/*.c` matches the name (lower case, no underscores, leading
   `nt` and trailing `internal` or `impl` removed). The implementation exists
@@ -39,12 +42,12 @@ hybrid, the first strong definition in file order decides the class.
 | Status | Services |
 |---|---:|
 | total | 171 |
-| IMPLEMENTED | 72 |
-| STUB-NOT-IMPLEMENTED | 0 |
+| IMPLEMENTED | 68 |
+| STUB-NOT-IMPLEMENTED | 6 |
 | REFUSES | 0 |
 | WEAK-FALLBACK | 0 |
 | UNREACHABLE-WRAPPER-MISSING | 0 |
-| MISSING | 2 |
+| MISSING | 0 |
 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | 91 |
 | IMPLEMENTED (userspace) / STUB-NOT-IMPLEMENTED (kernel) | 2 |
 | REFUSES (userspace) / IMPLEMENTED (kernel) | 1 |
@@ -56,12 +59,12 @@ hybrid, the first strong definition in file order decides the class.
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | system | 10 | 2 | 0 | 0 | 0 | 0 | 0 | 8 |
 | process-thread | 43 | 12 | 0 | 0 | 0 | 0 | 0 | 31 |
-| memory | 19 | 10 | 0 | 0 | 0 | 0 | 0 | 9 |
+| memory | 19 | 6 | 4 | 0 | 0 | 0 | 0 | 9 |
 | io | 30 | 24 | 0 | 0 | 0 | 0 | 0 | 6 |
 | sync | 32 | 15 | 0 | 0 | 0 | 0 | 0 | 17 |
-| security | 10 | 0 | 0 | 0 | 0 | 0 | 1 | 9 |
+| security | 10 | 0 | 1 | 0 | 0 | 0 | 0 | 9 |
 | registry | 11 | 0 | 0 | 0 | 0 | 0 | 0 | 11 |
-| ports | 10 | 9 | 0 | 0 | 0 | 0 | 1 | 0 |
+| ports | 10 | 9 | 1 | 0 | 0 | 0 | 0 | 0 |
 | object | 6 | 0 | 0 | 0 | 0 | 0 | 0 | 6 |
 
 ## Area: system
@@ -132,13 +135,13 @@ hybrid, the first strong definition in file order decides the class.
 | SSN | Service | Argc | Status | Handler file |
 |---|---|---:|---|---|
 | 0x0018 | `NtAllocateVirtualMemory` | 6 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
-| 0x0076 | `NtAllocateVirtualMemoryEx` | 7 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
+| 0x0076 | `NtAllocateVirtualMemoryEx` | 7 | STUB-NOT-IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x001e | `NtFreeVirtualMemory` | 4 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x0050 | `NtProtectVirtualMemory` | 5 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x0023 | `NtQueryVirtualMemory` | 6 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
-| 0x003f | `NtReadVirtualMemory` | 5 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
-| 0x003a | `NtWriteVirtualMemory` | 5 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
-| 0x00f0 | `NtFlushVirtualMemory` | 4 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
+| 0x003f | `NtReadVirtualMemory` | 5 | STUB-NOT-IMPLEMENTED | `src/kernel/nt/dispatch.c` |
+| 0x003a | `NtWriteVirtualMemory` | 5 | STUB-NOT-IMPLEMENTED | `src/kernel/nt/dispatch.c` |
+| 0x00f0 | `NtFlushVirtualMemory` | 4 | STUB-NOT-IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x0113 | `NtLockVirtualMemory` | 4 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x01d3 | `NtUnlockVirtualMemory` | 4 | IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x004a | `NtCreateSection` | 7 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/mm.c` |
@@ -235,7 +238,7 @@ hybrid, the first strong definition in file order decides the class.
 | 0x013d | `NtPrivilegeCheck` | 3 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
 | 0x01af | `NtSetSecurityObject` | 3 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
 | 0x0161 | `NtQuerySecurityObject` | 5 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
-| 0x003b | `NtCloseObjectAuditAlarm` | 3 | MISSING |  |
+| 0x003b | `NtCloseObjectAuditAlarm` | 3 | STUB-NOT-IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x0029 | `NtAccessCheckAndAuditAlarm` | 11 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/security.c` |
 
 ## Area: registry
@@ -266,7 +269,7 @@ hybrid, the first strong definition in file order decides the class.
 | 0x0022 | `NtRequestWaitReplyPort` | 3 | IMPLEMENTED | `src/kernel/nt/port.c` |
 | 0x000c | `NtReplyPort` | 2 | IMPLEMENTED | `src/kernel/nt/port.c` |
 | 0x000b | `NtReplyWaitReceivePort` | 4 | IMPLEMENTED | `src/kernel/nt/port.c` |
-| 0x002b | `NtReplyWaitReceivePortEx` | 5 | MISSING |  |
+| 0x002b | `NtReplyWaitReceivePortEx` | 5 | STUB-NOT-IMPLEMENTED | `src/kernel/nt/dispatch.c` |
 | 0x017e | `NtReplyWaitReplyPort` | 2 | IMPLEMENTED | `src/kernel/nt/port.c` |
 
 ## Area: object

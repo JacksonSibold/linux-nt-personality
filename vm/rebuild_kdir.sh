@@ -129,33 +129,30 @@ echo "Applying tracked NT sources..."
 # Ensure dirs exist
 mkdir -p "$KDIR/arch/x86/nt" "$KDIR/arch/ntdll" "$KDIR/fs"
 
-# arch/x86/nt: tracked canonical source is arch/x86/nt in project (HEAD)
-# Also src/kernel/nt contains canonical sources; arch/x86/nt takes precedence for dispatch etc.
+# arch/x86/nt: src/kernel/nt/ is the one canonical NT tree (docs/analysis/tree-divergence.md,
+# section 5). Copy it, then the arch-only files (Makefile, kernel_stubs.c). A file in both
+# trees is refused, as tools/ntpers_kpatch.py does.
 if [[ -d "$PROJECT_ROOT/arch/x86/nt" ]]; then
-  echo "  copying arch/x86/nt/ -> KDIR/arch/x86/nt/"
-  cp -a "$PROJECT_ROOT/arch/x86/nt/." "$KDIR/arch/x86/nt/"
+  for f in "$PROJECT_ROOT"/arch/x86/nt/*; do
+    [[ -f "$f" ]] || continue
+    bn=$(basename "$f")
+    if [[ -f "$PROJECT_ROOT/src/kernel/nt/$bn" ]]; then
+      echo "ERROR: arch/x86/nt/$bn duplicates src/kernel/nt/$bn; delete the arch copy" >&2
+      exit 1
+    fi
+  done
 fi
 if [[ -d "$PROJECT_ROOT/src/kernel/nt" ]]; then
-  echo "  copying src/kernel/nt/ -> KDIR/arch/x86/nt/ (canonical, but keep arch/x86/nt priority for overlapping)"
-  # Copy but don't overwrite the 8 tracked arch files that are the source of truth
+  echo "  copying src/kernel/nt/ -> KDIR/arch/x86/nt/ (canonical)"
   while IFS= read -r -d '' f; do
-    bn=$(basename "$f")
-    # Skip files that are already provided by arch/x86/nt at HEAD (dispatch, nt_io, nt_services, proc_thread, nt_internal, weak, Makefile)
-    case "$bn" in
-      dispatch.c|nt_io.c|nt_services.c|proc_thread.c|nt_internal.h|weak.c|Makefile) continue ;;
+    case "$(basename "$f")" in
       *.bak|*.new|*.rej) continue ;;
     esac
-    if [[ -f "$f" ]]; then
-      cp -a "$f" "$KDIR/arch/x86/nt/" 2>/dev/null || true
-    fi
+    cp -a "$f" "$KDIR/arch/x86/nt/" 2>/dev/null || true
   done < <(find "$PROJECT_ROOT/src/kernel/nt" -maxdepth 1 -type f -print0)
-  # Ensure Makefile is from arch/x86/nt
-  cp -a "$PROJECT_ROOT/arch/x86/nt/Makefile" "$KDIR/arch/x86/nt/Makefile" 2>/dev/null || true
-  # Deterministic patch: ensure registry.o is built if registry.c was copied (PROJECT Makefile currently lacks it)
-  if [[ -f "$KDIR/arch/x86/nt/registry.c" ]] && ! grep -q "registry\.o" "$KDIR/arch/x86/nt/Makefile"; then
-    echo 'obj-$(CONFIG_NT_PERSONALITY) += registry.o' >> "$KDIR/arch/x86/nt/Makefile"
-    echo "  patched Makefile for registry.o"
-  fi
+fi
+if [[ -f "$PROJECT_ROOT/arch/x86/nt/Makefile" ]]; then
+  cp -a "$PROJECT_ROOT/arch/x86/nt/Makefile" "$KDIR/arch/x86/nt/Makefile"
 fi
 
 # Generated but required: stubs.c, kernel_stubs.c, nt_service_list.h is already tracked via arch/x86/nt/

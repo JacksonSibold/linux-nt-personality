@@ -139,3 +139,26 @@ Each commit message names its arch origin. `git log --oneline -- src/kernel/nt` 
 - `arch/x86/nt/kernel_stubs.c` (broken, section 4) is unchanged.
 - Arch duplicates are still present. Deletion waits for step 4 and for the mm.c coalescing decision.
 - Syntax check not run. No C compiler on PATH (`gcc` not found), and the toolchain notes (TOOLCHAIN.md, kept outside the repo) were not present at the time. The changes are small and mirror arch text that was already in the tree, but none of it has been compiled.
+
+## 7. Status: unified (2026-10-13, branch `haiku/kgaps`)
+
+`src/kernel/nt` is now the only copy of every NT source the kernel builds. The arch
+duplicates are deleted. `arch/x86/nt/` keeps only `Makefile` and `kernel_stubs.c`.
+
+- `io.c` replaces `nt_io.c` (io.c is a superset: all eight nt_io services plus 16 more).
+  `registry.c` is built. Both are in `arch/x86/nt/Makefile`. The arch fix `39de0fb` is
+  ported (`kzalloc` in the query path). Fixes `79d1de2` and `6da43d2` were already in io.c.
+- `dispatch.c`, `proc_thread.c`, `nt_services.c`: arch-only hardening ported into src
+  (D-2, D-3, D-6; P-6, P-7, P-8, P-9, P-13, abandon of owned mutants on thread exit; N-1,
+  N-2/N-3). Arch debug-only `pr_debug`/`W1_INSTR` lines were not ported.
+- `mm.c`: arch-only M-6 (boot-time VAD init), M-8 (no kallsyms lookup of
+  `do_mprotect_pkey`), M-12 (stricter allocation-size bound) ported. The coalescing
+  decision is taken in favour of src: no VAD coalescing, matching the probe oracle. Owner
+  decision delegated; recorded in KERNEL-BOOT.md.
+- Shared names now come only from src. `tools/ntpers_kpatch.py` has no arch-wins list. An
+  arch file that src also has blocks the run (`DuplicateEdit`). `vm/kbuild.sh` and
+  `vm/rebuild_kdir.sh` apply the same rule. `tools/check_syscall_tables.py` reads only src.
+- Kernel-build registry is in memory (`NT_REGISTRY_HOST_FILES 0`). It no longer writes
+  `/tmp/nt_registry` from kernel context.
+
+Verification status is in [KERNEL-BOOT.md](../status/KERNEL-BOOT.md#unification-2026-10-13).

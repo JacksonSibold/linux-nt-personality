@@ -110,12 +110,32 @@ literals are removed before the body is read. The CLI is unchanged.
 ```
 python3 tools/service_inventory.py                 # counts on stdout
 python3 tools/service_inventory.py --markdown --out docs/status/SERVICES.md
+python3 tools/service_inventory.py --json          # one record per entry: kernel_class, userspace_class
 python3 tools/service_inventory.py --selftest      # built-in fixtures
 ```
 
+`kernel_class` is the class the `__KERNEL__` build sees for the entry: a definition
+under a kernel label counts in that branch, an unlabelled one in both, and a branch
+with no strong definition gets WEAK-FALLBACK, UNREACHABLE-WRAPPER-MISSING or MISSING.
 Exit status: `0` success, `1` a source cannot be read or the selftest fails,
 `2` usage error. CI regenerates `docs/status/SERVICES.md` and fails when the
 committed file differs. The unit tests are in `tests/unit/test_service_inventory.py`.
+
+## kernel_gate.py
+
+Checks a built kernel against the repository. `tests/kernel/check_kernel_complete.sh`
+runs it on `nm` and `ar t` output. Expectations: every entry whose `kernel_class` is
+IMPLEMENTED, REFUSES or STUB-NOT-IMPLEMENTED must be a strong `nt_svc_<Name>` symbol;
+the `obj-$(CONFIG_NT_PERSONALITY)` objects of `arch/x86/nt/Makefile` must be in
+`built-in.a` when the personality is enabled; nine entry points must be strong. The
+verdict rules are in the module docstring.
+
+```
+python3 tools/kernel_gate.py --repo . --nm vmlinux.nm.txt --ar builtin.ar.txt --config .config
+```
+
+Exit status: `0` PASS, `1` FAIL, `2` usage or input error. The unit tests are in
+`tests/unit/test_kernel_gate.py`.
 
 ## ntstatus_lookup.py
 

@@ -264,14 +264,33 @@ make -j"$(nproc)" bzImage # builds vmlinux as well
 bash ~/repos/ntpers/tests/kernel/check_kernel_complete.sh ~/ntpers/linux-6.18/vmlinux
 ```
 
-Outputs: `arch/x86/boot/bzImage`, `vmlinux`. The completeness check looks for
-`do_nt_syscall`, `nt_service_table`, `nt_enter_personality`,
-`nt_exit_personality`, `ObCreateHandle`, `ObReferenceObjectByHandle`,
-`nt_create_event`, `se_access_check`, `nt_svc_NtAllocateVirtualMemory`,
-`nt_svc_NtCreateFile`, `nt_svc_NtCreateIoCompletion`, `nt_svc_NtCreateMutant`,
-`nt_svc_NtQueryInformationFile`, `nt_banner_init`. It counts `nt_svc_*` symbols
-(at least 350) and the members of `arch/x86/nt/built-in.a` (at least 17, with
-17 named objects).
+Outputs: `arch/x86/boot/bzImage`, `vmlinux`. The completeness check is
+`tests/kernel/check_kernel_complete.sh VMLINUX`. It runs `nm` on VMLINUX and `ar t`
+on `KDIR/arch/x86/nt/built-in.a`, then `tools/kernel_gate.py`, which derives its
+expectations from the repository:
+
+- **Services.** Each entry of `src/kernel/nt/nt_service_list.h` whose kernel-branch
+  class from `tools/service_inventory.py --json` (`kernel_class`) is IMPLEMENTED,
+  REFUSES or STUB-NOT-IMPLEMENTED must be a strong `nt_svc_<Name>` symbol. A weak-only
+  or absent one fails the gate. WEAK-FALLBACK, UNREACHABLE and MISSING entries are
+  reported as kernel gaps and do not fail it.
+- **Objects.** The `obj-$(CONFIG_NT_PERSONALITY) += X.o` lines of
+  `arch/x86/nt/Makefile`. With `CONFIG_NT_PERSONALITY=y` in `KDIR/.config`, each must be
+  a member of `built-in.a` (matched by base name). A missing archive is an error.
+- **Entry points.** Nine fixed names (`do_nt_syscall`, `nt_service_table`,
+  `nt_enter_personality`, `nt_exit_personality`, `nt_banner_init`, `ObCreateHandle`,
+  `ObReferenceObjectByHandle`, `nt_create_event`, `se_access_check`). They are names,
+  not counts, and must be strong.
+
+The gate exits 1 on any shortfall, and 0 otherwise. The result for the current
+kernel is in `docs/status/KERNEL-BOOT.md`, "Completeness gate (after)", and the gaps are
+listed in `docs/status/KERNEL-GAPS.md`.
+
+Why the old gate was replaced: it expected 355 `nt_svc_*` symbols and 17 objects. The
+repository has 171 service-table entries and 20 Makefile objects, so neither constant
+could be met, and a passing kernel could not pass it. The new expectations come from
+the sources the build uses, so a change to the table, the Makefile or the handler
+classes changes the gate without editing it.
 
 `kbuild.sh` and `rebuild_kdir.sh` run a full `make -j$(nproc)` that also
 builds modules. Only `bzImage` is needed for the VM.
@@ -482,11 +501,12 @@ is unbooted (G22).
 both copy it. Decision: commit a config generated once by
 `make-kernel-config.sh` under that name, or make `kbuild.sh` call the script.
 
-**G8. The object count disagrees across the repository.** `arch/x86/nt/Makefile`
-lists 20 objects. `kbuild.sh` checks those 20 names and then prints
-"Makefile OK (18 objects)". `check_kernel_complete.sh` expects at least 17
-objects in `built-in.a` and names 17. `OVERVIEW.md` says 17. Decision: the
-number, and the single list the checks use.
+**G8. The object count disagrees across the repository. Closed for the gate.**
+`arch/x86/nt/Makefile` lists 20 objects. `check_kernel_complete.sh` expected 17 and
+named 17, and its service threshold (355) matched no repository count. Decision: the
+gate reads the object list from the Makefile and the service list from the inventory
+(section 7). `kbuild.sh` now prints the length of its own list (`e699195`). Still
+open: the descriptions in `docs/vm/OVERVIEW.md` (two places) say 17.
 
 **G9. `registry.c` is linked only by `rebuild_kdir.sh`. Closed: not built**
 (commits 5b5fb47 and 3e619a3). The tracked Makefile does not list it, and `registry.h` is

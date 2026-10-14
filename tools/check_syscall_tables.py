@@ -8,13 +8,11 @@ The NT system-service table is written out in several places:
                                      the source read by build/gen_stubs.py and
                                      build/gen_ntdll_def.py
   src/kernel/nt/nt_service_list.h    NT_SERVICE(Ssn, Name, Argc)
-  arch/x86/nt/nt_service_list.h      NT_SERVICE(Ssn, Name, Argc)
   build/generated_stubs.S            one stub per name: mov $Ssn, %eax, plus a
                                      Zw alias with .set
   src/ntdll/ntdll.def                Nt* and Zw* export names; Zw aliases use
                                      ZwX=NtX
   src/kernel/nt/nt_internal.h        NT_NR_SERVICES (must be max SSN + 1)
-  arch/x86/nt/nt_internal.h          NT_NR_SERVICES (must be max SSN + 1)
 
 The checker parses each one and reports:
 
@@ -55,12 +53,10 @@ import sys
 import tempfile
 
 TABLE = "src/ntdll/syscall_table.def"
-KERNEL_LISTS = ("src/kernel/nt/nt_service_list.h",
-                "arch/x86/nt/nt_service_list.h")
+KERNEL_LISTS = ("src/kernel/nt/nt_service_list.h",)
 STUBS = "build/generated_stubs.S"
 NTDLL_DEF = "src/ntdll/ntdll.def"
-NR_SERVICES_HEADERS = ("src/kernel/nt/nt_internal.h",
-                       "arch/x86/nt/nt_internal.h")
+NR_SERVICES_HEADERS = ("src/kernel/nt/nt_internal.h",)
 
 REPRESENTATIONS = (TABLE, *KERNEL_LISTS, STUBS, NTDLL_DEF, *NR_SERVICES_HEADERS)
 

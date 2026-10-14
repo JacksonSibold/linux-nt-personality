@@ -257,6 +257,7 @@ static void thread_sync_release(void)
     struct nt_thread *synct = nt_current_thread();
     if (!synct) return;
     nt_set_current_thread(NULL);
+    nt_abandon_owned_mutants(synct);
     nt_thread_destroy(synct);
 }
 
@@ -1269,6 +1270,11 @@ static void nt_setup_child_regs(struct task_struct *child,
                                  PVOID StartRoutine, PVOID Argument)
 {
     struct pt_regs *regs = task_pt_regs(child);
+    /* Check thr before the first dereference (P-13). */
+    if (!thr) {
+        pr_err("nt_setup_child_regs: NULL thread\n");
+        return;
+    }
     /* Cache stack_base before any call that may sleep (vm_mmap/copy_to_user)
      * so we don't hold thr in a register across a sleep. Re-read thr after.
      */
@@ -1298,10 +1304,14 @@ static void nt_setup_child_regs(struct task_struct *child,
     if (!thr || !thr->stack_base) {
         pr_err("nt_setup_child_regs: thr invalid after tramp alloc thr=%p\n", thr);
         regs->ip = (unsigned long)StartRoutine;
-    } else {
-        if (!tramp)
-            tramp = (unsigned long)StartRoutine;
+    } else if (tramp) {
+        /* The stub's CALL pushes one return address, so enter it with rsp
+         * 16-byte aligned: StartRoutine then starts with rsp + 8 aligned, as
+         * the ABI requires (P-6). The direct fallback below keeps sp. */
         regs->ip = tramp;
+        regs->sp = sp + 8;
+    } else {
+        regs->ip = (unsigned long)StartRoutine;
     }
     regs->cx = (unsigned long)StartRoutine;
     regs->dx = (unsigned long)Argument;
@@ -1357,6 +1367,11 @@ NTSTATUS nt_svc_NtCreateThreadEx(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess
         ObDereferenceObject(ph);
         if (!target) return STATUS_INVALID_HANDLE;
     }
+
+    /* Cross-process creation is not implemented: the new task always runs in
+     * the caller's address space, so any other target is refused (P-8). */
+    if (target != cur_proc)
+        return STATUS_NOT_SUPPORTED;
 
     /* CREATE_SUSPENDED is 0x00000004 (winbase) and also 0x00000001 for NtCreateThread.
      * Check both plus generic 0x1 to match Windows via both APIs.
@@ -1529,6 +1544,27 @@ NTSTATUS nt_svc_NtCreateUserProcess(PHANDLE a, PHANDLE b, ACCESS_MASK c, ACCESS_
 /* Suspend / Resume - exact previous-count semantics (golden)       */
 /* NtSuspendThread returns prev count: 0 then 1, NtResume 2 then 1  */
 /* --------------------------------------------------------------- */
+/* True if the user ULONG at p can be read and written; the value is written
+ * back unchanged, so the probe has no visible effect. */
+static bool nt_probe_user_ulong(PULONG p)
+{
+    ULONG v;
+    if (!access_ok(p, sizeof(ULONG)))
+        return false;
+    if (get_user(v, p))
+        return false;
+    return put_user(v, p) == 0;
+}
+
+/* Copies the previous suspend count out when the caller asked for it. Called
+ * after the thread lock is released (P-9). */
+static NTSTATUS nt_put_prev_count(PULONG out, ULONG prev)
+{
+    if (out && copy_to_user(out, &prev, sizeof(prev)))
+        return STATUS_ACCESS_VIOLATION;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS nt_svc_NtSuspendThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount)
 {
     struct nt_eprocess *proc;
@@ -1542,33 +1578,28 @@ NTSTATUS nt_svc_NtSuspendThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount
     proc = nt_current_eprocess();
     if (!proc) return STATUS_INVALID_PARAMETER;
     st = ObReferenceObjectByHandle(proc, ThreadHandle, &nt_thread_type, UserMode, 0, &hdr, NULL);
-    if (!NT_SUCCESS(st)) {
-        NT_TRACE("W1_INSTR: NtSuspendThread handle=%p ObReference failed 0x%x\n", ThreadHandle, st);
-        return STATUS_INVALID_HANDLE;
-    }
+    if (!NT_SUCCESS(st)) return STATUS_INVALID_HANDLE;
     thr = ObFindThreadByHeader(hdr);
     ObDereferenceObject(hdr);
-    if (!thr) {
-        NT_TRACE("W1_INSTR: NtSuspendThread handle=%p thr not found\n", ThreadHandle);
-        return STATUS_INVALID_HANDLE;
-    }
-    NT_TRACE("W1_INSTR: NtSuspendThread handle=%p tid=%lu terminated=%d suspend_count=%d\n", ThreadHandle, (unsigned long)thr->tid, thr->terminated, atomic_read(&thr->suspend_count));
+    if (!thr) return STATUS_INVALID_HANDLE;
+    /* Probe the output before suspending; it is written after the lock is
+     * released because copy_to_user() may fault (P-9). */
+    if (PreviousSuspendCount && !nt_probe_user_ulong(PreviousSuspendCount))
+        return STATUS_ACCESS_VIOLATION;
     spin_lock(&thr->lock);
-    if (thr->terminated) { NT_TRACE("W1_INSTR: NtSuspendThread tid=%lu terminated true, returning THREAD_IS_TERMINATING\n", (unsigned long)thr->tid); spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
+    if (thr->terminated) { spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
     prev = (ULONG)atomic_read(&thr->suspend_count);
     if (prev >= NT_MAX_SUSPEND_COUNT) { spin_unlock(&thr->lock); return STATUS_SUSPEND_COUNT_EXCEEDED; }
-    if (PreviousSuspendCount) {
-        if (!access_ok(PreviousSuspendCount, sizeof(*PreviousSuspendCount))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
-        if (copy_to_user(PreviousSuspendCount, &prev, sizeof(prev))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
-    }
-    NT_TRACE("NtSuspendThread: tid=%lu prev=%lu new=%lu\n", thr->tid, prev, prev+1);
     atomic_inc(&thr->suspend_count);
     if (prev == 0) {
+        /* find_vpid() and pid_task() require the RCU read lock (P-7). */
+        rcu_read_lock();
         tsk = pid_task(find_vpid(thr->tid), PIDTYPE_PID);
         if (tsk) set_tsk_thread_flag(tsk, TIF_NTSUSPEND);
+        rcu_read_unlock();
     }
     spin_unlock(&thr->lock);
-    return STATUS_SUCCESS;
+    return nt_put_prev_count(PreviousSuspendCount, prev);
 }
 
 NTSTATUS nt_svc_NtResumeThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount)
@@ -1577,42 +1608,34 @@ NTSTATUS nt_svc_NtResumeThread(HANDLE ThreadHandle, PULONG PreviousSuspendCount)
     struct nt_object_header *hdr = NULL;
     struct nt_ethread *thr;
     struct task_struct *tsk;
-    ULONG prev, cur;
+    ULONG prev;
     NTSTATUS st;
 
     if (!ThreadHandle) return STATUS_INVALID_PARAMETER;
     proc = nt_current_eprocess();
     if (!proc) return STATUS_INVALID_PARAMETER;
     st = ObReferenceObjectByHandle(proc, ThreadHandle, &nt_thread_type, UserMode, 0, &hdr, NULL);
-    if (!NT_SUCCESS(st)) {
-        NT_TRACE("W1_INSTR: NtSuspendThread handle=%p ObReference failed 0x%x\n", ThreadHandle, st);
-        return STATUS_INVALID_HANDLE;
-    }
+    if (!NT_SUCCESS(st)) return STATUS_INVALID_HANDLE;
     thr = ObFindThreadByHeader(hdr);
     ObDereferenceObject(hdr);
-    if (!thr) {
-        NT_TRACE("W1_INSTR: NtSuspendThread handle=%p thr not found\n", ThreadHandle);
-        return STATUS_INVALID_HANDLE;
-    }
-    NT_TRACE("W1_INSTR: NtSuspendThread handle=%p tid=%lu terminated=%d suspend_count=%d\n", ThreadHandle, (unsigned long)thr->tid, thr->terminated, atomic_read(&thr->suspend_count));
+    if (!thr) return STATUS_INVALID_HANDLE;
+    /* Probe before changing the count; copy out after the lock (P-9). */
+    if (PreviousSuspendCount && !nt_probe_user_ulong(PreviousSuspendCount))
+        return STATUS_ACCESS_VIOLATION;
     spin_lock(&thr->lock);
-    if (thr->terminated) { NT_TRACE("W1_INSTR: NtSuspendThread tid=%lu terminated true, returning THREAD_IS_TERMINATING\n", (unsigned long)thr->tid); spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
+    if (thr->terminated) { spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
     prev = (ULONG)atomic_read(&thr->suspend_count);
-    if (PreviousSuspendCount) {
-        if (!access_ok(PreviousSuspendCount, sizeof(*PreviousSuspendCount))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
-        if (copy_to_user(PreviousSuspendCount, &prev, sizeof(prev))) { spin_unlock(&thr->lock); return STATUS_ACCESS_VIOLATION; }
-    }
-    if (prev == 0) { spin_unlock(&thr->lock); return STATUS_SUCCESS; }
-    NT_TRACE("NtResumeThread: tid=%lu prev=%lu new=%lu\n", thr->tid, prev, prev-1);
+    if (prev == 0) { spin_unlock(&thr->lock); return nt_put_prev_count(PreviousSuspendCount, 0); }
     atomic_dec(&thr->suspend_count);
-    cur = prev - 1;
-    if (cur == 0) {
+    if (prev == 1) {
+        rcu_read_lock();
         tsk = pid_task(find_vpid(thr->tid), PIDTYPE_PID);
         if (tsk) clear_tsk_thread_flag(tsk, TIF_NTSUSPEND);
+        rcu_read_unlock();
         wake_up(&thr->suspend_wq);
     }
     spin_unlock(&thr->lock);
-    return STATUS_SUCCESS;
+    return nt_put_prev_count(PreviousSuspendCount, prev);
 }
 
 NTSTATUS nt_svc_NtSuspendProcess(HANDLE ProcessHandle)
@@ -1694,8 +1717,10 @@ NTSTATUS nt_svc_NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus)
         NT_TRACE_ERR("NtTerminateThread: abandoning for thr %p tid %lu\n", thr, thr->tid);
         nt_abandon_owned_mutants(thr->sync_thread);
     }
+    rcu_read_lock();
     tsk = pid_task(find_vpid(thr->tid), PIDTYPE_PID);
     if (tsk) wake_up_process(tsk);
+    rcu_read_unlock();
     return STATUS_SUCCESS;
 }
 

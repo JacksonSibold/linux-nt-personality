@@ -611,9 +611,9 @@ Each criterion's blockers are the references of its direct work items. Section 2
 
 | Criterion | Work items | Blocker references | Traceability class |
 |---|---|---|---|
-| `DOD-SEC-A008` | `WI-POLICY-DOCS` | docs/status/TRACEABILITY.md | NO-EVIDENCE |
-| `DOD-DRV-B003` | `WI-POLICY-DOCS` | docs/status/TRACEABILITY.md | NO-EVIDENCE |
-| `DOD-EVI-B006` | `WI-POLICY-DOCS` | docs/status/TRACEABILITY.md | NO-EVIDENCE |
+| `DOD-SEC-A008` | `WI-POLICY-DOCS` | docs/status/TRACEABILITY.md | HAS-HARNESS-ENTRY |
+| `DOD-DRV-B003` | `WI-POLICY-DOCS` | docs/status/TRACEABILITY.md | HAS-HARNESS-ENTRY |
+| `DOD-EVI-B006` | `WI-POLICY-DOCS` | docs/status/TRACEABILITY.md | HAS-HARNESS-ENTRY |
 | `DOD-NT-A001` | `WI-HARNESS`, `WI-NTSTATUS-FULL`, `WI-GOLDEN` | docs/harness/OVERVIEW.md; tests/harness/registry.yaml; tests/differential/README.md | HAS-HOST-TEST |
 | `DOD-NT-B001` | `WI-HARNESS`, `WI-NTSTATUS-FULL`, `WI-GOLDEN` | docs/harness/OVERVIEW.md; tests/harness/registry.yaml; tests/differential/README.md | REFERENCED-IN-DOCS |
 | `DOD-EVI-B001` | `WI-HARNESS`, `WI-EVIDENCE` | docs/harness/OVERVIEW.md | NO-EVIDENCE |
