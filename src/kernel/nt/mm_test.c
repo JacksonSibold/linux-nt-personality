@@ -269,6 +269,15 @@ static int test_query_coalesce_free(void) {
     ASSERT(mbi.RegionSize == 0x1000, "after protect not coalesce size 0x%zx", (size_t)mbi.RegionSize);
     ASSERT(mbi.Protect == PAGE_READONLY, "protect value");
 
+    /* An unaligned base: [c1+100, c1+100+0x1000) spans both pages, so c2 must
+     * change too and the region comes back whole. */
+    pb = (PVOID)((ULONG_PTR)c1 + 100); ps = 0x1000;
+    st = NtProtectVirtualMemory((HANDLE)-1, &pb, &ps, PAGE_READONLY, &old);
+    ASSERT(st == STATUS_SUCCESS, "protect unaligned");
+    ASSERT(pb == c1 && ps == 0x2000, "unaligned protect returns the page range");
+    ASSERT(query(c2, &mbi), "q c2 after unaligned protect");
+    ASSERT(mbi.Protect == PAGE_READONLY, "second page protected by unaligned range");
+
     /* Free region coalescing via query sweep */
     /* Sweep from low to high and ensure no overlaps and coverage */
     ULONG_PTR cur = NTMM_LOW_ADDRESS;

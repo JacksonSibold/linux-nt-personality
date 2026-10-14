@@ -1775,13 +1775,15 @@ static NTSTATUS NtProtectVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
     if (!ntmm_protection_valid(NewProtect)) return STATUS_INVALID_PAGE_PROTECTION;
     base = (ULONG_PTR)*BaseAddress;
     size = *RegionSize;
+    /* The byte range [base, base + size) must not wrap, and rounding its end
+     * out to a page must not wrap either. The round-up covers the in-page
+     * offset of base, so the last byte of the range is always protected. */
+    if (size > (SIZE_T)(~(ULONG_PTR)0 - base)) return STATUS_INVALID_PARAMETER;
+    ULONG_PTR raw_end = base + (ULONG_PTR)size;
+    ULONG_PTR end = ntmm_round_up(raw_end, NTMM_PAGE_SIZE);
+    if (end < raw_end) return STATUS_INVALID_PARAMETER;
     base = ntmm_round_down(base, NTMM_PAGE_SIZE);
-    /* Reject a size whose page round-up wraps to 0 (it would pass the end check). */
-    if (base > ~(ULONG_PTR)0 - NTMM_PAGE_SIZE || size > (SIZE_T)(~(ULONG_PTR)0 - NTMM_PAGE_SIZE - base)) return STATUS_INVALID_PARAMETER;
-    size = (SIZE_T)ntmm_round_up(size, NTMM_PAGE_SIZE);
-    /* base + size must not wrap past the top of the address space. */
-    if ((ULONG_PTR)size > (ULONG_PTR)-1 - base) return STATUS_INVALID_PARAMETER;
-    ULONG_PTR end = base + size;
+    size = (SIZE_T)(end - base);
     ntmm_lock(mm);
     struct nt_vad *first = nt_vad_find(mm, base);
     if (!first || first->state != MEM_COMMIT) { ntmm_unlock(mm); return STATUS_NOT_COMMITTED; }
