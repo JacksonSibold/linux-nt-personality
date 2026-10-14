@@ -13,6 +13,36 @@ called by `tools/linux-env/probe_results.py compare`.
 4. Fixed one kernel bug (`src/kernel/fs/binfmt_pe.c`): the second PE in one boot always failed to load (`pe_map_sections failed after exec commit (err -99)`). Before: 1 probe ran, 7 killed by SIGSEGV. After: 8 of 8 ran. M0 still passes (`m0-serial-after-binfmt-fix.log`).
 5. Harness: `tools/linux-env/probes-initramfs.sh` builds the probes and the initramfs; `boot-m0-host.ps1 -Initrd -Serial -Append` boots them; `probe_results.py split|compare` produces the verdicts.
 
+## Thread exit status fix, probe_process_thread_direct (2026-10-14)
+
+Before = the kernel of the table above (`bzImage` from `kfast/linux-src`, built 2026-10-14 04:17). After = the
+same guest tree with `src/kernel/nt/object.c` changed (`thread_delete` now wired in the kernel build too). Same
+probe initramfs (`probes-initramfs.sh ... probe_process_thread_direct`) and boot command for both
+(`log_buf_len=16M`). Compared with `probe_results.py compare` against `windows-26200.9457`.
+
+Cause: the kernel build never set `nt_thread_type.ops.delete_obj`, so a closed thread kept its registry node
+bound to its header address. A later thread object at the same address was matched first by
+`ObFindThreadByHeader`, which returned the closed thread's exit status (0, from the probe's explicit
+`NtTerminateThread(th,0)` on the sleeper threads). The serial log shows the three thread objects sharing header
+`c5c6822d`.
+
+| run | matched / golden leaves | mismatched | exit_codes in the probe JSON |
+|---|---|---|---|
+| before | 177 / 184 | 7 | thread_before_wait 0, thread_after 0, create_suspended_before 0, create_suspended_after 0 |
+| after | 180 / 184 | 4 | thread_before_wait 777, thread_after 777, create_suspended_before 259, create_suspended_after 777 |
+
+Remaining mismatches after the fix:
+- `process_info[9].retLen` (202 vs 120) and `process_info[9].image_name` (host build path): environmental.
+- `teb_peb.teb_peb` (guest address vs golden address): environmental.
+- `exit_codes.thread_before_wait` (259 vs 777): **not fixed**. The probe creates a thread that returns at once,
+  then queries it. On this single-CPU guest the child runs and exits before the parent's query, so the query
+  sees the terminated status. The kernel status path is correct (blocked and suspended threads report 259,
+  checked by `tests/kernel-host/thread_exit_test.c`). Making this read 259 would need a delay or a change to
+  scheduling, which is not done here.
+
+Regression on the same rebuilt kernel (the fixed `bzImage`, initramfs images from `~/ntpers`): M0 exit 42
+(`M0 PASS`); S1, S2, S3 and S4 each exit 0 (`STEP PASS`).
+
 ## Progress after the divergence fixes (2026-10-13)
 
 Before = run 4 (`probes-serial-run4.log`, the kernel of the table below). After = run 6 (`probes-divfix2-serial.log`, the kernel built from the commits listed underneath). Matched/total are `diff_jsons` field counts against the Windows golden. Run 5 (`probes-divfix-serial.log`, sync fix only, no `/tmp`, no exit fix) changed only `probe_sync_direct`, so the other rows are the same as run 4 there.

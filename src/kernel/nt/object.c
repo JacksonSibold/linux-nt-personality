@@ -1302,6 +1302,12 @@ struct nt_ethread *ObFindThreadByHeader(struct nt_object_header *hdr) {
     spin_unlock(&g_ob_thr_lock);
     return ret;
 }
+/* Kernel build of the thread delete hook (the userspace build has its own above):
+ * detach the freed header so a later header at the same address matches nothing. */
+static void thread_delete(struct nt_object_header *hdr) {
+    struct nt_ethread *t = ObFindThreadByHeader(hdr);
+    if (t) t->obj = NULL;
+}
 struct nt_ethread *ObFindThreadByTid(ULONG tid) {
     struct ob_thr_node *n;
     struct nt_ethread *ret = NULL;
@@ -1688,8 +1694,12 @@ NTSTATUS ObInitObjectManager(void)
     list_add(&nt_test_type.list, &ob_type_list);
 #ifndef __KERNEL__
     nt_process_type.ops.delete_obj = process_delete;
-    nt_thread_type.ops.delete_obj = thread_delete;
 #endif
+    /* Both builds: a freed thread header must drop its registry binding, or a
+     * later object at the same address is answered by the stale thread (the
+     * kernel build wired this hook nowhere, so a new thread's query returned
+     * the exit status of a closed one). */
+    nt_thread_type.ops.delete_obj = thread_delete;
 
     memset(&ob_root_hdr, 0, sizeof(ob_root_hdr));
     ob_root_hdr.type = &nt_directory_type;
