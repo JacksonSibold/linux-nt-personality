@@ -426,6 +426,16 @@ def build_plan(project):
                                   "ntdll header"))
     edits.append(CopyEdit(eid(), project / "src/kernel/fs/binfmt_pe.c",
                           "fs/binfmt_pe.c", "PE loader"))
+    # The UTF-16 and command-line/environment builders that binfmt_pe.c calls
+    # (src/loader/pe_text.c, portable under __KERNEL__). They sit beside it in
+    # fs/, so its #include "pe_text.h" finds the copy first.
+    edits.append(CopyEdit(eid(), project / "src/loader/pe_text.h",
+                          "fs/pe_text.h", "PE text header"))
+    edits.append(CopyEdit(eid(), project / "src/loader/pe_text.c",
+                          "fs/pe_text.c", "PE text builders"))
+    edits.append(AppendEdit(eid(), FS_MAKEFILE,
+                            "obj-$(CONFIG_BINFMT_PE)\t+= pe_text.o\n",
+                            "pe_text.o", "build pe_text.o", gap="G5"))
 
     # 5. Kconfig, Kbuild and fs wiring (BUILD-RECIPE 5a-5e).
     edits.append(WriteEdit(eid(), "arch/x86/Kconfig.nt",

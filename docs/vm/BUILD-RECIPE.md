@@ -109,7 +109,13 @@ supports that (G20).
    overwrite is reported as `WARN G24`.
 3. `arch/x86/nt/stubs.c` is written empty (generated).
 4. `src/ntdll/*.h` is copied to `KDIR/arch/ntdll/`.
-5. `src/kernel/fs/binfmt_pe.c` is copied to `KDIR/fs/binfmt_pe.c`.
+5. `src/kernel/fs/binfmt_pe.c` is copied to `KDIR/fs/binfmt_pe.c`. Its
+   `#include "../../ntdll/os_identity.h"` does not resolve from `fs/`. It
+   resolves through `-I arch/x86/include` to `KDIR/arch/ntdll/os_identity.h`
+   (item 4), as `-I include/uapi` does for the `nt_internal.h` include.
+6. `src/loader/pe_text.[ch]` are copied to `KDIR/fs/pe_text.[ch]`, and
+   `fs/Makefile` gets `obj-$(CONFIG_BINFMT_PE) += pe_text.o` (5d). The
+   command-line and environment builders are in that object.
 
 Not copied: `registry.c` (no object in the Makefile reaches it, G9), the
 `*_test.c` files, and every other file in `src/kernel/nt/` that the build does
@@ -298,7 +304,8 @@ builds modules. Only `bzImage` is needed for the VM.
 ## 8a. Incremental rebuild after editing NT sources
 
 After the tree is built once, edit only files under `src/kernel/nt/`,
-`src/kernel/fs/binfmt_pe.c`, `src/kernel/fs/kshim.[ch]` or `arch/x86/nt/`, then run:
+`src/kernel/fs/binfmt_pe.c`, `src/kernel/fs/kshim.[ch]`, `src/loader/pe_text.[ch]`,
+`src/ntdll/*.h` or `arch/x86/nt/`, then run:
 
 ```sh
 vm/incremental-kernel.sh          # copy the changed NT sources, then the steps below

@@ -1,6 +1,6 @@
 # 0028: binfmt_pe_test.c calls helpers that are not defined anywhere
 
-Status: Proposed. Test left unchanged. Owner decides between the options below.
+Status: Accepted (2026-10-14). Option 2 for the command-line, environment and UTF-16 cases. The test file is unchanged. See Outcome.
 Finding: `tests/syntax/README.md` remaining failures; `docs/KNOWN-ISSUES.md` (binfmt_pe_test.c entry).
 Date: 2026-10-12
 
@@ -73,3 +73,30 @@ behaviour. The minimal fix in this branch was the `struct inode` stub in
 - After option 2: `pe_build_command_line` and `pe_build_environment` return the
   lengths the test expects, and UTF-16 output for "ABC", U+00E9 and U+1F600 is
   checked.
+
+## Outcome (2026-10-14)
+
+Option 2 was taken. The change has four parts:
+
+- The helpers are in `src/loader/pe_text.c`: `pe_utf8_to_utf16`,
+  `pe_build_command_line`, `pe_build_environment`, and `pe_prot_to_mmap` in
+  `pe_text.h`. `pe_text.h` now builds under `__KERNEL__` too, so the kernel
+  build compiles the same code. `tools/ntpers_kpatch.py` copies `pe_text.[ch]`
+  to `fs/` and builds `pe_text.o` with `binfmt_pe.o`.
+- `pe_build_process_parameters` fills the exec's strings the way Windows does.
+  ImagePathName is the exec filename. CommandLine is argv joined with spaces,
+  quoting arguments that contain a space or tab. Environment is the envp block,
+  with `EnvironmentSize` in bytes. The strings sit in a second mapping, and the
+  struct points at them. `Length` and `MaximumLength` are the struct size,
+  `0x470`, in every build (the test checks `MaximumLength == sizeof`). The old
+  code set `PAGE_SIZE` under `CONFIG_NT_PERSONALITY` and left it unset without it.
+- The arguments come from `bprm->argv`/`bprm->envp` in the userspace model
+  (`kshim.h`). The kernel has no such arrays. It reads the strings from the new
+  stack at `mm->arg_start`, argv then envp, which `create_elf_tables` walks the
+  same way.
+- `pe_build_environment` writes an empty block as two NULs, not one. A block
+  with no variables is still double-NUL terminated.
+
+`binfmt_pe_test.c` was not changed. It is built and run by `tests/kernel-host`
+on Linux, and its two failing cases (`peb_teb_population`,
+`process_parameters_layout`) now pass.

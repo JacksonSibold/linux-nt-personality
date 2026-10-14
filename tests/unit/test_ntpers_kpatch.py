@@ -50,6 +50,8 @@ def make_project(root):
     _write(root, "src/kernel/nt/mm.c", "/* src copy of mm */\n")
     _write(root, "src/kernel/nt/debugfs_tests.c", "/* not in the Makefile */\n")
     _write(root, "src/kernel/fs/binfmt_pe.c", "/* PE loader */\n")
+    _write(root, "src/loader/pe_text.c", "/* pe text builders */\n")
+    _write(root, "src/loader/pe_text.h", "/* pe text header */\n")
     _write(root, "src/ntdll/nt_types.h", "/* types */\n")
 
 
@@ -168,6 +170,9 @@ class FullPlanTest(unittest.TestCase):
                       (t / "arch/x86/include/asm/syscall.h").read_text())
         self.assertTrue((t / "fs/binfmt_pe.c").is_file())
         self.assertTrue((t / "arch/ntdll/nt_types.h").is_file())
+        self.assertEqual((t / "fs/pe_text.c").read_text(), "/* pe text builders */\n")
+        self.assertEqual((t / "fs/pe_text.h").read_text(), "/* pe text header */\n")
+        self.assertIn("obj-$(CONFIG_BINFMT_PE)\t+= pe_text.o", (t / "fs/Makefile").read_text())
         self.assertEqual((t / "arch/x86/nt/stubs.c").read_bytes(), b"")
 
     def test_crlf_source_is_copied_as_lf(self):

@@ -96,5 +96,6 @@ size_t pe_build_environment(int envc, const char *const *envp, uint16_t *buf, si
         w_put(&w, 0);
     }
     w_put(&w, 0);
+    if (envc == 0) w_put(&w, 0);  /* empty block: "\0\0", not a lone NUL */
     return w.ok ? w.n : 0;
 }

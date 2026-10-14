@@ -18,8 +18,10 @@
 #   4. make bzImage, which relinks vmlinux and rebuilds the image;
 #   5. only if 1-4 succeeded, write the new manifest to the guest.
 #
-# NT sources: src/kernel/nt/, src/kernel/fs/binfmt_pe.c, src/kernel/fs/kshim.[ch] and
-# arch/x86/nt/ (step 2 overwrites the arch copies of the files listed in src/kernel/nt).
+# NT sources: src/kernel/nt/, src/kernel/fs/binfmt_pe.c, src/kernel/fs/kshim.[ch],
+# src/loader/pe_text.[ch], every src/ntdll/*.h (kpatch copies them to arch/ntdll/,
+# which binfmt_pe.c includes os_identity.h from) and arch/x86/nt/ (step 2 overwrites
+# the arch copies of the files listed in src/kernel/nt).
 #
 # Usage:
 #   vm/incremental-kernel.sh          copy the changed NT sources, then steps 1-5
@@ -48,7 +50,9 @@ GUEST_MANIFEST="${GUEST_MANIFEST:-kfast/nt-sync.manifest}"
 JOBS="${JOBS:-2}"
 CCACHE="${CCACHE:-1}"
 
-NT_PATHS=(src/kernel/nt src/kernel/fs/binfmt_pe.c src/kernel/fs/kshim.c src/kernel/fs/kshim.h arch/x86/nt)
+NT_PATHS=(src/kernel/nt src/kernel/fs/binfmt_pe.c src/kernel/fs/kshim.c src/kernel/fs/kshim.h arch/x86/nt src/loader/pe_text.c src/loader/pe_text.h)
+# Every ntdll header is staged, not only those a file names: kpatch copies all of them.
+NTDLL_HEADERS=(src/ntdll/*.h)
 
 MODE=changed
 DRY=0
@@ -64,7 +68,7 @@ log() { echo "incremental-kernel: $*"; }
 die() { echo "incremental-kernel: ERROR: $*" >&2; exit 1; }
 
 # 1. the manifest of the working tree: "sha256  path" per NT file (CRLF removed)
-mapfile -t NT_FILES < <(find "${NT_PATHS[@]}" -type f | sort)
+mapfile -t NT_FILES < <({ find "${NT_PATHS[@]}" -type f; printf '%s\n' "${NTDLL_HEADERS[@]}"; } | sort -u)
 LOCAL_MANIFEST=""
 for f in ${NT_FILES[@]+"${NT_FILES[@]}"}; do
     h="$(tr -d '\r' < "$f" | sha256sum | cut -d' ' -f1)"

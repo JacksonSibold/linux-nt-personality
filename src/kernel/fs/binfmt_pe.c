@@ -24,6 +24,7 @@
 #include <asm/cpufeature.h>
 #endif
 #include "../../ntdll/os_identity.h"
+#include "pe_text.h"
 
 /* Forward from arch/x86/nt */
 static struct linux_binfmt pe_format;
@@ -564,51 +565,227 @@ static int pe_apply_relocs(struct pe_load_state *st)
     return 0;
 }
 
-/* Minimal UTF16 helpers not needed for M0 test, but keep stubs */
+/* RTL_USER_PROCESS_PARAMETERS (x64) layout. The offsets are those of struct
+ * RTL_USER_PROCESS_PARAMETERS in src/ntdll/nt_types.h. binfmt_pe_test reads the
+ * same fields back through the struct, so a wrong offset fails that test. */
+#define PP_SIZE                 0x470
+#define PP_OFF_MAXIMUM_LENGTH   0x00
+#define PP_OFF_LENGTH           0x04
+#define PP_OFF_STANDARD_OUTPUT  0x28
+#define PP_OFF_IMAGE_PATH_NAME  0x60   /* UNICODE_STRING */
+#define PP_OFF_COMMAND_LINE     0x70   /* UNICODE_STRING */
+#define PP_OFF_ENVIRONMENT      0x80
+#define PP_OFF_ENVIRONMENT_SIZE 0x3F0
+
+/* Limit on the argument and environment bytes copied at exec: the kernel's
+ * default MAX_ARG_PAGES (32 pages), which MAX_ARG_PAGES does not expose here. */
+#define PE_MAX_ARG_BYTES (32UL * PAGE_SIZE)
+
+/* The exec arguments as NUL-terminated strings. */
+struct pe_exec_args {
+    int argc;
+    int envc;
+    const char *const *argv;
+    const char *const *envp;
+    char *blob;        /* kernel build: copies of the strings */
+    const char **vec;  /* kernel build: argv then envp, pointing into blob */
+};
+
+static void pe_exec_args_put(struct pe_exec_args *ea)
+{
+    kfree(ea->blob);
+    kfree(ea->vec);
+    ea->blob = NULL;
+    ea->vec = NULL;
+}
+
+/* Fills ea from the exec. The userspace model (kshim.h) keeps them in
+ * bprm->argv and bprm->envp. The kernel does not: copy_strings() leaves argv
+ * then envp on the new stack, each string NUL-terminated and contiguous from
+ * mm->arg_start (set by setup_arg_pages). create_elf_tables walks them the same
+ * way. Called after setup_arg_pages, when current->mm is the new address space. */
+static int pe_exec_args_get(struct linux_binprm *bprm, struct pe_exec_args *ea)
+{
+#ifdef KSHIM_H
+    ea->argc = bprm->argc;
+    ea->envc = bprm->envc;
+    ea->argv = bprm->argv;
+    ea->envp = bprm->envp;
+    return 0;
+#else
+    unsigned long base = current->mm->arg_start;
+    size_t n = (size_t)bprm->argc + (size_t)bprm->envc;
+    size_t total = 0, off = 0, i;
+    char *blob;
+    const char **vec;
+
+    for (i = 0; i < n; i++) {
+        long len = strnlen_user((const char __user *)(base + total), MAX_ARG_STRLEN);
+        if (len <= 0)
+            return -EFAULT;
+        if (len > MAX_ARG_STRLEN)
+            return -E2BIG;
+        total += len;
+    }
+    if (total > PE_MAX_ARG_BYTES)
+        return -E2BIG;
+
+    blob = kmalloc(total ? total : 1, GFP_KERNEL);
+    vec = kmalloc((n ? n : 1) * sizeof(*vec), GFP_KERNEL);
+    if (!blob || !vec) {
+        kfree(blob);
+        kfree(vec);
+        return -ENOMEM;
+    }
+    if (copy_from_user(blob, (const void __user *)base, total)) {
+        kfree(blob);
+        kfree(vec);
+        return -EFAULT;
+    }
+    for (i = 0; i < n; i++) {
+        size_t len = strnlen(blob + off, total - off);
+        if (len == total - off) {
+            kfree(blob);
+            kfree(vec);
+            return -EINVAL;
+        }
+        vec[i] = blob + off;
+        off += len + 1;
+    }
+    ea->argc = bprm->argc;
+    ea->envc = bprm->envc;
+    ea->argv = vec;
+    ea->envp = vec + bprm->argc;
+    ea->blob = blob;
+    ea->vec = vec;
+    return 0;
+#endif
+}
+
+/* Writes a UNICODE_STRING at user address `at` pointing at `buffer`. `units`
+ * counts the UTF-16 code units including the NUL: Length excludes it,
+ * MaximumLength includes it (the Windows convention). */
+static int pe_put_ustring(unsigned long at, unsigned long buffer, size_t units)
+{
+    u16 length = (u16)((units - 1) * 2);
+    u16 maxlen = (u16)(units * 2);
+    u64 addr = buffer;
+    if (copy_to_user((void __user *)(at + 0), &length, 2) ||
+        copy_to_user((void __user *)(at + 2), &maxlen, 2) ||
+        copy_to_user((void __user *)(at + 8), &addr, 8))
+        return -EFAULT;
+    return 0;
+}
+
+/* RTL_USER_PROCESS_PARAMETERS: the struct in one page, and its strings
+ * (ImagePathName, CommandLine, Environment) in a second mapping. Length and
+ * MaximumLength are the struct's size, PP_SIZE, so the block is the struct and
+ * the strings are referenced by pointer. */
 static int pe_build_process_parameters(struct pe_load_state *st)
 {
-    // For M0 we just need a minimal PEB params structure; use simple allocation
-    // Allocate one page for RTL_USER_PROCESS_PARAMETERS with empty strings
-    unsigned long p = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, 0);
-    if (IS_ERR_VALUE(p)) return -ENOMEM;
+    struct pe_exec_args ea = {0};
+    const char *image = (st->bprm && st->bprm->filename) ? st->bprm->filename : "";
+    size_t cap_cmd = 2, cap_env = 2, cap_img, n_cmd, n_env, n_img, units, bytes, i;
+    uint16_t *buf = NULL;
+    unsigned long p, strs;
+    u32 maxlen = PP_SIZE, len = PP_SIZE, env_size;
+    u64 env_ptr;
+    int ret;
+
+    ret = pe_exec_args_get(st->bprm, &ea);
+    if (ret)
+        return ret;
+
+    /* Capacities in UTF-16 units, each at least what the builders can write:
+     * a command-line argument takes at most 2 units per byte plus its quotes
+     * and separator; an environment entry takes at most 1 unit per byte plus
+     * its NUL; the image name at most 1 unit per byte plus the NUL. */
+    for (i = 0; i < (size_t)ea.argc; i++)
+        cap_cmd += 2 * strlen(ea.argv[i]) + 4;
+    for (i = 0; i < (size_t)ea.envc; i++)
+        cap_env += strlen(ea.envp[i]) + 1;
+    cap_img = strlen(image) + 1;
+    units = cap_cmd + cap_env + cap_img;
+    buf = kmalloc(units * sizeof(*buf), GFP_KERNEL);
+    if (!buf) {
+        ret = -ENOMEM;
+        goto done;
+    }
+
+    n_cmd = pe_build_command_line(ea.argc, ea.argv, buf, cap_cmd);
+    if (!n_cmd) { ret = -E2BIG; goto done; }
+    n_env = pe_build_environment(ea.envc, ea.envp, buf + n_cmd, cap_env);
+    if (!n_env) { ret = -E2BIG; goto done; }
+    n_img = pe_utf8_to_utf16(image, buf + n_cmd + n_env, cap_img);
+    if (!n_img) { ret = -E2BIG; goto done; }
+
+    bytes = PAGE_ALIGN((n_cmd + n_env + n_img) * sizeof(uint16_t));
+    strs = vm_mmap(NULL, 0, bytes, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, 0);
+    if (IS_ERR_VALUE(strs)) { ret = -ENOMEM; goto done; }
+    pe_state_add_mapping(st, strs, bytes);
+#ifdef CONFIG_NT_PERSONALITY
+    if (ntmm_add_region(strs, bytes, 0x04, 0x00020000, strs)) { ret = -EADDRNOTAVAIL; goto done; }
+#endif
+    if (copy_to_user((void __user *)strs, buf, (n_cmd + n_env + n_img) * sizeof(uint16_t))) {
+        ret = -EFAULT;
+        goto done;
+    }
+
+    p = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, 0);
+    if (IS_ERR_VALUE(p)) { ret = -ENOMEM; goto done; }
     pe_state_add_mapping(st, p, PAGE_SIZE);
 #ifdef CONFIG_NT_PERSONALITY
-    if (ntmm_add_region(p, PAGE_SIZE, 0x04, 0x00020000, p))
-        return -EADDRNOTAVAIL;
+    if (ntmm_add_region(p, PAGE_SIZE, 0x04, 0x00020000, p)) { ret = -EADDRNOTAVAIL; goto done; }
 #endif
-    // Zeroed already; set minimal fields at known offsets for debugging: just store pointers zero
-    // Real layout is 0x470 size but we allocate 4k
-    // Store MaximumLength, Length at offset 0
-    (void)p;
     st->params = (void *)p;
+
+    if (copy_to_user((void __user *)(p + PP_OFF_MAXIMUM_LENGTH), &maxlen, 4) ||
+        copy_to_user((void __user *)(p + PP_OFF_LENGTH), &len, 4)) {
+        ret = -EFAULT;
+        goto done;
+    }
+    ret = pe_put_ustring(p + PP_OFF_IMAGE_PATH_NAME, strs + 2 * (n_cmd + n_env), n_img);
+    if (ret) goto done;
+    ret = pe_put_ustring(p + PP_OFF_COMMAND_LINE, strs, n_cmd);
+    if (ret) goto done;
+    env_ptr = strs + 2 * n_cmd;
+    env_size = (u32)(n_env * sizeof(uint16_t));
+    if (copy_to_user((void __user *)(p + PP_OFF_ENVIRONMENT), &env_ptr, 8) ||
+        copy_to_user((void __user *)(p + PP_OFF_ENVIRONMENT_SIZE), &env_size, 4)) {
+        ret = -EFAULT;
+        goto done;
+    }
+
 #ifdef CONFIG_NT_PERSONALITY
     /*
-     * RTL_USER_PROCESS_PARAMETERS (x64): MaximumLength +0x00, Length +0x04,
-     * StandardOutput +0x28. Only StandardOutput is wired (S1): the exec-ing
-     * task's fd 1 becomes a File handle in the NT handle table, which is
-     * global and has NTIO_MAX_HANDLES slots, so one slot per exec is taken.
-     * StandardInput (+0x20) and StandardError (+0x30) stay 0 until a
-     * per-process table exists (process-creation.md step 5). fd 1 closed in
-     * the parent leaves the field 0.
+     * StandardOutput (S1): the exec-ing task's fd 1 becomes a File handle in
+     * the NT handle table, which is global and has NTIO_MAX_HANDLES slots, so
+     * one slot per exec is taken. StandardInput (+0x20) and StandardError
+     * (+0x30) stay 0 until a per-process table exists (process-creation.md
+     * step 5). fd 1 closed in the parent leaves the field 0.
      */
     {
-        u32 maxlen = PAGE_SIZE, len = 0x470;
         u64 h = 0;
-        struct file *out;
-        if (copy_to_user((void __user *)(p+0x00), &maxlen, 4) ||
-            copy_to_user((void __user *)(p+0x04), &len, 4))
-            return -EFAULT;
-        out = fget(1);
-        if (out) {
-            if (ntio_install_std_file(out, &h))
-                return -ENOMEM;
-            if (copy_to_user((void __user *)(p+0x28), &h, 8))
-                return -EFAULT;
+        struct file *stdout_file = fget(1);
+        if (stdout_file) {
+            if (ntio_install_std_file(stdout_file, &h)) {
+                ret = -ENOMEM;
+                goto done;
+            }
+            if (copy_to_user((void __user *)(p + PP_OFF_STANDARD_OUTPUT), &h, 8)) {
+                ret = -EFAULT;
+                goto done;
+            }
             pr_err("binfmt_pe: StandardOutput handle=0x%llx\n", (unsigned long long)h);
         }
     }
 #endif
-    return 0;
+    ret = 0;
+
+done:
+    kfree(buf);
+    pe_exec_args_put(&ea);
+    return ret;
 }
 
 /* The PEB's OS identity block (ADR 0075). Offsets and types match

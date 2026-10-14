@@ -220,12 +220,11 @@ needs a decision before the code changes. They are listed as owner decisions in
   header. Set both from the patches. Do not take the 32/33 values in
   `tests/syntax/shim/linux/thread_info.h`: those are syntax-check placeholders.
   See the header comment in `src/kernel/fs/kshim.h`.
-- `src/kernel/fs/binfmt_pe_test.c` does not compile. It calls loader helpers
-  that were never written (`pe_build_command_line`, `pe_build_environment`,
-  `pe_utf8_to_utf16`, `pe_prot_to_mmap`), and uses `PPEB`, `PTEB`,
-  `RTL_USER_PROCESS_PARAMETERS` and `pe_load_state.pe`, none of which are
-  defined. Record [0028](decisions/0028-binfmt-pe-test-missing-helpers.md)
-  (Proposed) lists the options.
+- Resolved: `src/kernel/fs/binfmt_pe_test.c` compiles and runs on the Linux host
+  (`tests/kernel-host`, `FS_TESTS`). The helpers it calls live in
+  `src/loader/pe_text.c`, and `pe_build_process_parameters` fills CommandLine,
+  ImagePathName and Environment. Decision and outcome are in
+  [0028](decisions/0028-binfmt-pe-test-missing-helpers.md) (Accepted).
 - `src/kernel/nt/kshim.c` depends on glibc `st_atim`. The file now uses
   `KSHIM_STAT_*` macros, which fall back to `st_atime` on non-Linux builds. The
   Linux branch is not compiled on this machine.

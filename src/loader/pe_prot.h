@@ -26,4 +26,17 @@ typedef struct pe_page_protection {
 pe_status_t pe_prot_from_section(const IMAGE_SECTION_HEADER *sec,
                                  pe_page_protection_t *out);
 
+#ifndef __KERNEL__
+#include <sys/mman.h>
+/* PE_PROT_* bits to the PROT_* bits mmap() takes (userspace only). */
+static inline unsigned long pe_prot_to_mmap(u32 prot)
+{
+    unsigned long p = 0;
+    if (prot & PE_PROT_READ)  p |= PROT_READ;
+    if (prot & PE_PROT_WRITE) p |= PROT_WRITE;
+    if (prot & PE_PROT_EXEC)  p |= PROT_EXEC;
+    return p;
+}
+#endif
+
 #endif /* PE_PROT_H */

@@ -46,7 +46,7 @@ The golden corpus is the accepted oracle for this project (record 0073). A perso
 
 - A program that checks for a server edition (product type 3) now sees a client. This is intended. Any server-only behaviour must be reviewed against the client identity.
 - The product type rests on the live-host check, not on the corpus. If a later golden capture measures product type, the policy basis must be updated to cite it.
-- `binfmt_pe.c` `pe_init_peb` does not write the OS version fields, so the PE loader's PEB reports zero. `binfmt_pe_test.c` is not wired into any Makefile, so no suite runs it. This is recorded as a gap and is not changed here.
+- Resolved (2026-10-14): `binfmt_pe.c` `pe_init_peb` writes the OS version fields from `src/ntdll/os_identity.h`, so the PE loader's PEB reports the identity above. `binfmt_pe_test.c` is built and run by `tests/kernel-host` on Linux (`FS_TESTS`). The kernel build compiles `os_identity.h` through the `arch/ntdll/` copy that `tools/ntpers_kpatch.py` makes, and `vm/incremental-kernel.sh` stages every `src/ntdll/*.h`, so a change to the identity header reaches the guest tree. See [0028](0028-binfmt-pe-test-missing-helpers.md).
 - No `KUSER_SHARED_DATA` or `GetVersionEx` implementation exists under `src/`. Those sources have nothing to change. The policy lists only the sites that exist.
 
 ## Test plan
