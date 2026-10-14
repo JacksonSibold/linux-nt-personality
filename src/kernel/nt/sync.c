@@ -364,26 +364,43 @@ static void wake_ctx(struct nt_wait_ctx *ctx) {
     pthread_mutex_unlock(&ctx->lock);
 }
 static void wake_waiters_for_header(struct nt_dispatcher_header *h) {
-    /* snapshot with refcount bump to keep heap ctx alive */
-    struct nt_wait_ctx *to_wake[64];
-    int n = 0;
+    /* Every linked waiter is woken. The old code snapshotted at most 64 and
+     * dropped the rest, so waiter 65 onward never woke: a lost wakeup. Waking
+     * under h->lock keeps each block linked, and a block's ctx cannot be freed
+     * while it is linked, since its waiter unlinks before it frees the ctx.
+     * Lock order is h->lock, then ctx->lock; no path takes them the other way. */
     pthread_mutex_lock(&h->lock);
     struct list_head *pos;
-    for (pos = h->waiters.next; pos != &h->waiters && n < 64; pos = pos->next) {
+    for (pos = h->waiters.next; pos != &h->waiters; pos = pos->next) {
         struct nt_wait_block *blk = list_entry(pos, struct nt_wait_block, entry);
-        struct nt_wait_ctx *ctx = blk->ctx;
-        atomic_fetch_add(&ctx->refcount, 1);
-        to_wake[n++] = ctx;
+        wake_ctx(blk->ctx);
     }
     pthread_mutex_unlock(&h->lock);
-    for (int i=0;i<n;i++) {
-        wake_ctx(to_wake[i]);
-        if (atomic_fetch_sub(&to_wake[i]->refcount, 1) == 1) {
-            pthread_mutex_destroy(&to_wake[i]->lock);
-            pthread_cond_destroy(&to_wake[i]->cond);
-            kfree(to_wake[i]);
+}
+
+/* Non-consuming check used between linking the wait blocks and sleeping: is
+ * the wait already satisfiable? Locks follow the try path (per object for
+ * WaitAny, all of sorted[] ascending for WaitAll). Caller holds no locks. */
+static bool wait_objects_ready(ULONG count, struct nt_dispatcher_header **objects,
+                               struct nt_dispatcher_header **sorted, ULONG wait_type,
+                               struct nt_thread *thr) {
+    if (wait_type == WaitAny) {
+        for (ULONG i = 0; i < count; i++) {
+            struct nt_dispatcher_header *h = objects[i];
+            pthread_mutex_lock(&h->lock);
+            bool sig = nt_dispatcher_is_signaled(h, thr);
+            pthread_mutex_unlock(&h->lock);
+            if (sig) return true;
         }
+        return false;
     }
+    for (ULONG i = 0; i < count; i++) pthread_mutex_lock(&sorted[i]->lock);
+    bool all = true;
+    for (ULONG i = 0; i < count; i++) {
+        if (!nt_dispatcher_is_signaled(sorted[i], thr)) { all = false; break; }
+    }
+    for (LONG i = (LONG)count - 1; i >= 0; i--) pthread_mutex_unlock(&sorted[i]->lock);
+    return all;
 }
 
 /* consume helpers - caller holds h->lock */
@@ -743,22 +760,32 @@ NTSTATUS nt_wait_for_multiple_objects(ULONG count,
             pthread_mutex_unlock(&thr->lock);
         }
 
-        /* insert waiters */
+        /* block. woken is cleared, and the wait blocks linked, before the
+         * object state is examined. Two cases cover every signal: one that
+         * lands before the examination is seen by it; one that lands after the
+         * link sets woken under ctx->lock, so the sleep below is not entered
+         * or is woken. Without the examination, a signal in the gap between
+         * the failed acquire above and the link was lost, and the waiter slept
+         * on an object that was already signaled. The examination does not
+         * consume, so the loop top takes the object. */
+        pthread_mutex_lock(&ctx->lock);
+        ctx->woken = false;
+        pthread_mutex_unlock(&ctx->lock);
+
         if (wait_type == WaitAny) insert_blocks(count, objects, ctx);
         else insert_blocks_sorted(count, sorted, ctx, sorted_orig, objects);
 
-        /* block */
-        pthread_mutex_lock(&ctx->lock);
-        ctx->woken = false;
-        int rc=0;
-        if (has_deadline) {
-            rc = pthread_cond_timedwait(&ctx->cond, &ctx->lock, &deadline_ts);
-        } else {
-            rc = pthread_cond_wait(&ctx->cond, &ctx->lock);
+        if (!wait_objects_ready(count, objects, sorted, wait_type, thr)) {
+            pthread_mutex_lock(&ctx->lock);
+            while (!ctx->woken) {
+                if (has_deadline) {
+                    if (pthread_cond_timedwait(&ctx->cond, &ctx->lock, &deadline_ts) == ETIMEDOUT) break;
+                } else {
+                    pthread_cond_wait(&ctx->cond, &ctx->lock);
+                }
+            }
+            pthread_mutex_unlock(&ctx->lock);
         }
-        bool w = ctx->woken;
-        pthread_mutex_unlock(&ctx->lock);
-        (void)rc; (void)w;
 
         /* remove waiters (always) */
         if (wait_type == WaitAny) remove_blocks(count, objects, ctx);
@@ -773,15 +800,7 @@ NTSTATUS nt_wait_for_multiple_objects(ULONG count,
             if (al) { thr->alerted=false; pthread_mutex_unlock(&thr->lock); final_status = STATUS_ALERTED; break; }
             pthread_mutex_unlock(&thr->lock);
         }
-        if (rc == ETIMEDOUT && has_deadline && deadline_expired(&deadline_ts)) {
-            /* loop will try once more then timeout; but to avoid extra iteration, check try again next loop top will timeout.
-               Continue loop to re-try acquire once before declaring timeout - handles race where signal arrived at deadline */
-            continue;
-        }
-        /* loop retries try_acquire */
-        if (has_deadline && deadline_expired(&deadline_ts)) {
-            /* will be caught at top as timeout if not acquired */
-        }
+        /* loop: the top retries try_acquire and reports a timeout once the deadline has passed */
     }
 
     if (atomic_fetch_sub(&ctx->refcount, 1) == 1) {
@@ -1631,24 +1650,45 @@ static void kernel_wake_ctx(struct nt_wait_ctx *ctx)
 
 static void kernel_wake_waiters(struct nt_dispatcher_header *h)
 {
-    struct nt_wait_ctx *to_wake[64];
-    int n = 0;
+    /* Every linked waiter is woken; the old snapshot of at most 64 dropped the
+     * rest (lost wakeup). Waking under h->lock keeps each block, and so its
+     * ctx, alive: a waiter unlinks before it frees its ctx. wake_up_all does
+     * not sleep, so it is safe under the spinlock. Lock order: h->lock, then
+     * ctx->lock. */
     unsigned long flags;
     spin_lock_irqsave(&h->lock, flags);
     struct list_head *pos;
-    for (pos = h->waiters.next; pos != &h->waiters && n < 64; pos = pos->next) {
+    for (pos = h->waiters.next; pos != &h->waiters; pos = pos->next) {
         struct nt_wait_block *blk = list_entry(pos, struct nt_wait_block, entry);
-        struct nt_wait_ctx *ctx = blk->ctx;
-        atomic_inc(&ctx->refcount);
-        to_wake[n++] = ctx;
+        kernel_wake_ctx(blk->ctx);
     }
     spin_unlock_irqrestore(&h->lock, flags);
-    for (int i = 0; i < n; i++) {
-        kernel_wake_ctx(to_wake[i]);
-        if (atomic_dec_and_test(&to_wake[i]->refcount)) {
-            kfree(to_wake[i]);
+}
+
+/* Non-consuming check used between linking the wait blocks and sleeping. Same
+ * locking as the kernel try path. */
+static bool kernel_wait_objects_ready(ULONG count, struct nt_dispatcher_header **objects,
+                                      struct nt_dispatcher_header **sorted, ULONG wait_type,
+                                      struct nt_thread *thr)
+{
+    unsigned long flags;
+    if (wait_type == WaitAny) {
+        for (ULONG i = 0; i < count; i++) {
+            struct nt_dispatcher_header *h = objects[i];
+            spin_lock_irqsave(&h->lock, flags);
+            bool sig = kernel_is_signaled(h, thr);
+            spin_unlock_irqrestore(&h->lock, flags);
+            if (sig) return true;
         }
+        return false;
     }
+    for (ULONG i = 0; i < count; i++) spin_lock(&sorted[i]->lock);
+    bool all = true;
+    for (ULONG i = 0; i < count; i++) {
+        if (!kernel_is_signaled(sorted[i], thr)) { all = false; break; }
+    }
+    for (LONG i = (LONG)count - 1; i >= 0; i--) spin_unlock(&sorted[i]->lock);
+    return all;
 }
 
 /* creation wrappers (kernel) */
@@ -2395,6 +2435,14 @@ NTSTATUS nt_wait_for_multiple_objects(ULONG count,
             spin_unlock_irqrestore(&thr->lock, flags);
         }
 
+        /* Clear woken before the blocks are linked: a wake from here on is
+         * recorded, and the recheck below sees it. See the userspace engine. */
+        {
+            unsigned long flags; spin_lock_irqsave(&ctx->lock, flags);
+            ctx->woken = false;
+            spin_unlock_irqrestore(&ctx->lock, flags);
+        }
+
         /* insert wait blocks */
         if (wait_type == WaitAny) {
             for (ULONG i = 0; i < count; i++) {
@@ -2422,8 +2470,11 @@ NTSTATUS nt_wait_for_multiple_objects(ULONG count,
         /* block */
         DEFINE_WAIT(wait);
         prepare_to_wait(&ctx->wq, &wait, alertable ? TASK_INTERRUPTIBLE : TASK_UNINTERRUPTIBLE);
-        /* Recheck woken before sleeping to avoid lost wakeup between insert and prepare */
-        {
+        /* Recheck before sleeping. A signal that landed between the failed
+         * try above and the link is caught by the object check, which the
+         * woken flag alone could not do (a lost wakeup). The check does not
+         * consume; the loop top takes the object. */
+        if (!kernel_wait_objects_ready(count, objects, sorted, wait_type, thr)) {
             unsigned long flags; spin_lock_irqsave(&ctx->lock, flags);
             bool w = ctx->woken;
             spin_unlock_irqrestore(&ctx->lock, flags);
