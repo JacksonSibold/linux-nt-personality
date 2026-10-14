@@ -12,7 +12,7 @@
 #   test_except_pure      list order, resume decisions, vectored continue handlers (except_pure.h)
 #   test_runtime          freestanding malloc/calloc from ntdll_runtime.c
 #   test_win32_policy     kernel32 shim argument mapping (win32_policy.h)
-#   test_msvcrt_policy    msvcrt calloc size overflow check (msvcrt_policy.h)
+#   test_msvcrt_policy    msvcrt calloc size overflow check, snprintf return value (msvcrt_policy.h, msvcrt_format.h)
 #   test_pe_bounds        PE section and relocation range checks (pe_bounds.h)
 #   test_ldr_pure         loader IAT slot writes and TLS callback table reads (ldr_pure.h)
 #   test_ldr_mapped_pure  startup-module headers, RVA-indexed exports and forwarders (ldr_pure.h)
@@ -122,8 +122,9 @@ $(OUT)/test_ntstatus_to_dos$(EXE_SUFFIX): test_ntstatus_to_dos.c minitest.h $(SR
 $(OUT)/test_win32_policy$(EXE_SUFFIX): test_win32_policy.c minitest.h $(SRC)/win32_policy.h $(SRC)/nt_types.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
 
-# Header-only size arithmetic for msvcrt calloc (src/ntdll/msvcrt_policy.h).
-$(OUT)/test_msvcrt_policy$(EXE_SUFFIX): test_msvcrt_policy.c minitest.h $(SRC)/msvcrt_policy.h $(SRC)/nt_types.h | $(OUT)
+# Header-only size arithmetic for msvcrt calloc and the snprintf formatter
+# (src/ntdll/msvcrt_policy.h, src/ntdll/msvcrt_format.h).
+$(OUT)/test_msvcrt_policy$(EXE_SUFFIX): test_msvcrt_policy.c minitest.h $(SRC)/msvcrt_policy.h $(SRC)/msvcrt_format.h $(SRC)/nt_types.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
 
 # Header-only range checks (src/ntdll/pe_bounds.h).
