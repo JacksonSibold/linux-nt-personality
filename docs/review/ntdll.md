@@ -334,7 +334,7 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 - `kernel32.c:464` (base): `{ (void)h;(void)ms; return 0; /* WAIT_OBJECT_0 */ }`. Callers proceed as though the object were signalled.
 - Fix: call `NtWaitForSingleObject`.
 
-### K32-6 [High] HeapAlloc rounds the size before checking it
+### K32-6 [High] HeapAlloc rounds the size before checking it (Fixed: `win32_heap_block_size` in `win32_policy.h`; host test `test_win32_policy`)
 - `kernel32.c:294` (base): `size = (size+15)&~15;` runs before the bounds check on `g_k32_off`. A size near SIZE_MAX wraps to a small block (same class as RT-1).
 - Fix: reject `size` above the heap size before rounding.
 

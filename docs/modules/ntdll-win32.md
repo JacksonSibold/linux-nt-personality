@@ -80,7 +80,6 @@ Error policy: `ERROR_CALL_NOT_IMPLEMENTED` for `DONT_RESOLVE_DLL_REFERENCES` (th
 - `VirtualProtect` ignores its protection argument (K32-1), and `TlsAlloc` always returns slot 0 (K32-2). Both break callers that rely on them.
 - `CreateFileW` swaps the CREATE_NEW and CREATE_ALWAYS dispositions (K32-3).
 - `WaitForSingleObject` never waits (K32-5).
-- `HeapAlloc` checks its size after rounding (K32-6).
 - Most of the table above is placeholder code. Programs that use these calls will misbehave silently, not fail.
 - `kernelbase.def` forwards 22 names plus the module APIs. They resolve through the loader, which is compiled (LDR-1 fixed in 10f42c8). Whether they run is not verified (see Module APIs).
 - `DllMain` in each shim returns TRUE and does nothing. The shim DLLs have no initialisation.
