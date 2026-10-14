@@ -162,6 +162,8 @@ NTSTATUS NtCreateKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess,
                      POBJECT_ATTRIBUTES ObjectAttributes, ULONG TitleIndex,
                      PUNICODE_STRING Class, ULONG CreateOptions, PULONG Disposition);
 NTSTATUS NtOpenKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes);
+/* Privileged open/create with write access under \Registry\Machine; see registry.c. */
+NTSTATUS ntreg_open_key_trusted(PUNICODE_STRING path, ACCESS_MASK access, int create, PHANDLE out);
 NTSTATUS NtOpenKeyEx(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes, ULONG OpenOptions);
 NTSTATUS NtDeleteKey(HANDLE KeyHandle);
 NTSTATUS NtFlushKey(HANDLE KeyHandle);

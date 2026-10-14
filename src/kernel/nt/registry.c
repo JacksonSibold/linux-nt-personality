@@ -922,6 +922,57 @@ NTSTATUS NtCreateKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess,
     }
 }
 
+/* Privileged open for the boot path and the driver service database.  Creates
+ * the key if it is missing (NtCreateKey allows creating with no write rights),
+ * then opens a handle with the requested access.  This is the only way to get
+ * write access under \Registry\Machine: NtOpenKey and NtCreateKey still deny it
+ * to ordinary callers.  path must be a full \Registry\... name. */
+NTSTATUS ntreg_open_key_trusted(PUNICODE_STRING path, ACCESS_MASK access, int create, PHANDLE out) {
+    if (!path || !path->Buffer || !out) return STATUS_INVALID_PARAMETER;
+    ntreg_init();
+    if (!create) {
+        /* Open only: a missing key stays missing (remove must not create). */
+        struct nt_object_header *fhdr = NULL;
+        NTSTATUS fst = registry_find_key(path, &fhdr);
+        if (!NT_SUCCESS(fst)) return STATUS_OBJECT_NAME_NOT_FOUND;
+        struct nt_eprocess *fproc = kshim_current_process();
+        if (!fproc || !fproc->handle_table) { ObDereferenceObject(fhdr); return STATUS_INVALID_HANDLE; }
+        fst = ObCreateHandle(fproc, fhdr, access, 0, out);
+        ObDereferenceObject(fhdr);
+        return fst;
+    }
+    /* NtCreateKey creates one missing ancestor, not a whole chain, so create
+     * each ancestor top-down (every prefix after the hive root), then the leaf. */
+    size_t nchars = path->Length / sizeof(WCHAR);
+    for (size_t i = 1; i <= nchars; i++) {
+        if (i != nchars && path->Buffer[i] != '\\') continue;
+        UNICODE_STRING prefix;
+        prefix.Buffer = path->Buffer;
+        prefix.Length = (USHORT)(i * sizeof(WCHAR));
+        prefix.MaximumLength = prefix.Length;
+        OBJECT_ATTRIBUTES poa;
+        memset(&poa, 0, sizeof poa);
+        poa.Length = sizeof poa;
+        poa.ObjectName = &prefix;
+        poa.Attributes = OBJ_CASE_INSENSITIVE;
+        HANDLE ptmp = NULL;
+        ULONG pdisp = 0;
+        NTSTATUS pst = NtCreateKey(&ptmp, 0, &poa, 0, NULL, 0, &pdisp);
+        if (!NT_SUCCESS(pst)) return pst;
+        ObCloseHandle(kshim_current_process(), ptmp);
+    }
+    NTSTATUS st = STATUS_SUCCESS;
+
+    struct nt_eprocess *proc = kshim_current_process();
+    if (!proc || !proc->handle_table) return STATUS_INVALID_HANDLE;
+    struct nt_object_header *hdr = NULL;
+    st = registry_find_key(path, &hdr);
+    if (!NT_SUCCESS(st)) return STATUS_OBJECT_NAME_NOT_FOUND;
+    st = ObCreateHandle(proc, hdr, access, 0, out);
+    ObDereferenceObject(hdr);
+    return st;
+}
+
 NTSTATUS NtOpenKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes) {
     return NtOpenKeyEx(KeyHandle, DesiredAccess, ObjectAttributes, 0);
 }

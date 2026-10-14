@@ -91,10 +91,10 @@ LDLIBS  := $(HOST_LIBS) $(COV_LIBS)
 LDFLAGS := -fno-use-linker-plugin $(COV_FLAGS) $(SAN_FLAGS)
 
 # Test programs and the module objects each one links against.
-TESTS := port_test job_test security_extra_test object_test object_extra_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test system_test process_params_test handle_inherit_test proc_create_args_test image_plan_test image_reloc_test debugobj_test thread_exit_test exc_deliver_test
+TESTS := port_test job_test security_extra_test object_test object_extra_test security_test registry_test i2_test io_test mm_test sync_test sync_extra_test proc_thread_test handle_edge_test registry_ops_test system_test process_params_test handle_inherit_test proc_create_args_test image_plan_test image_reloc_test debugobj_test thread_exit_test exc_deliver_test driver_svcdb_test
 
 # Tests kept in this directory (not in src/kernel/nt). Their sources are $(t).c here.
-LOCAL_TESTS := port_test job_test handle_edge_test registry_ops_test process_params_test handle_inherit_test proc_create_args_test image_plan_test image_reloc_test debugobj_test thread_exit_test exc_deliver_test
+LOCAL_TESTS := port_test job_test handle_edge_test registry_ops_test process_params_test handle_inherit_test proc_create_args_test image_plan_test image_reloc_test debugobj_test thread_exit_test exc_deliver_test driver_svcdb_test
 
 # Concurrency stress programs (see README.md "Stress tests"). Run by "stress",
 # never by "check". Sources are in this directory, like LOCAL_TESTS.
@@ -138,6 +138,7 @@ job_test_OBJS := security object handle nt_obj sync kshim job
 debugobj_test_OBJS := security proc_thread object handle nt_obj sync nt_services kshim debugobj
 thread_exit_test_OBJS := security proc_thread object handle nt_obj sync nt_services kshim
 registry_ops_test_OBJS := security registry object handle nt_obj sync kshim
+driver_svcdb_test_OBJS := security registry object handle nt_obj sync kshim drvhost_svcdb
 stress_handle_test_OBJS := security object handle kshim
 stress_object_test_OBJS := security object handle kshim
 stress_sync_test_OBJS := security object handle nt_obj nt_services sync proc_thread kshim ntstatus_kernel
@@ -177,6 +178,11 @@ $(BUILD)/mman_win.o: $(SHIM)/mman_win.c | $(BUILD)
 
 # Module sources from src/kernel/nt.
 $(BUILD)/%.o: $(NT)/%.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# The driver host's service database (src/kernel/nt/driver/drvhost_svcdb.c): plain
+# C over the registry API, so it builds with the same kshim flags as the modules.
+$(BUILD)/drvhost_svcdb.o: $(NT)/driver/drvhost_svcdb.c $(NT)/driver/drvhost_svcdb.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # The PE parser from src/loader, built plain (no kernel prelude), like tests/host.
