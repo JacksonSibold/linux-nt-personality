@@ -329,25 +329,25 @@ static NTSTATUS ObpInsertDirectoryEntry(struct nt_directory *dir,
     NTSTATUS status;
     if (!name || name->Length == 0)
         return STATUS_OBJECT_NAME_INVALID;
+    /* The entry and its name are allocated before the locks: GFP_KERNEL may
+     * sleep, and a rwlock section is atomic context. They are freed on a
+     * collision. */
+    de = (struct nt_dir_entry *)kzalloc(sizeof(*de), GFP_KERNEL);
+    if (!de)
+        return STATUS_NO_MEMORY;
+    status = nt_dup_unicodestring(name, &de->name);
+    if (!NT_SUCCESS(status)) {
+        kfree(de);
+        return status;
+    }
     write_lock(&ob_ns_lock);
     write_lock(&dir->lock);
     if (obp_find_entry_locked(dir, name)) {
         write_unlock(&dir->lock);
         write_unlock(&ob_ns_lock);
-        return STATUS_OBJECT_NAME_COLLISION;
-    }
-    de = (struct nt_dir_entry *)kzalloc(sizeof(*de), GFP_KERNEL);
-    if (!de) {
-        write_unlock(&dir->lock);
-        write_unlock(&ob_ns_lock);
-        return STATUS_NO_MEMORY;
-    }
-    status = nt_dup_unicodestring(name, &de->name);
-    if (!NT_SUCCESS(status)) {
+        nt_free_unicodestring(&de->name);
         kfree(de);
-        write_unlock(&dir->lock);
-        write_unlock(&ob_ns_lock);
-        return status;
+        return STATUS_OBJECT_NAME_COLLISION;
     }
     de->obj = obj;
     INIT_LIST_HEAD(&de->link);

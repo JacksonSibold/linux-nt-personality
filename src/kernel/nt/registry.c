@@ -1192,6 +1192,16 @@ NTSTATUS NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleI
         st=dup_us(ValueName,&vname);
         if (!NT_SUCCESS(st)) { ObDereferenceObject(hdr); return st; }
     } else { vname.Buffer=NULL; vname.Length=0; vname.MaximumLength=0; }
+    // Allocate before the locks: GFP_KERNEL may sleep, and a rwlock section is
+    // atomic context. nv is freed again when the value already exists.
+    uint8_t *nd=NULL;
+    if (DataSize) {
+        nd=(uint8_t*)kmalloc(DataSize,GFP_KERNEL);
+        if (!nd){ free_us(&vname); ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
+        if (Data) memcpy(nd,Data,DataSize);
+    }
+    struct reg_value *nv=(struct reg_value*)kmalloc(sizeof(*nv),GFP_KERNEL);
+    if (!nv){ kfree(nd); free_us(&vname); ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
     mutex_lock(&k->persist_lock);
     write_lock(&k->lock);
     struct reg_value *iter=NULL;
@@ -1203,15 +1213,8 @@ NTSTATUS NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleI
         if (eq){ target=iter; break; }
     }
     if (target) {
-        // replace: allocate the new data first, so a failure keeps the old value
-        // whole. Freeing it first left data NULL with data_len set, and the
-        // snapshot then copied from NULL.
-        uint8_t *nd=NULL;
-        if (DataSize) {
-            nd=(uint8_t*)kmalloc(DataSize,GFP_KERNEL);
-            if (!nd){ write_unlock(&k->lock); mutex_unlock(&k->persist_lock); free_us(&vname); ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
-            if (Data) memcpy(nd,Data,DataSize);
-        }
+        // replace: the new data is already allocated, so a failure kept the old
+        // value whole.
         if (target->data) kfree(target->data);
         target->data=nd;
         target->data_len=DataSize;
@@ -1221,21 +1224,16 @@ NTSTATUS NtSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleI
         REG_TEST_PERSIST_HOOK();
         persist_write_value(k,target);
         mutex_unlock(&k->persist_lock);
+        kfree(nv);
         free_us(&vname);
         ObDereferenceObject(hdr);
         return STATUS_SUCCESS;
     } else {
-        struct reg_value *nv=(struct reg_value*)kmalloc(sizeof(*nv),GFP_KERNEL);
-        if (!nv){ write_unlock(&k->lock); mutex_unlock(&k->persist_lock); free_us(&vname); ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
         INIT_LIST_HEAD(&nv->link);
         nv->name=vname; // take ownership
         nv->type=Type;
         nv->data_len=DataSize;
-        if (DataSize){
-            nv->data=(uint8_t*)kmalloc(DataSize,GFP_KERNEL);
-            if (!nv->data){ free_us(&nv->name); kfree(nv); write_unlock(&k->lock); mutex_unlock(&k->persist_lock); ObDereferenceObject(hdr); return STATUS_NO_MEMORY; }
-            if (Data) memcpy(nv->data,Data,DataSize);
-        } else nv->data=NULL;
+        nv->data=nd;
         list_add_tail(&nv->link,&k->values);
         k->last_write_time.QuadPart=(LONGLONG)now_100ns();
         write_unlock(&k->lock);
