@@ -11,6 +11,9 @@ kept in `C:\Users\Jackson\repos\linux-env\kernel-s1\s1-serial.log` (host, not co
 | S2 | exe imports the real `ntdll.dll` (LdrLoadDll) | PASS |
 | S3 | kernel32 subset: `GetStdHandle`/`WriteFile`/`ExitProcess`, then `CreateFileA`/`WriteFile`/`ReadFile` in tmpfs | PASS |
 | S4 | `printf`/`puts` through the msvcrt shim | PASS |
+| S5 | exe importing a DLL the initramfs lacks: the process fails with STATUS_DLL_NOT_FOUND, no crash | PASS |
+| S6 | `GetModuleHandleA("kernel32.dll")` and `GetProcAddress(…, "GetCurrentProcessId")` find the startup DLL | PASS |
+| S7 | a `CreateThread` thread reads its TEB through `%gs` (self, PEB, ClientId, stack bounds) | PASS |
 
 ## S1: nostdlib exe on the NT syscall interface
 
@@ -151,6 +154,91 @@ Result: S4 PASS.
 
 Regression on the final ntdll (same kernel): S2 `hello from NT via ntdll` and S3 `hello from kernel32` /
 `file payload from S3` still pass, each with exit status 0.
+
+## S5: a missing import fails the process, it does not crash it
+
+Fixture: `tests/kernel/s5/console_s5.c`, built by `make -C tests/kernel s5`. It imports one function from
+`missing_s5.dll`, which the initramfs does not ship (the import library is `s5/missing_s5.def`). `_start`
+never runs.
+
+Loader change (src/ntdll/ntdll_main.c, `ldr_fail_unbound_import`): a DLL that cannot be mapped, or a name
+the mapped DLL does not export, ends the process. The loader writes one line to stderr (handle -12) and to
+the serial console, then calls `NtTerminateProcess` with STATUS_DLL_NOT_FOUND (0xC0000135) or
+STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139). Before this, the process-start binder skipped a DLL it could not map,
+and left an unresolved IAT slot holding the import's RVA, so the first call jumped into the image.
+
+The Linux exit status keeps only the low byte of the NT status. The shell therefore sees 53 (0x35) for
+0xC0000135, and the step compares against 53. The full status is on the stderr line.
+
+Serial (boot of 2026-10-13, `expected 53`; the lines beginning `Ldr:` are the loader's debug output):
+
+```
+binfmt_pe: loading PE /tests_kernel/console_s5.exe pid=26
+binfmt_pe: after nt_enter TIF_NTABI=1
+LdrInitializeThunk: enter
+LdrInitializeThunk: got PEB
+Ldr: import dll_name=missing_s5.dll
+LdrInitializeThunk: cannot bind import image -> missing_s5.dll: STATUS_DLL_NOT_FOUND
+Ldr: unbound import missing_s5.dll: STATUS_DLL_NOT_FOUND
+STEP exit status: 53 (expected 53)
+STEP PASS
+```
+
+Regression on the same ntdll: S2 (`hello from NT via ntdll`), S3 (`hello from kernel32`, `file payload from S3`) and
+S4 (`hello from msvcrt`) each still pass with exit status 0.
+
+Result: S5 PASS.
+
+## S6: GetModuleHandle and GetProcAddress on the startup modules
+
+Fixture: `tests/kernel/s6/console_s6.c`, built by `make -C tests/kernel s6`. It imports only from kernel32.dll
+(`GetModuleHandleA`, `GetProcAddress`, `GetCurrentProcessId`, `GetStdHandle`, `WriteFile`, `ExitProcess`).
+Steps: `GetModuleHandleA("kernel32.dll")` must be non-NULL; `GetModuleHandleA(NULL)` must be non-NULL;
+`GetProcAddress(kernel32, "GetCurrentProcessId")` must equal the address of the direct import, and calling it
+must return a non-zero PID. Failures exit 10 to 13.
+
+Cause: `ntdll_main.c` maps the startup DLLs with `ldr_nt_map_dll` and never enters them in the loader's
+module list, so the module APIs cannot see them (`docs/status/DIFFERENTIAL-RESULTS.md`, non-VM probes,
+cause 1). The fix registers the exe, ntdll and every DLL the binder maps (`winldr_register_mapped`, pinned,
+with base, size, entry point and names from the mapped headers), links them in the load, memory-order and
+hash lists, and puts each on the initialization-order list after its DllMain (`winldr_mark_initialized`).
+`LdrGetProcedureAddress` on a registered module resolves through its RVA-indexed export table
+(`ldr_mapped_export` in `src/ntdll/ldr_pure.h`), forwarders included. Host tests: `test_ldr_mapped_pure`.
+
+Boots (host QEMU, `boot-m0-host.ps1`, the same bzImage; the initramfs differs only in the two DLLs):
+
+- Before (`s6-before-serial.log`, ntdll and kernel32 from the k32full cycle): `GetModuleHandleA` returns NULL
+  and the step exits 10.
+- After (`s6-after-serial.log`, this branch): `S6 GetProcAddress kernel32 GetCurrentProcessId: match`,
+  `STEP exit status: 0 (expected 0)`, `STEP PASS`.
+
+Result: S6 PASS.
+
+## S7: a created thread has a TEB
+
+Fixture: `tests/kernel/s7/console_s7.c`, built by `make -C tests/kernel s7`. The main thread calls
+`CreateThread` (kernel32, `NtCreateThreadEx`). The worker reads `gs:[0x30]` (NtTib.Self), `gs:[0x60]` (PEB),
+`gs:[0x48]` (ClientId.UniqueThread), `gs:[0x08]` and `gs:[0x10]` (stack base and limit) and its own `%rsp`,
+and stores them. The main thread checks: a TEB that is not its own, the same PEB, the thread id that
+`CreateThread` returned, and a stack pointer inside the stack bounds. Failures exit 10 to 17.
+
+Cause: `nt_alloc_teb_stack_kernel` (`arch/x86/nt/proc_thread.c`, mirrored in `src/kernel/nt/proc_thread.c`)
+allocated the TEB with `kzalloc`. A kernel address faults on the first user-mode `%gs` read. The fix maps the
+TEB as two user pages (as `binfmt_pe`'s `pe_init_teb` does), builds the fields in a kernel staging copy and
+copies them out, stores the thread id once `copy_process` has run (`nt_teb_set_tid`), and frees the mapping in
+`nt_free_teb_stack_kernel`. The PEB comes from the creator's TEB when `proc->peb` is unset, which it is for an
+exe loaded by `binfmt_pe` in the kernel build.
+
+Boots (host QEMU, `boot-m0-host.ps1`, `-KernelDir` for the new kernel):
+
+- Before (`s7-before-serial.log`, pre-fix bzImage in `kernel-6.18.56`): `console_s7.exe[27]: segfault at
+  ff110000005d6030 ip 0000000140001000`. The read is of the kernel-memory TEB, from the worker.
+- After (`s7-after-serial.log`, new bzImage built from this branch): `STEP exit status: 0 (expected 0)`,
+  `STEP PASS`.
+
+Regression on the same new kernel: S6 (`s6-after-newkernel-serial.log`) still `STEP PASS`.
+
+Result: S7 PASS.
 
 ## Resume
 

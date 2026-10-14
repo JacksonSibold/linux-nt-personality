@@ -20,15 +20,15 @@ Each statement links to the file it comes from. These are recorded results; they
 
 ## Repository map
 
-The snapshot tracks <!-- counts:tracked_files:begin -->702<!-- counts:tracked_files:end --> files (`git ls-files`).
+The snapshot tracks <!-- counts:tracked_files:begin -->727<!-- counts:tracked_files:end --> files (`git ls-files`).
 
 - `src/`: kernel-personality components, loader, ntdll and Win32 experiments.
 - `arch/`: architecture-specific integration.
 - `build/`: top-level Makefile and generator scripts.
 - `docs/`: architecture, research notes and definition of done.
 - `tests/`: conformance harness, differential probes and regression source.
-- `tools/`: standalone Python tools (repository checks, doc counts, NTSTATUS lookup, PE summary, criteria report, VM serial result collector and initramfs packer).
-- `vm/`: experimental build/run and artifact-freshness tooling. The VM can move data over a 9p share (`VM_TRANSPORT=9p`, the default) or over the serial console with the initramfs as the payload (`VM_TRANSPORT=initrd-serial`, for hosts without 9p or KVM); see [docs/vm/TRANSPORTS.md](docs/vm/TRANSPORTS.md).
+- `tools/`: standalone Python tools (repository checks, doc counts, NTSTATUS lookup, PE summary, criteria report).
+- `vm/`: experimental build/run and artifact-freshness tooling.
 
 The original development handoff records a minimal PE reaching exit code 42 and only **3 of 423** full conformance criteria passing (no signed bundle is linked, so this count is unverified). These are historical project records, not results reproduced during this publication. Large generated evidence bundles, Windows binaries, VM images, build products and local Git history are excluded from this source snapshot. Some evidence-dependent commands will therefore lack their inputs.
 

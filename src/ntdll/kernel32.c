@@ -18,6 +18,7 @@
 #include "k32_module_pure.h"
 #include "k32_io_pure.h"
 #include "k32_file_pure.h"
+#include "k32_sync_pure.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -57,6 +58,7 @@ __declspec(dllimport) extern NTSTATUS NtReleaseMutant(HANDLE, PLONG);
 __declspec(dllimport) extern NTSTATUS NtCreateSemaphore(PHANDLE, ULONG, PVOID, LONG, LONG);
 __declspec(dllimport) extern NTSTATUS NtReleaseSemaphore(HANDLE, LONG, PLONG);
 __declspec(dllimport) extern NTSTATUS NtQueryVolumeInformationFile(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, ULONG);
+__declspec(dllimport) extern NTSTATUS NtWaitForMultipleObjects(ULONG, PHANDLE, ULONG, BOOLEAN, PLARGE_INTEGER);
 
 /* TEB access for LastError */
 static inline PTEB NtCurrentTebMingw(void) {
@@ -677,13 +679,117 @@ BOOL WINAPI HeapFree(HANDLE heap, DWORD flags, LPVOID mem) { (void)heap;(void)fl
 LPVOID WINAPI HeapReAlloc(HANDLE heap, DWORD flags, LPVOID mem, SIZE_T size){ (void)heap;(void)flags;(void)mem;(void)size; return NULL; }
 SIZE_T WINAPI HeapSize(HANDLE heap, DWORD flags, const void *mem){ (void)heap;(void)flags;(void)mem; return 0; }
 
-/* CriticalSection - single-thread no-op */
+/* Critical sections (K32-S1). The RTL protocol, with the counting rules in
+ * k32_sync_pure.h. The wake primitive is an auto-reset NT event in
+ * LockSemaphore, created on first use by the waiter or by the leaver, whichever
+ * needs it first. A thread that owns the section re-enters by counting. */
 typedef struct { void *DebugInfo; LONG LockCount; LONG RecursionCount; HANDLE OwningThread; HANDLE LockSemaphore; ULONG_PTR SpinCount; } CRITICAL_SECTION;
-void WINAPI InitializeCriticalSection(CRITICAL_SECTION *cs) { if(cs) memset(cs,0,sizeof(*cs)); }
-void WINAPI EnterCriticalSection(CRITICAL_SECTION *cs) { (void)cs; }
-void WINAPI LeaveCriticalSection(CRITICAL_SECTION *cs) { (void)cs; }
-void WINAPI DeleteCriticalSection(CRITICAL_SECTION *cs) { (void)cs; }
-BOOL WINAPI TryEnterCriticalSection(CRITICAL_SECTION *cs) { (void)cs; return 1; }
+
+static HANDLE k32_cs_self(void)
+{
+    PTEB teb = NtCurrentTebMingw();
+    return teb ? (HANDLE)(ULONG_PTR)teb->ClientId.UniqueThread : NULL;
+}
+
+/* The section's event, created if no one has yet. Returns NULL only when the
+ * event cannot be created; the callers then retry after a short delay. */
+static HANDLE k32_cs_event(CRITICAL_SECTION *cs)
+{
+    HANDLE ev = __atomic_load_n(&cs->LockSemaphore, __ATOMIC_ACQUIRE);
+    if (ev) return ev;
+    HANDLE created = NULL;
+    /* SynchronizationEvent (1): auto-reset, so one signal wakes one waiter. */
+    NTSTATUS s = NtCreateEvent(&created, WIN32_EVENT_ALL_ACCESS, NULL, 1, 0);
+    if (!NT_SUCCESS(s)) return NULL;
+    HANDLE expected = NULL;
+    if (__atomic_compare_exchange_n(&cs->LockSemaphore, &expected, created, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return created;
+    NtClose(created);   /* another thread created it first */
+    return expected;
+}
+
+void WINAPI InitializeCriticalSection(CRITICAL_SECTION *cs)
+{
+    if (!cs) return;
+    memset(cs, 0, sizeof(*cs));
+    cs->LockCount = K32S_CS_LOCK_FREE;
+}
+
+void WINAPI EnterCriticalSection(CRITICAL_SECTION *cs)
+{
+    if (!cs) return;
+    HANDLE self = k32_cs_self();
+    if (k32s_cs_owned_by(cs->OwningThread, self)) {
+        cs->RecursionCount++;
+        __atomic_add_fetch(&cs->LockCount, 1, __ATOMIC_SEQ_CST);
+        return;
+    }
+    LONG after = __atomic_add_fetch(&cs->LockCount, 1, __ATOMIC_SEQ_CST);
+    if (k32s_cs_must_wait(after)) {
+        HANDLE ev = k32_cs_event(cs);
+        while (!ev) {
+            /* Event creation failed: back off 1 ms and try again. */
+            LARGE_INTEGER d; d.QuadPart = -10000;
+            NtDelayExecution(0, &d);
+            ev = k32_cs_event(cs);
+        }
+        NtWaitForSingleObject(ev, 0, NULL);
+    }
+    cs->OwningThread = self;
+    cs->RecursionCount = 1;
+}
+
+void WINAPI LeaveCriticalSection(CRITICAL_SECTION *cs)
+{
+    if (!cs) return;
+    if (--cs->RecursionCount == 0) {
+        /* Clear the owner before the count changes, so a woken waiter never
+         * sees a stale owner. */
+        cs->OwningThread = NULL;
+        LONG after = __atomic_sub_fetch(&cs->LockCount, 1, __ATOMIC_SEQ_CST);
+        if (k32s_cs_must_signal(after)) {
+            HANDLE ev = k32_cs_event(cs);
+            while (!ev) {
+                LARGE_INTEGER d; d.QuadPart = -10000;
+                NtDelayExecution(0, &d);
+                ev = k32_cs_event(cs);
+            }
+            NtSetEvent(ev, NULL);
+        }
+        return;
+    }
+    __atomic_sub_fetch(&cs->LockCount, 1, __ATOMIC_SEQ_CST);
+}
+
+void WINAPI DeleteCriticalSection(CRITICAL_SECTION *cs)
+{
+    if (!cs) return;
+    HANDLE ev = __atomic_exchange_n(&cs->LockSemaphore, NULL, __ATOMIC_ACQ_REL);
+    if (ev) NtClose(ev);
+    cs->OwningThread = NULL;
+    cs->RecursionCount = 0;
+    cs->LockCount = K32S_CS_LOCK_FREE;
+    cs->SpinCount = 0;
+}
+
+BOOL WINAPI TryEnterCriticalSection(CRITICAL_SECTION *cs)
+{
+    if (!cs) return 0;
+    HANDLE self = k32_cs_self();
+    if (k32s_cs_owned_by(cs->OwningThread, self)) {
+        cs->RecursionCount++;
+        __atomic_add_fetch(&cs->LockCount, 1, __ATOMIC_SEQ_CST);
+        return 1;
+    }
+    LONG expected = K32S_CS_LOCK_FREE;
+    if (!__atomic_compare_exchange_n(&cs->LockCount, &expected, 0, 0,
+                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+        return 0;
+    cs->OwningThread = self;
+    cs->RecursionCount = 1;
+    return 1;
+}
 
 /* TLS */
 /* The index bitmap is process-wide, so it lives in the PEB. */
@@ -714,26 +820,8 @@ BOOL WINAPI TlsSetValue(DWORD idx, LPVOID val) {
     return 1;
 }
 
-/* String conversions - ASCII only */
-int WINAPI MultiByteToWideChar(UINT cp, DWORD flags, const char *mb, int cb, WCHAR *wc, int cc) {
-    (void)cp;(void)flags;
-    if (!mb) { SetLastError(87); return 0; }
-    int len = (cb==-1) ? (int)strlen(mb)+1 : cb;
-    if (!wc || cc==0) return len;
-    int i;
-    for(i=0;i<len && i<cc;i++) wc[i]=(WCHAR)(unsigned char)mb[i];
-    return i;
-}
-int WINAPI WideCharToMultiByte(UINT cp, DWORD flags, const WCHAR *wc, int cc, char *mb, int cb, const char *def, BOOL *used) {
-    (void)cp;(void)flags;(void)def;(void)used;
-    if (!wc) { SetLastError(87); return 0; }
-    int len = (cc==-1) ? 0 : cc;
-    if (cc==-1) { while(wc[len]) len++; len++; }
-    if (!mb || cb==0) return len;
-    int i;
-    for(i=0;i<len && i<cb;i++) mb[i]=(char)(wc[i] & 0xFF);
-    return i;
-}
+/* String conversions: MultiByteToWideChar and WideCharToMultiByte are in
+ * kernel32_str.c (K32-C1). */
 BOOL WINAPI IsDBCSLeadByteEx(UINT cp, BYTE b) { (void)cp;(void)b; return 0; }
 
 /* Process/Thread */
@@ -749,24 +837,8 @@ DWORD WINAPI GetCurrentThreadId(void) {
     if (teb) return (DWORD)(ULONG_PTR)teb->ClientId.UniqueThread;
     return 1;
 }
-BOOL WINAPI GetExitCodeProcess(HANDLE h, DWORD *ec) { (void)h; if(ec) *ec=0; return 1; }
-BOOL WINAPI GetExitCodeThread(HANDLE h, DWORD *ec) { (void)h; if(ec) *ec=0; return 1; }
-DWORD WINAPI GetPriorityClass(HANDLE h) { (void)h; return 0x20; /* NORMAL */ }
-int WINAPI GetThreadPriority(HANDLE h) { (void)h; return 0; }
-BOOL WINAPI SetThreadPriority(HANDLE h, int p) { (void)h;(void)p; return 1; }
-BOOL WINAPI TerminateThread(HANDLE h, DWORD ec) { (void)h;(void)ec; return 0; }
-HANDLE WINAPI CreateThread(void *sa, SIZE_T stack, void *start, void *param, DWORD flags, DWORD *id) {
-    (void)sa;(void)stack;(void)start;(void)param;(void)flags;(void)id;
-    SetLastError(120); return NULL;
-}
-HANDLE WINAPI CreateProcessA(const char *app, char *cmd, void *pa, void *ta, BOOL inh, DWORD flags, void *env, const char *dir, void *si, void *pi) {
-    (void)app;(void)cmd;(void)pa;(void)ta;(void)inh;(void)flags;(void)env;(void)dir;(void)si;(void)pi;
-    SetLastError(2); return NULL;
-}
-HANDLE WINAPI CreateProcessW(const WCHAR *app, WCHAR *cmd, void *pa, void *ta, BOOL inh, DWORD flags, void *env, const WCHAR *dir, void *si, void *pi) {
-    (void)app;(void)cmd;(void)pa;(void)ta;(void)inh;(void)flags;(void)env;(void)dir;(void)si;(void)pi;
-    SetLastError(2); return NULL;
-}
+/* GetExitCodeThread, GetExitCodeProcess, TerminateThread, CreateThread and
+ * CreateProcess are in kernel32_thread.c (K32-T1). */
 BOOL WINAPI IsDebuggerPresent(void) { return 0; }
 
 /* File names: delete, directories and attributes (K32-8). */
@@ -895,16 +967,8 @@ DWORD WINAPI GetFileAttributesA(const char *name)
     return GetFileAttributesW(g_k32_wide);
 }
 
-/* Temp path */
-DWORD WINAPI GetTempPathA(DWORD len, char *buf) {
-    const char *tmp="/tmp/";
-    size_t need=strlen(tmp)+1;
-    if (!buf || len==0) return (DWORD)need;
-    size_t n = need < len ? need : len;
-    memcpy(buf, tmp, n);
-    if (n<len) buf[n-1]='\0';
-    return (DWORD)need-1;
-}
+/* Temp path: GetTempPathA and GetTempFileNameA are in kernel32_fs.c (K32-F1).
+ * The wide variants below are not exported and still return the fixed path. */
 DWORD WINAPI GetTempPathW(DWORD len, WCHAR *buf) {
     const WCHAR tmp[]={ '/', 't','m','p','/',0 };
     size_t need=5+1;
@@ -913,34 +977,19 @@ DWORD WINAPI GetTempPathW(DWORD len, WCHAR *buf) {
     for(size_t i=0;i<n;i++) buf[i]=tmp[i];
     return (DWORD)need-1;
 }
-UINT WINAPI GetTempFileNameA(const char *dir, const char *prefix, UINT uniq, char *out) {
-    (void)dir;(void)prefix;(void)uniq;
-    const char *name="/tmp/tmpfile.tmp";
-    if(out) strcpy(out, name);
-    return 1;
-}
 UINT WINAPI GetTempFileNameW(const WCHAR *dir, const WCHAR *prefix, UINT uniq, WCHAR *out) {
     (void)dir;(void)prefix;(void)uniq;
     const WCHAR name[]={'/','t','m','p','/','t','m','p',0};
     if(out) { size_t i; for(i=0;name[i];i++) out[i]=name[i]; out[i]=0; }
     return 1;
 }
-DWORD WINAPI GetBinaryTypeA(const char *app, DWORD *type){ (void)app; if(type) *type=6; return 1; }
 DWORD WINAPI QueryDosDeviceW(const WCHAR *name, WCHAR *target, DWORD max) {
     (void)name;(void)target;(void)max; SetLastError(2); return 0;
 }
 
-/* Memory mapping */
-HANDLE WINAPI CreateFileMappingA(HANDLE f, void *sa, DWORD prot, DWORD hi, DWORD lo, const char *name) {
-    (void)f;(void)sa;(void)prot;(void)hi;(void)lo;(void)name; SetLastError(0); return (HANDLE)1;
-}
-HANDLE WINAPI CreateFileMappingW(HANDLE f, void *sa, DWORD prot, DWORD hi, DWORD lo, const WCHAR *name) {
-    (void)f;(void)sa;(void)prot;(void)hi;(void)lo;(void)name; SetLastError(0); return (HANDLE)1;
-}
-LPVOID WINAPI MapViewOfFile(HANDLE m, DWORD access, DWORD offHi, DWORD offLo, SIZE_T size) {
-    (void)m;(void)access;(void)offHi;(void)offLo;(void)size; SetLastError(8); return NULL;
-}
-BOOL WINAPI UnmapViewOfFile(const void *p) { (void)p; SetLastError(0); return 1; }
+/* Memory mapping: CreateFileMapping, MapViewOfFile and UnmapViewOfFile are in
+ * kernel32_mm.c (K32-M1). */
+
 /* File size and position (K32-11, K32-8). FilePositionInformation is class 14,
  * FileStandardInformation class 5, FileEndOfFileInformation class 20. */
 __declspec(dllimport) extern NTSTATUS NtQueryInformationFile(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, ULONG);
@@ -1171,7 +1220,20 @@ DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms){
     SetLastError(0);
     return r;
 }
-DWORD WINAPI WaitForMultipleObjects(DWORD n, const HANDLE *hs, BOOL waitAll, DWORD ms){ (void)n;(void)hs;(void)waitAll;(void)ms; return 0; }
+/* K32-S2: WaitForMultipleObjects on NtWaitForMultipleObjects. The count and
+ * the handle checks are in k32s_wait_multi_args_ok. */
+DWORD WINAPI WaitForMultipleObjects(DWORD n, const HANDLE *hs, BOOL waitAll, DWORD ms){
+    if (!k32s_wait_multi_args_ok(n, (const void *const *)hs)) {
+        SetLastError(K32S_ERROR_INVALID_PARAMETER);
+        return K32S_WAIT_FAILED;
+    }
+    LARGE_INTEGER t;
+    NTSTATUS s = NtWaitForMultipleObjects(n, (PHANDLE)hs, k32s_wait_type(waitAll), 0, win32_timeout_to_nt(ms, &t));
+    DWORD r = k32s_wait_multi_result(s, n);
+    if (r == K32S_WAIT_FAILED) { SetLastErrorFromStatus(s); return r; }
+    SetLastError(0);
+    return r;
+}
 __declspec(dllimport) extern NTSTATUS NtDuplicateObject(HANDLE, HANDLE, HANDLE, PHANDLE, ACCESS_MASK, ULONG, ULONG);
 /* K32-13: the target gets a handle to the same object, from NtDuplicateObject.
  * OBJ_INHERIT is 0x2; DUPLICATE_CLOSE_SOURCE and DUPLICATE_SAME_ACCESS keep
@@ -1184,8 +1246,6 @@ BOOL WINAPI DuplicateHandle(HANDLE srcP, HANDLE src, HANDLE dstP, HANDLE *dst, D
     SetLastError(0);
     return 1;
 }
-BOOL WINAPI GetHandleInformation(HANDLE h, DWORD *flags){ (void)h; if(flags) *flags=0; return 1; }
-DWORD WINAPI GetProcessHandleCount(HANDLE p, DWORD *cnt){ (void)p; if(cnt) *cnt=5; return 1; }
 
 /* Perf */
 /* K32-10: the counter and its frequency come from the kernel, not constants. */
@@ -1208,13 +1268,18 @@ void WINAPI Sleep(DWORD ms){
     NtDelayExecution(0, &d);
 }
 void WINAPI SleepEx(DWORD ms, BOOL alert){ (void)alert; Sleep(ms); }
+/* K32-S3: milliseconds since the kernel started, from the performance counter. */
+DWORD WINAPI GetTickCount(void){
+    LARGE_INTEGER count, freq;
+    if(!NT_SUCCESS(NtQueryPerformanceCounter(&count, &freq))) return 0;
+    return k32s_tick_count_ms(count.QuadPart, freq.QuadPart);
+}
 
 /* Exception */
-void* WINAPI SetUnhandledExceptionFilter(void *f){ (void)f; return NULL; }
 LONG WINAPI UnhandledExceptionFilter(void *info){ (void)info; return 1; }
 
 /* VirtualQuery via NtQueryVirtualMemory */
-typedef struct { PVOID BaseAddress; PVOID AllocationBase; DWORD AllocationProtect; SIZE_T RegionSize; DWORD State; DWORD Protect; DWORD Type; } MEMORY_BASIC_INFORMATION;
+typedef struct { PVOID BaseAddress; PVOID AllocationBase; DWORD AllocationProtect; WORD PartitionId; SIZE_T RegionSize; DWORD State; DWORD Protect; DWORD Type; } MEMORY_BASIC_INFORMATION;
 SIZE_T WINAPI VirtualQuery(const void *addr, MEMORY_BASIC_INFORMATION *info, SIZE_T len){
     if(!info || len < sizeof(*info)){ SetLastError(87); return 0; }
     PVOID base = (PVOID)addr;

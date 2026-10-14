@@ -43,6 +43,19 @@ $(BINDIR)/console_s3.exe: s3/console_s3.c $(BINDIR)/libkernel32_imp.a
 
 s3: $(BINDIR)/console_s3.exe
 
+# S6: GetModuleHandleA("kernel32.dll") and GetProcAddress on the startup module list.
+# Uses the same kernel32 import library as S3.
+$(BINDIR)/console_s6.exe: s6/console_s6.c $(BINDIR)/libkernel32_imp.a
+	$(CC) -nostdlib -Wl,-e,_start -Wl,--no-seh -Wl,--no-insert-timestamp -Os -s -ffreestanding -fno-builtin -fno-stack-protector -o $@ $< -L$(BINDIR) -lkernel32_imp
+
+s6: $(BINDIR)/console_s6.exe
+
+# S7: a CreateThread thread reads its TEB through %gs (NtCreateThreadEx, src/kernel/nt/proc_thread.c).
+$(BINDIR)/console_s7.exe: s7/console_s7.c $(BINDIR)/libkernel32_imp.a
+	$(CC) -nostdlib -Wl,-e,_start -Wl,--no-seh -Wl,--no-insert-timestamp -Os -s -ffreestanding -fno-builtin -fno-stack-protector -o $@ $< -L$(BINDIR) -lkernel32_imp
+
+s7: $(BINDIR)/console_s7.exe
+
 $(BINDIR)/libmsvcrt_imp.a: ../../src/ntdll/msvcrt.def | $(BINDIR)
 	x86_64-w64-mingw32-dlltool -d $< -l $@ -D msvcrt.dll
 
@@ -50,6 +63,16 @@ $(BINDIR)/console_s4.exe: s4/console_s4.c $(BINDIR)/libmsvcrt_imp.a
 	$(CC) -nostdlib -Wl,-e,_start -Wl,--no-seh -Wl,--no-insert-timestamp -Os -s -ffreestanding -fno-builtin -fno-stack-protector -o $@ $< -L$(BINDIR) -lmsvcrt_imp
 
 s4: $(BINDIR)/console_s4.exe
+
+# S5: an exe importing from a DLL that the initramfs does not ship. The strict
+# loader must fail it with STATUS_DLL_NOT_FOUND (0xC0000135), not run it.
+$(BINDIR)/libmissing_s5_imp.a: s5/missing_s5.def | $(BINDIR)
+	x86_64-w64-mingw32-dlltool -d $< -l $@ -D missing_s5.dll
+
+$(BINDIR)/console_s5.exe: s5/console_s5.c $(BINDIR)/libmissing_s5_imp.a
+	$(CC) -nostdlib -Wl,-e,_start -Wl,--no-seh -Wl,--no-insert-timestamp -Os -s -ffreestanding -fno-builtin -fno-stack-protector -o $@ $< -L$(BINDIR) -lmissing_s5_imp
+
+s5: $(BINDIR)/console_s5.exe
 
 clean:
 	rm -rf $(BINDIR)/*.exe

@@ -56,6 +56,71 @@ EXPORTS
     GetProcessHeap
     HeapReAlloc
     HeapSize
+    CreateEventA
+    CreateMutexA
+    CreateSemaphoreA
+    ReleaseMutex
+    ReleaseSemaphore
+    ResetEvent
+    SetEvent
+    WaitForSingleObject
+    WaitForMultipleObjects
+    InitializeCriticalSection
+    EnterCriticalSection
+    LeaveCriticalSection
+    TryEnterCriticalSection
+    DeleteCriticalSection
+    Sleep
+    GetTickCount
+    TlsGetValue
+    CreateFileMappingA
+    CreateFileMappingW
+    MapViewOfFile
+    UnmapViewOfFile
+    CreateThread
+    TerminateThread
+    SuspendThread
+    ResumeThread
+    GetExitCodeThread
+    GetExitCodeProcess
+    CreateProcessA
+    CreateProcessW
+    FindFirstFileA
+    FindNextFileA
+    FindClose
+    GetFileTime
+    GetFileInformationByHandle
+    GetTempPathA
+    GetTempFileNameA
+    AddVectoredExceptionHandler = K32AddVectoredExceptionHandler
+    RemoveVectoredExceptionHandler = K32RemoveVectoredExceptionHandler
+    AddVectoredContinueHandler = K32AddVectoredContinueHandler
+    RemoveVectoredContinueHandler = K32RemoveVectoredContinueHandler
+    CreateNamedPipeA
+    ConnectNamedPipe
+    DisconnectNamedPipe
+    PeekNamedPipe
+    WaitNamedPipeA
+    GetStartupInfoA
+    GetPriorityClass
+    GetThreadPriority
+    SetThreadPriority
+    GetHandleInformation
+    GetProcessHandleCount
+    GetBinaryTypeA
+    SetUnhandledExceptionFilter
+    DuplicateHandle
+    GetCurrentProcess
+    GetCurrentProcessId
+    GetCurrentThread
+    IsDBCSLeadByteEx
+    IsDebuggerPresent
+    QueryDosDeviceW
+    QueryPerformanceCounter
+    QueryPerformanceFrequency
+    VirtualQuery
+    MultiByteToWideChar
+    WideCharToMultiByte
     DllMain
     _DllMainCRTStartup
     DllMainCRTStartup

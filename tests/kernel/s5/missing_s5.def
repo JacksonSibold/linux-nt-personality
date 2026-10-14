@@ -1,0 +1,3 @@
+LIBRARY missing_s5
+EXPORTS
+    s5_missing_fn

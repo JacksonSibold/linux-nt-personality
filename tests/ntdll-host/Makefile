@@ -15,9 +15,17 @@
 #   test_msvcrt_policy    msvcrt calloc size overflow check (msvcrt_policy.h)
 #   test_pe_bounds        PE section and relocation range checks (pe_bounds.h)
 #   test_ldr_pure         loader IAT slot writes and TLS callback table reads (ldr_pure.h)
+#   test_ldr_mapped_pure  startup-module headers, RVA-indexed exports and forwarders (ldr_pure.h)
+#   test_advapi_pure      advapi32 registry key, value and path mapping (advapi_pure.h)
 #   test_ldr_sched        loader init order, refcounts, search order, names, attach result (ldr_sched.h)
 #   test_k32_module_pure  Win32 module API helpers: conversion, flags, names, errors (k32_module_pure.h)
 #   test_k32_io_pure      std handles, ReadFile/WriteFile status, console mode and text (k32_io_pure.h)
+#   test_k32_sync_pure    WaitForMultipleObjects args and results, critical-section counts, GetTickCount (k32_sync_pure.h)
+#   test_k32_mm_pure      CreateFileMapping flags, MapViewOfFile access and offsets (k32_mm_pure.h)
+#   test_k32_thread_pure  CreateThread flags, exit codes, suspend results (k32_thread_pure.h)
+#   test_k32_find_pure    FindFirstFile wildcards, temp path and temp names, environment match (k32_find_pure.h)
+#   test_k32_sys_pure     thread and process priority, handle flags, PE binary type (k32_sys_pure.h)
+#   test_k32_str_pure     UTF-8 and Windows-1252 conversions, buffer sizes, default character (k32_str_pure.h)
 #
 # SANITIZE=auto (default) enables -fsanitize=address,undefined only when a
 # probe program both links and runs with it. The MSYS2 UCRT64 gcc on the
@@ -82,7 +90,7 @@ CPPFLAGS := -I$(SRC) -I$(LOADER)
 # defined before the first system header, which minitest.h's stdio.h already is.
 CFLAGS   := -std=c11 -g $(OPT_LEVEL) -Wall -Wextra -Werror -D_GNU_SOURCE $(COV_FLAGS) $(SAN_FLAGS)
 
-TESTS    := test_ntstatus_to_dos test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure test_ldr_sched test_k32_module_pure test_k32_io_pure test_k32_file_pure
+TESTS    := test_ntstatus_to_dos test_advapi_pure test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure test_ldr_mapped_pure test_ldr_sched test_k32_module_pure test_k32_io_pure test_k32_file_pure test_k32_sync_pure test_k32_mm_pure test_k32_thread_pure test_k32_find_pure test_k32_sys_pure test_k32_str_pure
 TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 
 # test_pe_bounds is build-only on this host: Windows Application Control blocks
@@ -139,8 +147,40 @@ $(OUT)/test_k32_file_pure$(EXE_SUFFIX): test_k32_file_pure.c minitest.h $(SRC)/k
 $(OUT)/test_k32_io_pure$(EXE_SUFFIX): test_k32_io_pure.c minitest.h $(SRC)/k32_io_pure.h $(SRC)/k32_module_pure.h $(SRC)/nt_types.h $(SRC)/ntstatus.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
 
+# Header-only critical-section, multi-wait and GetTickCount logic (src/ntdll/k32_sync_pure.h, used by kernel32.c).
+$(OUT)/test_k32_sync_pure$(EXE_SUFFIX): test_k32_sync_pure.c minitest.h $(SRC)/k32_sync_pure.h $(SRC)/nt_types.h $(SRC)/ntstatus.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only code page conversion rules (src/ntdll/k32_str_pure.h, used by kernel32_str.c).
+$(OUT)/test_k32_str_pure$(EXE_SUFFIX): test_k32_str_pure.c minitest.h $(SRC)/k32_str_pure.h $(SRC)/nt_types.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only priority, handle flag and PE binary type rules (src/ntdll/k32_sys_pure.h, used by kernel32_sys.c).
+$(OUT)/test_k32_sys_pure$(EXE_SUFFIX): test_k32_sys_pure.c minitest.h $(SRC)/k32_sys_pure.h $(SRC)/nt_types.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only file search, temp name and environment match rules (src/ntdll/k32_find_pure.h, used by kernel32_fs.c).
+$(OUT)/test_k32_find_pure$(EXE_SUFFIX): test_k32_find_pure.c minitest.h $(SRC)/k32_find_pure.h $(SRC)/nt_types.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only thread flag, exit code and suspend result rules (src/ntdll/k32_thread_pure.h, used by kernel32_thread.c).
+$(OUT)/test_k32_thread_pure$(EXE_SUFFIX): test_k32_thread_pure.c minitest.h $(SRC)/k32_thread_pure.h $(SRC)/nt_types.h $(SRC)/ntstatus.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only file mapping flag rules (src/ntdll/k32_mm_pure.h, used by kernel32_mm.c).
+$(OUT)/test_k32_mm_pure$(EXE_SUFFIX): test_k32_mm_pure.c minitest.h $(SRC)/k32_mm_pure.h $(SRC)/nt_types.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only advapi32 registry mapping (src/ntdll/advapi_pure.h, used by advapi32.c).
+$(OUT)/test_advapi_pure$(EXE_SUFFIX): test_advapi_pure.c minitest.h $(SRC)/advapi_pure.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
 # Header-only loader address translation (src/ntdll/ldr_pure.h, used by ldr.c).
 $(OUT)/test_ldr_pure$(EXE_SUFFIX): test_ldr_pure.c minitest.h $(SRC)/ldr_pure.h $(SRC)/pe_bounds.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
+# Header-only RVA-indexed module headers and exports for startup modules (src/ntdll/ldr_pure.h, used by ldr.c).
+$(OUT)/test_ldr_mapped_pure$(EXE_SUFFIX): test_ldr_mapped_pure.c minitest.h $(SRC)/ldr_pure.h $(SRC)/pe_bounds.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
 
 # unwind.c calls _NtRaiseException from except.c (RtlRaiseException).

@@ -135,6 +135,8 @@ typedef struct ldr_module {
     int attached;               /* DllMain attach already run */
     int datafile;               /* LOAD_LIBRARY_AS_DATAFILE */
     int pinned;                 /* never unload */
+    int mapped;                 /* image is an NT section owned by the startup binder
+                                 * (winldr_register_mapped): RVA-indexed, not freed here */
 
     /* TLS */
     IMAGE_TLS_DIRECTORY64 tls;
@@ -482,7 +484,7 @@ void winldr_ctx_destroy(winldr_ctx_t *ctx)
             ldr_process_detach(ctx, m);
         if (m->entry.FullDllName.Buffer) free(m->entry.FullDllName.Buffer);
         if (m->entry.BaseDllName.Buffer) free(m->entry.BaseDllName.Buffer);
-        if (m->image) ldr_free_image(m->image, m->image_size);
+        if (m->image && !m->mapped) ldr_free_image(m->image, m->image_size);
         free(m->file_data);
         free(m);
     }
@@ -1095,6 +1097,86 @@ PLDR_DATA_TABLE_ENTRY winldr_find_module(winldr_ctx_t *ctx, const char *name)
     return m ? &m->entry : NULL;
 }
 
+/* Startup modules (ntdll_main.c). The binder maps the exe, ntdll and each DLL
+ * it binds as NT sections, with no file handle left for the loader. Each one
+ * enters the loader list here, so GetModuleHandle, GetProcAddress,
+ * LdrGetDllHandle and LdrGetProcedureAddress see it. The header is read from
+ * the mapped image; the module is pinned because the binder owns the image. */
+NTSTATUS winldr_register_mapped(winldr_ctx_t *ctx, const char *path, void *base)
+{
+    ldr_mapped_hdr_t h;
+    if (!ctx || !path || !base) return STATUS_INVALID_PARAMETER;
+    /* The first page holds the headers of every image the binder maps. */
+    if (!ldr_mapped_headers((const unsigned char *)base, 0x1000, &h))
+        return STATUS_INVALID_IMAGE_FORMAT;
+    if (h.size_of_image == 0) return STATUS_INVALID_IMAGE_FORMAT;
+
+    const char *bn = ldr_basename(path);
+    size_t n = strlen(path), bl = strlen(bn);
+
+    ldr_lock_acquire(ctx);
+    if (ldr_lookup_by_name(ctx, bn)) {
+        ldr_lock_release(ctx);
+        return STATUS_SUCCESS;
+    }
+
+    ldr_module_t *mod = (ldr_module_t *)calloc(1, sizeof(*mod));
+    WCHAR *full = (WCHAR *)malloc((n + 1) * sizeof(WCHAR));
+    WCHAR *base_w = (WCHAR *)malloc((bl + 1) * sizeof(WCHAR));
+    if (!mod || !full || !base_w) {
+        free(mod);
+        free(full);
+        free(base_w);
+        ldr_lock_release(ctx);
+        return STATUS_NO_MEMORY;
+    }
+
+    mod->image = (u8 *)base;
+    mod->image_size = (size_t)h.size_of_image;
+    mod->mapped = 1;
+    mod->pinned = 1;
+    mod->entry.DllBase = base;
+    mod->entry.EntryPoint = h.entry_rva ? (PVOID)((u8 *)base + h.entry_rva) : NULL;
+    mod->entry.SizeOfImage = (ULONG)h.size_of_image;
+    mod->entry.OriginalBase = (PVOID)(ULONG_PTR)h.image_base;
+    mod->entry.TimeDateStamp = (ULONG)h.time_date_stamp;
+    mod->entry.LoadCount = 1;
+    ldr_set_base_name(mod, path);
+
+    ldr_ascii_to_wcs(path, full, n + 1);
+    ldr_set_unicode_string(&mod->entry.FullDllName, full, (USHORT)(n * sizeof(WCHAR)));
+    ldr_ascii_to_wcs(bn, base_w, bl + 1);
+    ldr_set_unicode_string(&mod->entry.BaseDllName, base_w, (USHORT)(bl * sizeof(WCHAR)));
+
+    InitializeListHead(&mod->entry.InLoadOrderLinks);
+    InitializeListHead(&mod->entry.InMemoryOrderLinks);
+    InitializeListHead(&mod->entry.InInitializationOrderLinks);
+    InsertTailList(&ctx->ldr_data.InLoadOrderModuleList, &mod->entry.InLoadOrderLinks);
+    InsertTailList(&ctx->ldr_data.InMemoryOrderModuleList, &mod->entry.InMemoryOrderLinks);
+    ldr_insert_hash(ctx, mod);
+
+    ldr_lock_release(ctx);
+    return STATUS_SUCCESS;
+}
+
+/* The DllMain of a registered module has run: it joins the initialization
+ * order list. Idempotent. An unknown base does nothing. */
+void winldr_mark_initialized(winldr_ctx_t *ctx, void *base)
+{
+    if (!ctx || !base) return;
+    ldr_lock_acquire(ctx);
+    PLIST_ENTRY head = &ctx->ldr_data.InLoadOrderModuleList;
+    for (PLIST_ENTRY e = head->Flink; e != head; e = e->Flink) {
+        PLDR_DATA_TABLE_ENTRY m = CONTAINING_RECORD(e, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+        if (m->DllBase != base) continue;
+        if (m->InInitializationOrderLinks.Flink == &m->InInitializationOrderLinks)
+            InsertTailList(&ctx->ldr_data.InInitializationOrderModuleList,
+                           &m->InInitializationOrderLinks);
+        break;
+    }
+    ldr_lock_release(ctx);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Export resolution                                                          */
 /* -------------------------------------------------------------------------- */
@@ -1184,6 +1266,40 @@ static NTSTATUS ldr_resolve_export(winldr_ctx_t *ctx,
                               depth + 1);
 }
 
+/* Export lookup in a startup module, whose image is laid out by RVA
+ * (ldr_pure.h, ldr_mapped_export). The same forwarder contract as the file-backed
+ * path: a forwarder is returned as its string, and the caller loads the host. */
+static NTSTATUS ldr_mapped_export_resolve(ldr_module_t *mod,
+                                          const char *name,
+                                          WORD ordinal,
+                                          int by_ordinal,
+                                          ULONG_PTR *out_addr,
+                                          char *forwarder_buf,
+                                          size_t forwarder_buf_size)
+{
+    const unsigned char *img = (const unsigned char *)mod->image;
+    unsigned long rva = 0;
+    int fwd = 0;
+
+    int r = ldr_mapped_export(img, mod->image_size, name, ordinal, by_ordinal, &rva, &fwd);
+    if (r == LDR_PURE_EXPORT_NOT_FOUND)
+        return by_ordinal ? STATUS_ORDINAL_NOT_FOUND : STATUS_PROCEDURE_NOT_FOUND;
+    if (r != LDR_PURE_EXPORT_FOUND) return STATUS_INVALID_IMAGE_FORMAT;
+
+    if (!fwd) {
+        *out_addr = (ULONG_PTR)(mod->image + rva);
+        return STATUS_SUCCESS;
+    }
+
+    const char *s = NULL;
+    size_t len = 0;
+    if (!ldr_mapped_cstr(img, mod->image_size, rva, &s, &len)) return STATUS_INVALID_IMAGE_FORMAT;
+    if (len >= forwarder_buf_size) return STATUS_INVALID_IMAGE_FORMAT;
+    memcpy(forwarder_buf, s, len);
+    forwarder_buf[len] = '\0';
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS ldr_resolve_export_in_module(winldr_ctx_t *ctx,
                                              ldr_module_t *mod,
                                              const char *name,
@@ -1195,6 +1311,10 @@ static NTSTATUS ldr_resolve_export_in_module(winldr_ctx_t *ctx,
 {
     (void)ctx;
     forwarder_buf[0] = '\0';
+
+    if (mod->mapped)
+        return ldr_mapped_export_resolve(mod, name, ordinal, by_ordinal, out_addr,
+                                         forwarder_buf, forwarder_buf_size);
 
     pe_data_directory_t dd;
     pe_status_t ps = pe_directory_get(&mod->pe, IMAGE_DIRECTORY_ENTRY_EXPORT, &dd);

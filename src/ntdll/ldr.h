@@ -205,6 +205,16 @@ PLDR_DATA_TABLE_ENTRY winldr_first_module(winldr_ctx_t *ctx, int load_order);
 PLDR_DATA_TABLE_ENTRY winldr_next_module(winldr_ctx_t *ctx, PLDR_DATA_TABLE_ENTRY cur, int load_order);
 PLDR_DATA_TABLE_ENTRY winldr_find_module(winldr_ctx_t *ctx, const char *name);
 
+/* Startup modules: the binder (ntdll_main.c) maps the exe, ntdll and the DLLs it
+ * binds as NT sections. winldr_register_mapped enters one into the load,
+ * memory-order and hash lists (pinned; base, size, entry point and names come
+ * from the mapped headers, path is the full image path). Registering a name
+ * that is already present succeeds and changes nothing.
+ * winldr_mark_initialized puts it on the initialization-order list once its
+ * DllMain has run. */
+NTSTATUS winldr_register_mapped(winldr_ctx_t *ctx, const char *path, void *base);
+void     winldr_mark_initialized(winldr_ctx_t *ctx, void *base);
+
 const winldr_init_log_entry_t *winldr_get_init_log(winldr_ctx_t *ctx, size_t *count);
 void winldr_clear_init_log(winldr_ctx_t *ctx);
 

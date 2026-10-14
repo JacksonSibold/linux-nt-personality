@@ -61,6 +61,16 @@ EXPORTS
     vfprintf
     _fileno
     _isatty
+    _acmdln DATA
+    _onexit
+    _setjmp
+    _snwprintf
+    fwrite
+    getenv
+    longjmp
+    memset
+    setvbuf
+    strncpy
     DllMain
     _DllMainCRTStartup
     DllMainCRTStartup

@@ -30,14 +30,16 @@ trap 'rm -rf "$tmp"' EXIT
 # Address-table lines end in "Export RVA" or "Forward To", so they do not match.
 objdump -p "$DLL" \
   | tr -d '\r' \
-  | awk '/^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]+\+base\[[[:space:]]*[0-9]+\][[:space:]]+[0-9a-fA-F]{4}[[:space:]]+[A-Za-z_@][A-Za-z_@0-9.]*[[:space:]]*$/ { print $NF }' \
+  | awk '/^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]+\+base\[[[:space:]]*[0-9]+\][[:space:]]+[0-9a-fA-F]{4}[[:space:]]+[A-Za-z_@][A-Za-z_@0-9.]*[[:space:]]*$/ { print $NF }
+         # binutils 2.40+ prints the name table as "[ N] name" under "[Ordinal/Name Pointer] Table".
+         /^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]+[A-Za-z_@][A-Za-z_@0-9.]*[[:space:]]*$/ { print $NF }' \
   | sort -u > "$tmp/dll.txt"
 
 # .def side: "LIBRARY", "EXPORTS", blank and ';' comment lines are skipped.
 # For "Exported=Internal" the exported name is the left side.
 tr -d '\r' < "$DEF" \
   | sed -e 's/;.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-  | awk -F= 'NF && !/^(LIBRARY|EXPORTS)([[:space:]]|$)/ { print $1 }' \
+  | awk -F= 'NF && !/^(LIBRARY|EXPORTS)([[:space:]]|$)/ { sub(/[[:space:]]+DATA[[:space:]]*$/, "", $1); sub(/[[:space:]]+$/, "", $1); print $1 }' \
   | sort -u > "$tmp/def.txt"
 
 if [ ! -s "$tmp/dll.txt" ]; then

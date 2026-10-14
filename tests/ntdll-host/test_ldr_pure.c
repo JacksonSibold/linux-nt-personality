@@ -191,7 +191,45 @@ static void tls_callbacks_out_of_range_reads_nothing(void)
     MT_EXPECT(v == 0x5555);
 }
 
+/* Strict binding: an import whose DLL is missing fails with
+ * STATUS_DLL_NOT_FOUND, a found DLL that lacks the name fails with
+ * STATUS_ENTRYPOINT_NOT_FOUND, and only a fully bound import succeeds. */
+static void unbound_import_status_codes(void)
+{
+    MT_EXPECT_EQ(ldr_unbound_import_status(0, 0), 0xC0000135UL);
+    MT_EXPECT_EQ(ldr_unbound_import_status(0, 1), 0xC0000135UL);
+    MT_EXPECT_EQ(ldr_unbound_import_status(1, 0), 0xC0000139UL);
+    MT_EXPECT_EQ(ldr_unbound_import_status(1, 1), 0UL);
+}
+
+/* Synthetic import table: an IAT at RVA 0x2000 with three slots. Slot 0 still
+ * holds the hint/name RVA of an import the binder could not resolve. Slot 1
+ * holds a bound VA (preferred base + RVA). Slot 2 is zero, the terminator. The
+ * raw-RVA check must flag slot 0 only. */
+static void synthetic_iat_detects_unbound_slot(void)
+{
+    unsigned char image[IMG_SIZE];
+    memset(image, MARK, sizeof(image));
+    const unsigned long long name_rva = 0x2100;
+    const unsigned long long bound = PREF_BASE + 0x1010;
+
+    MT_EXPECT(ldr_iat_write(image, IMG_SIZE, IDATA_RVA, 0, name_rva) == 1);
+    MT_EXPECT(ldr_iat_write(image, IMG_SIZE, IDATA_RVA, 1, bound) == 1);
+    MT_EXPECT(ldr_iat_write(image, IMG_SIZE, IDATA_RVA, 2, 0) == 1);
+
+    MT_EXPECT(ldr_iat_slot_is_raw_rva(read_u64(image + IDATA_RVA), IMG_SIZE) == 1);
+    MT_EXPECT(ldr_iat_slot_is_raw_rva(read_u64(image + IDATA_RVA + 8), IMG_SIZE) == 0);
+    MT_EXPECT(ldr_iat_slot_is_raw_rva(read_u64(image + IDATA_RVA + 16), IMG_SIZE) == 0);
+
+    /* A zero slot is the terminator, not an unbound import. */
+    MT_EXPECT(ldr_iat_slot_is_raw_rva(0, IMG_SIZE) == 0);
+    /* A slot holding exactly the image size is a VA, not an RVA. */
+    MT_EXPECT(ldr_iat_slot_is_raw_rva(IMG_SIZE, IMG_SIZE) == 0);
+}
+
 static const mt_case_t cases[] = {
+    { "unbound_import_status_codes", unbound_import_status_codes },
+    { "synthetic_iat_detects_unbound_slot", synthetic_iat_detects_unbound_slot },
     { "iat_base_is_rva_with_ilt_fallback", iat_base_is_rva_with_ilt_fallback },
     { "iat_write_lands_at_rva_not_file_offset", iat_write_lands_at_rva_not_file_offset },
     { "iat_write_exact_fit_at_end", iat_write_exact_fit_at_end },

@@ -996,29 +996,36 @@ void nt_thread_check_suspend(void)
 /* --------------------------------------------------------------- */
 /* TEB/stack allocation helpers                                      */
 /* --------------------------------------------------------------- */
+/* The thread's TEB is user memory. The thread reads it through %gs (gs:[0x30]
+ * is NtTib.Self, gs:[0x60] the PEB), so it must be a user mapping, two pages as
+ * in binfmt_pe's pe_init_teb. The fields are built in a kernel staging copy and
+ * copied out: a kzalloc'd TEB is a kernel address, and a user %gs access to it
+ * faults. */
+#define NT_TEB_PAGES 2
+
+/* PEB for a new thread in proc. An exe loaded by binfmt_pe leaves proc->peb
+ * unset in the kernel build, so the thread takes the PEB its creator reads at
+ * gs:[0x60]. A process has one PEB, so the creator's is the process's. */
+static struct _PEB *nt_new_thread_peb(struct nt_eprocess *proc)
+{
+    unsigned long peb = 0;
+    if (proc && proc->peb) return proc->peb;
+    if (!current->thread.gsbase)
+        return NULL;
+    if (copy_from_user(&peb, (void __user *)(current->thread.gsbase + offsetof(struct _TEB, ProcessEnvironmentBlock)),
+                       sizeof(peb)))
+        return NULL;
+    return (struct _PEB *)peb;
+}
+
 static NTSTATUS nt_alloc_teb_stack_kernel(struct nt_eprocess *proc,
                                            struct nt_ethread *thr,
                                            size_t reserve, size_t commit)
 {
-    void *teb;
-    unsigned long stack_addr, stack_top;
-    (void)proc;
+    unsigned long stack_addr, teb_addr;
+    struct _TEB *stage;
 
-    /* TEB: 2 pages, zeroed */
-    teb = kzalloc(2 * PAGE_SIZE, GFP_KERNEL);
-    if (!teb) return STATUS_NO_MEMORY;
-    thr->teb = (struct _TEB *)teb;
-    thr->teb_base = (ULONG_PTR)teb;
-
-    /* Populate minimal TEB - matches shim and binfmt_pe initial thread */
-    thr->teb->NtTib.Self = (struct _NT_TIB *)teb;
-    thr->teb->ProcessEnvironmentBlock = proc ? proc->peb : NULL;
-    if (proc) {
-        thr->teb->ClientId.UniqueProcess = (HANDLE)(ULONG_PTR)proc->pid;
-        thr->teb->ClientId.UniqueThread = (HANDLE)(ULONG_PTR)thr->tid;
-    }
-    thr->teb->LastErrorValue = 0;
-    memset(thr->teb->TlsSlots, 0, sizeof(thr->teb->TlsSlots));
+    BUILD_BUG_ON(sizeof(struct _TEB) > NT_TEB_PAGES * PAGE_SIZE);
 
     /* TLS template copy: static TLS from PE image (if present). For now zero;
      * full copy via ldr_copy_static_tls will be invoked if image has .tls.
@@ -1034,22 +1041,70 @@ static NTSTATUS nt_alloc_teb_stack_kernel(struct nt_eprocess *proc,
 
     stack_addr = vm_mmap(NULL, 0, reserve, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS, 0);
-    if (IS_ERR_VALUE(stack_addr)) {
-        kfree(teb);
-        thr->teb = NULL;
+    if (IS_ERR_VALUE(stack_addr)) return STATUS_NO_MEMORY;
+
+    teb_addr = vm_mmap(NULL, 0, NT_TEB_PAGES * PAGE_SIZE, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, 0);
+    if (IS_ERR_VALUE(teb_addr)) {
+        vm_munmap(stack_addr, reserve);
         return STATUS_NO_MEMORY;
     }
+
+    stage = kzalloc(sizeof(*stage), GFP_KERNEL);
+    if (!stage) {
+        vm_munmap(teb_addr, NT_TEB_PAGES * PAGE_SIZE);
+        vm_munmap(stack_addr, reserve);
+        return STATUS_NO_MEMORY;
+    }
+
     thr->stack_limit = (void *)stack_addr;
     thr->stack_base = (void *)(stack_addr + reserve);
-    thr->teb->NtTib.StackBase = thr->stack_base;
-    thr->teb->NtTib.StackLimit = thr->stack_limit;
-    thr->teb->DeallocationStack = thr->stack_limit;
+
+    /* Populate minimal TEB - matches shim and binfmt_pe initial thread. The
+     * thread id is not known until copy_process; nt_teb_set_tid stores it. */
+    stage->NtTib.Self = (struct _NT_TIB *)teb_addr;
+    stage->NtTib.StackBase = thr->stack_base;
+    stage->NtTib.StackLimit = thr->stack_limit;
+    stage->DeallocationStack = thr->stack_limit;
+    stage->ProcessEnvironmentBlock = nt_new_thread_peb(proc);
+    if (proc)
+        stage->ClientId.UniqueProcess = (HANDLE)(ULONG_PTR)proc->pid;
+    stage->ClientId.UniqueThread = (HANDLE)(ULONG_PTR)thr->tid;
+    stage->LastErrorValue = 0;
+
+    if (copy_to_user((void __user *)teb_addr, stage, sizeof(*stage))) {
+        kfree(stage);
+        vm_munmap(teb_addr, NT_TEB_PAGES * PAGE_SIZE);
+        vm_munmap(stack_addr, reserve);
+        thr->stack_limit = NULL;
+        thr->stack_base = NULL;
+        return STATUS_NO_MEMORY;
+    }
+    kfree(stage);
+
+    thr->teb = (struct _TEB *)teb_addr;
+    thr->teb_base = (ULONG_PTR)teb_addr;
     return STATUS_SUCCESS;
+}
+
+/* Stores the thread id in the user TEB (ClientId.UniqueThread). The id is known
+ * only after copy_process, so this runs once the child task exists. */
+static void nt_teb_set_tid(struct nt_ethread *thr)
+{
+    unsigned long tid = (unsigned long)thr->tid;
+    if (!thr->teb_base) return;
+    if (copy_to_user((void __user *)(thr->teb_base + offsetof(struct _TEB, ClientId.UniqueThread)),
+                     &tid, sizeof(tid)))
+        pr_err("NtCreateThreadEx: TEB ClientId not written (tid %lu)\n", tid);
 }
 
 static void nt_free_teb_stack_kernel(struct nt_ethread *thr)
 {
-    if (thr->teb) { kfree(thr->teb); thr->teb = NULL; }
+    if (thr->teb_base) {
+        vm_munmap((unsigned long)thr->teb_base, NT_TEB_PAGES * PAGE_SIZE);
+        thr->teb = NULL;
+        thr->teb_base = 0;
+    }
     if (thr->stack_limit && thr->stack_reserve) {
         vm_munmap((unsigned long)thr->stack_limit, thr->stack_reserve);
         thr->stack_limit = NULL;
@@ -1289,7 +1344,7 @@ NTSTATUS nt_svc_NtCreateThreadEx(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess
         child = p;
         get_task_struct(child);
         thr->tid = (ULONG)pid;
-        thr->teb->ClientId.UniqueThread = (HANDLE)(ULONG_PTR)thr->tid;
+        nt_teb_set_tid(thr);
 
         /* W1_INSTR: log TIF before and after set, and before wake */
         pr_debug("W1_INSTR: child creation parent pid=%d TIF_NTABI parent=%d child pid=%d child TIF before set=%d\n", current->pid, test_thread_flag(TIF_NTABI), pid, test_tsk_thread_flag(child, TIF_NTABI));

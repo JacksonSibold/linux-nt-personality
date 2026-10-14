@@ -108,7 +108,7 @@ check: $(OUT)/ntdll.dll $(OUT)/ntdll.def
 
 # kernel32.dll (S3 of the console milestone): kernel32.c with the runtime helpers
 # (memcpy, strlen, ...) that ntdll.dll does not export, importing ntdll.dll.
-K32_OBJS := $(OUT)/kernel32.o $(OUT)/k32_runtime.o
+K32_OBJS := $(OUT)/kernel32.o $(OUT)/kernel32_mm.o $(OUT)/kernel32_thread.o $(OUT)/kernel32_fs.o $(OUT)/kernel32_misc.o $(OUT)/kernel32_sys.o $(OUT)/kernel32_str.o $(OUT)/k32_runtime.o
 
 $(OUT)/k32_runtime.o: ntdll_runtime.c | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
@@ -131,6 +131,25 @@ $(OUT)/msvcrt.dll: $(OUT)/msvcrt.o msvcrt.def $(OUT)/libkernel32_imp.a $(OUT)/li
 
 .PHONY: msvcrt
 msvcrt: $(OUT)/msvcrt.dll
+# advapi32.dll: the registry subset the differential probes import (advapi32.def),
+# on the NT registry services in ntdll.dll. Uses the same runtime helpers as kernel32.
+$(OUT)/advapi32.o: advapi32.c advapi_pure.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OUT)/advapi32.dll: $(OUT)/advapi32.o $(OUT)/k32_runtime.o advapi32.def $(OUT)/libntdll_imp.a
+	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/advapi32.o $(OUT)/k32_runtime.o advapi32.def -L$(OUT) -lntdll_imp -lgcc
+.PHONY: advapi32
+advapi32: $(OUT)/advapi32.dll
+# user32.dll: the wsprintf subset (user32.def) the probes import. user32.c is self-contained
+# (it defines its own ___chkstk_ms), so k32_runtime.o is not linked: it would clash.
+$(OUT)/user32.o: user32.c | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OUT)/user32.dll: $(OUT)/user32.o user32.def $(OUT)/libntdll_imp.a
+	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/user32.o user32.def -L$(OUT) -lntdll_imp -lgcc
+.PHONY: user32
+user32: $(OUT)/user32.dll
+# check: the export names of advapi32.dll against advapi32.def (build-only, not run).
+check-advapi32: $(OUT)/advapi32.dll
+	$(ROOT)/tests/ntdll-host/check_exports.sh $(OUT)/advapi32.dll advapi32.def
 
 $(OUT):
 	mkdir -p $(OUT)

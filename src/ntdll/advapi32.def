@@ -1,10 +1,14 @@
 LIBRARY advapi32
 EXPORTS
-    RegOpenKeyExA
-    RegOpenKeyExW
-    RegQueryValueExA
-    RegQueryValueExW
-    RegCloseKey
     DllMain
-    _DllMainCRTStartup
     DllMainCRTStartup
+    ImpersonateNamedPipeClient
+    RegCloseKey
+    RegCreateKeyExA
+    RegDeleteKeyA
+    RegDeleteValueA
+    RegOpenKeyExA
+    RegQueryValueExA
+    RegSetValueExA
+    RevertToSelf
+    _DllMainCRTStartup

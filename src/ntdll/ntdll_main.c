@@ -19,6 +19,7 @@
 #include "except.h"
 #include "../loader/pe_format.h"
 #include "pe_bounds.h"
+#include "ldr_pure.h"
 #undef DUMMYUNIONNAME
 #undef DUMMYSTRUCTNAME
 
@@ -497,6 +498,47 @@ static void* get_ntdll_base(void) {
 struct loaded_entry { char name[64]; void *base; size_t size; int has_init; };
 static struct loaded_entry g_loaded[MAX_LOADED];
 static int g_nloaded = 0;
+
+/* The process loader context (ldr.h), set when LdrInitializeThunk publishes it.
+ * Each startup module the binder maps enters its module list
+ * (winldr_register_mapped), so GetModuleHandle and GetProcAddress find it
+ * (docs/status/DIFFERENTIAL-RESULTS.md, non-VM probes, cause 1). */
+static winldr_ctx_t *g_ldr_ctx = NULL;
+
+static void ldr_register_startup_name(const char *name, void *base)
+{
+    char path[512];
+    size_t n = 0;
+    const char *pre = "C:/Windows/System32/";
+    if (!g_ldr_ctx || !base || !name) return;
+    while (*pre && n < 300) path[n++] = *pre++;
+    for (const char *p = name; *p && n < 500; p++) path[n++] = *p;
+    path[n] = 0;
+    winldr_register_mapped(g_ldr_ctx, path, base);
+}
+
+/* The exe itself is the first entry of the load list. Its path is the image
+ * path from the process parameters, with '/' separators. */
+static void ldr_register_exe(PPEB peb, void *image_base)
+{
+    char path[512];
+    size_t k = 0;
+    if (!g_ldr_ctx || !image_base) return;
+    if (peb->ProcessParameters && peb->ProcessParameters->ImagePathName.Buffer) {
+        const UNICODE_STRING *ip = &peb->ProcessParameters->ImagePathName;
+        size_t n = ip->Length / sizeof(WCHAR);
+        for (size_t i = 0; i < n && k + 1 < sizeof(path); ++i) {
+            WCHAR c = ip->Buffer[i];
+            path[k++] = (c == '\\') ? '/' : (c <= 0x7F ? (char)c : '?');
+        }
+    }
+    if (k == 0) {
+        const char *dflt = "C:/image.exe";
+        while (dflt[k]) { path[k] = dflt[k]; k++; }
+    }
+    path[k] = 0;
+    winldr_register_mapped(g_ldr_ctx, path, image_base);
+}
 static void* find_loaded(const char *name) {
     char lower[64]; size_t i=0; for (; name[i] && i<63; i++) { char c=name[i]; if (c>='A'&&c<='Z') c+='a'-'A'; lower[i]=c; } lower[i]=0;
     for (int j=0;j<g_nloaded;j++) {
@@ -512,6 +554,7 @@ static int add_loaded(const char *name, void *base, size_t size) {
     g_loaded[g_nloaded].size = size;
     g_loaded[g_nloaded].has_init = 0;
     g_nloaded++;
+    ldr_register_startup_name(name, base);
     return 0;
 }
 static int is_already_loaded_ntdll(const char *name) {
@@ -600,6 +643,7 @@ static void ldr_publish_process_context(PPEB peb)
     }
     peb->Ldr = winldr_peb_ldr(ctx);
     LDR_PEB_CONTEXT_SLOT(peb) = ctx;
+    g_ldr_ctx = ctx;
 }
 
 /*
@@ -610,6 +654,45 @@ static void ldr_publish_process_context(PPEB peb)
  */
 static void *g_bound_mods[MAX_LOADED];
 static int g_nbound = 0;
+
+/* Strict binding (Windows loader). An import that cannot be bound ends the
+ * process: the loader writes one line to stderr (handle -12) and to the serial
+ * console (handle -11), then terminates with STATUS_DLL_NOT_FOUND (0xC0000135)
+ * or STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139). The IAT slot is never left with
+ * a raw RVA. Pure status logic: ldr_pure.h (ldr_unbound_import_status). */
+static void ldr_err_write(HANDLE h, const char *msg)
+{
+    IO_STATUS_BLOCK ios;
+    SIZE_T len = 0;
+    while (msg && msg[len]) len++;
+    if (len) NtWriteFile(h, NULL, NULL, NULL, &ios, (PVOID)msg, (ULONG)len, NULL, NULL);
+}
+
+static void ldr_fail_unbound_import(const char *importer, const char *dll,
+                                    const char *sym, unsigned long status)
+{
+    const char *what = (status == LDR_PURE_STATUS_DLL_NOT_FOUND)
+                           ? "STATUS_DLL_NOT_FOUND"
+                           : "STATUS_ENTRYPOINT_NOT_FOUND";
+    HANDLE herr = (HANDLE)(intptr_t)-12;
+    HANDLE hout = (HANDLE)(intptr_t)-11;
+    ldr_err_write(herr, "LdrInitializeThunk: cannot bind import ");
+    ldr_err_write(herr, importer ? importer : "?");
+    ldr_err_write(herr, " -> ");
+    ldr_err_write(herr, dll ? dll : "?");
+    if (sym) { ldr_err_write(herr, "!"); ldr_err_write(herr, sym); }
+    ldr_err_write(herr, ": ");
+    ldr_err_write(herr, what);
+    ldr_err_write(herr, "\n");
+    /* Same line on serial, so a run without a stderr handle still shows it. */
+    ldr_err_write(hout, "Ldr: unbound import ");
+    ldr_err_write(hout, dll ? dll : "?");
+    ldr_err_write(hout, ": ");
+    ldr_err_write(hout, what);
+    ldr_err_write(hout, "\n");
+    NtTerminateProcess((HANDLE)(intptr_t)-1, (NTSTATUS)status);
+    while (1) {}
+}
 
 static void ldr_bind_imports(unsigned char *mod, int depth)
 {
@@ -645,7 +728,8 @@ static void ldr_bind_imports(unsigned char *mod, int depth)
             for (const char *p = dep_name; *p && n < 500; p++) full[n++] = *p;
             full[n] = 0;
             size_t sz = 0;
-            if (ldr_nt_map_dll(full, &dep, &sz) != STATUS_SUCCESS) continue;
+            if (ldr_nt_map_dll(full, &dep, &sz) != STATUS_SUCCESS)
+                ldr_fail_unbound_import("dependency", dep_name, NULL, LDR_PURE_STATUS_DLL_NOT_FOUND);
             add_loaded(dep_name, dep, sz);
             fresh = 1;
             dbg_print("Ldr: bind dependency ");
@@ -656,6 +740,7 @@ static void ldr_bind_imports(unsigned char *mod, int depth)
         if (fresh) {
             call_tls_callbacks(dep);
             call_dll_main(dep);
+            if (g_ldr_ctx) winldr_mark_initialized(g_ldr_ctx, dep);
         }
         u32 cnt = 0;
         for (u32 idx = 0; idx < 512; idx++) {
@@ -682,7 +767,10 @@ static void ldr_bind_imports(unsigned char *mod, int depth)
                 if (ibn_rva < ldr_load_u32(mod + oh_off + 56))
                     proc = ldr_find_export(dep, (const char *)(mod + ibn_rva + 2));
             }
-            if (proc) *(u64 *)(mod + first_thunk + idx*8) = (u64)(ULONG_PTR)proc;
+            if (!proc)
+                ldr_fail_unbound_import("dependency", (const char *)(mod + name_rva), NULL,
+                                        LDR_PURE_STATUS_ENTRYPOINT_NOT_FOUND);
+            *(u64 *)(mod + first_thunk + idx*8) = (u64)(ULONG_PTR)proc;
         }
     }
 }
@@ -695,6 +783,7 @@ void NTAPI LdrInitializeThunk(void) {
     void *image_base = peb->ImageBaseAddress;
     dbg_print("LdrInitializeThunk: got PEB\n");
     ldr_publish_process_context(peb);
+    ldr_register_exe(peb, image_base);
     if (!image_base) { NtTerminateProcess((HANDLE)-1, 1); while(1){} }
     unsigned char *base = (unsigned char*)image_base;
     // Validate EXE
@@ -708,6 +797,8 @@ void NTAPI LdrInitializeThunk(void) {
     void *ntdll = get_ntdll_base();
     if (ntdll) {
         add_loaded("ntdll.dll", ntdll, 0);
+        /* ntdll is initialized by the process start, before the exe runs. */
+        if (g_ldr_ctx) winldr_mark_initialized(g_ldr_ctx, ntdll);
     }
     if (import_rva && import_size) {
         unsigned char *imp = base + import_rva;
@@ -734,7 +825,7 @@ void NTAPI LdrInitializeThunk(void) {
                         // Try to map ntdll from disk as fallback
                         /* MAIN-5: system directory only. */
                         if (ldr_nt_map_dll("/windows/system32/ntdll.dll", &dll_base, &dll_size)!=STATUS_SUCCESS) {
-                            continue;
+                            ldr_fail_unbound_import("image", dll_name, NULL, LDR_PURE_STATUS_DLL_NOT_FOUND);
                         }
                         add_loaded(dll_name, dll_base, dll_size);
                     }
@@ -752,7 +843,8 @@ void NTAPI LdrInitializeThunk(void) {
                         full[n]=0;
                         if (ldr_nt_map_dll(full, &dll_base, &dll_size)==STATUS_SUCCESS) { found=1; break; }
                     }
-                    if (!found) continue;
+                    if (!found)
+                        ldr_fail_unbound_import("image", dll_name, NULL, LDR_PURE_STATUS_DLL_NOT_FOUND);
                     add_loaded(dll_name, dll_base, dll_size);
                     dbg_print("Ldr: mapped ");
                     dbg_print(dll_name);
@@ -787,8 +879,10 @@ void NTAPI LdrInitializeThunk(void) {
                                         char full[512]; size_t nn=0; const char *pre=cands[cc]; while(*pre&&nn<500) full[nn++]=*pre++; const char *p=d_dll_name; while(*p&&nn<500) full[nn++]=*p++; full[nn]=0;
                                         if (ldr_nt_map_dll(full,&dep_base,&dep_size)==STATUS_SUCCESS){dfound=1;break;}
                                     }
-                                    (void)dfound;
-                                    if (dep_base) add_loaded(d_dll_name, dep_base, dep_size);
+                                    if (!dfound || !dep_base)
+                                        ldr_fail_unbound_import(dll_name, d_dll_name, NULL,
+                                                                LDR_PURE_STATUS_DLL_NOT_FOUND);
+                                    add_loaded(d_dll_name, dep_base, dep_size);
                                 }
                                 // Resolve IAT for this dependency import
                                 if (dep_base && d_first) {
@@ -817,7 +911,10 @@ void NTAPI LdrInitializeThunk(void) {
                                                 proc = ldr_find_export(dep_base, sym_name);
                                                 if(!proc){ WORD o=(WORD)(*(u16*)(db+ibn_rva)); proc=ldr_find_export_by_ordinal(dep_base,o); }
                                             }
-                                            if(proc){ u64 *iat=(u64*)(db+d_thunk_rva+idx*8); *iat=(u64)(ULONG_PTR)proc; }
+                                            if(!proc)
+                                                ldr_fail_unbound_import(dll_name, d_dll_name, NULL,
+                                                                        LDR_PURE_STATUS_ENTRYPOINT_NOT_FOUND);
+                                            { u64 *iat=(u64*)(db+d_thunk_rva+idx*8); *iat=(u64)(ULONG_PTR)proc; }
                                         }
                                         // Restore
                                         PVOID rp=(PVOID)pa; SIZE_T rsz=adj; ULONG old2; NtProtectVirtualMemory((HANDLE)-1,&rp,&rsz,0x02,&old2);
@@ -829,6 +926,7 @@ void NTAPI LdrInitializeThunk(void) {
                     // Call TLS and DllMain for this newly loaded dll (kernel32)
                     call_tls_callbacks(dll_base);
                     call_dll_main(dll_base);
+                    if (g_ldr_ctx) winldr_mark_initialized(g_ldr_ctx, dll_base);
                 }
             }
             // The DLL's own imports (and any dependency it maps): S4.
@@ -877,7 +975,14 @@ void NTAPI LdrInitializeThunk(void) {
                         { dbg_print("Ldr: patch IAT "); { char tmp[16]; unsigned long v=(unsigned long)iat; int pi=0; char hb[32]; int r=0; if(v==0) hb[r++]='0'; else while(v>0){ unsigned long d=v%16; hb[r++]= d<10?'0'+d:'a'+d-10; v/=16; } tmp[pi++]='0'; tmp[pi++]='x'; while(r>0) tmp[pi++]=hb[--r]; tmp[pi]=0; dbg_print(tmp);} dbg_print(" -> "); { char tmp[16]; unsigned long v=(unsigned long)proc; int pi=0; char hb[32]; int r=0; if(v==0) hb[r++]='0'; else while(v>0){ unsigned long d=v%16; hb[r++]= d<10?'0'+d:'a'+d-10; v/=16; } tmp[pi++]='0'; tmp[pi++]='x'; while(r>0) tmp[pi++]=hb[--r]; tmp[pi]=0; dbg_print(tmp);} dbg_print("\n"); }
                         *iat = (u64)(ULONG_PTR)proc;
                     } else {
-                        dbg_print("Ldr: proc not found\n");
+                        /* Strict (Windows): never leave the raw RVA in the IAT. */
+                        const char *miss = (thunk_val & 0x8000000000000000ULL)
+                                               ? "ordinal"
+                                               : ((u32)thunk_val < ldr_load_u32(base+oh_off+56))
+                                                     ? (const char *)(base + (u32)thunk_val + 2)
+                                                     : "?";
+                        ldr_fail_unbound_import("image", dll_name, miss,
+                                                LDR_PURE_STATUS_ENTRYPOINT_NOT_FOUND);
                     }
                 }
                 // Restore protection to READONLY (0x02)

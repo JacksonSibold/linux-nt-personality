@@ -86,7 +86,12 @@ int atexit(void (*f)(void)){
     return 0;
 }
 typedef void (*_onexit_t)(void);
-_onexit_t _onexit(_onexit_t f){ (void)f; return NULL; }
+/* _onexit registers f with the atexit list (run in reverse order by exit). */
+_onexit_t _onexit(_onexit_t f){
+    if(!f || g_atexit_count >= MS_ATEXIT_MAX) return NULL;
+    g_atexit_fns[g_atexit_count++] = f;
+    return f;
+}
 
 /* Heap wrappers - use kernel32 Heap */
 /* Each block has a 16-byte header holding the requested size, so realloc
@@ -347,7 +352,9 @@ int __C_specific_handler(void *a, void *b, void *c, void *d){ (void)a;(void)b;(v
 void* __C_specific_handler_wrapper = __C_specific_handler;
 
 /* Startup helpers */
+void ms_load_cmdline(void);
 int __getmainargs(int *argc, char ***argv, char ***envp, int expand, void *si){
+    ms_load_cmdline();
     (void)expand;(void)si;
     static char *args[] = {"prog", NULL};
     static char *env[] = {NULL};
@@ -364,10 +371,230 @@ int* _errno_func(void){ return &g_errno; }
 /* Additional exports expected */
 int _fileno(void *f){ (void)f; return 1; }
 int _isatty(int f){ (void)f; return 0; }
-void* _acmdln = NULL;
 void* _aenvptr = NULL;
 int _dowildcard = 0;
 
+/* ---- K32-M msvcrt additions (MS-1) ----------------------------------------
+ * setjmp/longjmp, fwrite, getenv, setvbuf, strncpy and _snwprintf. The stdio
+ * streams are unbuffered, so setvbuf only checks its mode. getenv returns a
+ * pointer into a snapshot taken at the first call (the CRT copies the
+ * environment too); the snapshot holds 16 KB and drops what does not fit. */
+
+/* jmp_buf layout (x64, used only by setjmp and longjmp here):
+ *   0 Frame, 8 Rbx, 16 Rsp (the caller's, after the return), 24 Rbp,
+ *   32 Rsi, 40 Rdi, 48 R12, 56 R13, 64 R14, 72 R15, 80 Rip.
+ * The XMM registers are not saved. */
+__asm__(
+    ".text\n"
+    ".globl _setjmp\n"
+    "_setjmp:\n"
+    "    leaq 8(%rsp), %rax\n"
+    "    movq %rax, 16(%rcx)\n"
+    "    movq (%rsp), %rax\n"
+    "    movq %rax, 80(%rcx)\n"
+    "    movq %rbx, 8(%rcx)\n"
+    "    movq %rbp, 24(%rcx)\n"
+    "    movq %rsi, 32(%rcx)\n"
+    "    movq %rdi, 40(%rcx)\n"
+    "    movq %r12, 48(%rcx)\n"
+    "    movq %r13, 56(%rcx)\n"
+    "    movq %r14, 64(%rcx)\n"
+    "    movq %r15, 72(%rcx)\n"
+    "    xorl %eax, %eax\n"
+    "    ret\n"
+    ".globl longjmp\n"
+    "longjmp:\n"
+    "    movl %edx, %eax\n"
+    "    testl %eax, %eax\n"
+    "    jnz 1f\n"
+    "    movl $1, %eax\n"
+    "1:\n"
+    "    movq 8(%rcx), %rbx\n"
+    "    movq 24(%rcx), %rbp\n"
+    "    movq 32(%rcx), %rsi\n"
+    "    movq 40(%rcx), %rdi\n"
+    "    movq 48(%rcx), %r12\n"
+    "    movq 56(%rcx), %r13\n"
+    "    movq 64(%rcx), %r14\n"
+    "    movq 72(%rcx), %r15\n"
+    "    movq 16(%rcx), %rsp\n"
+    "    jmp *80(%rcx)\n"
+);
+
+char *strncpy(char *d, const char *s, SIZE_T n){
+    SIZE_T i = 0;
+    for(; i < n && s[i]; ++i) d[i] = s[i];
+    for(; i < n; ++i) d[i] = '\0';
+    return d;
+}
+
+/* Mode check only: _IOFBF 0, _IOLBF 0x40, _IONBF 4. Every stream is unbuffered. */
+int setvbuf(void *stream, char *buf, int mode, SIZE_T size){
+    (void)stream;(void)buf;(void)size;
+    if(mode != 0 && mode != 0x40 && mode != 4) return -1;
+    return 0;
+}
+
+/* stderr is &g_iob[2]; any other stream writes to stdout (the probes use
+ * stdout and stderr only). Returns count when every item was written. */
+SIZE_T fwrite(const void *p, SIZE_T size, SIZE_T count, void *stream){
+    SIZE_T total = 0;
+    if(!ms_mul_size(size, count, &total) || total == 0) return 0;
+    if(stream == (void*)&g_iob[2]) write_stderr((const char*)p, total);
+    else write_stdout((const char*)p, total);
+    return count;
+}
+
+/* Process command line, narrowed (non-ASCII as '?'), for _acmdln. */
+static char g_ms_cmdline[2048];
+static void ms_narrow(const WCHAR *in, SIZE_T n, char *out, SIZE_T cap){
+    SIZE_T i = 0;
+    for(; i < n && i + 1 < cap; ++i) out[i] = (in[i] <= 0x7F) ? (char)in[i] : '?';
+    out[i] = '\0';
+}
+char *_acmdln = NULL;
+void ms_load_cmdline(void){
+    PTEB teb = NULL;
+    __asm__ volatile("movq %%gs:0x30, %0" : "=r"(teb) :: "memory");
+    PEB *peb = teb ? teb->ProcessEnvironmentBlock : NULL;
+    RTL_USER_PROCESS_PARAMETERS *pp = peb ? peb->ProcessParameters : NULL;
+    if(!pp || !pp->CommandLine.Buffer) g_ms_cmdline[0] = '\0';
+    else ms_narrow(pp->CommandLine.Buffer, pp->CommandLine.Length / sizeof(WCHAR), g_ms_cmdline, sizeof(g_ms_cmdline));
+    _acmdln = g_ms_cmdline;
+}
+
+/* Environment snapshot for getenv: NAME=value entries, each NUL terminated,
+ * the list ended by an empty entry. */
+static char g_ms_env[16384];
+static int g_ms_env_loaded = 0;
+static void ms_load_env(void){
+    if(g_ms_env_loaded) return;
+    g_ms_env_loaded = 1;
+    PTEB teb = NULL;
+    __asm__ volatile("movq %%gs:0x30, %0" : "=r"(teb) :: "memory");
+    PEB *peb = teb ? teb->ProcessEnvironmentBlock : NULL;
+    RTL_USER_PROCESS_PARAMETERS *pp = peb ? peb->ProcessParameters : NULL;
+    const WCHAR *env = pp ? (const WCHAR *)pp->Environment : NULL;
+    SIZE_T limit = (pp && pp->EnvironmentSize) ? pp->EnvironmentSize / sizeof(WCHAR) : 32768;
+    SIZE_T out = 0, pos = 0;
+    if(!env){ g_ms_env[0] = '\0'; return; }
+    while(pos < limit && env[pos]){
+        SIZE_T len = 0;
+        while(pos + len < limit && env[pos + len]) ++len;
+        if(out + len + 2 > sizeof(g_ms_env)) break;
+        ms_narrow(env + pos, len, g_ms_env + out, len + 1);
+        out += len;
+        g_ms_env[out++] = '\0';
+        pos += len + 1;
+    }
+    g_ms_env[out] = '\0';
+}
+static int ms_ci_eq(char a, char b){
+    if(a >= 'a' && a <= 'z') a = (char)(a - 'a' + 'A');
+    if(b >= 'a' && b <= 'z') b = (char)(b - 'a' + 'A');
+    return a == b;
+}
+/* getenv: the value of name, or NULL. The name compare is ASCII case-insensitive. */
+char *getenv(const char *name){
+    if(!name || !name[0]) return NULL;
+    ms_load_env();
+    SIZE_T nl = strlen(name);
+    const char *p = g_ms_env;
+    while(*p){
+        SIZE_T l = strlen(p);
+        if(l > nl && p[nl] == '='){
+            SIZE_T i = 0;
+            while(i < nl && ms_ci_eq(p[i], name[i])) ++i;
+            if(i == nl) return (char*)(p + nl + 1);
+        }
+        p += l + 1;
+    }
+    return NULL;
+}
+
+/* Wide formatter for _snwprintf. %d %i %u %x %X %c (int as a wide character),
+ * %s (wide string), %S (narrow string) and %% are supported, with the '-' and
+ * '0' flags, a field width and a string precision. Returns the length, or -1
+ * when the output and its NUL do not fit; the buffer then holds the cut text. */
+static void ms_wput(WCHAR *out, SIZE_T cap, SIZE_T *pos, int *trunc, WCHAR c){
+    if(*pos + 1 < cap) out[*pos] = c;
+    else *trunc = 1;
+    ++*pos;
+}
+static int ms_wformat(WCHAR *out, SIZE_T cap, const WCHAR *fmt, va_list ap){
+    SIZE_T pos = 0;
+    int trunc = 0;
+    for(SIZE_T i = 0; fmt[i]; ++i){
+        if(fmt[i] != '%'){ ms_wput(out, cap, &pos, &trunc, fmt[i]); continue; }
+        ++i;
+        int left = 0, zero = 0, width = 0, prec = -1;
+        while(fmt[i] == '-' || fmt[i] == '0'){ if(fmt[i] == '-') left = 1; else zero = 1; ++i; }
+        while(fmt[i] >= '0' && fmt[i] <= '9'){ width = width * 10 + (fmt[i] - '0'); ++i; }
+        if(fmt[i] == '.'){ ++i; prec = 0; while(fmt[i] >= '0' && fmt[i] <= '9'){ prec = prec * 10 + (fmt[i] - '0'); ++i; } }
+        if(fmt[i] == 0) break;
+        WCHAR wbuf[256];
+        SIZE_T wn = 0;
+        switch(fmt[i]){
+        case '%':
+            ms_wput(out, cap, &pos, &trunc, '%');
+            continue;
+        case 'c':
+            wbuf[0] = (WCHAR)va_arg(ap, int);
+            wn = 1;
+            break;
+        case 's': {
+            const WCHAR *s = va_arg(ap, const WCHAR *);
+            static const WCHAR nullw[] = { 0x28, 0x6E, 0x75, 0x6C, 0x6C, 0x29, 0 };
+            if(!s) s = nullw;
+            while(s[wn] && (prec < 0 || (int)wn < prec) && wn < 255){ wbuf[wn] = s[wn]; ++wn; }
+            break;
+        }
+        case 'S': {
+            const char *s = va_arg(ap, const char *);
+            if(!s) s = "(null)";
+            while(s[wn] && (prec < 0 || (int)wn < prec) && wn < 255){ wbuf[wn] = (WCHAR)(unsigned char)s[wn]; ++wn; }
+            break;
+        }
+        case 'd': case 'i': case 'u': case 'x': case 'X': {
+            unsigned long long v;
+            int neg = 0;
+            if(fmt[i] == 'd' || fmt[i] == 'i'){
+                long long sv = va_arg(ap, int);
+                if(sv < 0){ neg = 1; v = (unsigned long long)(-sv); }
+                else v = (unsigned long long)sv;
+            } else {
+                v = va_arg(ap, unsigned int);
+            }
+            unsigned base = (fmt[i] == 'x' || fmt[i] == 'X') ? 16u : 10u;
+            const char *digits = (fmt[i] == 'X') ? "0123456789ABCDEF" : "0123456789abcdef";
+            char tmp[32];
+            SIZE_T k = sizeof(tmp);
+            do { tmp[--k] = digits[v % base]; v /= base; } while(v && k > 0);
+            if(neg && k > 0) tmp[--k] = '-';
+            for(; k < sizeof(tmp); ++k) wbuf[wn++] = (WCHAR)tmp[k];
+            break;
+        }
+        default:
+            ms_wput(out, cap, &pos, &trunc, '%');
+            ms_wput(out, cap, &pos, &trunc, fmt[i]);
+            continue;
+        }
+        SIZE_T padn = ((SIZE_T)width > wn) ? (SIZE_T)width - wn : 0;
+        if(!left) for(SIZE_T j = 0; j < padn; ++j) ms_wput(out, cap, &pos, &trunc, zero ? '0' : ' ');
+        for(SIZE_T j = 0; j < wn; ++j) ms_wput(out, cap, &pos, &trunc, wbuf[j]);
+        if(left) for(SIZE_T j = 0; j < padn; ++j) ms_wput(out, cap, &pos, &trunc, ' ');
+    }
+    if(cap > 0) out[pos < cap ? pos : cap - 1] = 0;
+    if(trunc || cap == 0) return -1;
+    return (int)pos;
+}
+int _snwprintf(WCHAR *buf, SIZE_T n, const WCHAR *fmt, ...){
+    va_list ap;
+    va_start(ap, fmt);
+    int r = ms_wformat(buf, n, fmt, ap);
+    va_end(ap);
+    return r;
+}
 #else
 /* Linux stub */
 #endif
