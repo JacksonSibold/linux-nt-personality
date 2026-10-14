@@ -19,7 +19,7 @@ The whole file is compiled only under `__MINGW32__`. The Linux test build does n
 - `DllMain`, `_DllMainCRTStartup`, `DllMainCRTStartup`: ntdll's own DllMain, which returns 1 and does nothing.
 - `KiUserExceptionDispatcher(rec, ctx)`: forwards to `RtlDispatchException`, and ignores the result.
 - `KiUserApcDispatcher(...)`: empty. APCs are not dispatched in this build.
-- `RtlGetVersion(OSVERSIONINFOEXW *)`: reports 10.0 build 20348, `VER_PLATFORM_WIN32_NT`, product type 3 (server).
+- `RtlGetVersion(OSVERSIONINFOEXW *)`: reports 10.0 build 26200, `VER_PLATFORM_WIN32_NT`, product type 1 (workstation). This is the accepted golden host identity (26200.9457), declared in `tests/conformance/os-identity-policy.json`; see `docs/decisions/0075-os-identity-golden-build.md`. It replaces the earlier server 2022 persona (build 20348), which is no longer used.
 - `NtCurrentTeb(void)`: reads the TEB from `gs:0x30`.
 - `RtlAddFunctionTable` and `RtlDeleteFunctionTable`: see Known gaps.
 

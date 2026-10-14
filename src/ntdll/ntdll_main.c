@@ -1026,9 +1026,9 @@ NTSTATUS NTAPI RtlGetVersion(OSVERSIONINFOEXW *info) {
     if (!info || info->dwOSVersionInfoSize < sizeof(*info)) return STATUS_INVALID_PARAMETER;
     info->dwMajorVersion = 10;
     info->dwMinorVersion = 0;
-    info->dwBuildNumber = 20348;
+    info->dwBuildNumber = 26200;
     info->dwPlatformId = 2;
-    info->wProductType = 3;
+    info->wProductType = 1;
     for (int i=0;i<128;i++) info->szCSDVersion[i]=0;
     return STATUS_SUCCESS;
 }

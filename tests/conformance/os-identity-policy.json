@@ -1,7 +1,8 @@
 {
   "schema": "ntpers-os-identity-policy/1",
   "policy_version": 1,
-  "status": "proposed; values pending owner review (no owner decision recorded for OS identity)",
+  "status": "decided by delegated authority, owner may override",
+  "decision": "docs/decisions/0075-os-identity-golden-build.md",
   "reference_build": "26200.9457",
   "reference_build_source": "tests/differential/golden/ACCEPTED_BUILDS.json",
   "rule": "Every literal that reports an OS version or product identity in src/ must be declared here with the declared value. Undeclared identity literals and mismatched literals fail tools/check_os_identity.py. The policy is the only source of identity values; per-call ad-hoc values are not allowed.",
@@ -10,7 +11,7 @@
     "dwMinorVersion": {"value": 0, "basis": "golden manifest cmd_ver 10.0.26200"},
     "dwBuildNumber": {"value": 26200, "basis": "CurrentBuild 26200 in tests/differential/golden/windows-26200.9457/manifest.json"},
     "dwPlatformId": {"value": 2, "basis": "VER_PLATFORM_WIN32_NT"},
-    "wProductType": {"value": 1, "basis": "VER_NT_WORKSTATION; the reference host is a Windows 11 Pro client edition"},
+    "wProductType": {"value": 1, "basis": "VER_NT_WORKSTATION; reference host EditionID Professional (manifest ProductName 'Windows 10 Pro', build 26200.9457). The golden corpus has no product-type probe; the value was confirmed on the live reference host via Win32_OperatingSystem.ProductType = 1"},
     "OSMajorVersion": {"value": 10, "basis": "PEB field, same as dwMajorVersion"},
     "OSMinorVersion": {"value": 0, "basis": "PEB field, same as dwMinorVersion"},
     "OSBuildNumber": {"value": 26200, "basis": "PEB field, same as dwBuildNumber"}

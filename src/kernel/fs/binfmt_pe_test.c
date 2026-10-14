@@ -628,7 +628,7 @@ static void test_peb_teb_population(void)
     ASSERT_EQ(peb->BeingDebugged, 0);
     ASSERT_EQ(peb->NtGlobalFlag, 0);
     ASSERT_EQ(peb->OSMajorVersion, 10);
-    ASSERT_EQ(peb->OSBuildNumber, 20348);
+    ASSERT_EQ(peb->OSBuildNumber, 26200);
 
     ASSERT((struct _NT_TIB *)teb == teb->NtTib.Self);
     ASSERT_EQ(teb->ProcessEnvironmentBlock, (struct _PEB *)peb);
