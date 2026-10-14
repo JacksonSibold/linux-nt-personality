@@ -137,3 +137,26 @@ same criterion replaces its record in `tools/criteria_report.py`.
 | DOD-DRV-B003 | PASS | [docs/status/bundles/dodrun-DOD-DRV-B003-20261013T062552Z.json](bundles/dodrun-DOD-DRV-B003-20261013T062552Z.json) |
 | DOD-SEC-A008 | PASS | [docs/status/bundles/dodrun-DOD-SEC-A008-20261013T062406Z.json](bundles/dodrun-DOD-SEC-A008-20261013T062406Z.json) |
 | DOD-EVI-B006 | PASS | [docs/status/bundles/dodrun-DOD-EVI-B006-20261013T063013Z.json](bundles/dodrun-DOD-EVI-B006-20261013T063013Z.json) |
+
+## OS-identity policy (WI-OSID-POLICY, branch haiku/crit, 2026-10-14)
+
+Roadmap item `WI-OSID-POLICY` (effort S, no prerequisites) is implemented as an audit,
+not as a passing criterion. The file `tests/conformance/os-identity-policy.json` declares
+the version-reporting fields (build 26200, major 10, minor 0, platform 2, product type 1)
+and the eight source sites that assign them. The values are proposed from the accepted
+reference build 26200.9457 and are marked pending owner review. No owner decision on OS
+identity is recorded.
+
+`tools/check_os_identity.py` checks each declared site and scans `src/` for identity
+assignments outside those sites. `tests/unit/test_check_os_identity.py` covers the logic
+on synthetic trees (14 tests). The full unit suite passes (812 tests).
+
+Live audit result: 2 violations. Both are in `RtlGetVersion` (`src/ntdll/ntdll_main.c`):
+`dwBuildNumber` is 20348 (declared 26200) and `wProductType` is 3 (declared 1). That
+persona is documented in `docs/modules/ntdll-startup.md` as Windows Server 2022, but the
+PEB in `src/kernel/nt/proc_thread.c` reports 26200. Choosing one identity is an owner
+decision, so the runtime values were not changed.
+
+dodrun on the Windows host for DOD-AC-A005 and DOD-AC-B001: UNIMPLEMENTED for both. The
+criteria need a canary that runs 28 version-bearing APIs on the personality, which depends
+on `WI-WIN32-CORE`. No criterion newly passes from this change.
