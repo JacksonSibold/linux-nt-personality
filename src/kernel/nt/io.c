@@ -2530,6 +2530,35 @@ static NTSTATUS ntio_query_all(struct nt_file_object *file,
 	return STATUS_SUCCESS;
 }
 
+/*
+ * Store the IoStatusBlock of a query. Windows (probe_ntstatus size_probe, golden
+ * 26200.9457) sets Information on success and on STATUS_BUFFER_OVERFLOW only. Any other
+ * failure sets Status and leaves the caller's Information as it was: the golden keeps the
+ * value of an earlier call through three STATUS_INFO_LENGTH_MISMATCH queries.
+ * Returns STATUS_ACCESS_VIOLATION when the block cannot be written, else status.
+ */
+static NTSTATUS ntio_store_query_status(PIO_STATUS_BLOCK __user iosb,
+					NTSTATUS status, ULONG info)
+{
+	int sets_info = NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW;
+#ifdef __KERNEL__
+	IO_STATUS_BLOCK kiosb;
+
+	if (copy_from_user(&kiosb, iosb, sizeof(kiosb)))
+		return STATUS_ACCESS_VIOLATION;
+	kiosb.DUMMYUNIONNAME.Status = status;
+	if (sets_info)
+		kiosb.Information = info;
+	if (copy_to_user(iosb, &kiosb, sizeof(kiosb)))
+		return STATUS_ACCESS_VIOLATION;
+#else
+	iosb->DUMMYUNIONNAME.Status = status;
+	if (sets_info)
+		iosb->Information = info;
+#endif
+	return status;
+}
+
 NTSTATUS nt_svc_NtQueryInformationFile(HANDLE FileHandle,
 				       PIO_STATUS_BLOCK __user IoStatusBlock,
 				       PVOID __user FileInformation,
@@ -2609,19 +2638,16 @@ NTSTATUS nt_svc_NtQueryInformationFile(HANDLE FileHandle,
 		status = STATUS_INVALID_INFO_CLASS;
 		break;
 	}
+	/* Windows reports the bytes copied on STATUS_BUFFER_OVERFLOW: the whole buffer. */
+	if (status == STATUS_BUFFER_OVERFLOW)
+		retlen = Length;
 	if ((NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW) && kbuf && retlen) {
 		ULONG to_copy = retlen < Length ? retlen : Length;
 		if (copy_to_user(FileInformation, kbuf, to_copy))
 			status = STATUS_ACCESS_VIOLATION;
 	}
 	kfree(kbuf);
-	{
-		IO_STATUS_BLOCK kiosb;
-		kiosb.DUMMYUNIONNAME.Status = status;
-		kiosb.Information = retlen;
-		if (copy_to_user(IoStatusBlock, &kiosb, sizeof(kiosb)))
-			status = STATUS_ACCESS_VIOLATION;
-	}
+	status = ntio_store_query_status(IoStatusBlock, status, retlen);
 #else
 	switch (FileInformationClass) {
 	case FileBasicInformation:
@@ -2664,8 +2690,9 @@ NTSTATUS nt_svc_NtQueryInformationFile(HANDLE FileHandle,
 		status = STATUS_INVALID_INFO_CLASS;
 		break;
 	}
-	IoStatusBlock->DUMMYUNIONNAME.Status = status;
-	IoStatusBlock->Information = retlen;
+	if (status == STATUS_BUFFER_OVERFLOW)
+		retlen = Length;
+	status = ntio_store_query_status(IoStatusBlock, status, retlen);
 #endif
 	ntio_file_put(file);
 	return status;

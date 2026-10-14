@@ -2178,6 +2178,46 @@ TEST(alert_consumed_once)
 	PASS();
 }
 
+/* IoStatusBlock.Information per status, as the Windows golden records it
+ * (probe_ntstatus size_probe): BUFFER_OVERFLOW reports the bytes copied (the whole
+ * buffer); INFO_LENGTH_MISMATCH leaves the caller's Information unchanged; success
+ * reports the bytes written. */
+TEST(query_status_information)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	char buf[512];
+
+	reset_state();
+	ASSERT(write_file_at("qstat.txt", "abcdef"));
+	ASSERT_STATUS(open_test_file("qstat.txt", FILE_GENERIC_READ, FILE_SHARE_READ,
+				     FILE_OPEN,
+				     FILE_NON_DIRECTORY_FILE |
+				     FILE_SYNCHRONOUS_IO_NONALERT, &h),
+		      STATUS_SUCCESS);
+
+	iosb.Information = 0xDEADBEEF;
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, buf, 8,
+						    FileNameInformation),
+		      STATUS_BUFFER_OVERFLOW);
+	ASSERT(iosb.Information == 8);
+
+	iosb.Information = 0x5A;
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, buf, 0,
+						    FileBasicInformation),
+		      STATUS_INFO_LENGTH_MISMATCH);
+	ASSERT(iosb.Information == 0x5A);
+
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, buf,
+						    sizeof(FILE_BASIC_INFORMATION),
+						    FileBasicInformation),
+		      STATUS_SUCCESS);
+	ASSERT(iosb.Information == sizeof(FILE_BASIC_INFORMATION));
+
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 int main(void)
 {
 	setup_root();
@@ -2217,6 +2257,7 @@ int main(void)
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);
 	RUN(alert_consumed_once);
+	RUN(query_status_information);
 
 	printf("ntio tests: %d passed, %d failed\n", g_pass, g_fail);
 

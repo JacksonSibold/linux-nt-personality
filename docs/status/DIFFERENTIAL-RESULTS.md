@@ -351,6 +351,42 @@ Limit: the VAD map is still global. Two PEs running at the same time would share
 
 The 14 probes without an NTPERS_VM branch (`probe_directory`, `probe_direct_simple`, `probe_exception`, `probe_fileinfo`, `probe_handles`, `probe_namedpipe`, `probe_ntstatus`, `probe_path`, `probe_peloader`, `probe_process_thread`, `probe_registry`, `probe_section`, `probe_sharemode`, `probe_sync`, `probe_teb_peb`) resolve ntdll through `GetProcAddress`. The personality maps no ntdll, so they cannot run until ntdll is loaded. Their `*_direct` variants are the ones run here.
 
+## NONVM field work: ntstatus fix and the four target probes (diff3, 2026-10-14)
+
+Build: `NONVM=1` probes (`probe_*.c` without an NTPERS_VM branch) and their DLLs (`make -C src/ntdll all kernel32 msvcrt advapi32 user32`, rebuilt in the guest), on the kernel `bzImage` of `vm/incremental-kernel.sh` over `~/syncfix/linux-src`. Boot: host QEMU, `boot-m0-host.ps1 -Mem 2048 -Initrd probes-nonvm.cpio.gz`, `log_buf_len=16M`, `NTPERS_ALL_DONE` reached, all 15 probes exit as before (`probe_exception` 139).
+
+**A/B on the same initramfs (only the kernel differs):**
+
+| probe | before (main `io.c`) | after (this change) | golden leaves |
+|---|---|---|---|
+| probe_ntstatus | 2190 | **2191** | 2199 |
+| probe_fileinfo | 165 | **183** | 221 |
+| all other 13 probes | unchanged | unchanged | |
+
+`probe_sharemode` stays PASS (458857 of 458857). No probe lost a match.
+
+The `teb_peb` count is 81 of 104 in both runs. The earlier 79 came from the DLLs built before this cycle, not from the kernel change.
+
+**Fix (`src/kernel/nt/io.c`, `nt_svc_NtQueryInformationFile`):** `IoStatusBlock.Information` followed the wrong rule. The old code always wrote `retlen`, so it stored 0 on every error and never reported bytes on `STATUS_BUFFER_OVERFLOW`. The golden (probe_ntstatus `size_probe`, Windows 26200.9457) shows:
+
+- `STATUS_BUFFER_OVERFLOW` reports the bytes copied, which is the whole buffer (row `buffer_len 8`: Windows 8, old VM 0).
+- A `STATUS_INFO_LENGTH_MISMATCH` query leaves the caller's `Information` unchanged (rows `buffer_len 0/4`, `FileBasicInformation`: Windows keeps 94 from the previous successful query).
+
+The change is `ntio_store_query_status`: it writes `Information` on success and on `BUFFER_OVERFLOW` only, and the overflow case reports `Length`. The `io_test` case `query_status_information` covers both rules, and the io_test suite passes on the host (36 passed, 0 failed). The unit suite (`python -m unittest discover tests/unit`) passes.
+
+**Field-by-field root cause (the four target probes):**
+
+- **probe_section, 1 field (`vacuous`, S1): not fixable from the kernel.** `dualrun.py` `MANDATORY_KEYS["probe_section"] = ["tests"]`. Neither the golden nor the VM output has a `tests` key (checked: `probe_section.json` keys are `sec_commit`, `map_commit`, and so on). The NT section calls do run in the VM (`sec_commit` status 0, `map_commit` 0). Clearing the flag needs a golden or comparator change, both forbidden here. Left at 128/129.
+- **probe_ntstatus, 9 fields (`size_probe[0..8].info`): 1 fixed, 8 left.**
+  - `[2]` (buffer 8, overflow): fixed by this change.
+  - `[0]`, `[1]` (buffer 0 and 4): Windows reports 623483279872, which is uninitialised stack in the Windows capture (the `iosb` is not set before the call). Not reproducible from the VM. Environmental.
+  - `[3]` (buffer 512): Windows reports 94, which is the NT name of the host temp file `\Users\Jackson\AppData\Local\Temp\ntpXXXX.tmp` (45 characters). The VM reports 38, the length of the faux NT name for the guest's temp file. Environmental (host path).
+  - `[4..8]`: the value carried from `[3]`, so they follow `[3]`. Environmental.
+- **probe_virtualquery, 11 fields: not investigated in this cycle.** Open items from the table above: region count 5 against 4, and 4 KB against 8 KB region sizes.
+- **probe_handles, 29 fields: not investigated in this cycle.** Open items: `GetProcessHandleCount` 0 against 63, and the `duplicate_handle` length 6 against 7.
+
+Left unfixed: section (blocked, above), ntstatus 8 environmental fields, virtualquery 11, handles 29.
+
 ## Reproduce
 
 Guest (SSH via `tools/linux-env/ssh-guest.sh`, repo synced with `GUEST_DEST=dualrun tools/linux-env/sync-repo.sh`):
