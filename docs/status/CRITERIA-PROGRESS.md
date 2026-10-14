@@ -37,11 +37,13 @@ a placeholder would be a false PASS.
 
 ## Blocking gate
 
-`lint_integrity.py` fails on four goldens, with `windows_build` set to the
-hard-coded `26200.9168` (probe_handles_direct, probe_process_thread_direct,
-probe_sync_direct, probe_virtualquery_direct). The strict build check rejects
-them. Until a probe source is changed to report the host build and the four
-are recaptured, the gate stays closed and dodrun does not run.
+The four goldens named in the earlier report (probe_handles_direct,
+probe_process_thread_direct, probe_sync_direct, probe_virtualquery_direct) no
+longer carry the hard-coded `26200.9168`. The Windows build of each probe
+source prints the host build, and the goldens in `windows-26200.9457/` record
+`26200.9457`. The integrity lint still cannot pass off Windows: on a non-Windows
+host it stops at "cannot determine the host Windows build". Running it on the
+`26200.9457` host is the remaining check, and has not been done here.
 
 ## Blocked-on-golden count
 
