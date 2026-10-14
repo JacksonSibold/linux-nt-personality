@@ -259,6 +259,15 @@ static void thread_sync_release(void)
     struct nt_thread *synct = nt_current_thread();
     if (!synct) return;
     nt_set_current_thread(NULL);
+    /* Unpublish the sync thread before it is freed. A peer NtTerminateThread
+     * reads ethread->sync_thread under the ethread lock, so taking that lock
+     * here waits out any abandon the peer has in progress. */
+    struct nt_ethread *thr = kshim_current_thread();
+    if (thr) {
+        pthread_mutex_lock(&thr->lock);
+        if (thr->sync_thread == synct) thr->sync_thread = NULL;
+        pthread_mutex_unlock(&thr->lock);
+    }
     nt_abandon_owned_mutants(synct);
     nt_thread_destroy(synct);
 }
@@ -283,6 +292,11 @@ static void *thread_trampoline(void *arg)
     nt_thread_create(&synct);
     if (synct) {
         nt_set_current_thread(synct);
+        /* Publish the sync thread on the ethread, so a peer NtTerminateThread
+         * can abandon this thread's mutants (see thread_sync_release). */
+        pthread_mutex_lock(&thr->lock);
+        thr->sync_thread = synct;
+        pthread_mutex_unlock(&thr->lock);
     }
 
     /* Set GS base to TEB if possible */
@@ -646,6 +660,10 @@ NTSTATUS nt_svc_NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus)
     if (!thr) return STATUS_INVALID_HANDLE;
     pthread_mutex_lock(&thr->lock);
     if (thr->terminated) { pthread_mutex_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
+    /* Abandon the TARGET's mutants before the exit is published, and under
+     * thr->lock so the target cannot take a new mutant in between. The caller's
+     * own sync thread is not involved: it is the target's list that must go. */
+    if (thr->sync_thread) nt_abandon_owned_mutants(thr->sync_thread);
     thr->exit_status = ExitStatus;
     thr->terminated = true;
     pthread_cond_broadcast(&thr->exit_cond);
@@ -657,7 +675,6 @@ NTSTATUS nt_svc_NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus)
         pthread_cancel(thr->pthread);
         /* also wake if suspended */
     }
-    nt_abandon_for_thread(thr);
     return STATUS_SUCCESS;
 }
 
@@ -1702,13 +1719,16 @@ NTSTATUS nt_svc_NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus)
     if (ThreadHandle == NtCurrentThread()) {
         thr = nt_current_ethread();
         if (!thr) return STATUS_INVALID_HANDLE;
+        /* Abandon the owned mutants BEFORE the exit is published: a waiter wakes
+         * on `terminated`, so it must not see this thread exited while it still
+         * owns mutants. do_exit's personality exit abandons again, as a no-op. */
+        if (thr->sync_thread) nt_abandon_owned_mutants(thr->sync_thread);
         spin_lock(&thr->lock);
         thr->exit_status = ExitStatus;
         thr->terminated = true;
         wake_up(&thr->exit_wq);
         wake_up(&thr->suspend_wq);
         spin_unlock(&thr->lock);
-        /* Abandon owned mutants - delegated to sync layer via task death */
         do_exit(ExitStatus & 0xFF);
         return STATUS_SUCCESS;
     }
@@ -1719,17 +1739,15 @@ NTSTATUS nt_svc_NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus)
     if (!thr) return STATUS_INVALID_HANDLE;
     spin_lock(&thr->lock);
     if (thr->terminated) { spin_unlock(&thr->lock); return STATUS_THREAD_IS_TERMINATING; }
+    /* Abandon the target's mutants before the exit is published, under
+     * thr->lock so the target cannot link a new mutant in between. */
+    if (thr->sync_thread) nt_abandon_owned_mutants(thr->sync_thread);
     thr->exit_status = ExitStatus;
     thr->terminated = true;
     wake_up(&thr->exit_wq);
     wake_up(&thr->suspend_wq);
     spin_unlock(&thr->lock);
     NT_TRACE_ERR("NtTerminateThread: thr %p tid %lu sync_thread %p tid %lu\n", thr, thr->tid, thr->sync_thread, thr->sync_thread?thr->sync_thread->tid:0);
-    if (thr->sync_thread) {
-        extern void nt_abandon_owned_mutants(struct nt_thread *);
-        NT_TRACE_ERR("NtTerminateThread: abandoning for thr %p tid %lu\n", thr, thr->tid);
-        nt_abandon_owned_mutants(thr->sync_thread);
-    }
     rcu_read_lock();
     tsk = pid_task(find_vpid(thr->tid), PIDTYPE_PID);
     if (tsk) wake_up_process(tsk);

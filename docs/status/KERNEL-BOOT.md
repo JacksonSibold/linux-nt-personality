@@ -519,10 +519,43 @@ matched of golden leaves:
 Verdict level: **1 of 15** (`probe_sharemode`), the same as the last recorded main run. For the four probes
 named in the previous section (directory, fileinfo, peloader, registry) the counts are the same as recorded there.
 
-**Follow-ups (not fixed here):**
+**Follow-ups (not fixed here; all three fixed on `haiku/syncfix`, see the next section):**
 - Kernel branch of `NtTerminateThread`/`do_exit` still publishes `terminated` before abandoning mutants.
   The userspace fix is in `proc_thread.c`; the kernel path needs the same ordering and a kernel build check.
 - Userspace `NtTerminateThread` on a peer thread calls `nt_abandon_for_thread`, which abandons the caller's
   mutants, not the target's. Mutants of the peer are abandoned by its cancel cleanup, which runs after
   `terminated` is published.
 - `nt_pulse_event` has a 64-entry snapshot in the same shape as the fixed wake path. Not changed.
+
+## Kernel follow-ups fixed (branch `haiku/syncfix`, 2026-10-14)
+
+Base: `main` at `099f353`. The three follow-ups above are fixed; each has a kernel-host regression test that
+fails on the old code and passes on the new.
+
+| follow-up | fix | regression test (fails before) |
+|---|---|---|
+| kernel `NtTerminateThread` publishes `terminated` before abandoning mutants | self and peer paths of the `__KERNEL__` branch in `proc_thread.c` abandon the target's sync thread before `terminated` is set; the peer path does it under `thr->lock` | `thread_exit_test` `test_kernel_terminate_abandons_before_publish` (source-order check; the `__KERNEL__` branch cannot be compiled on the host, so this is not a runtime race test) |
+| userspace peer terminate abandons the caller's mutants | `thread_trampoline` publishes its sync thread on the ethread, `thread_sync_release` unpublishes it under `thr->lock`, and the peer path abandons `thr->sync_thread` under `thr->lock` before publishing | `thread_exit_test` `test_peer_terminate_abandons_target_mutant` (waiter sees `0x102` TIMEOUT instead of `0x80` ABANDONED) |
+| `nt_pulse_event` releases at most 64 waiters | the pulse releases every linked waiter (both builds). A WaitAny waiter on a manual-reset event is marked as released, and its wait returns success even after the 1 ms reset (a plain wake was not enough: 7 of 100 woke under that reset) | `sync_extra_test` `test_pulse_wakes_all_beyond_64` (`FAIL pulse: 64 of 100 waiters woke`) |
+
+**Loops (guest, `tests/kernel-host` binaries, 200 runs each, 4 in parallel):** `thread_exit_test` 200 of 200
+pass; `sync_extra_test` 200 of 200 pass (zero non-zero exits, zero `FAIL` lines).
+
+**Gates:** `make -C tests/kernel-host check-quick` (guest, KHOST_OS=linux): 25 programs rc=0.
+`make -C tests/ntdll-host test` (guest): all tests passed. `python -m unittest discover tests/unit` (Windows
+host): 832 tests OK. `sync_test` (not in check-quick) also passes.
+
+**Not verified here:**
+- The Windows host cannot link C test programs: Windows Application Control blocks `collect2.exe` in the
+  MSYS2 UCRT64 toolchain ("An Application Control policy has blocked this file"), so `tests/kernel-host`
+  and `tests/ntdll-host` were run in the guest instead.
+- The `__KERNEL__` changes are proved only by the incremental kernel build, not by a runtime test. Build:
+  `vm/incremental-kernel.sh` (CCACHE=0, JOBS=20, private guest tree `~/syncfix/linux-src`, copied from
+  `~/kfast/linux-src`): full pass over 87 NT files, `INCREMENTAL_OK`, bzImage up to date; rerun on the final
+  tree after one comment-only edit, 1 file copied, `INCREMENTAL_OK`.
+
+**New follow-ups found while fixing:**
+- `nt_abandon_owned_mutants` (both builds) still snapshots at most 64 owned mutants per thread. A thread that
+  owns more than 64 mutants leaves the rest owned. Not changed here.
+- The userspace pulse still resets the event after a 1 ms sleep. Late WaitAny waiters that arrive in that
+  window still succeed, and WaitAll waiters rely on the window rather than on a mark. Not changed here.

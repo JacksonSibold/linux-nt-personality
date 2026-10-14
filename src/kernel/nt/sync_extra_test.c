@@ -883,6 +883,30 @@ static void test_wake_all_waiters_beyond_64(void) {
     PASS();
 }
 
+/* NtPulseEvent must release every waiter, as NtSetEvent does. The old pulse
+ * snapshotted at most 64 waiters, so with 100 the rest slept to their timeout. */
+static void test_pulse_wakes_all_beyond_64(void) {
+    struct nt_event *ev = NULL;
+    ASSERT_STATUS(nt_create_event(&ev, NotificationEvent, false), STATUS_SUCCESS);
+    ext_wrap_t w[EXT_WAKE_ALL_N];
+    atomic_store(&g_ext_woken, 0);
+    atomic_store(&g_ext_arrived, 0);
+    for (int i = 0; i < EXT_WAKE_ALL_N; i++) {
+        if (ext_start(&w[i], ext_wake_all_waiter, &ev->header) != 0) { fprintf(stderr, "FAIL thread start\n"); g_fail++; return; }
+    }
+    for (int i = 0; i < 10000 && atomic_load(&g_ext_arrived) < EXT_WAKE_ALL_N; i++) usleep(1000);
+    usleep(200 * 1000);
+    g_ext_set_ns = ext_now_ns();
+    nt_pulse_event(ev, NULL);
+    for (int i = 0; i < EXT_WAKE_ALL_N; i++) ext_join(&w[i]);
+    if (atomic_load(&g_ext_woken) != EXT_WAKE_ALL_N) {
+        fprintf(stderr, "FAIL pulse: %d of %d waiters woke\n", atomic_load(&g_ext_woken), EXT_WAKE_ALL_N);
+        g_fail++; return;
+    }
+    nt_put_event(ev);
+    PASS();
+}
+
 /* Auto-reset handoff ping-pong. The signal can land in the gap between a
  * waiter's failed try and its link into the object's wait list; that gap lost
  * the wakeup, so one handoff in a long run would stall. 2000 rounds in each
@@ -964,6 +988,7 @@ int main(void) {
     RUN(keyed_release_null_timeout_matched_by_waiter);
     RUN(yield_execution_succeeds);
     RUN(wake_all_waiters_beyond_64);
+    RUN(pulse_wakes_all_beyond_64);
     RUN(auto_reset_handoff_loop);
     printf("sync extra tests: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) return 1;

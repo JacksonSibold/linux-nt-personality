@@ -156,6 +156,9 @@ struct nt_wait_ctx {
     pthread_mutex_t   lock;
     pthread_cond_t    cond;
     bool              woken;
+    /* Manual-reset event that released this WaitAny waiter by NtPulseEvent,
+     * set under lock. Such a waiter succeeds on that object (see sync.c). */
+    struct nt_dispatcher_header *pulsed_by;
     NTSTATUS          status;
     ULONG             satisfied_index;
     bool              abandoned;
@@ -180,6 +183,9 @@ struct nt_wait_ctx {
     spinlock_t        lock;
     wait_queue_head_t wq;
     bool              woken;
+    /* Manual-reset event that released this WaitAny waiter by NtPulseEvent,
+     * set under lock (see nt_pulse_event in sync.c). */
+    struct nt_dispatcher_header *pulsed_by;
     NTSTATUS          status;
     ULONG             satisfied_index;
     bool              abandoned;

@@ -20,7 +20,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <pthread.h>
+#include <unistd.h>
 
 NTSTATUS nt_svc_NtWaitForSingleObject(HANDLE,BOOLEAN,PLARGE_INTEGER);
 
@@ -156,11 +158,108 @@ static void test_closed_thread_does_not_answer_for_new_thread(void){
     if(g_fail==0) PASS();
 }
 
+/* Peer terminate must abandon the TARGET's mutants, not the caller's. The
+ * target takes a mutant and then sits with cancellation disabled, so the
+ * pthread_cancel from NtTerminateThread stays pending and only the terminate
+ * path itself can release the mutant. The caller must then see it abandoned. */
+static struct nt_mutant *g_pm_mutant;
+static struct gate g_pm_gate;
+static atomic_int g_pm_held;
+
+static ULONG thr_hold_mutant(PVOID a){
+    (void)a;
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+    nt_wait_for_single_object(&g_pm_mutant->header, false, NULL);
+    atomic_store(&g_pm_held, 1);
+    gate_wait(&g_pm_gate);
+    return 777;
+}
+
+static void test_peer_terminate_abandons_target_mutant(void){
+    setup_proc();
+    struct nt_eprocess *proc=kshim_current_process();
+    struct nt_thread *msync=NULL;
+    CHECK(nt_thread_create(&msync)==STATUS_SUCCESS);
+    if(!msync){ return; }
+    nt_set_current_thread(msync);   /* the caller's own sync thread, as a real thread has */
+    CHECK(nt_create_mutant(&g_pm_mutant, false)==STATUS_SUCCESS);
+    if(g_fail){ return; }
+    gate_init(&g_pm_gate);
+    atomic_store(&g_pm_held, 0);
+    HANDLE th=NULL;
+    NTSTATUS st=nt_svc_NtCreateThreadEx(&th,0,NULL,NtCurrentProcess(),thr_hold_mutant,NULL,0,0,0,0,NULL);
+    CHECK(st==STATUS_SUCCESS);
+    if(st!=STATUS_SUCCESS){ return; }
+    for(int i=0; i<10000 && !atomic_load(&g_pm_held); i++) usleep(1000);
+    CHECK(atomic_load(&g_pm_held)==1);
+
+    CHECK(nt_svc_NtTerminateThread(th, 5)==STATUS_SUCCESS);
+    LARGE_INTEGER zero; zero.QuadPart=0;
+    NTSTATUS w=nt_wait_for_single_object(&g_pm_mutant->header, false, &zero);
+    if(w!=STATUS_ABANDONED_WAIT_0){ fprintf(stderr,"FAIL peer terminate: mutant wait 0x%lx, want abandoned 0x%lx\n",(unsigned long)w,(unsigned long)STATUS_ABANDONED_WAIT_0); g_fail++; }
+    if(w==STATUS_SUCCESS || w==STATUS_ABANDONED_WAIT_0) nt_release_mutant(g_pm_mutant, NULL);
+
+    gate_open(&g_pm_gate);
+    CHECK(nt_svc_NtWaitForSingleObject(th,0,NULL)==STATUS_SUCCESS);
+    ObCloseHandle(proc,th);
+    nt_set_current_thread(NULL);
+    nt_thread_destroy(msync);
+    if(g_fail==0) PASS();
+}
+
+/* The kernel build's NtTerminateThread (src/kernel/nt/proc_thread.c, the
+ * __KERNEL__ branch) cannot be compiled on the host, so this checks its source
+ * order instead. In both the self and peer paths the owned mutants must be
+ * abandoned before `terminated` is published: a waiter wakes on that flag and
+ * must not find the exited thread still owning a mutant. Run from build/. */
+static int block_abandons_before_publish(const char *a, const char *b, const char *label){
+    size_t n=(size_t)(b-a);
+    char *s=malloc(n+1);
+    if(!s) return 0;
+    memcpy(s,a,n); s[n]=0;
+    const char *ab=strstr(s,"nt_abandon_owned_mutants(");
+    const char *pub=strstr(s,"terminated = true");
+    int ok = ab && pub && ab<pub;
+    if(!ok) fprintf(stderr,"FAIL kernel NtTerminateThread %s path: mutants not abandoned before terminated is published\n", label);
+    free(s);
+    return ok;
+}
+
+static void test_kernel_terminate_abandons_before_publish(void){
+    FILE *f=fopen("../../../src/kernel/nt/proc_thread.c","rb");
+    CHECK(f!=NULL);
+    if(!f) return;
+    fseek(f,0,SEEK_END); long len=ftell(f); fseek(f,0,SEEK_SET);
+    char *src=malloc((size_t)len+1);
+    CHECK(src!=NULL);
+    if(!src){ fclose(f); return; }
+    size_t got=fread(src,1,(size_t)len,f);
+    fclose(f);
+    src[got]=0;
+    const char *kern=strstr(src,"Terminate helpers");
+    const char *body=kern?strstr(kern,"NTSTATUS nt_svc_NtTerminateThread("):NULL;
+    const char *end=body?strstr(body,"NTSTATUS nt_svc_NtTerminateProcess("):NULL;
+    CHECK(body!=NULL && end!=NULL);
+    if(body && end){
+        const char *self=strstr(body,"ThreadHandle == NtCurrentThread()");
+        const char *peer=self?strstr(self,"st = ObReferenceObjectByHandle"):NULL;
+        CHECK(self!=NULL && peer!=NULL && peer<end);
+        if(self && peer && peer<end){
+            CHECK(block_abandons_before_publish(self,peer,"self"));
+            CHECK(block_abandons_before_publish(peer,end,"peer"));
+        }
+    }
+    free(src);
+    if(g_fail==0) PASS();
+}
+
 int main(void){
     printf("thread exit status tests\n");
     RUN(test_blocked_thread_status);
     RUN(test_suspended_thread_status);
     RUN(test_closed_thread_does_not_answer_for_new_thread);
+    RUN(test_peer_terminate_abandons_target_mutant);
+    RUN(test_kernel_terminate_abandons_before_publish);
     printf("thread exit status tests: %d passed, %d failed\n", g_pass, g_fail);
     ObCleanupObjectManager();
     return g_fail?1:0;

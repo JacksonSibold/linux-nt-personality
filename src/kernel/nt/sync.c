@@ -496,6 +496,21 @@ static void sort_by_addr(ULONG count, struct nt_dispatcher_header **objs, ULONG 
     }
 }
 
+/* Index of the object a manual-reset pulse released this WaitAny waiter on.
+ * The pulse resets the event after a short delay, so a released waiter that
+ * re-checks after the reset would otherwise block again and miss the pulse. */
+static bool pulse_release_index(struct nt_wait_ctx *ctx, ULONG count, struct nt_dispatcher_header **objs, ULONG *out_idx) {
+    bool hit = false;
+    pthread_mutex_lock(&ctx->lock);
+    if (ctx->pulsed_by) {
+        for (ULONG i = 0; i < count; i++) {
+            if (objs[i] == ctx->pulsed_by) { *out_idx = i; hit = true; break; }
+        }
+    }
+    pthread_mutex_unlock(&ctx->lock);
+    return hit;
+}
+
 /* try acquire WaitAny : caller holds no locks, will lock per object */
 static bool try_acquire_wait_any(ULONG count, struct nt_dispatcher_header **objs, struct nt_thread *thr, ULONG *out_idx, bool *out_abandoned) {
     for (ULONG i=0;i<count;i++) {
@@ -692,7 +707,9 @@ NTSTATUS nt_wait_for_multiple_objects(ULONG count,
         /* try acquire */
         bool got=false;
         abandoned=false;
-        if (wait_type == WaitAny) {
+        if (wait_type == WaitAny && pulse_release_index(ctx, count, objects, &satisfied_idx)) {
+            got = true;
+        } else if (wait_type == WaitAny) {
             got = try_acquire_wait_any(count, objects, thr, &satisfied_idx, &abandoned);
         } else {
             got = try_acquire_wait_all_sorted(count, sorted, sorted_orig, thr, &abandoned);
@@ -842,23 +859,23 @@ NTSTATUS nt_pulse_event(struct nt_event *event, LONG *prev) {
     struct nt_dispatcher_header *h=&event->header;
     pthread_mutex_lock(&h->lock);
     if (prev) *prev = h->signal_state;
-    struct nt_wait_ctx *to_wake[64]; int n=0;
-    struct list_head *pos;
-    for (pos = h->waiters.next; pos != &h->waiters && n<64; pos = pos->next) {
-        struct nt_wait_block *blk = list_entry(pos, struct nt_wait_block, entry);
-        atomic_fetch_add(&blk->ctx->refcount, 1);
-        to_wake[n++]=blk->ctx;
-    }
     h->signal_state = 1;
-    pthread_mutex_unlock(&h->lock);
-    for (int i=0;i<n;i++) wake_ctx(to_wake[i]);
-    for (int i=0;i<n;i++) {
-        if (atomic_fetch_sub(&to_wake[i]->refcount, 1) == 1) {
-            pthread_mutex_destroy(&to_wake[i]->lock);
-            pthread_cond_destroy(&to_wake[i]->cond);
-            kfree(to_wake[i]);
-        }
+    /* Release every linked waiter, as nt_set_event does; the old snapshot took
+     * at most 64, so the rest slept to their timeout. A WaitAny waiter on a
+     * manual-reset event is marked as released by this pulse, so it succeeds
+     * even when the reset below has cleared the signal before it re-checks.
+     * Waking under h->lock keeps each block, and its ctx, alive (see
+     * wake_waiters_for_header). */
+    struct list_head *pos;
+    for (pos = h->waiters.next; pos != &h->waiters; pos = pos->next) {
+        struct nt_wait_ctx *ctx = list_entry(pos, struct nt_wait_block, entry)->ctx;
+        pthread_mutex_lock(&ctx->lock);
+        if (h->manual_reset && ctx->wait_type == WaitAny) ctx->pulsed_by = h;
+        ctx->woken = true;
+        pthread_cond_signal(&ctx->cond);
+        pthread_mutex_unlock(&ctx->lock);
     }
+    pthread_mutex_unlock(&h->lock);
     usleep(1000);
     pthread_mutex_lock(&h->lock);
     h->signal_state = 0;
@@ -1803,17 +1820,20 @@ NTSTATUS nt_pulse_event(struct nt_event *event, LONG *prev)
     spin_lock_irqsave(&h->lock, flags);
     if (prev) *prev = h->signal_state;
     h->signal_state = 1;
-    /* snapshot waiters while holding lock */
-    struct nt_wait_ctx *to_wake[64]; int n = 0;
+    /* Release every linked waiter, as nt_set_event does; the old snapshot took
+     * at most 64 and dropped the rest. A WaitAny waiter on a manual-reset event
+     * is marked as released, so it succeeds even after the reset below. Under
+     * h->lock each block, and its ctx, stays alive (lock order h, then ctx). */
     struct list_head *pos;
-    for (pos = h->waiters.next; pos != &h->waiters && n < 64; pos = pos->next) {
-        struct nt_wait_block *blk = list_entry(pos, struct nt_wait_block, entry);
-        atomic_inc(&blk->ctx->refcount);
-        to_wake[n++] = blk->ctx;
+    for (pos = h->waiters.next; pos != &h->waiters; pos = pos->next) {
+        struct nt_wait_ctx *ctx = list_entry(pos, struct nt_wait_block, entry)->ctx;
+        spin_lock(&ctx->lock);
+        if (h->manual_reset && ctx->wait_type == WaitAny) ctx->pulsed_by = h;
+        ctx->woken = true;
+        spin_unlock(&ctx->lock);
+        wake_up_all(&ctx->wq);
     }
     spin_unlock_irqrestore(&h->lock, flags);
-    for (int i = 0; i < n; i++) kernel_wake_ctx(to_wake[i]);
-    for (int i = 0; i < n; i++) if (atomic_dec_and_test(&to_wake[i]->refcount)) kfree(to_wake[i]);
     /* pulse resets after a short delay – emulate with immediate reset after wakers have been queued */
     msleep(1);
     spin_lock_irqsave(&h->lock, flags);
@@ -2269,6 +2289,21 @@ void nt_thread_exit_abandon(void)
 }
 
 /* ---- wait engine core ---- */
+/* Kernel twin of pulse_release_index (userspace section above). */
+static bool kernel_pulse_release_index(struct nt_wait_ctx *ctx, ULONG count, struct nt_dispatcher_header **objs, ULONG *out_idx)
+{
+    bool hit = false;
+    unsigned long flags;
+    spin_lock_irqsave(&ctx->lock, flags);
+    if (ctx->pulsed_by) {
+        for (ULONG i = 0; i < count; i++) {
+            if (objs[i] == ctx->pulsed_by) { *out_idx = i; hit = true; break; }
+        }
+    }
+    spin_unlock_irqrestore(&ctx->lock, flags);
+    return hit;
+}
+
 NTSTATUS nt_wait_for_multiple_objects(ULONG count,
                                       struct nt_dispatcher_header **objects,
                                       ULONG wait_type,
@@ -2332,7 +2367,9 @@ NTSTATUS nt_wait_for_multiple_objects(ULONG count,
         /* try acquire */
         bool got = false;
         abandoned = false;
-        if (wait_type == WaitAny) {
+        if (wait_type == WaitAny && kernel_pulse_release_index(ctx, count, objects, &satisfied_idx)) {
+            got = true;
+        } else if (wait_type == WaitAny) {
             for (ULONG i = 0; i < count; i++) {
                 struct nt_dispatcher_header *h = objects[i];
                 bool aband = false;
