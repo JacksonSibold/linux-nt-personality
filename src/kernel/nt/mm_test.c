@@ -17,6 +17,7 @@
 #include "object.h"
 #include "handle.h"
 #include "io.h"
+#include "security.h"
 #include "../../../tests/kernel-host/pe_synth.h"
 #include <limits.h>
 #include <fcntl.h>
@@ -268,6 +269,22 @@ static int test_query_coalesce_free(void) {
     ASSERT(query(c1, &mbi), "q c1 after protect");
     ASSERT(mbi.RegionSize == 0x1000, "after protect not coalesce size 0x%zx", (size_t)mbi.RegionSize);
     ASSERT(mbi.Protect == PAGE_READONLY, "protect value");
+
+    /* An unaligned base: [c1+100, c1+100+0x1000) spans both pages, so c2 must
+     * change too and the region comes back whole. */
+    pb = (PVOID)((ULONG_PTR)c1 + 100); ps = 0x1000;
+    st = NtProtectVirtualMemory((HANDLE)-1, &pb, &ps, PAGE_READONLY, &old);
+    ASSERT(st == STATUS_SUCCESS, "protect unaligned");
+    ASSERT(pb == c1 && ps == 0x2000, "unaligned protect returns the page range");
+    ASSERT(query(c2, &mbi), "q c2 after unaligned protect");
+    ASSERT(mbi.Protect == PAGE_READONLY, "second page protected by unaligned range");
+
+    /* A zero size is rejected even from an unaligned base, and changes nothing. */
+    pb = (PVOID)((ULONG_PTR)c1 + 100); ps = 0;
+    st = NtProtectVirtualMemory((HANDLE)-1, &pb, &ps, PAGE_READWRITE, &old);
+    ASSERT(st == STATUS_INVALID_PARAMETER, "protect zero size rejected");
+    ASSERT(query(c1, &mbi) && mbi.Protect == PAGE_READONLY, "zero-size protect left first page");
+    ASSERT(query(c2, &mbi) && mbi.Protect == PAGE_READONLY, "zero-size protect left second page");
 
     /* Free region coalescing via query sweep */
     /* Sweep from low to high and ensure no overlaps and coverage */
@@ -576,6 +593,88 @@ static int test_lock_virtual_memory(void) {
     return 1;
 }
 
+/* A failed allocation in the lock bookkeeping must not lose the lock runs.
+ * Decommit the middle page of three locked pages while the nth allocation
+ * fails, for each n up to past the last one the call makes. A refused call
+ * leaves the whole range locked; a successful one leaves the outer pages locked
+ * and the middle one not. */
+static int test_lock_forget_split_no_memory(void) {
+    for (int n = 1; n <= 6; n++) {
+        PVOID base = NULL;
+        SIZE_T size = 3 * 4096;
+        PVOID lb;
+        SIZE_T ls;
+        ASSERT(NtAllocateVirtualMemory((HANDLE)-1, &base, 0, &size, MEM_COMMIT, PAGE_READWRITE) == STATUS_SUCCESS, "commit");
+        lb = base; ls = size;
+        ASSERT(NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "lock");
+        PVOID mid = (char *)base + 4096;
+        SIZE_T ms = 4096;
+        kshim_fail_alloc_nth(n);
+        NTSTATUS st = NtFreeVirtualMemory((HANDLE)-1, &mid, &ms, MEM_DECOMMIT);
+        kshim_fail_alloc_nth(0);
+        ASSERT(st == STATUS_SUCCESS || st == STATUS_NO_MEMORY, "n=%d decommit status 0x%x", n, (unsigned)st);
+        if (st == STATUS_NO_MEMORY) {
+            lb = base; ls = size;
+            ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "n=%d refused decommit kept the whole lock", n);
+        } else {
+            lb = base; ls = 4096;
+            ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "n=%d first page still locked", n);
+            lb = (char *)base + 2 * 4096; ls = 4096;
+            ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_SUCCESS, "n=%d last page still locked", n);
+            lb = mid; ls = 4096;
+            ASSERT(NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_NOT_LOCKED, "n=%d middle page unlocked", n);
+        }
+        PVOID rb = base; SIZE_T rs = 0;
+        ASSERT(NtFreeVirtualMemory((HANDLE)-1, &rb, &rs, MEM_RELEASE) == STATUS_SUCCESS, "n=%d release", n);
+    }
+    return 1;
+}
+
+/* MAP_SYSTEM succeeds when the process token holds SeLockMemoryPrivilege. The
+ * test grants it to the process for the duration of the test. Pages locked as
+ * MAP_SYSTEM are not unlocked as MAP_PROCESS, nor re-locked as MAP_PROCESS. */
+static int test_lock_map_system(void) {
+    PSID user = NULL;
+    LUID_AND_ATTRIBUTES priv;
+    ASSERT(sid_from_string("S-1-5-21-0-0-0-1000", &user) == STATUS_SUCCESS, "sid");
+    priv.Luid.LowPart = SE_LOCK_MEMORY_PRIVILEGE;
+    priv.Luid.HighPart = 0;
+    priv.Attributes = SE_PRIVILEGE_ENABLED;
+    ACCESS_TOKEN *tok = token_create_primary(user, NULL, 0, &priv, 1, NULL, NULL, NULL, NULL, 0);
+    sid_free(user);
+    ASSERT(tok != NULL, "token with privilege");
+    ACCESS_TOKEN *saved = g_mm_proc->primary_token;
+    g_mm_proc->primary_token = tok;
+
+    PVOID base = NULL;
+    SIZE_T size = 2 * 4096;
+    PVOID lb;
+    SIZE_T ls;
+    NTSTATUS st = NtAllocateVirtualMemory((HANDLE)-1, &base, 0, &size, MEM_COMMIT, PAGE_READWRITE);
+    int ok = st == STATUS_SUCCESS;
+    if (ok) {
+        lb = base; ls = size;
+        st = NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 2);
+        ok = st == STATUS_SUCCESS && lb == base && ls == size;
+        if (ok) {
+            lb = base; ls = size;
+            ok = NtLockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_INVALID_PARAMETER;
+            lb = base; ls = size;
+            ok = ok && NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 1) == STATUS_NOT_LOCKED;
+            lb = base; ls = size;
+            ok = ok && NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 2) == STATUS_SUCCESS;
+            lb = base; ls = size;
+            ok = ok && NtUnlockVirtualMemory((HANDLE)-1, &lb, &ls, 2) == STATUS_NOT_LOCKED;
+        }
+        PVOID rb = base; SIZE_T rs = 0;
+        NtFreeVirtualMemory((HANDLE)-1, &rb, &rs, MEM_RELEASE);
+    }
+    g_mm_proc->primary_token = saved;
+    token_dereference(tok);
+    ASSERT(ok, "MAP_SYSTEM lock/unlock with the privilege held");
+    return 1;
+}
+
 static char g_mmf_root[512];
 
 /* Defined in tests/kernel-host/shim/posix_host.c; declared here as the prelude does. */
@@ -713,6 +812,38 @@ static int test_file_section_shared_write_reaches_file(void) {
     ASSERT(mmf_host_byte("shared_rw.bin", 0x10, &b) && b == 'H', "file holds first written byte");
     ASSERT(mmf_host_byte("shared_rw.bin", 0x14, &b) && b == 'O', "file holds last written byte");
     ASSERT(mmf_host_size("shared_rw.bin") == 0x1000, "file size unchanged");
+    return 1;
+}
+
+/* A failed write-back is reported, not dropped. The section's backing fd is
+ * made invalid so pwrite fails: flush returns STATUS_IO_DEVICE_ERROR, and the
+ * unmap that follows also returns it but still removes the view. */
+static int test_file_section_writeback_failure_reported(void) {
+    HANDLE fh = NULL, sec = NULL;
+    PVOID base = NULL;
+    struct nt_object_header *hdr = NULL;
+    struct nt_section *ns = NULL;
+    MEMORY_BASIC_INFORMATION mbi;
+    unsigned char b = 0;
+    int saved_fd;
+    ASSERT(mmf_make("wb_fail.bin", 0x1000, 'A'), "make file");
+    ASSERT(mmf_open("wb_fail.bin", FILE_READ_DATA | FILE_WRITE_DATA, &fh) == STATUS_SUCCESS, "open rw");
+    ASSERT(mmf_section(fh, &sec, PAGE_READWRITE, 0) == STATUS_SUCCESS, "create section");
+    ASSERT(mmf_map(sec, 0, 0, PAGE_READWRITE, &base) == STATUS_SUCCESS, "map view");
+    ASSERT(ObReferenceObjectByHandle(g_mm_proc, sec, &nt_section_type, KernelMode, 0, &hdr, NULL) == STATUS_SUCCESS, "ref section");
+    ns = (struct nt_section *)nt_object_body(hdr);
+    ObDereferenceObject(hdr);
+    saved_fd = ns->backing.fd;
+    ASSERT(saved_fd >= 0, "section has a backing fd");
+    memcpy((unsigned char *)base + 0x10, "HELLO", 5);
+    ns->backing.fd = -1;
+    ASSERT(mmf_flush(base, 0x1000) == STATUS_IO_DEVICE_ERROR, "flush reports write-back failure");
+    ASSERT(NtUnmapViewOfSection((HANDLE)-1, base) == STATUS_IO_DEVICE_ERROR, "unmap reports write-back failure");
+    ASSERT(query(base, &mbi) && mbi.State == MEM_FREE, "view removed although write-back failed");
+    ns->backing.fd = saved_fd;
+    ASSERT(ObCloseHandle(g_mm_proc, sec) == STATUS_SUCCESS, "close section");
+    ASSERT(nt_svc_NtClose(fh) == STATUS_SUCCESS, "close file");
+    ASSERT(mmf_host_byte("wb_fail.bin", 0x10, &b) && b == 'A', "file unchanged by failed write-back");
     return 1;
 }
 
@@ -3017,9 +3148,12 @@ int main(void) {
     RUN_TEST(test_vad_matrix);
     RUN_TEST(test_alloc_size_wrap);
     RUN_TEST(test_lock_virtual_memory);
+    RUN_TEST(test_lock_forget_split_no_memory);
+    RUN_TEST(test_lock_map_system);
     mmf_setup();
     RUN_TEST(test_file_section_shared_write_reaches_file);
     RUN_TEST(test_file_section_cow_does_not_modify_file);
+    RUN_TEST(test_file_section_writeback_failure_reported);
     RUN_TEST(test_file_section_access_by_protection);
     RUN_TEST(test_file_section_zero_length_rejected);
     RUN_TEST(test_file_section_uses_allocation_size);

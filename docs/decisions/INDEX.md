@@ -9,7 +9,7 @@ Status values:
 - **no-change**: the record is accepted and no code change is needed.
 - **open**: the record is proposed and not implemented.
 
-Snapshot: 2026-10-13, `HEAD` at the time this index was written. 73 records: 15 fixed, 16 open, 41 blocked, 1 no-change.
+Snapshot: 2026-10-13, `HEAD` at the time this index was written. 74 records: 16 fixed, 16 open, 41 blocked, 1 no-change.
 
 | Record | Title | Status | Finding | Commit |
 |---|---|---|---|---|
@@ -86,6 +86,7 @@ Snapshot: 2026-10-13, `HEAD` at the time this index was written. 73 records: 15 
 | [0071](0071-ntdll-registry-backend.md) | Registry functions always report "not found" | blocked | ntdll ADV-1 (Low) | |
 | [0072](0072-kernel-nt-lpc-ports.md) | LPC ports (NtCreatePort family) are not implemented | fixed | none (service gap) | fa370b1 |
 | [0073](0073-golden-accepted-builds.md) | Golden corpus accepts a list of builds (option 3) | fixed | none (golden policy) | 97fa1d4 |
+| [0074](0074-per-process-address-space.md) | Per-process address spaces for the memory manager | fixed | none (architecture gap) | 021e475 |
 
 ## Notes
 

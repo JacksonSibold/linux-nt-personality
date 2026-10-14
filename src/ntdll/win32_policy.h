@@ -130,4 +130,21 @@ static inline HANDLE win32_sync_create_result(NTSTATUS s, HANDLE h)
     return NT_SUCCESS(s) ? h : NULL;
 }
 
+/* K32-6: HeapAlloc hands out 16-byte aligned blocks from a bump heap of cap
+ * bytes with used bytes taken. The size is checked against the space left
+ * before it is rounded, so a size near SIZE_MAX cannot wrap to a small block.
+ * Returns 1 and stores the rounded block size when it fits (the rounded size
+ * must fit too), else 0 and leaves *block unchanged. Requires used <= cap. */
+static inline int win32_heap_block_size(SIZE_T size, SIZE_T used, SIZE_T cap, SIZE_T *block)
+{
+    SIZE_T rounded;
+    if (size > cap - used)
+        return 0;
+    rounded = (size + 15) & ~(SIZE_T)15;
+    if (rounded > cap - used)
+        return 0;
+    *block = rounded;
+    return 1;
+}
+
 #endif /* NTDLL_WIN32_POLICY_H */

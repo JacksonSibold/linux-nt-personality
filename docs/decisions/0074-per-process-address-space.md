@@ -1,4 +1,4 @@
-# 0073: Per-process address spaces for the memory manager
+# 0074: Per-process address spaces for the memory manager
 
 Status: Accepted. Implemented in 021e475 (mm.c, mm.h, mm_test.c, object.c, object.h).
 Finding: none in `docs/review/`. Gap found while reading `docs/architecture/memory.md`: "One address space: `ProcessHandle` is ignored by the section and allocation paths, which use `g_nt_mm`. Every process shares one VAD list." This record is the prerequisite for per-process isolation in `docs/architecture/process-creation.md`.

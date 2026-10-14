@@ -8,11 +8,13 @@ Severity: High / Medium / Low / Info. "Latent" means the defect is real in the c
 
 ## Summary
 
+Counts of the finding headings as of 2026-10-13.
+
 | Severity | Count |
 |---|---|
-| High | 8 |
-| Medium | 10 |
-| Low | 19 |
+| High | 9 |
+| Medium | 18 |
+| Low | 21 |
 | Info | 1 |
 
 The C-* findings are the exception to the static method above. They were found by the concurrency stress programs in `tests/kernel-host` (`make stress`, branch `haiku/stress`, 2026-10-12, 16 workers, seeds 1 to 3). C-1 was reproduced and fixed. C-2 was not reproduced. The stress run also found no handle-table, sync, or allocation-leak defects.
@@ -207,9 +209,9 @@ The code is careful about `copy_from_user` at most service entry points, and the
 - `src/kernel/nt/sync.c`: the userspace timer thread called `t->apc_routine` when no APC thread was set, and `timer_callback` called it in softirq context. `nt_svc_NtSetTimer` passed the user pointer through unchecked. No APC queue exists (`nt_thread_queue_apc` sets one flag), so the routine cannot be delivered to its thread.
 - Fix: a non-NULL `ApcRoutine` returns `STATUS_NOT_IMPLEMENTED` before any state changes, in the wrapper and in both `nt_set_timer` functions. The timer callbacks never call a routine.
 
-### K-1 [Medium] NtReleaseKeyedEvent with no waiter succeeds and drops the release (fixed ed89f0e for userspace; kernel open)
+### K-1 [Medium] NtReleaseKeyedEvent with no waiter succeeds and drops the release (fixed ed89f0e for userspace; kernel branch ported, not built)
 - `src/kernel/nt/sync.c`, `nt_release_keyed_event`: with no waiter for the key it returned `STATUS_SUCCESS`. NT blocks the releaser until a waiter takes the release, or returns `STATUS_TIMEOUT` when the timeout ends (at once for zero).
-- Fix (userspace shim): a queued releaser list. A waiter that arrives first takes the release. Matching and waking happen under `g_keyed_lock`. The kernel keyed-event code (`nt_wait_for_keyed_event` and `nt_release_keyed_event` in the kernel branch, `:1756` and later) is a separate implementation with the same defect. It was not changed, because it cannot be built or run on this host.
+- Fix (userspace shim): a queued releaser list. A waiter that arrives first takes the release. Matching and waking happen under `g_keyed_lock`. The kernel keyed-event code (`nt_wait_for_keyed_event` and `nt_release_keyed_event` in the kernel branch, `:1756` and later) is a separate implementation that had the same defect. It now has the same queued releaser design, with the waiter checking the releaser queue and joining the waiter list in one critical section, and both sides waking under the lock. It is compiled only in the kernel build, so it was reviewed but not built or run.
 
 ### T-4 [Low] NtWaitForMultipleObjects and the nt_internal.h prototypes take unsigned long arguments (not changed)
 - `src/kernel/nt/sync.c` (`nt_svc_NtWaitForMultipleObjects`) and `src/kernel/nt/nt_internal.h:73-74` take twelve `unsigned long` arguments. On an LLP64 host (Win64) a pointer argument is truncated to 32 bits. The kernel build is LP64, so the defect is latent there. The `nt_internal.h` prototype of `nt_svc_NtWaitForSingleObject` does not match its definition in `nt_obj.c` (`HANDLE`, `BOOLEAN`, `PLARGE_INTEGER`). Nothing in the host tests calls either through `nt_internal.h`.

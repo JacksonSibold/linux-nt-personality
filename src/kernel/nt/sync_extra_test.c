@@ -346,6 +346,20 @@ TEST(set_timer_int64_min_due_does_not_fire) {
     PASS();
 }
 
+/* A wait timeout of INT64_MIN is 2^63 units, which cannot be negated in int64_t.
+ * It must not overflow into a past deadline: the wait lasts until the timer fires. */
+TEST(wait_int64_min_timeout_does_not_expire) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_timer(&h, 0x1F0003, NULL, NotificationTimer), STATUS_SUCCESS);
+    LARGE_INTEGER due = rel100(100);
+    ASSERT_STATUS(t_set_timer(h, &due, NULL, NULL, 0, NULL), STATUS_SUCCESS);
+    LARGE_INTEGER wait;
+    wait.QuadPart = INT64_MIN;
+    ASSERT_STATUS(t_wait_handle(h, &wait), STATUS_WAIT_0);
+    PASS();
+}
+
 TEST(set_timer_bad_arguments) {
     reset_ob();
     HANDLE h = NULL;
@@ -661,6 +675,37 @@ TEST(keyed_release_blocks_until_waiter) {
     PASS();
 }
 
+static void *keyed_releaser_null_thread(void *p) {
+    struct keyed_release_arg *a = (struct keyed_release_arg *)p;
+    kshim_set_current_process(a->proc);
+    struct nt_thread *t = NULL;
+    if (nt_thread_create(&t) == STATUS_SUCCESS) nt_set_current_thread(t);
+    a->st = t_release_keyed(a->h, a->key, NULL);
+    atomic_store(&a->done, 1);
+    return NULL;
+}
+
+/* A release with a NULL timeout (no limit) that is queued before any waiter is
+ * taken by a waiter that arrives later. Both calls return once they match. */
+TEST(keyed_release_null_timeout_matched_by_waiter) {
+    reset_ob();
+    HANDLE h = NULL;
+    ASSERT_STATUS(t_create_keyed(&h, 0x1F0003, NULL, 0), STATUS_SUCCESS);
+    int key_marker = 0;
+    struct keyed_release_arg rel = { h, &key_marker, kshim_current_process(), STATUS_UNSUCCESSFUL, 0 };
+    pthread_t pr;
+    ASSERT(pthread_create(&pr, NULL, keyed_releaser_null_thread, &rel) == 0);
+    usleep(100000);
+    struct keyed_wait_arg wa = { h, &key_marker, kshim_current_process(), STATUS_UNSUCCESSFUL };
+    pthread_t pw;
+    ASSERT(pthread_create(&pw, NULL, keyed_waiter_thread, &wa) == 0);
+    pthread_join(pw, NULL);
+    pthread_join(pr, NULL);
+    ASSERT_STATUS(wa.st, STATUS_WAIT_0);
+    ASSERT_STATUS(rel.st, STATUS_SUCCESS);
+    PASS();
+}
+
 /* ------------------------------------------------------------------ */
 /* Timers as waitable objects (NtWaitForSingleObject / ...Multiple...)  */
 /* ------------------------------------------------------------------ */
@@ -784,6 +829,7 @@ int main(void) {
     RUN(holder_after_collision_same_type_leaves_no_leak);
     RUN(set_timer_fires_and_reports_previous);
     RUN(set_timer_int64_min_due_does_not_fire);
+    RUN(wait_int64_min_timeout_does_not_expire);
     RUN(set_timer_bad_arguments);
     RUN(set_timer_wrong_type);
     RUN(cancel_timer_before_fire);
@@ -807,6 +853,7 @@ int main(void) {
     RUN(keyed_release_wakes_waiter);
     RUN(keyed_release_without_waiter_times_out);
     RUN(keyed_release_blocks_until_waiter);
+    RUN(keyed_release_null_timeout_matched_by_waiter);
     RUN(yield_execution_succeeds);
     printf("sync extra tests: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) return 1;

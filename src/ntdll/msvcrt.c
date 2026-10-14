@@ -7,6 +7,7 @@
 #include "nt_types.h"
 #include "ntstatus.h"
 #include "msvcrt_policy.h"
+#include "msvcrt_format.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdarg.h>
@@ -157,87 +158,6 @@ struct lconv* localeconv(void){ return &g_lconv; }
 typedef void (*sighandler_t)(int);
 sighandler_t signal(int sig, sighandler_t h){ (void)sig;(void)h; return NULL; }
 
-/* Simple vsnprintf for CRT printf - handles %s %d %u %x %X %p %llu %lu %lld %c %f? minimal */
-static int my_vsprintf(char *out, size_t outsz, const char *fmt, va_list ap){
-    size_t pos=0;
-    for(const char *p=fmt; *p && pos+1<outsz; p++){
-        if(*p!='%'){ out[pos++]=*p; continue; }
-        p++;
-        if(!*p) break;
-        // flags/width ignored for simplicity, handle length modifiers
-        int is_long=0, is_ll=0, is_z=0;
-        if(*p=='l'){ is_long=1; p++; if(*p=='l'){ is_ll=1; p++; } }
-        else if(*p=='z'){ is_z=1; p++; }
-        else if(*p=='I'){ // I64
-            if(p[1]=='6'&&p[2]=='4'){ is_ll=1; p+=3; }
-        }
-        char spec=*p;
-        if(spec=='s'){
-            const char *s=va_arg(ap,const char*);
-            if(!s) s="(null)";
-            size_t sl=strlen(s);
-            for(size_t i=0;i<sl && pos+1<outsz;i++) out[pos++]=s[i];
-        } else if(spec=='S'){ // wide string
-            const WCHAR *ws=va_arg(ap,const WCHAR*);
-            if(!ws){ const char *s="(null)"; for(size_t i=0;s[i]&&pos+1<outsz;i++) out[pos++]=s[i]; }
-            else for(size_t i=0; ws[i]&&pos+1<outsz;i++) out[pos++]=(char)(ws[i]&0xFF);
-        } else if(spec=='c'){
-            int c=va_arg(ap,int);
-            if(pos+1<outsz) out[pos++]=(char)c;
-        } else if(spec=='d' || spec=='i'){
-            long long v = is_ll?va_arg(ap,long long): is_long?va_arg(ap,long): is_z? (long long)va_arg(ap,SIZE_T): va_arg(ap,int);
-            char buf[32]; int neg=0; unsigned long long uv;
-            if(v<0){ neg=1; uv=(unsigned long long)(-v); } else uv=(unsigned long long)v;
-            int idx=31; buf[idx--]='\0';
-            if(uv==0) buf[idx--]='0';
-            else while(uv && idx>=0){ buf[idx--]='0'+(uv%10); uv/=10; }
-            if(neg && idx>=0) buf[idx--]='-';
-            const char *s=buf+idx+1;
-            for(size_t i=0;s[i]&&pos+1<outsz;i++) out[pos++]=s[i];
-        } else if(spec=='u'){
-            unsigned long long v = is_ll?va_arg(ap,unsigned long long): is_long?va_arg(ap,unsigned long): is_z?va_arg(ap,SIZE_T): va_arg(ap,unsigned int);
-            char buf[32]; int idx=31; buf[idx--]='\0';
-            if(v==0) buf[idx--]='0';
-            else while(v && idx>=0){ buf[idx--]='0'+(v%10); v/=10; }
-            const char *s=buf+idx+1;
-            for(size_t i=0;s[i]&&pos+1<outsz;i++) out[pos++]=s[i];
-        } else if(spec=='x' || spec=='X'){
-            unsigned long long v = is_ll?va_arg(ap,unsigned long long): is_long?va_arg(ap,unsigned long): is_z?va_arg(ap,SIZE_T): va_arg(ap,unsigned int);
-            char buf[32]; int idx=31; buf[idx--]='\0';
-            const char *digits = (spec=='x')?"0123456789abcdef":"0123456789ABCDEF";
-            if(v==0) buf[idx--]='0';
-            else while(v && idx>=0){ buf[idx--]=digits[v%16]; v/=16; }
-            const char *s=buf+idx+1;
-            for(size_t i=0;s[i]&&pos+1<outsz;i++) out[pos++]=s[i];
-        } else if(spec=='p'){
-            void *ptr=va_arg(ap,void*);
-            unsigned long long v=(unsigned long long)(uintptr_t)ptr;
-            char buf[32]; int idx=31; buf[idx--]='\0';
-            if(v==0) buf[idx--]='0';
-            else while(v && idx>=0){ buf[idx--]="0123456789abcdef"[v%16]; v/=16; }
-            // prefix 0x
-            if(pos+2<outsz){ out[pos++]='0'; out[pos++]='x'; }
-            const char *s=buf+idx+1;
-            for(size_t i=0;s[i]&&pos+1<outsz;i++) out[pos++]=s[i];
-        } else if(spec=='f' || spec=='F' || spec=='e' || spec=='E' || spec=='g' || spec=='G'){
-            double d=va_arg(ap,double);
-            (void)d;
-            // simplified: output "0.0"
-            const char *s="0.0";
-            for(size_t i=0;s[i]&&pos+1<outsz;i++) out[pos++]=s[i];
-        } else if(spec=='%'){
-            if(pos+1<outsz) out[pos++]='%';
-        } else {
-            // unknown, copy as is
-            if(pos+1<outsz) out[pos++]='%';
-            if(pos+1<outsz) out[pos++]=spec;
-        }
-    }
-    /* CRT-2: size 0 means no buffer, so write the NUL only when there is room. */
-    if(outsz) out[pos]='\0';
-    return (int)pos;
-}
-
 static void write_stdout(const char *s, size_t len){
     HANDLE h=GetStdHandle((DWORD)-11);
     if(!h || h==(HANDLE)(intptr_t)-1) h=GetStdHandle((DWORD)-10);
@@ -255,7 +175,7 @@ int fprintf(void *stream, const char *fmt, ...){
     (void)stream;
     char buf[4096];
     va_list ap; va_start(ap,fmt);
-    int n=my_vsprintf(buf,sizeof(buf),fmt,ap);
+    int n=(int)ms_stored(my_vsprintf(buf,sizeof(buf),fmt,ap),sizeof(buf));
     va_end(ap);
     if(n>0) write_stdout(buf,(size_t)n);
     return n;
@@ -263,21 +183,21 @@ int fprintf(void *stream, const char *fmt, ...){
 int vfprintf(void *stream, const char *fmt, va_list ap){
     (void)stream;
     char buf[4096];
-    int n=my_vsprintf(buf,sizeof(buf),fmt,ap);
+    int n=(int)ms_stored(my_vsprintf(buf,sizeof(buf),fmt,ap),sizeof(buf));
     if(n>0) write_stdout(buf,(size_t)n);
     return n;
 }
 int printf(const char *fmt, ...){
     char buf[4096];
     va_list ap; va_start(ap,fmt);
-    int n=my_vsprintf(buf,sizeof(buf),fmt,ap);
+    int n=(int)ms_stored(my_vsprintf(buf,sizeof(buf),fmt,ap),sizeof(buf));
     va_end(ap);
     if(n>0) write_stdout(buf,(size_t)n);
     return n;
 }
 int vprintf(const char *fmt, va_list ap){
     char buf[4096];
-    int n=my_vsprintf(buf,sizeof(buf),fmt,ap);
+    int n=(int)ms_stored(my_vsprintf(buf,sizeof(buf),fmt,ap),sizeof(buf));
     if(n>0) write_stdout(buf,(size_t)n);
     return n;
 }
@@ -306,7 +226,7 @@ int sscanf(const char *a, const char *b, ...){ (void)a;(void)b; return 0; }
  * bounds the write to MS_SPRINTF_LIMIT but cannot protect a smaller buffer. */
 static int ms_bounded_vsprintf(char *s, const char *fmt, va_list ap){
     char tmp[MS_SPRINTF_LIMIT];
-    int n=my_vsprintf(tmp,sizeof(tmp),fmt,ap);
+    int n=(int)ms_stored(my_vsprintf(tmp,sizeof(tmp),fmt,ap),sizeof(tmp));
     memcpy(s,tmp,(size_t)ms_sprintf_write_size((SIZE_T)n));
     return n;
 }

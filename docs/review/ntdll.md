@@ -40,7 +40,7 @@ Each fix is its own commit named by its ID. Host-testable logic has a test that 
 | RT-3 | Needs owner | Implementing the printf family or failing at link time is a product choice. |
 | RT-4 | Needs owner | Dropping `errno` changes the CRT ABI; the test Makefile already relaxes `-Wattributes`. |
 | RT-6 | Needs owner | `NtTerminateProcess` would be an undefined symbol in `test_runtime`; needs a stub or weak-symbol decision. |
-| CRT-2 | Partly fixed | cdcc7ce guards the NUL. The return value still counts bytes written, not the length required. |
+| CRT-2 | Fixed | cdcc7ce guards the NUL. The snprintf family now returns the length required; host test `test_msvcrt_policy`. |
 | CRT-1 | Partly fixed | 1f334ce bounds `sprintf` and `vsprintf` to `MS_SPRINTF_LIMIT` (1024). A caller with a smaller buffer still overflows; removing the exports is the owner decision. |
 | CRT-3 | Fixed | 1224d00 (`calloc` returns NULL when `n * s` wraps) |
 | CRT-4 | Fixed | 2a499a7 |
@@ -274,7 +274,7 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 - `msvcrt.c:273-279`: `sprintf` and `vsprintf` format into the caller's buffer with a size of 8192 (`my_vsprintf(s, 8192, ...)`), whatever the buffer really is. Any caller with a smaller buffer overflows it.
 - Fix: remove these, or require callers to use `snprintf`.
 
-### CRT-2 [Medium] snprintf writes a NUL even when the size is zero
+### CRT-2 [Medium] snprintf writes a NUL even when the size is zero (Fixed: NUL guard in cdcc7ce, required-length return with the formatter in `msvcrt_format.h`; host test `test_msvcrt_policy`)
 - `msvcrt.c:206`: `out[pos]='\0';` runs after the loop, so `snprintf(NULL, 0, fmt)` (the standard size query) writes to address 0. The function also returns the number written, not the length it would need.
 - Fix: write the NUL only when `outsz > 0`, and return the required length.
 
@@ -334,7 +334,7 @@ Noticed in passing, outside this pass: CRT-3 (High, `calloc` overflow in `msvcrt
 - `kernel32.c:464` (base): `{ (void)h;(void)ms; return 0; /* WAIT_OBJECT_0 */ }`. Callers proceed as though the object were signalled.
 - Fix: call `NtWaitForSingleObject`.
 
-### K32-6 [High] HeapAlloc rounds the size before checking it
+### K32-6 [High] HeapAlloc rounds the size before checking it (Fixed: `win32_heap_block_size` in `win32_policy.h`; host test `test_win32_policy`)
 - `kernel32.c:294` (base): `size = (size+15)&~15;` runs before the bounds check on `g_k32_off`. A size near SIZE_MAX wraps to a small block (same class as RT-1).
 - Fix: reject `size` above the heap size before rounding.
 

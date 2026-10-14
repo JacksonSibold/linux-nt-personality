@@ -56,7 +56,15 @@ static int kshim_poison_enabled(void) {
     return state;
 }
 
+static _Atomic int kshim_fail_countdown;
+
+void kshim_fail_alloc_nth(int n) {
+    atomic_store(&kshim_fail_countdown, n);
+}
+
 void *kshim_alloc_tagged(size_t size, int zero, const char *file, int line) {
+    if (atomic_load(&kshim_fail_countdown) > 0 && atomic_fetch_sub(&kshim_fail_countdown, 1) == 1)
+        return NULL;
     void *p = zero ? calloc(1, size) : malloc(size);
     if (!p) return NULL;
     if (!zero && kshim_poison_enabled())

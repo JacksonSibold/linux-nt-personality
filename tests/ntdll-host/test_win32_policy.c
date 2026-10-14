@@ -132,7 +132,37 @@ static void sync_create_result_is_handle_or_null(void)
     MT_EXPECT(win32_sync_create_result((NTSTATUS)0xC0000017L, h) == NULL); /* NO_MEMORY */
 }
 
+/* K32-6: sizes round up to 16 and a size near SIZE_MAX is refused, not wrapped. */
+static void heap_block_size_rounds_to_16(void)
+{
+    SIZE_T b = 0;
+    MT_EXPECT(win32_heap_block_size(1, 0, 4096, &b));
+    MT_EXPECT_EQ(b, 16);
+    MT_EXPECT(win32_heap_block_size(16, 0, 4096, &b));
+    MT_EXPECT_EQ(b, 16);
+    MT_EXPECT(win32_heap_block_size(0, 0, 4096, &b));
+    MT_EXPECT_EQ(b, 0);
+    MT_EXPECT(win32_heap_block_size(4096, 0, 4096, &b));
+    MT_EXPECT_EQ(b, 4096);
+    MT_EXPECT(win32_heap_block_size(17, 4064, 4096, &b));
+    MT_EXPECT_EQ(b, 32);
+}
+
+static void heap_block_size_rejects_oversize_without_wrapping(void)
+{
+    SIZE_T b = 0x5a5a;
+    MT_EXPECT(!win32_heap_block_size((SIZE_T)-1, 0, 4096, &b));
+    MT_EXPECT(!win32_heap_block_size((SIZE_T)-1 - 14, 0, 4096, &b)); /* +15 wraps to 0 */
+    MT_EXPECT(!win32_heap_block_size((SIZE_T)-1 - 14, 64, 4096, &b));
+    MT_EXPECT(!win32_heap_block_size(4097, 0, 4096, &b));
+    MT_EXPECT(!win32_heap_block_size(1, 4096, 4096, &b));
+    MT_EXPECT(!win32_heap_block_size(4090, 16, 4096, &b)); /* fits only before rounding */
+    MT_EXPECT(b == 0x5a5a); /* *block is left unchanged on failure */
+}
+
 static const mt_case_t cases[] = {
+    MT_CASE(heap_block_size_rounds_to_16),
+    MT_CASE(heap_block_size_rejects_oversize_without_wrapping),
     MT_CASE(sync_event_type_maps_manual_reset),
     MT_CASE(sync_create_result_is_handle_or_null),
     MT_CASE(wait_timeout_conversion),

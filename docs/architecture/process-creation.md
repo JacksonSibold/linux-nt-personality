@@ -323,7 +323,7 @@ Each prerequisite lists the findings or decisions that already cover it.
   [0022](../decisions/0022-arch-global-file-handle-table.md) (global file handle
   table, open). A child must not see a handle the parent did not mark for
   inheritance.
-- **P3. One address space and VAD table per process.** Partly done (ADR 0073).
+- **P3. One address space and VAD table per process.** Partly done (ADR 0074).
   Each `nt_eprocess` owns a `struct nt_mm` (created on first use). The memory
   services resolve `ProcessHandle` through the object manager with access checks,
   and cross-process reads and writes copy between spaces. In the userspace shim a
@@ -331,7 +331,7 @@ Each prerequisite lists the findings or decisions that already cover it.
   the current task, and returns `STATUS_NOT_SUPPORTED` for a foreign process. A
   child task needs its own real address space there (a per-process `mm_struct`)
   before a loader can map into it. See [memory.md](memory.md),
-  [mm.md](../modules/mm.md) and [0073](../decisions/0073-per-process-address-space.md).
+  [mm.md](../modules/mm.md) and [0074](../decisions/0074-per-process-address-space.md).
   Related: [0020](../decisions/0020-arch-global-vad-table.md) (one global VAD table,
   open) and [0005](../decisions/0005-vad-commit-rollback.md) (VAD rollback, blocked).
 - **P4. Process and thread access checks.** `NtOpenProcess` and `NtOpenThread`

@@ -364,15 +364,13 @@ absent. A gap whose golden is present fails. A criterion whose registry entry
 declares `requires_golden` on a gap probe is reported **BLOCKED-ON-GOLDEN** by
 `dodrun.py` and `lint_integrity.py`, and it is never passed.
 
-| Probe | Reason code | Why |
-|-------|-------------|-----|
-| `probe_ntstatus_direct` | `too-large-kept-out` | 95165-byte output. Raw output not on local disk. |
-| `probe_path` | `too-large-kept-out` | 2888920-byte output. Raw output not on local disk. Sentinel waived through this gap. |
-| `probe_path_direct` | `too-large-kept-out` | 9207661-byte output. Raw output not on local disk. Sentinel waived through this gap. |
-| `probe_sharemode_direct` | `unsafe-on-host` | Writes and deletes `C:\tmp\probe_cross_*`. First launch refused by Application Control (WinError 4551). No golden. |
-
-Policy probes without a golden: 4 of 22 (the four above). No other golden is
-missing.
+No probe is a known gap now. The recapture in section 9 produced a golden for every
+policy probe, including `probe_sharemode_direct` (`probe_sharemode_direct.json.gz`,
+captured 2026-10-13 from probe commit `f1b34bf`, 4,942,145 bytes decompressed, gzip
+sha256 `52212656...6b987`, which matches `manifest.json`). The `known_gaps` object of
+the `26200.9457` entry in `ACCEPTED_BUILDS.json` is empty. The earlier gap list
+(`probe_ntstatus_direct`, `probe_path`, `probe_path_direct`, `probe_sharemode_direct`)
+is superseded by section 9.
 
 ### 8.3 Size policy (owner decision, 2026-10-13)
 

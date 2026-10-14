@@ -668,8 +668,7 @@ static size_t g_k32_off=0;
 HANDLE WINAPI GetProcessHeap(void) { return (HANDLE)g_k32_heap; }
 LPVOID WINAPI HeapAlloc(HANDLE heap, DWORD flags, SIZE_T size) {
     (void)heap;(void)flags;
-    size = (size+15)&~15;
-    if (g_k32_off + size > sizeof(g_k32_heap)) { SetLastError(8); return NULL; }
+    if (!win32_heap_block_size(size, g_k32_off, sizeof(g_k32_heap), &size)) { SetLastError(8); return NULL; }
     void *p = g_k32_heap + g_k32_off;
     g_k32_off += size;
     SetLastError(0);

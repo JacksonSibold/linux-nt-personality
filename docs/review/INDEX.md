@@ -35,7 +35,7 @@ The rows add to the severity total above (221). Per report, the `Fixed`, `Partly
 
 Where the status and the decision record disagree, the report is the source for this table, and the disagreement is listed in [OWNER-DECISIONS.md](../OWNER-DECISIONS.md). One case: the arch report marks `B-1` as blocked, while [decision record 0027](../decisions/0027-arch-kernel-stubs-file.md) is `Fixed` in `974db57`.
 
-Decision records: [docs/decisions/INDEX.md](../decisions/INDEX.md) lists the 37 records (13 fixed, 16 open, 7 blocked, 1 no-change). Each record's status line was checked against the index; none was missing from it.
+Decision records: [docs/decisions/INDEX.md](../decisions/INDEX.md) lists the 74 records (16 fixed, 16 open, 41 blocked, 1 no-change) in its 2026-10-13 snapshot. Each record's status line was checked against the index; none was missing from it.
 
 ## Audit passes
 

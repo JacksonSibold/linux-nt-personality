@@ -22,6 +22,7 @@
 #include "image_plan.h"
 #include "image_reloc.h"
 #else
+#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
@@ -871,31 +872,35 @@ static int nt_lock_needs_split(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e) {
     return 0;
 }
 
+/* Allocates the node a split of [s, e) will need, or leaves *spare NULL when
+ * no run is split. Call it before any change, so that a failure leaves the
+ * runs and the address space as they were. Caller holds the mm lock. */
+static NTSTATUS nt_lock_reserve(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e, struct nt_lock_range **spare) {
+    *spare = NULL;
+    if (!nt_lock_needs_split(mm, s, e)) return STATUS_SUCCESS;
+    *spare = (struct nt_lock_range *)kzalloc(sizeof(**spare), GFP_KERNEL);
+    return *spare ? STATUS_SUCCESS : STATUS_NO_MEMORY;
+}
+
 /* Removes [s, e) from the runs. No host call: the caller releases the host lock
- * first when that applies. *spare is the node for the right half of a split and
- * is consumed (set to NULL) when used. With no spare, a split drops the whole
- * run; nt_lock_forget accepts that case (see its comment). Caller holds the mm
- * lock. */
+ * first when that applies. *spare, from nt_lock_reserve, is the node for the
+ * right half of a split and is consumed (set to NULL) when used. Caller holds
+ * the mm lock. */
 static void nt_lock_carve(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e, struct nt_lock_range **spare) {
     struct nt_lock_range **pp = &mm->locks;
     while (*pp) {
         struct nt_lock_range *r = *pp;
         if (r->end <= s || r->start >= e) { pp = &r->next; continue; }
         if (r->start < s && r->end > e) {
-            if (*spare) {
-                struct nt_lock_range *right = *spare;
-                *spare = NULL;
-                right->start = e;
-                right->end = r->end;
-                right->map_type = r->map_type;
-                right->next = r->next;
-                r->next = right;
-                r->end = s;
-                pp = &r->next;
-                continue;
-            }
-            *pp = r->next;
-            kfree(r);
+            struct nt_lock_range *right = *spare;
+            *spare = NULL;
+            right->start = e;
+            right->end = r->end;
+            right->map_type = r->map_type;
+            right->next = r->next;
+            r->next = right;
+            r->end = s;
+            pp = &r->next;
             continue;
         }
         if (r->start < s) { r->end = s; pp = &r->next; continue; }
@@ -906,15 +911,10 @@ static void nt_lock_carve(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e, struct nt_
 }
 
 /* Drops the runs in [s, e) once the pages are freed or decommitted. The OS has
- * already released those pages, so the host is not called. If a split needs a
- * node and none can be allocated, the whole containing run is dropped: a page
- * that stays locked then has no record, which is a bookkeeping loss, not a
- * crash. Caller holds the mm lock. */
-static void nt_lock_forget(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e) {
-    struct nt_lock_range *spare = NULL;
-    if (!mm->locks) return;
-    if (nt_lock_needs_split(mm, s, e))
-        spare = (struct nt_lock_range *)kzalloc(sizeof(*spare), GFP_KERNEL);
+ * already released those pages, so the host is not called. spare is from
+ * nt_lock_reserve for the same range; it is freed here when unused. Caller
+ * holds the mm lock. */
+static void nt_lock_forget(struct nt_mm *mm, ULONG_PTR s, ULONG_PTR e, struct nt_lock_range *spare) {
     nt_lock_carve(mm, s, e, &spare);
     if (spare) kfree(spare);
 }
@@ -1023,18 +1023,6 @@ static int nt_lock_privilege_held(void) {
 }
 #endif /* !__KERNEL__ */
 
-#ifdef __KERNEL__
-/* Initialise the global VAD table once, at boot. The lazy checks in the
- * service entry points then never race a first use on two CPUs (M-6). */
-static int __init ntmm_kernel_init(void)
-{
-    ntmm_init(&g_nt_mm);
-    g_nt_mm_initialized = 1;
-    return 0;
-}
-core_initcall(ntmm_kernel_init);
-#endif
-
 NTSTATUS ntmm_init(struct nt_mm *mm) {
     mm->vad_root.rb_node = NULL;
 #ifndef __KERNEL__
@@ -1086,10 +1074,35 @@ void ntmm_destroy(struct nt_mm *mm) {
 #endif
 }
 
-void ntmm_reset(void) {
-    ntmm_destroy(&g_nt_mm);
+#ifdef __KERNEL__
+/* The global table is initialised once, at boot, so a first call on two CPUs
+ * cannot both run ntmm_init on a live address space. */
+static int __init ntmm_kernel_init(void) {
     ntmm_init(&g_nt_mm);
     g_nt_mm_initialized = 1;
+    return 0;
+}
+core_initcall(ntmm_kernel_init);
+#else
+static pthread_once_t ntmm_global_once = PTHREAD_ONCE_INIT;
+
+static void ntmm_global_init_once(void) {
+    ntmm_init(&g_nt_mm);
+    g_nt_mm_initialized = 1;
+}
+#endif
+
+/* Makes sure the global table exists. Kernel: a no-op, core_initcall did it. */
+static void ntmm_global_ensure(void) {
+#ifndef __KERNEL__
+    pthread_once(&ntmm_global_once, ntmm_global_init_once);
+#endif
+}
+
+void ntmm_reset(void) {
+    ntmm_global_ensure();
+    ntmm_destroy(&g_nt_mm);
+    ntmm_init(&g_nt_mm);
 }
 
 int ntmm_check_invariants(struct nt_mm *mm) {
@@ -1190,7 +1203,7 @@ static void ntmm_host_decommit(struct nt_mm *mm, ULONG_PTR base, SIZE_T size) {
 }
 
 static NTSTATUS ntmm_global_space(struct ntmm_space_ref *ref) {
-    if (!g_nt_mm_initialized) { ntmm_init(&g_nt_mm); g_nt_mm_initialized = 1; }
+    ntmm_global_ensure();
     ref->mm = &g_nt_mm;
     return STATUS_SUCCESS;
 }
@@ -1641,6 +1654,9 @@ static NTSTATUS NtFreeVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
             right = nt_vad_right_neighbor(mm, right);
         }
         /* Expand to cover all contiguous nodes with same alloc_base */
+        struct nt_lock_range *spare;
+        status = nt_lock_reserve(mm, rel_start, rel_end, &spare);
+        if (!NT_SUCCESS(status)) { ntmm_unlock(mm); return status; }
 #ifndef __KERNEL__
         struct nt_vad *cur = mm->vad_head;
         while (cur) {
@@ -1662,7 +1678,7 @@ static NTSTATUS NtFreeVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
             }
             cur = next;
         }
-        nt_lock_forget(mm, rel_start, rel_end);
+        nt_lock_forget(mm, rel_start, rel_end, spare);
         ntmm_unlock(mm);
         kshim_munmap((void *)rel_start, (size_t)(rel_end - rel_start));
 #else
@@ -1687,7 +1703,7 @@ static NTSTATUS NtFreeVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
             }
             n = next;
         }
-        nt_lock_forget(mm, rel_start, rel_end);
+        nt_lock_forget(mm, rel_start, rel_end, spare);
         ntmm_unlock(mm);
         /* Kernel: drop mapping with mmap_lock and vm_munmap.
          * R1 integration note: caller must hold mmap_write_lock or use vm_munmap()
@@ -1715,16 +1731,19 @@ static NTSTATUS NtFreeVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
     struct nt_vad *first = nt_vad_find(mm, base);
     if (!first || first->state != MEM_COMMIT) { ntmm_unlock(mm); return STATUS_INVALID_PARAMETER; }
     if (base < first->start) { ntmm_unlock(mm); return STATUS_INVALID_PARAMETER; }
+    struct nt_lock_range *spare;
+    status = nt_lock_reserve(mm, base, end, &spare);
+    if (!NT_SUCCESS(status)) { ntmm_unlock(mm); return status; }
     ULONG_PTR pos = base;
     struct nt_vad *vad = first;
     while (pos < end && vad) {
-        if (vad->state != MEM_COMMIT) { ntmm_unlock(mm); return STATUS_INVALID_PARAMETER; }
+        if (vad->state != MEM_COMMIT) { status = STATUS_INVALID_PARAMETER; goto fail; }
         ULONG_PTR piece_start = pos > vad->start ? pos : vad->start;
         ULONG_PTR piece_end = vad->end < end ? vad->end : end;
         struct nt_vad *next = nt_vad_right_neighbor(mm, vad);
         if (piece_start < piece_end) {
             struct nt_vad *mid = nt_vad_split(mm, vad, piece_start, piece_end);
-            if (!mid) { ntmm_unlock(mm); return STATUS_NO_MEMORY; }
+            if (!mid) { status = STATUS_NO_MEMORY; goto fail; }
             mid->state = MEM_RESERVE;
             mid->protect = mid->alloc_protect;
             mid->guard = 0;
@@ -1732,10 +1751,10 @@ static NTSTATUS NtFreeVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
         pos = piece_end;
         if (pos >= end) break;
         vad = next;
-        if (!vad || vad->start != pos) { ntmm_unlock(mm); return STATUS_INVALID_PARAMETER; }
+        if (!vad || vad->start != pos) { status = STATUS_INVALID_PARAMETER; goto fail; }
     }
     nt_coalesce_all(mm);
-    nt_lock_forget(mm, base, end);
+    nt_lock_forget(mm, base, end, spare);
     ntmm_unlock(mm);
 #ifdef __KERNEL__
     /* Kernel: use mprotect_fixup or vm_mprotect with mmap_lock.
@@ -1744,6 +1763,10 @@ static NTSTATUS NtFreeVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
      */
 #endif
     ntmm_host_decommit(mm, base, size);
+    return status;
+fail:
+    kfree(spare);
+    ntmm_unlock(mm);
     return status;
 }
 
@@ -1779,13 +1802,18 @@ static NTSTATUS NtProtectVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
     if (!ntmm_protection_valid(NewProtect)) return STATUS_INVALID_PAGE_PROTECTION;
     base = (ULONG_PTR)*BaseAddress;
     size = *RegionSize;
+    /* Zero is rejected before any alignment, as in the lock path. Rounding a
+     * zero size up from an unaligned base would otherwise protect a page. */
+    if (size == 0) return STATUS_INVALID_PARAMETER;
+    /* The byte range [base, base + size) must not wrap, and rounding its end
+     * out to a page must not wrap either. The round-up covers the in-page
+     * offset of base, so the last byte of the range is always protected. */
+    if (size > (SIZE_T)(~(ULONG_PTR)0 - base)) return STATUS_INVALID_PARAMETER;
+    ULONG_PTR raw_end = base + (ULONG_PTR)size;
+    ULONG_PTR end = ntmm_round_up(raw_end, NTMM_PAGE_SIZE);
+    if (end < raw_end) return STATUS_INVALID_PARAMETER;
     base = ntmm_round_down(base, NTMM_PAGE_SIZE);
-    /* Reject a size whose page round-up wraps to 0 (it would pass the end check). */
-    if (base > ~(ULONG_PTR)0 - NTMM_PAGE_SIZE || size > (SIZE_T)(~(ULONG_PTR)0 - NTMM_PAGE_SIZE - base)) return STATUS_INVALID_PARAMETER;
-    size = (SIZE_T)ntmm_round_up(size, NTMM_PAGE_SIZE);
-    /* base + size must not wrap past the top of the address space. */
-    if ((ULONG_PTR)size > (ULONG_PTR)-1 - base) return STATUS_INVALID_PARAMETER;
-    ULONG_PTR end = base + size;
+    size = (SIZE_T)(end - base);
     ntmm_lock(mm);
     struct nt_vad *first = nt_vad_find(mm, base);
     if (!first || first->state != MEM_COMMIT) { ntmm_unlock(mm); return STATUS_NOT_COMMITTED; }
@@ -1935,14 +1963,12 @@ static NTSTATUS NtUnlockVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress, P
 #ifdef __KERNEL__
     return STATUS_NOT_SUPPORTED;
 #else
-    struct nt_lock_range *spare = NULL;
+    struct nt_lock_range *spare;
     struct nt_lock_range *r;
     ntmm_lock(mm);
     if (!nt_lock_covered(mm, base, end, (ULONG)MapType)) { ntmm_unlock(mm); return STATUS_NOT_LOCKED; }
-    if (nt_lock_needs_split(mm, base, end)) {
-        spare = (struct nt_lock_range *)kzalloc(sizeof(*spare), GFP_KERNEL);
-        if (!spare) { ntmm_unlock(mm); return STATUS_NO_MEMORY; }
-    }
+    st = nt_lock_reserve(mm, base, end, &spare);
+    if (!NT_SUCCESS(st)) { ntmm_unlock(mm); return st; }
     for (r = mm->locks; r; r = r->next) {
         if (r->map_type == (ULONG)MapType && r->start < end && r->end > base) {
             ULONG_PTR ps = r->start > base ? r->start : base;
@@ -2219,17 +2245,24 @@ NTSTATUS NtWriteVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress,
 #ifndef __KERNEL__
 /* Host shim only. A file view is a copy (kshim_section_map_file), so a shared
  * writable view is written back to its file for [from, to). Copy-on-write and
- * read-only views are not written back. The kernel maps the file's own pages. */
-static void nt_view_writeback(const struct nt_vad *vad, ULONG_PTR from, ULONG_PTR to) {
+ * read-only views are not written back. The kernel maps the file's own pages.
+ * A short write is continued; a failed write is STATUS_IO_DEVICE_ERROR. */
+static NTSTATUS nt_view_writeback(const struct nt_vad *vad, ULONG_PTR from, ULONG_PTR to) {
     ULONG prot;
-    if (!vad->section || !vad->section->is_file || vad->state != MEM_COMMIT) return;
+    off_t off;
+    if (!vad->section || !vad->section->is_file || vad->state != MEM_COMMIT) return STATUS_SUCCESS;
     prot = vad->protect & 0xFFUL;
-    if (prot != PAGE_READWRITE && prot != PAGE_EXECUTE_READWRITE) return;
+    if (prot != PAGE_READWRITE && prot != PAGE_EXECUTE_READWRITE) return STATUS_SUCCESS;
     if (from < vad->start) from = vad->start;
     if (to > vad->end) to = vad->end;
-    if (from >= to) return;
-    pwrite(vad->section->backing.fd, (void *)from, (size_t)(to - from),
-           (off_t)(vad->section_offset + (from - vad->start)));
+    off = (off_t)(vad->section_offset + (from - vad->start));
+    while (from < to) {
+        ssize_t n = pwrite(vad->section->backing.fd, (void *)from, (size_t)(to - from), off);
+        if (n <= 0) return STATUS_IO_DEVICE_ERROR;
+        from += (ULONG_PTR)n;
+        off += (off_t)n;
+    }
+    return STATUS_SUCCESS;
 }
 #endif
 
@@ -2267,7 +2300,8 @@ static NTSTATUS NtFlushVirtualMemory_in(struct nt_mm *mm, PVOID *BaseAddress,
         for (cur = start; cur < end; ) {
             struct nt_vad *vad = nt_vad_find(mm, cur);
             ULONG_PTR stop = vad->end < end ? vad->end : end;
-            nt_view_writeback(vad, cur, stop);
+            st = nt_view_writeback(vad, cur, stop);
+            if (!NT_SUCCESS(st)) break;
             cur = stop;
         }
     }
@@ -3111,13 +3145,18 @@ static NTSTATUS NtUnmapViewOfSection_in(struct nt_mm *mm, PVOID BaseAddress) {
         if (right->end > unmap_end) unmap_end = right->end;
         right = nt_vad_right_neighbor(mm, right);
     }
+    struct nt_lock_range *spare;
+    NTSTATUS st = nt_lock_reserve(mm, unmap_start, unmap_end, &spare);
+    if (!NT_SUCCESS(st)) { ntmm_unlock(mm); return st; }
     struct nt_vad *cur;
+    NTSTATUS wb = STATUS_SUCCESS;
 #ifndef __KERNEL__
     cur = mm->vad_head;
     while (cur) {
         struct nt_vad *next = cur->list_next;
         if (cur->alloc_base == base && cur->start >= unmap_start && cur->end <= unmap_end) {
-            nt_view_writeback(cur, cur->start, cur->end);
+            NTSTATUS st = nt_view_writeback(cur, cur->start, cur->end);
+            if (!NT_SUCCESS(st) && NT_SUCCESS(wb)) wb = st;
             nt_list_remove(mm, cur);
             nt_vad_free(cur);
         }
@@ -3135,7 +3174,7 @@ static NTSTATUS NtUnmapViewOfSection_in(struct nt_mm *mm, PVOID BaseAddress) {
         n = next;
     }
 #endif
-    nt_lock_forget(mm, unmap_start, unmap_end);
+    nt_lock_forget(mm, unmap_start, unmap_end, spare);
 #ifdef __KERNEL__
     /* Kernel: vm_munmap takes mmap_lock, so it stays outside the VAD lock. */
     ntmm_unlock(mm);
@@ -3147,7 +3186,7 @@ static NTSTATUS NtUnmapViewOfSection_in(struct nt_mm *mm, PVOID BaseAddress) {
     kshim_munmap((void *)unmap_start, (size_t)(unmap_end - unmap_start));
     ntmm_unlock(mm);
 #endif
-    return STATUS_SUCCESS;
+    return wb; /* the view is unmapped even when its write-back failed */
 }
 
 NTSTATUS NtUnmapViewOfSection(HANDLE ProcessHandle, PVOID BaseAddress) {
@@ -3164,7 +3203,7 @@ NTSTATUS ntmm_add_region(ULONG_PTR base, SIZE_T size, ULONG protect, ULONG type,
     struct nt_mm *mm = &g_nt_mm;
     ULONG_PTR end;
     if (!base || !size) return STATUS_INVALID_PARAMETER;
-    if (!g_nt_mm_initialized) { ntmm_init(mm); g_nt_mm_initialized = 1; }
+    ntmm_global_ensure();
     base = ntmm_round_down(base, NTMM_PAGE_SIZE);
     size = ntmm_round_up(size, NTMM_PAGE_SIZE);
     end = base + size;
