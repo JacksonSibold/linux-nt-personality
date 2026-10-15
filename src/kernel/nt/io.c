@@ -4281,7 +4281,7 @@ static NTSTATUS ntio_dir_service(HANDLE FileHandle,
 	ULONG bufsz = Length < NTIO_DIR_BOUNCE_MAX ? Length : (ULONG)NTIO_DIR_BOUNCE_MAX;
 #endif
 
-	if (!IoStatusBlock || !FileInformation)
+	if (!IoStatusBlock)
 		return STATUS_ACCESS_VIOLATION;
 	file = ntio_handle_lookup(FileHandle, 0);
 	if (!file)
@@ -4295,6 +4295,14 @@ static NTSTATUS ntio_dir_service(HANDLE FileHandle,
 	    cls != FileIdBothDirectoryInformation && cls != FileNamesInformation) {
 		ntio_file_put(file);
 		return STATUS_INVALID_INFO_CLASS;
+	}
+	/* A NULL buffer, or one too short for the fixed part of the first entry, is
+	 * STATUS_INFO_LENGTH_MISMATCH (probe_directory golden, all four classes:
+	 * NULL with length 0 and a 4-byte buffer both return 0xC0000004). A buffer
+	 * that holds the fixed part but not the whole name is BUFFER_OVERFLOW, below. */
+	if (!FileInformation || Length < ntio_dir_fixed_size(cls)) {
+		ntio_file_put(file);
+		return STATUS_INFO_LENGTH_MISMATCH;
 	}
 
 	/* A new scan takes the pattern from this call. */

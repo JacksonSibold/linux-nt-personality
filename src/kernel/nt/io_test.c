@@ -2419,6 +2419,53 @@ TEST(query_status_information)
 	PASS();
 }
 
+/* probe_directory golden: a NULL buffer and a buffer too short for the fixed part
+ * of the first entry return STATUS_INFO_LENGTH_MISMATCH for every class. A buffer
+ * that holds the fixed part but not the name is STATUS_BUFFER_OVERFLOW. */
+TEST(query_directory_small_buffer)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	static unsigned char buf[8192];
+	static const ULONG classes[] = { FileDirectoryInformation, FileFullDirectoryInformation,
+					 FileBothDirectoryInformation, FileNamesInformation };
+	static const size_t fixed[] = { offsetof(FILE_DIRECTORY_INFORMATION, FileName),
+					offsetof(FILE_FULL_DIRECTORY_INFORMATION, FileName),
+					offsetof(FILE_BOTH_DIRECTORY_INFORMATION, FileName),
+					offsetof(FILE_NAMES_INFORMATION, FileName) };
+	unsigned i;
+
+	reset_state();
+	create_dir_at("qsmall");
+	ASSERT(write_file_at("qsmall/alpha.txt", "1"));
+	ASSERT_STATUS(open_test_file("qsmall", FILE_GENERIC_READ,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				     FILE_OPEN, FILE_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+
+	for (i = 0; i < sizeof(classes) / sizeof(classes[0]); i++) {
+		/* NULL buffer, length 0, as the probe calls it. */
+		ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, NULL, 0,
+							  classes[i], 0, NULL, 1),
+			      STATUS_INFO_LENGTH_MISMATCH);
+		/* A 4-byte buffer, and one byte short of the fixed part. */
+		ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf, 4,
+							  classes[i], 0, NULL, 1),
+			      STATUS_INFO_LENGTH_MISMATCH);
+		ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+							  (ULONG)fixed[i] - 1, classes[i], 0,
+							  NULL, 1),
+			      STATUS_INFO_LENGTH_MISMATCH);
+		/* The fixed part fits, the name does not. */
+		ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+							  (ULONG)fixed[i], classes[i], 0,
+							  NULL, 1),
+			      STATUS_BUFFER_OVERFLOW);
+	}
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 int main(void)
 {
 	setup_root();
@@ -2463,6 +2510,7 @@ int main(void)
 	RUN(iocp_query_depth);
 	RUN(alert_consumed_once);
 	RUN(query_status_information);
+	RUN(query_directory_small_buffer);
 
 	printf("ntio tests: %d passed, %d failed\n", g_pass, g_fail);
 

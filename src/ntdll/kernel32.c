@@ -192,7 +192,8 @@ static BOOL k32_transfer(HANDLE h, void *buf, DWORD n, DWORD *count, void *overl
     if (eof) { SetLastError(eof); return 0; }
     if (k32_io_classify(s, is_read) != K32_IO_DONE) { SetLastErrorFromStatus(s); return 0; }
     if (count) *count = k32_io_count(s, ios.Information);
-    SetLastError(0);
+    /* Success leaves the last error alone (Windows ReadFile/WriteFile do not clear it;
+     * probe_handles golden keeps the stale error across printf output). */
     return 1;
 }
 
@@ -309,7 +310,9 @@ HANDLE WINAPI CreateFileW(const WCHAR *name, DWORD access, DWORD share, void *sa
 BOOL WINAPI CloseHandle(HANDLE h) {
     if (!h) { SetLastError(6); return 0; }
     NTSTATUS s = NtClose(h);
-    if (s==STATUS_SUCCESS) { SetLastError(0); return 1; }
+    /* Success leaves the last error alone, as Windows does (probe_handles golden:
+     * CloseHandle(pseudo) returns TRUE and keeps the stale error 6). */
+    if (s==STATUS_SUCCESS) return 1;
     SetLastErrorFromStatus(s);
     return 0;
 }
@@ -1168,8 +1171,9 @@ BOOL WINAPI FlushFileBuffers(HANDLE h)
 static HANDLE k32_create_sync_result(NTSTATUS s, HANDLE h)
 {
     HANDLE r = win32_sync_create_result(s, h);
-    if (r) SetLastError(0);
-    else SetLastErrorFromStatus(s);
+    /* A successful create keeps the last error (probe_handles golden: 32 from an
+     * earlier failed CreateFile survives CreateEvent and CreateMutex). */
+    if (!r) SetLastErrorFromStatus(s);
     return r;
 }
 HANDLE WINAPI CreateEventA(void *sa, BOOL man, BOOL init, const char *name){
