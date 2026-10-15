@@ -736,3 +736,49 @@ host): 832 tests OK. `sync_test` (not in check-quick) also passes.
   owns more than 64 mutants leaves the rest owned. Not changed here.
 - The userspace pulse still resets the event after a 1 ms sleep. Late WaitAny waiters that arrive in that
   window still succeed, and WaitAll waiters rely on the window rather than on a mark. Not changed here.
+
+## Kernel directory enumeration (haiku/npipe, 2026-10-15)
+
+Source: `main` at `e141334` plus the directory commit on `haiku/npipe` (`NtQueryDirectoryFile(Ex)` kernel branch in `src/kernel/nt/io.c`, `FILE_ID_BOTH_DIRECTORY_INFORMATION` in `io.h`, a FileIdBoth check in `io_test.c`).
+
+**What changed.** The `__KERNEL__` branch of `ntio_dir_service` no longer returns `STATUS_NOT_SUPPORTED`. It snapshots the directory with `iterate_dir()` (SEEK_SET first, then one pass; `.` and `..` added first, as in the host build), applies the same wildcard and restart rules, and formats entries with the helpers the host build uses. Formatting goes into a kernel bounce buffer, capped at 1 MiB, and is copied out with `copy_to_user`. The search pattern (`FileName`) is copied in from user space before use. Classes: FileDirectoryInformation, FileFullDirectoryInformation, FileBothDirectoryInformation, FileNamesInformation and FileIdBothDirectoryInformation (37).
+
+**Dispatch.** Service 53 (0x0035) is `NtQueryDirectoryFile` in `nt_service_list.h` and `syscall_table.def`. In the built tree `arch/x86/nt/nt_service_list.h` has the same entry, and `nt_svc_NtQueryDirectoryFile` is present in `io.c`. The probe serial logs contain no `nt: missing service` line. I could not reproduce the earlier "missing service 53" message from the source; the stale build that produced it was not inspected.
+
+**Two kernel faults found by the probe and fixed before the reported run.**
+- First boot: `probe_directory` oopsed (`BUG: unable to handle page fault`, exit 137). The kernel read the caller's `UNICODE_STRING` pointer directly in `ntio_dir_pattern`. Fixed by copying the string and its buffer in (`ntio_dir_pattern_user`).
+- Shared lock: while the rebased build finished, another agent's job held `~/.kbuild.lock` (`seh/kb3.sh`), so the manifest write queued behind it. The build steps themselves ran under the lock.
+
+**Builds (guest, `vm/incremental-kernel.sh` under `flock ~/.kbuild.lock`).** Shared tree `~/kfast/linux-src`, shared manifest. Final bzImage: build `#7` (rebased on `e141334`), `INCREMENTAL_OK`, sha256 `1727aa9f...`. The NONVM initramfs was built from a fresh copy of the rebased worktree at `~/dirq-repo`, sha256 `4e1a3bb1...`.
+
+**Host unit tests.** `make -C tests/kernel-host KHOST_OS=linux build/io_test.exe`, run in the guest on the rebased tree: 40 passed, 0 failed. The new FileIdBoth case checks that the FileId of `qdir/b.txt` equals its host inode.
+
+**NONVM probes** (`NONVM=1 probes-initramfs.sh`, boot with `log_buf_len=16M`, host QEMU through `boot-m0-host.ps1`): all 15 reach `NTPERS_ALL_DONE`. `probe_exception` exits 139 as before, `probe_process_thread`, `probe_sync` do not produce JSON (as before). Every other probe exits 0, and `probe_directory` now exits 0 (was 137 on the first boot).
+
+Matched fields against `tests/differential/golden/windows-26200.9457`, from `probe_results.py split` and `compare` (matched = golden leaves minus mismatched fields):
+
+| probe | matched / golden | verdict | last recorded (main 0d19a62) |
+|---|---|---|---|
+| probe_directory | 56 / 67 | FAIL (11 S1) | 19 / 67 |
+| probe_exception | 0 / 76 | FAIL | 0 / 76 |
+| probe_fileinfo | 183 / 221 | FAIL | 165 / 221 |
+| probe_handles | 82 / 111 | FAIL | 82 / 111 |
+| probe_namedpipe | 3 / 45 | FAIL | 3 / 45 |
+| probe_ntstatus | 2191 / 2199 | FAIL | 2191 / 2199 |
+| probe_path | 55105 / 72523 | FAIL | 51355 / 72523 |
+| probe_peloader | 33 / 34 | FAIL | 33 / 34 |
+| probe_process_thread | 0 / 182 | FAIL | 0 / 182 |
+| probe_registry | 128 / 140 | FAIL | 128 / 140 |
+| probe_section | 128 / 129 | FAIL | 128 / 129 |
+| probe_sharemode | 458857 / 458857 | PASS | 458857 / 458857 |
+| probe_sync | 0 / 74 | FAIL | 0 / 74 |
+| probe_teb_peb | 81 / 104 | FAIL | 79 / 104 |
+| probe_virtualquery | 128 / 139 | FAIL | 128 / 139 |
+
+Verdict level: **1 of 15** (`probe_sharemode`), unchanged. The "last recorded" column is main at `0d19a62`, not a same-tree baseline: main has moved since, so the `probe_path`, `probe_fileinfo` and `probe_teb_peb` gains are not all from this change. No probe that was matched before lost a field.
+
+**probe_directory still fails.** The 11 S1 mismatches are the NULL-buffer and undersized-buffer statuses: `query_tests[*].null_hex` windows `0xC0000004` (STATUS_INFO_LENGTH_MISMATCH), vm `0xC0000005` (our access violation); `small_hex` windows `0xC0000004`, vm `0x80000005` (buffer overflow). Changing these is a status-mapping change and is not made here.
+
+**Path-rule patch (`pathreg-run/unverified-kernel-path-rules.patch`): not folded in.** It applies with an offset. Its `io_test` literals were mis-escaped; I corrected them, then the userspace case `\??\C:\path\sub/deep.txt` returned `0xC0000033` instead of PATH_NOT_FOUND, so `io_test` reported 39 passed, 1 failed. Per the rule to drop anything that regresses, it was reverted and no kernel boot was taken for it.
+
+**Gaps.** `probe_directory` at 56 / 67 still needs the status mapping above. The `FileIdBothDirectoryInformation` path is covered by the host test only; no probe reads class 37.

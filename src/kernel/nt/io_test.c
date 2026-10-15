@@ -1935,6 +1935,41 @@ TEST(query_directory_scan)
 	ASSERT(n == 6);
 	ASSERT(dir_has(names, n, "b.txt"));
 
+	/* FileIdBothDirectoryInformation: the name follows the 8-byte FileId, which
+	 * carries the host inode number. */
+	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,
+						  sizeof(buf), FileIdBothDirectoryInformation,
+						  0, NULL, 1),
+		      STATUS_SUCCESS);
+	n = dir_walk(buf, (ULONG)iosb.Information,
+		     offsetof(FILE_ID_BOTH_DIRECTORY_INFORMATION, FileNameLength),
+		     offsetof(FILE_ID_BOTH_DIRECTORY_INFORMATION, FileName), names, 16);
+	ASSERT(n == 6);
+	ASSERT(dir_has(names, n, "b.txt"));
+	{
+		struct stat sb;
+		char full[PATH_MAX];
+		ULONG off = 0;
+		bool found = false;
+
+		snprintf(full, sizeof(full), "%s/%s", g_test_root, "qdir/b.txt");
+		ASSERT(stat(full, &sb) == 0);
+		for (;;) {
+			const FILE_ID_BOTH_DIRECTORY_INFORMATION *e =
+				(const FILE_ID_BOTH_DIRECTORY_INFORMATION *)(buf + off);
+
+			if (e->FileNameLength == 5 * sizeof(WCHAR) && e->FileName[0] == 'b') {
+				ASSERT((LONGLONG)e->FileId.QuadPart == (LONGLONG)sb.st_ino);
+				found = true;
+				break;
+			}
+			if (!e->NextEntryOffset)
+				break;
+			off += e->NextEntryOffset;
+		}
+		ASSERT(found);
+	}
+
 	/* FileDirectoryInformation reports the directory attribute on sub. */
 	make_unicode(&pat, "sub", pat_buf, sizeof(pat_buf));
 	ASSERT_STATUS(nt_svc_NtQueryDirectoryFile(h, NULL, NULL, NULL, &iosb, buf,

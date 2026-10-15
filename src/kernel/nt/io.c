@@ -3776,8 +3776,9 @@ NTSTATUS nt_svc_NtUnlockFile(HANDLE FileHandle,
 
 /*
  * Enumeration reads the directory once per scan (first call, or a restart) and
- * returns entries from that snapshot. The snapshot is userspace-only: the
- * kernel branch of NtQueryDirectoryFile returns STATUS_NOT_SUPPORTED.
+ * returns entries from that snapshot. The host build lists the directory with
+ * opendir/readdir; the kernel build walks it with iterate_dir(). Both feed the
+ * same snapshot, and the formatting helpers below are shared by both builds.
  */
 
 static void ntio_dir_clear(struct nt_file_object *file)
@@ -3796,7 +3797,6 @@ static void ntio_dir_clear(struct nt_file_object *file)
 	file->dir_pattern = NULL;
 }
 
-#ifndef __KERNEL__
 static int ntio_ascii_lower(int c)
 {
 	return (c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c;
@@ -3838,9 +3838,24 @@ static size_t ntio_dir_fixed_size(ULONG cls)
 		return offsetof(FILE_FULL_DIRECTORY_INFORMATION, FileName);
 	case FileBothDirectoryInformation:
 		return offsetof(FILE_BOTH_DIRECTORY_INFORMATION, FileName);
+	case FileIdBothDirectoryInformation:
+		return offsetof(FILE_ID_BOTH_DIRECTORY_INFORMATION, FileName);
 	default:
 		return offsetof(FILE_NAMES_INFORMATION, FileName);
 	}
+}
+
+/*
+ * Allocation for the snapshot array. The kernel branch grows it with krealloc,
+ * the host build with realloc. A failed call leaves the old array in place.
+ */
+static void *ntio_dir_realloc(void *p, size_t n)
+{
+#ifdef __KERNEL__
+	return krealloc(p, n, GFP_KERNEL);
+#else
+	return realloc(p, n);
+#endif
 }
 
 /* Append one name to the snapshot if it matches the pattern. */
@@ -3855,7 +3870,7 @@ static NTSTATUS ntio_dir_add(struct nt_file_object *file, const char *name,
 	if (file->dir_count == *cap) {
 		size_t ncap = *cap ? *cap * 2 : 16;
 
-		nn = realloc(file->dir_names, ncap * sizeof(char *));
+		nn = ntio_dir_realloc(file->dir_names, ncap * sizeof(char *));
 		if (!nn)
 			return STATUS_NO_MEMORY;
 		file->dir_names = nn;
@@ -3868,6 +3883,7 @@ static NTSTATUS ntio_dir_add(struct nt_file_object *file, const char *name,
 	return STATUS_SUCCESS;
 }
 
+#ifndef __KERNEL__
 /*
  * Snapshot the directory entries that match pattern. NT always reports "." and
  * ".." first, so they are added here whether or not the host listing has them.
@@ -3906,6 +3922,85 @@ static NTSTATUS ntio_dir_snapshot(struct nt_file_object *file, const char *patte
 		ntio_dir_clear(file);
 	return status;
 }
+#else /* __KERNEL__ */
+/* State for one iterate_dir() pass. ctx must stay first: the actor recovers the scan from it. */
+struct ntio_dir_scan {
+	struct dir_context ctx;
+	struct nt_file_object *file;
+	const char *pattern;
+	size_t cap;
+	NTSTATUS status;
+};
+
+static bool ntio_dir_actor(struct dir_context *ctx, const char *name, int namlen,
+			   loff_t off, u64 ino, unsigned int d_type)
+{
+	struct ntio_dir_scan *scan = container_of(ctx, struct ntio_dir_scan, ctx);
+	char *copy;
+
+	(void)off;
+	(void)ino;
+	(void)d_type;
+	/* "." and ".." were added before the pass, so skip the host's copies. */
+	if ((namlen == 1 && name[0] == '.') ||
+	    (namlen == 2 && name[0] == '.' && name[1] == '.'))
+		return true;
+	copy = kstrndup(name, namlen, GFP_KERNEL);
+	if (!copy) {
+		scan->status = STATUS_NO_MEMORY;
+		return false;
+	}
+	scan->status = ntio_dir_add(scan->file, copy, scan->pattern, &scan->cap);
+	kfree(copy);
+	return NT_SUCCESS(scan->status);
+}
+
+/* Kernel snapshot: same entries and order as the host build, read with iterate_dir(). */
+static NTSTATUS ntio_dir_snapshot(struct nt_file_object *file, const char *pattern)
+{
+	struct ntio_dir_scan scan = {
+		.file = file,
+		.pattern = pattern,
+		.cap = 0,
+		.status = STATUS_SUCCESS,
+	};
+	NTSTATUS status;
+	int err;
+
+	ntio_dir_clear(file);
+	file->dir_pattern = kstrdup(pattern, GFP_KERNEL);
+	if (!file->dir_pattern)
+		return STATUS_NO_MEMORY;
+	if (!file->filp)
+		return STATUS_INVALID_HANDLE;
+
+	status = ntio_dir_add(file, ".", pattern, &scan.cap);
+	if (NT_SUCCESS(status))
+		status = ntio_dir_add(file, "..", pattern, &scan.cap);
+	if (NT_SUCCESS(status)) {
+		/* iterate_dir() resumes from f_pos, so start the pass at the top (SEEK_SET). */
+		if (vfs_llseek(file->filp, 0, 0) < 0) {
+			status = STATUS_ACCESS_DENIED;
+		} else {
+			scan.ctx.actor = ntio_dir_actor;
+			scan.ctx.pos = 0;
+			err = iterate_dir(file->filp, &scan.ctx);
+			status = scan.status;
+			if (NT_SUCCESS(status) && err) {
+				if (err == -ENOTDIR)
+					status = STATUS_NOT_A_DIRECTORY;
+				else if (err == -ENOENT)
+					status = STATUS_NO_SUCH_FILE;
+				else
+					status = STATUS_ACCESS_DENIED;
+			}
+		}
+	}
+	if (!NT_SUCCESS(status))
+		ntio_dir_clear(file);
+	return status;
+}
+#endif
 
 /*
  * Host names are UTF-8. Decode one code point at s (n bytes left). An invalid
@@ -4015,6 +4110,13 @@ static void ntio_dir_fill_entry(void *dst, ULONG cls, ULONG index,
 		d->FileAttributes = bi.FileAttributes;
 		d->FileNameLength = name_bytes;
 	}
+
+	if (cls == FileIdBothDirectoryInformation) {
+		PFILE_ID_BOTH_DIRECTORY_INFORMATION ib =
+			(PFILE_ID_BOTH_DIRECTORY_INFORMATION)dst;
+
+		ib->FileId.QuadPart = (LONGLONG)st->ino;
+	}
 }
 
 /*
@@ -4114,9 +4216,51 @@ static NTSTATUS ntio_dir_pattern(PUNICODE_STRING pattern, char *out, size_t outl
 	return STATUS_SUCCESS;
 }
 
+#ifdef __KERNEL__
+/*
+ * The search pattern is a user pointer. Copy the UNICODE_STRING and its buffer in,
+ * then convert them as ntio_dir_pattern does. Lengths past the ASCII buffer are refused
+ * here, before any copy of the characters.
+ */
+static NTSTATUS ntio_dir_pattern_user(PUNICODE_STRING __user FileName, char *out,
+				       size_t outlen)
+{
+	UNICODE_STRING kus;
+	WCHAR *kwbuf;
+	NTSTATUS status;
+
+	if (!FileName)
+		return ntio_dir_pattern(NULL, out, outlen);
+	if (copy_from_user(&kus, FileName, sizeof(kus)))
+		return STATUS_ACCESS_VIOLATION;
+	if (kus.Length == 0 || !kus.Buffer)
+		return ntio_dir_pattern(NULL, out, outlen);
+	if (kus.Length > (outlen - 1) * sizeof(WCHAR))
+		return STATUS_NAME_TOO_LONG;
+	kwbuf = kmalloc(kus.Length, GFP_KERNEL);
+	if (!kwbuf)
+		return STATUS_NO_MEMORY;
+	if (copy_from_user(kwbuf, kus.Buffer, kus.Length)) {
+		kfree(kwbuf);
+		return STATUS_ACCESS_VIOLATION;
+	}
+	kus.Buffer = kwbuf;
+	status = ntio_dir_pattern(&kus, out, outlen);
+	kfree(kwbuf);
+	return status;
+}
+#endif
+
+/*
+ * Kernel bounce buffer limit for one directory query. A larger Length is clamped to
+ * this, so one call returns at most this many bytes of entries. Entries are at most
+ * a few hundred bytes, so the clamp only changes how many calls a scan needs.
+ */
+#define NTIO_DIR_BOUNCE_MAX (1024UL * 1024UL)
+
 static NTSTATUS ntio_dir_service(HANDLE FileHandle,
-				 PIO_STATUS_BLOCK IoStatusBlock,
-				 PVOID FileInformation, ULONG Length,
+				 PIO_STATUS_BLOCK __user IoStatusBlock,
+				 PVOID __user FileInformation, ULONG Length,
 				 ULONG cls, bool return_single, bool restart,
 				 PUNICODE_STRING FileName)
 {
@@ -4124,6 +4268,11 @@ static NTSTATUS ntio_dir_service(HANDLE FileHandle,
 	char pattern[512];
 	ULONG_PTR information = 0;
 	NTSTATUS status;
+#ifdef __KERNEL__
+	IO_STATUS_BLOCK kiosb;
+	unsigned char *kbuf = NULL;
+	ULONG bufsz = Length < NTIO_DIR_BOUNCE_MAX ? Length : (ULONG)NTIO_DIR_BOUNCE_MAX;
+#endif
 
 	if (!IoStatusBlock || !FileInformation)
 		return STATUS_ACCESS_VIOLATION;
@@ -4135,43 +4284,58 @@ static NTSTATUS ntio_dir_service(HANDLE FileHandle,
 		return STATUS_INVALID_PARAMETER;
 	}
 	if (cls != FileDirectoryInformation && cls != FileFullDirectoryInformation &&
-	    cls != FileBothDirectoryInformation && cls != FileNamesInformation) {
+	    cls != FileBothDirectoryInformation &&
+	    cls != FileIdBothDirectoryInformation && cls != FileNamesInformation) {
 		ntio_file_put(file);
 		return STATUS_INVALID_INFO_CLASS;
 	}
 
 	/* A new scan takes the pattern from this call. */
+#ifdef __KERNEL__
+	status = ntio_dir_pattern_user(FileName, pattern, sizeof(pattern));
+#else
 	status = ntio_dir_pattern(FileName, pattern, sizeof(pattern));
-	if (NT_SUCCESS(status) && (restart || !file->dir_names)) {
+#endif
+	if (NT_SUCCESS(status) && (restart || !file->dir_names))
 		status = ntio_dir_snapshot(file, pattern);
-	}
-	if (NT_SUCCESS(status))
+	if (NT_SUCCESS(status)) {
+#ifdef __KERNEL__
+		/* Format into a kernel buffer, then copy out; the user buffer is never written directly. */
+		size_t saved_pos = file->dir_pos;
+
+		kbuf = kvzalloc(bufsz ? bufsz : 1, GFP_KERNEL);
+		if (!kbuf) {
+			status = STATUS_NO_MEMORY;
+		} else {
+			status = ntio_query_dir_common(file, kbuf, bufsz, cls,
+						       return_single, &information);
+			if (NT_SUCCESS(status) && information &&
+			    copy_to_user(FileInformation, kbuf, information)) {
+				/* Put the entries back so a retry returns them again. */
+				file->dir_pos = saved_pos;
+				information = 0;
+				status = STATUS_ACCESS_VIOLATION;
+			}
+		}
+		kvfree(kbuf);
+#else
 		status = ntio_query_dir_common(file, FileInformation, Length, cls,
 					       return_single, &information);
+#endif
+	}
 	ntio_file_put(file);
 
+#ifdef __KERNEL__
+	kiosb.DUMMYUNIONNAME.Status = status;
+	kiosb.Information = information;
+	if (copy_to_user(IoStatusBlock, &kiosb, sizeof(kiosb)))
+		return STATUS_ACCESS_VIOLATION;
+#else
 	IoStatusBlock->DUMMYUNIONNAME.Status = status;
 	IoStatusBlock->Information = information;
+#endif
 	return status;
 }
-#else /* __KERNEL__ */
-static NTSTATUS ntio_dir_service(HANDLE FileHandle,
-				 PIO_STATUS_BLOCK __user IoStatusBlock,
-				 PVOID __user FileInformation, ULONG Length,
-				 ULONG cls, bool return_single, bool restart,
-				 PUNICODE_STRING FileName)
-{
-	(void)FileHandle;
-	(void)FileInformation;
-	(void)Length;
-	(void)cls;
-	(void)return_single;
-	(void)restart;
-	(void)FileName;
-	/* The kernel branch has no directory snapshot yet. */
-	return ntio_complete_iosb(IoStatusBlock, STATUS_NOT_SUPPORTED);
-}
-#endif
 
 NTSTATUS nt_svc_NtQueryDirectoryFile(HANDLE FileHandle, HANDLE Event,
 				     PVOID ApcRoutine, PVOID ApcContext,
