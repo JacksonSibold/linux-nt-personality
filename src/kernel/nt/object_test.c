@@ -419,11 +419,11 @@ TEST(pseudo_handles)
     st = ObReferenceObjectByHandle(proc, NtCurrentProcess(), &nt_thread_type, UserMode, 0, &obj, NULL);
     ASSERT_STATUS(st, STATUS_OBJECT_TYPE_MISMATCH);
 
-    /* Close pseudo should fail */
+    /* Closing a pseudo handle succeeds as a no-op (probe_handles golden). */
     st = ObCloseHandle(proc, NtCurrentProcess());
-    ASSERT_STATUS(st, STATUS_INVALID_HANDLE);
+    ASSERT_STATUS(st, STATUS_SUCCESS);
     st = ObCloseHandle(proc, NtCurrentThread());
-    ASSERT_STATUS(st, STATUS_INVALID_HANDLE);
+    ASSERT_STATUS(st, STATUS_SUCCESS);
 
     ObDestroyProcessObject(proc);
     ObDestroyThreadObject(thr);

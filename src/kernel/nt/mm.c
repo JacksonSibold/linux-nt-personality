@@ -2027,6 +2027,16 @@ static NTSTATUS ntmm_query_region(struct nt_mm *mm, PVOID BaseAddress, PVOID Mem
     return STATUS_SUCCESS;
 }
 
+/* Two VADs belong to one reported region when they have the same
+ * AllocationBase, State, Type and reported Protect (PAGE_GUARD included,
+ * zero for reserved pages). See NtQueryVirtualMemory_in. */
+static int ntmm_region_same(const struct nt_vad *a, const struct nt_vad *b) {
+    ULONG pa = a->state == MEM_COMMIT ? (a->protect | (a->guard ? PAGE_GUARD : 0)) : 0;
+    ULONG pb = b->state == MEM_COMMIT ? (b->protect | (b->guard ? PAGE_GUARD : 0)) : 0;
+    return a->alloc_base == b->alloc_base && a->state == b->state &&
+           a->type == b->type && pa == pb;
+}
+
 static NTSTATUS NtQueryVirtualMemory_in(struct nt_mm *mm, PVOID BaseAddress,
                               ULONG MemoryInformationClass,
                               PVOID MemoryInformation,
@@ -2074,7 +2084,7 @@ static NTSTATUS NtQueryVirtualMemory_in(struct nt_mm *mm, PVOID BaseAddress,
             mbi->AllocationProtect = 0;
             mbi->RegionSize = 0;
             mbi->State = MEM_FREE;
-            mbi->Protect = 0;
+            mbi->Protect = PAGE_NOACCESS; /* Windows: free pages report PAGE_NOACCESS (golden free_query) */
             mbi->Type = 0;
         } else {
             mbi->BaseAddress = (PVOID)region_start;
@@ -2082,15 +2092,13 @@ static NTSTATUS NtQueryVirtualMemory_in(struct nt_mm *mm, PVOID BaseAddress,
             mbi->AllocationProtect = 0;
             mbi->RegionSize = region_end - region_start;
             mbi->State = MEM_FREE;
-            mbi->Protect = 0;
+            mbi->Protect = PAGE_NOACCESS; /* Windows: free pages report PAGE_NOACCESS (golden free_query) */
             mbi->Type = 0;
         }
         ntmm_unlock(mm);
         if (ReturnLength) *ReturnLength = sizeof(*mbi);
         return STATUS_SUCCESS;
     }
-    ULONG_PTR region_start = vad->start;
-    ULONG_PTR region_end = vad->end;
     ULONG state = vad->state;
     ULONG protect = vad->protect;
     ULONG alloc_protect = vad->alloc_protect;
@@ -2098,17 +2106,27 @@ static NTSTATUS NtQueryVirtualMemory_in(struct nt_mm *mm, PVOID BaseAddress,
     ULONG type = vad->type;
     int guard = vad->guard;
 
-    /* Windows per-VAD: probe_virtualquery_direct oracle shows every query
-     * returns 4096 even when adjacent pages have identical State/Type/
-     * AllocationBase/Protect. Previous coalescing merged them to 954368,
-     * causing 4084 S1 divergences. Reporting per-VAD (single VAD extent)
-     * matches the oracle. RESERVE gaps that are single large VADs (e.g.,
-     * 8192, 45056) are still reported correctly as their VAD size. */
-    (void)protect; (void)alloc_protect; (void)type; (void)guard;
-    mbi->BaseAddress = (PVOID)region_start;
+    /* Windows reports a region as the maximal run of adjacent pages that share
+     * AllocationBase, State, Protect and Type. A VAD split (for example by
+     * VirtualProtect on the first page of a committed run, or by a decommit)
+     * is merged back here, so the report matches Windows. The AllocationBase
+     * test keeps a run inside one allocation, and the contiguity test keeps it
+     * free of gaps. Checked against the probe_virtualquery golden. */
+    struct nt_vad *first = vad, *last = vad;
+    for (;;) {
+        struct nt_vad *p = first->start > 0 ? nt_vad_find(mm, first->start - 1) : NULL;
+        if (!p || p->end != first->start || !ntmm_region_same(vad, p)) break;
+        first = p;
+    }
+    for (;;) {
+        struct nt_vad *n = nt_vad_find(mm, last->end);
+        if (!n || n->start != last->end || !ntmm_region_same(vad, n)) break;
+        last = n;
+    }
+    mbi->BaseAddress = (PVOID)first->start;
     mbi->AllocationBase = (PVOID)alloc_base;
     mbi->AllocationProtect = alloc_protect;
-    mbi->RegionSize = region_end - region_start;
+    mbi->RegionSize = last->end - first->start;
     mbi->State = state;
     if (state == MEM_COMMIT) {
         mbi->Protect = protect;

@@ -356,8 +356,10 @@ NTSTATUS ObCloseHandle(struct nt_eprocess *proc, HANDLE handle)
     u32 idx;
     NTSTATUS st = STATUS_SUCCESS;
 
+    /* Closing a pseudo handle is a successful no-op (probe_handles golden:
+     * CloseHandle(GetCurrentProcess()) returns TRUE). */
     if (handle == NtCurrentProcess() || handle == NtCurrentThread())
-        return STATUS_INVALID_HANDLE;
+        return STATUS_SUCCESS;
     if (!proc) return STATUS_INVALID_PARAMETER;
     table = proc->handle_table;
     if (!table) return STATUS_INVALID_HANDLE;
@@ -517,6 +519,28 @@ NTSTATUS ObReferenceObjectByHandle(struct nt_eprocess *proc,
 /* Duplication and inheritance                                                */
 /* -------------------------------------------------------------------------- */
 
+/* Maps generic rights to the type's specific rights (Windows applies the type's
+ * GENERIC_MAPPING before the granted-access check). Types without a mapping
+ * keep the access as given. Checked against the probe_handles golden:
+ * DuplicateHandle(GENERIC_READ) on a file grants FILE_GENERIC_READ (0x120089). */
+#define OBP_GENERIC_READ    0x80000000UL
+#define OBP_GENERIC_WRITE   0x40000000UL
+#define OBP_GENERIC_EXECUTE 0x20000000UL
+#define OBP_GENERIC_ALL     0x10000000UL
+
+static ACCESS_MASK ObpMapGenericAccess(const struct nt_object_type *type, ACCESS_MASK access)
+{
+    const struct _GENERIC_MAPPING *gm = type ? type->generic_map : NULL;
+    ACCESS_MASK out;
+    if (!gm) return access;
+    out = access & 0x0FFFFFFFUL;
+    if (access & OBP_GENERIC_READ)    out |= gm->GenericRead;
+    if (access & OBP_GENERIC_WRITE)   out |= gm->GenericWrite;
+    if (access & OBP_GENERIC_EXECUTE) out |= gm->GenericExecute;
+    if (access & OBP_GENERIC_ALL)     out |= gm->GenericAll;
+    return out;
+}
+
 NTSTATUS NtDuplicateObject(struct nt_eprocess *src_proc,
                             HANDLE src_handle,
                             struct nt_eprocess *dst_proc,
@@ -560,6 +584,7 @@ NTSTATUS NtDuplicateObject(struct nt_eprocess *src_proc,
     if (options & DUPLICATE_SAME_ACCESS) {
         new_access = se->granted_access;
     } else {
+        desired_access = ObpMapGenericAccess(obj->type, desired_access);
         if ((desired_access & ~se->granted_access) != 0) {
             ObDereferenceObject(obj);
             if (second != first) spin_unlock(&second->lock);

@@ -244,11 +244,10 @@ static int test_query_coalesce_free(void) {
     PVOID br = NULL; SIZE_T sr = 0x30000; /* 3*64KB */
     st = NtAllocateVirtualMemory((HANDLE)-1, &br, 0, &sr, MEM_RESERVE, PAGE_READWRITE);
     ASSERT(st == STATUS_SUCCESS, "br reserve");
-    /* Commit two adjacent pages with same protect. Windows keeps each 4K commit as a
-     * separate VAD (per-page 4096) even when adjacent with identical State/Type/
-     * AllocationBase/Protect - see probe_virtualquery_direct oracle where every
-     * query returns 4096. Previous code coalesced them to 0x2000, causing 4084 S1
-     * divergences (954368 vs 4096). Correct per Windows is per-VAD. */
+    /* Commit two adjacent pages with the same protect. Windows reports the run as
+     * one region: adjacent pages with identical State, Type, AllocationBase and
+     * Protect coalesce (probe_virtualquery golden, query_before_free[0] is 8192
+     * for two read-only committed pages). */
     PVOID c1 = (PVOID)((ULONG_PTR)br + 0x1000); SIZE_T cs1 = 0x1000;
     PVOID t = c1; SIZE_T ts = cs1;
     st = NtAllocateVirtualMemory((HANDLE)-1, &t, 0, &ts, MEM_COMMIT, PAGE_READWRITE);
@@ -257,9 +256,9 @@ static int test_query_coalesce_free(void) {
     t = c2; ts = cs2;
     st = NtAllocateVirtualMemory((HANDLE)-1, &t, 0, &ts, MEM_COMMIT, PAGE_READWRITE);
     ASSERT(st == STATUS_SUCCESS, "c2");
-    /* Query c1 should be per-VAD 0x1000, not coalesced 0x2000, per Windows */
+    /* Query c1 reports the coalesced run c1..c2 */
     ASSERT(query(c1, &mbi), "q c1");
-    ASSERT(mbi.RegionSize == 0x1000, "per-VAD commit size got 0x%zx exp 0x1000 (Windows per-page)", (size_t)mbi.RegionSize);
+    ASSERT(mbi.RegionSize == 0x2000, "coalesced commit run got 0x%zx exp 0x2000", (size_t)mbi.RegionSize);
     ASSERT(mbi.State == MEM_COMMIT, "coalesce state");
 
     /* Now protect one of them differently -> should not coalesce */
@@ -1803,9 +1802,8 @@ static int test_probe_virtualquery_regression(void) {
     ASSERT(vp == rbase, "vp base");
     ASSERT(vpsz == 0x1000, "vp size");
 
-    /* query_before_free — per-VAD 4096 to match Windows probe_virtualquery_direct oracle
-     * (previously expected coalesced 8192, but Windows keeps each 4K page separate for large reserves,
-     * and per-VAD is the safe baseline; the 64KB coalesced case is covered by dedicated probe). */
+    /* query_before_free: pages 0 and 1 are both read-only and committed, so Windows
+     * reports one 8192-byte region (probe_virtualquery golden, query_before_free[0]). */
     ASSERT(query(rbase, &mbi), "q before [0]");
     ASSERT(mbi.BaseAddress == rbase, "before [0] Base");
     ASSERT(mbi.AllocationBase == rbase, "before [0] AllocBase");
@@ -1813,7 +1811,7 @@ static int test_probe_virtualquery_regression(void) {
     ASSERT(mbi.State == MEM_COMMIT, "before [0] State %lu", (unsigned long)mbi.State);
     ASSERT(mbi.Protect == PAGE_READONLY, "before [0] Protect %lu", (unsigned long)mbi.Protect);
     ASSERT(mbi.Type == MEM_PRIVATE, "before [0] Type %lu", (unsigned long)mbi.Type);
-    ASSERT(mbi.RegionSize == 4096, "before [0] RegionSize 0x%zx exp 4096 (per-VAD)", (size_t)mbi.RegionSize);
+    ASSERT(mbi.RegionSize == 8192, "before [0] RegionSize 0x%zx exp 8192 (coalesced RO run)", (size_t)mbi.RegionSize);
 
     PVOID q1 = (PVOID)((ULONG_PTR)rbase + 0x2000);
     ASSERT(query(q1, &mbi), "q before [1]");
@@ -2074,16 +2072,22 @@ static int test_probe_direct_windows_rule(void) {
         st = NtQueryVirtualMemory((HANDLE)-1, pageAddr, MemoryBasicInformation, &mbi, sizeof(mbi), &ret);
         ASSERT(st==STATUS_SUCCESS, "iter %d query failed 0x%lx", iter, (unsigned long)st);
         ASSERT(ret==sizeof(mbi), "ret len iter %d", iter);
-        /* Windows rule: maximal run where State, Type, AllocationBase, Protect identical.
-         * For COMMIT, Windows keeps each 4K page per-VAD (4096) even when adjacent with identical
-         * attributes after separate commits (4084 S1 divergences). For RESERVE, Windows does coalesce
-         * adjacent reserve pages. We check per-VAD for COMMIT, coalesced allowed for RESERVE. */
+        /* Windows rule (probe_virtualquery golden): a region is the maximal run where
+         * State, Type, AllocationBase and Protect are identical. The model is the run of
+         * equal state[] values around this page; state 0 is reserved (Protect 0),
+         * 1 is committed RW, 2 is committed RO. */
+        /* state[page] was updated above, so the run is taken from the new state. */
+        unsigned char cur = state[page];
+        int run_lo = page, run_hi = page + 1;
+        while (run_lo > 0 && state[run_lo-1] == cur) run_lo--;
+        while (run_hi < 256 && state[run_hi] == cur) run_hi++;
         ASSERT(mbi.AllocationBase == (PVOID)reserve_base, "iter %d AllocBase %p exp %p", iter, mbi.AllocationBase, (PVOID)reserve_base);
         ASSERT(mbi.AllocationProtect == PAGE_READWRITE, "iter %d AllocProt %lu", iter, (unsigned long)mbi.AllocationProtect);
         ASSERT(mbi.Type == MEM_PRIVATE, "iter %d Type %lu", iter, (unsigned long)mbi.Type);
-        if (s==0 || s==1) {
-            ASSERT(mbi.BaseAddress == pageAddr, "iter %d BaseAddress %p exp %p", iter, mbi.BaseAddress, pageAddr);
-            ASSERT(mbi.RegionSize == 4096, "iter %d RegionSize %zu exp 4096 (coalescing defect)", iter, (size_t)mbi.RegionSize);
+        if (cur==1 || cur==2 || run_hi < 256 || run_lo > 0) {
+            /* Runs bounded inside the modelled 256 pages are exact. */
+            ASSERT(mbi.BaseAddress == (PVOID)(reserve_base + run_lo*0x1000), "iter %d BaseAddress %p exp run start %p", iter, mbi.BaseAddress, (PVOID)(reserve_base + run_lo*0x1000));
+            ASSERT(mbi.RegionSize == (SIZE_T)(run_hi-run_lo)*0x1000, "iter %d RegionSize %zu exp run %d pages", iter, (size_t)mbi.RegionSize, run_hi-run_lo);
         } else {
             /* RESERVE may be coalesced (e.g., 12288) or per-VAD 4096; allow either */
             ASSERT((ULONG_PTR)mbi.BaseAddress <= (ULONG_PTR)pageAddr && (ULONG_PTR)pageAddr < (ULONG_PTR)mbi.BaseAddress + mbi.RegionSize, "iter %d RESERVE Base %p not covering page %p", iter, mbi.BaseAddress, pageAddr);
@@ -2112,6 +2116,60 @@ static int test_probe_direct_windows_rule(void) {
     ASSERT(mbi.State == MEM_FREE, "after release State %lu", (unsigned long)mbi.State);
     ASSERT(mbi.Type == 0, "after release Type");
     ASSERT(mbi.AllocationBase == NULL, "after release AllocBase");
+    return 1;
+}
+
+/* probe_virtualquery golden: a VirtualProtect on the first page of a committed
+ * run splits its VAD. Windows reports adjacent pages with the same State and
+ * Protect as one region, so the query must return the run whole. Layout as in
+ * the golden: RO pages 0 and 1 (merged), reserved pages 2 and 3, RX page 4,
+ * reserved pages 5 to 15. */
+static int mqc_query(ULONG_PTR a, MEMORY_BASIC_INFORMATION *m) {
+    SIZE_T r = 0;
+    return NtQueryVirtualMemory((HANDLE)-1, (PVOID)a, MemoryBasicInformation, m, sizeof(*m), &r) == STATUS_SUCCESS;
+}
+
+static int test_query_coalesce_adjacent_commit(void) {
+    PVOID base = NULL;
+    SIZE_T size = 0x10000;
+    NTSTATUS st = NtAllocateVirtualMemory((HANDLE)-1, &base, 0, &size, MEM_RESERVE, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "reserve 0x%lx", (unsigned long)st);
+    ULONG_PTR b = (ULONG_PTR)base;
+    PVOID p0 = (PVOID)b, p1 = (PVOID)(b + 0x1000), p4 = (PVOID)(b + 0x4000);
+    SIZE_T s = 0x1000;
+    st = NtAllocateVirtualMemory((HANDLE)-1, &p0, 0, &s, MEM_COMMIT, PAGE_READWRITE);
+    ASSERT(st == STATUS_SUCCESS, "commit p0 0x%lx", (unsigned long)st);
+    s = 0x1000;
+    st = NtAllocateVirtualMemory((HANDLE)-1, &p1, 0, &s, MEM_COMMIT, PAGE_READONLY);
+    ASSERT(st == STATUS_SUCCESS, "commit p1 0x%lx", (unsigned long)st);
+    s = 0x1000;
+    st = NtAllocateVirtualMemory((HANDLE)-1, &p4, 0, &s, MEM_COMMIT, PAGE_EXECUTE_READ);
+    ASSERT(st == STATUS_SUCCESS, "commit p4 0x%lx", (unsigned long)st);
+    /* Split the run: page 0 becomes read-only like page 1. */
+    PVOID pp = p0; SIZE_T ps = 0x1000; ULONG old = 0;
+    st = NtProtectVirtualMemory((HANDLE)-1, &pp, &ps, PAGE_READONLY, &old);
+    ASSERT(st == STATUS_SUCCESS, "protect p0 0x%lx", (unsigned long)st);
+
+    MEMORY_BASIC_INFORMATION m;
+    ASSERT(mqc_query(b, &m), "query p0");
+    ASSERT(m.State == MEM_COMMIT && m.Protect == PAGE_READONLY, "p0 state/protect %lu/%lu", (unsigned long)m.State, (unsigned long)m.Protect);
+    ASSERT(m.BaseAddress == (PVOID)b && m.RegionSize == 0x2000, "p0 run base %p size 0x%zx (want 0x2000)", m.BaseAddress, (size_t)m.RegionSize);
+    ASSERT(mqc_query(b + 0x1000, &m), "query p1");
+    ASSERT(m.BaseAddress == (PVOID)b && m.RegionSize == 0x2000, "p1 reports the same run, size 0x%zx", (size_t)m.RegionSize);
+    ASSERT(mqc_query(b + 0x2000, &m), "query reserved 2");
+    ASSERT(m.State == MEM_RESERVE && m.BaseAddress == (PVOID)(b + 0x2000) && m.RegionSize == 0x2000, "reserved 2-3 run size 0x%zx", (size_t)m.RegionSize);
+    ASSERT(mqc_query(b + 0x4000, &m), "query p4");
+    ASSERT(m.State == MEM_COMMIT && m.Protect == PAGE_EXECUTE_READ && m.BaseAddress == (PVOID)(b + 0x4000) && m.RegionSize == 0x1000, "p4 RX single page size 0x%zx", (size_t)m.RegionSize);
+    ASSERT(mqc_query(b + 0x5000, &m), "query reserved 5");
+    ASSERT(m.State == MEM_RESERVE && m.BaseAddress == (PVOID)(b + 0x5000) && m.RegionSize == 0xB000, "reserved tail size 0x%zx (want 0xB000)", (size_t)m.RegionSize);
+
+    /* Free pages report PAGE_NOACCESS and span to the next region (golden free_query). */
+    ASSERT(mqc_query(b + 0x10000, &m), "query past reservation");
+    ASSERT(m.State == MEM_FREE && m.Protect == PAGE_NOACCESS, "free state/protect %lu/%lu", (unsigned long)m.State, (unsigned long)m.Protect);
+
+    PVOID rel = base; SIZE_T rs = 0;
+    st = NtFreeVirtualMemory((HANDLE)-1, &rel, &rs, MEM_RELEASE);
+    ASSERT(st == STATUS_SUCCESS, "release 0x%lx", (unsigned long)st);
     return 1;
 }
 
@@ -3181,6 +3239,7 @@ int main(void) {
     RUN_TEST(test_vad_long_random_invariant);
     RUN_TEST(test_probe_direct_windows_rule);
     RUN_TEST(test_query_region_info);
+    RUN_TEST(test_query_coalesce_adjacent_commit);
     RUN_TEST(test_rw_virtual_memory);
     RUN_TEST(test_flush_virtual_memory);
     RUN_TEST(test_allocate_ex);

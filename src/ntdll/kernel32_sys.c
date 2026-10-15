@@ -7,9 +7,9 @@
  * The priority calls use NtQueryInformationProcess (ProcessPriorityClass),
  * NtQueryInformationThread (ThreadBasicInformation) and NtSetInformationThread
  * (ThreadBasePriority). GetHandleInformation uses NtQueryObject
- * (ObjectHandleFlagInformation). GetProcessHandleCount is not implemented:
- * the kernel does not answer ProcessHandleCount yet, so it fails with
- * ERROR_CALL_NOT_IMPLEMENTED rather than report a made-up count.
+ * (ObjectHandleFlagInformation). GetProcessHandleCount uses
+ * NtQueryInformationProcess (ProcessHandleCount, class 20), which reports the
+ * live count of the target's handle table.
  */
 #ifdef __MINGW32__
 #ifdef DUMMYUNIONNAME
@@ -147,13 +147,24 @@ BOOL WINAPI GetHandleInformation(HANDLE h, DWORD *flags)
     return 1;
 }
 
-/* Not implemented: see the file comment. */
+/* ProcessHandleCount (class 20): the live handle count of the process's own
+ * table. Windows does not clear the last error on success, so none is set. */
+#define K32Y_PROCESS_HANDLE_COUNT 20
 BOOL WINAPI GetProcessHandleCount(HANDLE h, DWORD *count)
 {
-    (void)h;
-    (void)count;
-    SetLastError(K32Y_ERROR_CALL_NOT_IMPLEMENTED);
-    return 0;
+    ULONG n = 0;
+    NTSTATUS s;
+    if (!count) {
+        SetLastError(K32Y_ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    s = NtQueryInformationProcess(h, K32Y_PROCESS_HANDLE_COUNT, &n, sizeof(n), NULL);
+    if (!NT_SUCCESS(s)) {
+        k32y_status(s);
+        return 0;
+    }
+    *count = (DWORD)n;
+    return 1;
 }
 
 BOOL WINAPI GetBinaryTypeA(const char *app, DWORD *type)

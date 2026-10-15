@@ -127,6 +127,7 @@
 #define ProcessDebugPort 7
 #define ProcessPriorityClass 18
 #define ProcessWx86Information 19
+#define ProcessHandleCount 20
 #define ProcessAffinityMask 21
 #define ProcessForegroundInformation 25
 #define ProcessWow64Information 26
@@ -864,7 +865,8 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
         return STATUS_SUCCESS;
     }
     case 19: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
-    case 20: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
+    case ProcessHandleCount: { /* the live count of the target's handle table */
+        const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=ObHandleTableCount(target->handle_table); return STATUS_SUCCESS; }
     case ProcessAffinityMask: { const ULONG need=8; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG_PTR*)ProcessInformation=target->affinity_mask; return STATUS_SUCCESS; }
     case 22: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
     case 24: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !ProcessInformation) return STATUS_INVALID_PARAMETER; if (ReturnLength) *ReturnLength=need; *(ULONG*)ProcessInformation=0; return STATUS_SUCCESS; }
@@ -1972,7 +1974,8 @@ NTSTATUS nt_svc_NtQueryInformationProcess(HANDLE ProcessHandle, ULONG ProcessInf
         return STATUS_SUCCESS;
     }
     case 19: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
-    case 20: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
+    case ProcessHandleCount: { /* the live count of the target's handle table */
+        const ULONG need=4; ULONG z; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); z = ObHandleTableCount(target->handle_table); if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; return STATUS_SUCCESS; }
     case ProcessAffinityMask: { const ULONG need=8; ULONG_PTR v; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); v = target->affinity_mask; if (copy_to_user(ProcessInformation, &v, sizeof(v))) return STATUS_ACCESS_VIOLATION; return STATUS_SUCCESS; }
     case 22: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }
     case 24: { const ULONG need=4; if (ProcessInformationLength!=need) return STATUS_INFO_LENGTH_MISMATCH; if (ProcessInformationLength && !access_ok(ProcessInformation, ProcessInformationLength)) return STATUS_ACCESS_VIOLATION; if (ReturnLength && access_ok(ReturnLength, sizeof(*ReturnLength))) copy_to_user(ReturnLength, &need, sizeof(need)); { ULONG z=0; if (copy_to_user(ProcessInformation, &z, sizeof(z))) return STATUS_ACCESS_VIOLATION; } return STATUS_SUCCESS; }

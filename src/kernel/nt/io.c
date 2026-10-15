@@ -564,6 +564,13 @@ void *ntio_handle_peek(HANDLE h)
 	return obj;
 }
 
+/* Exported for the object-manager duplicate path (nt_obj.c): generic rights map
+ * to FILE_GENERIC_* before the granted-access check. */
+ACCESS_MASK ntio_map_generic_access_ex(ACCESS_MASK access)
+{
+	return ntio_map_generic_access(access);
+}
+
 NTSTATUS ntio_duplicate_file_handle(struct nt_file_object *f, ACCESS_MASK new_access, HANDLE *out_handle)
 {
 	int i;
