@@ -143,10 +143,25 @@ advapi32: $(OUT)/advapi32.dll
 # (it defines its own ___chkstk_ms), so k32_runtime.o is not linked: it would clash.
 $(OUT)/user32.o: user32.c | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
-$(OUT)/user32.dll: $(OUT)/user32.o user32.def $(OUT)/libntdll_imp.a
-	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/user32.o user32.def -L$(OUT) -lntdll_imp -lgcc
+# win32k model (src/ntdll/win32k): the service layer behind user32 and gdi32. One object per
+# source; the shims (user32_win32k.c, gdi32_win32k.c) convert the Win32 ABI to the model.
+W32K_CORE_OBJS := $(addprefix $(OUT)/,w32k_core.o w32k_msg.o w32k_input.o w32k_sys.o w32k_gdi.o)
+$(OUT)/w32k_%.o: win32k/w32k_%.c win32k/w32k.h win32k/w32k_int.h win32k/w32k_evdev.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OUT)/user32_win32k.o: user32_win32k.c win32k/w32k.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OUT)/gdi32_win32k.o: gdi32_win32k.c win32k/w32k.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OUT)/user32.dll: $(OUT)/user32.o $(OUT)/user32_win32k.o $(W32K_CORE_OBJS) user32.def $(OUT)/libntdll_imp.a
+	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/user32.o $(OUT)/user32_win32k.o $(W32K_CORE_OBJS) user32.def -L$(OUT) -lntdll_imp -lgcc
 .PHONY: user32
 user32: $(OUT)/user32.dll
+
+# gdi32.dll: GDI objects and blits (gdi32.def) over the same win32k model objects as user32.
+$(OUT)/gdi32.dll: $(OUT)/gdi32_win32k.o $(W32K_CORE_OBJS) gdi32.def $(OUT)/libntdll_imp.a
+	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/gdi32_win32k.o $(W32K_CORE_OBJS) gdi32.def -L$(OUT) -lntdll_imp -lgcc
+.PHONY: gdi32
+gdi32: $(OUT)/gdi32.dll
 # check: the export names of advapi32.dll against advapi32.def (build-only, not run).
 check-advapi32: $(OUT)/advapi32.dll
 	$(ROOT)/tests/ntdll-host/check_exports.sh $(OUT)/advapi32.dll advapi32.def

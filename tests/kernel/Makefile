@@ -76,6 +76,20 @@ $(BINDIR)/console_s10.exe: s10/console_s10.c $(BINDIR)/libkernel32_imp.a
 
 s10: $(BINDIR)/console_s10.exe
 
+# S12: the win32k windowing layer (user32, gdi32): window, message order, a blocking
+# GetMessage that ends on a timer, and DIB pixel readback. Needs the user32 and gdi32
+# export libraries built from src/ntdll/user32.def and gdi32.def.
+$(BINDIR)/libuser32_imp.a: ../../src/ntdll/user32.def | $(BINDIR)
+	x86_64-w64-mingw32-dlltool -d $< -l $@ -D user32.dll
+
+$(BINDIR)/libgdi32_imp.a: ../../src/ntdll/gdi32.def | $(BINDIR)
+	x86_64-w64-mingw32-dlltool -d $< -l $@ -D gdi32.dll
+
+$(BINDIR)/console_s12.exe: s12/console_s12.c $(BINDIR)/libkernel32_imp.a $(BINDIR)/libuser32_imp.a $(BINDIR)/libgdi32_imp.a
+	$(CC) -nostdlib -Wl,-e,_start -Wl,--no-seh -Wl,--no-insert-timestamp -Os -s -ffreestanding -fno-builtin -fno-stack-protector -o $@ $< -L$(BINDIR) -lkernel32_imp -luser32_imp -lgdi32_imp
+
+s12: $(BINDIR)/console_s12.exe
+
 # S11: process exit releases NT handles (io.c ntio_release_owned_handles). console_s11 is
 # started 1500 times from the step's shell loop; pipe_s11 reads a pipe standard input and
 # checks GetFileType == FILE_TYPE_PIPE. Both need the kernel's exit release.

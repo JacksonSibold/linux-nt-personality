@@ -12,7 +12,13 @@
 #ifndef HINSTANCE
 typedef PVOID HINSTANCE;
 #endif
-BOOL WINAPI DllMain(HINSTANCE h, DWORD r, PVOID v){ (void)h;(void)r;(void)v; return 1; }
+/* The win32k model (win32k/, user32_win32k.c) is set up on process attach. */
+void w32k_shim_attach(void);
+BOOL WINAPI DllMain(HINSTANCE h, DWORD r, PVOID v){
+    (void)h;(void)v;
+    if(r==1) w32k_shim_attach();
+    return 1;
+}
 BOOL __stdcall _DllMainCRTStartup(HINSTANCE h, DWORD r, PVOID v){ return DllMain(h,r,v); }
 BOOL __stdcall DllMainCRTStartup(HINSTANCE h, DWORD r, PVOID v){ return DllMain(h,r,v); }
 void __chkstk_ms(void){}
