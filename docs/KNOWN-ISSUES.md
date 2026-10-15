@@ -11,7 +11,7 @@ record. Decisions the owner must make are listed in
 research prototype (see the top-level [README](../README.md)).
 
 Status as of 2026-10-12. The fixes were not built in a kernel tree and were not
-run there. On 2026-10-12 the unit suite passed (<!-- counts:unit_tests:begin -->867<!-- counts:unit_tests:end --> `test_` functions in <!-- counts:unit_modules:begin -->40<!-- counts:unit_modules:end --> modules).
+run there. On 2026-10-12 the unit suite passed (<!-- counts:unit_tests:begin -->871<!-- counts:unit_tests:end --> `test_` functions in <!-- counts:unit_modules:begin -->41<!-- counts:unit_modules:end --> modules).
 The syntax check passed 36 of 41 files at the last audit pass
 ([tests/syntax/README.md](../tests/syntax/README.md)). Decision records and their
 status are indexed in [docs/decisions/INDEX.md](decisions/INDEX.md).
