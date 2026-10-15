@@ -34,6 +34,7 @@ extern int ntmm_add_region(unsigned long, unsigned long, unsigned long, unsigned
 extern void ntmm_reset(void);
 extern int ntio_install_std_file(struct file *filp, u64 *out_handle);
 extern void ntio_release_std_handle(u64 h);
+extern void nt_exc_set_dispatcher(unsigned long va);
 #else
 #ifndef KSHIM_H /* the userspace model (kshim.h) provides its own */
 static inline void nt_enter_personality(struct task_struct *tsk) { (void)tsk; }
@@ -885,7 +886,7 @@ static int pe_init_teb(struct pe_load_state *st)
     return 0;
 }
 
-static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
+static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk, u64 *out_exc)
 {
     /* No world-writable fallback: /tmp/ntdll.dll would let any local user supply
      * the LdrInitializeThunk that runs in every PE process (K-5). */
@@ -1097,6 +1098,9 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
         }
     }
     u64 thunk = 0;
+    /* KiUserExceptionDispatcher: the NT exception entry the kernel redirects a
+     * faulting thread to (src/kernel/nt/proc_thread.c). 0 when ntdll lacks it. */
+    u64 exc = 0;
     {
         u32 export_rva = 0, export_size=0;
         if (size_opt >= 112+8) {
@@ -1125,6 +1129,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                 /* Bound the scan: a larger name table is not a real ntdll (K-14). */
                 if (num_names > 65536u) num_names = 65536u;
                 for (u32 i=0; i<num_names; ++i) {
+                    if (thunk && exc) break;
                     u32 name_rva = 0;
                     if (copy_from_user(&name_rva, (void __user *)(actual_base + names_rva + i*4), 4))
                         break;
@@ -1138,6 +1143,15 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                         if (c==0) break;
                     }
                     name[sizeof(name)-1]=0;
+                    if (strcmp(name, "KiUserExceptionDispatcher")==0 && !exc) {
+                        u16 eord = 0;
+                        u32 efunc = 0;
+                        if (!copy_from_user(&eord, (void __user *)(actual_base + ords_rva + i*2), 2) &&
+                            eord < ed.NumberOfFunctions &&
+                            !copy_from_user(&efunc, (void __user *)(actual_base + funcs_rva + eord*4), 4) &&
+                            efunc != 0 && efunc < size_image)
+                            exc = actual_base + efunc;
+                    }
                     if (strcmp(name, "LdrInitializeThunk")==0) {
                         u16 ord = 0;
                         if (copy_from_user(&ord, (void __user *)(actual_base + ords_rva + i*2), 2))
@@ -1167,7 +1181,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
                             if (!in_exec) break;
                         }
                         thunk = actual_base + func_rva;
-                        break;
+                        continue;
                     }
                 }
             }
@@ -1179,6 +1193,7 @@ static int pe_map_ntdll(struct pe_load_state *st, u64 *out_base, u64 *out_thunk)
         return -ENOENT;
     *out_base = actual_base;
     *out_thunk = thunk;
+    *out_exc = exc;
     pr_err("binfmt_pe: mapped ntdll at 0x%llx LdrInitializeThunk 0x%llx\n", (unsigned long long)actual_base, (unsigned long long)thunk);
     return 0;
 }
@@ -1299,13 +1314,13 @@ static int load_pe_binary(struct linux_binprm *bprm)
     ret = pe_init_teb(&state);
     if (ret) { ret = pe_post_commit_fail("pe_init_teb", ret); goto out; }
 
-    u64 ntdll_base = 0, ntdll_thunk = 0;
+    u64 ntdll_base = 0, ntdll_thunk = 0, ntdll_exc = 0;
     int has_ntdll = 0;
     {
         /* A region conflict, or a failed write or zeroing into a mapping that
          * is already committed, is fatal here. Other ntdll failures (file not
          * found, bad image) still fall back to the exe entry. */
-        int ntdll_rc = pe_map_ntdll(&state, &ntdll_base, &ntdll_thunk);
+        int ntdll_rc = pe_map_ntdll(&state, &ntdll_base, &ntdll_thunk, &ntdll_exc);
         if (ntdll_rc == -EADDRNOTAVAIL || ntdll_rc == -EFAULT) {
             ret = pe_post_commit_fail("ntdll region", ntdll_rc);
             goto out;
@@ -1317,6 +1332,11 @@ static int load_pe_binary(struct linux_binprm *bprm)
     else
         pr_err("binfmt_pe: ntdll not mapped, falling back to exe entry\n");
 
+#if defined(__KERNEL__) && defined(CONFIG_NT_PERSONALITY)
+    /* Record where a faulting thread of this process resumes (0 = no NT dispatch). */
+    if (has_ntdll && ntdll_exc)
+        nt_exc_set_dispatcher((unsigned long)ntdll_exc);
+#endif
     if (has_ntdll && ntdll_thunk)
         entry = (unsigned long)ntdll_thunk;
     else

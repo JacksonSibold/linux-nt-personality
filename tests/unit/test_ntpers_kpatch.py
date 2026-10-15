@@ -77,6 +77,13 @@ def make_tree(root, tif_addr32_bit=28, elf_em_extra=None):
            "void __noreturn do_exit(long code)\n{\n"
            "\tstruct task_struct *tsk = current;\n\n\tcode = code;\n"
            "\tgroup_dead = atomic_dec_and_test(&tsk->signal->live);\n}\n")
+    _write(root, "arch/x86/mm/fault.c",
+           "static void\n__bad_area_nosemaphore(struct pt_regs *regs)\n{\n"
+           "\tif (likely(show_unhandled_signals))\n"
+           "\t\tshow_signal_msg(regs, 0, 0, current);\n}\n")
+    _write(root, "arch/x86/kernel/traps.c",
+           "static void\ndo_trap(int trapnr, int signr, char *str, struct pt_regs *regs)\n{\n"
+           "\tshow_signal(tsk, signr, \"trap \", str, regs, error_code);\n}\n")
     _write(root, "arch/x86/include/asm/thread_info.h",
            "#ifndef _ASM_X86_THREAD_INFO_H\n#define _ASM_X86_THREAD_INFO_H\n"
            "#define TIF_BLOCKSTEP\t\t25\t/* set when we want DEBUGCTLMSR_BTF */\n"
@@ -162,6 +169,9 @@ class FullPlanTest(unittest.TestCase):
         self.assertIn("tsk->nt_thread = NULL;", (t / "kernel/fork.c").read_text())
         self.assertIn("nt_thread_exit_abandon();", (t / "kernel/exit.c").read_text())
         self.assertIn("*nt_thread;", (t / "include/linux/sched.h").read_text())
+        self.assertIn("nt_exc_dispatch;", (t / "include/linux/sched.h").read_text())
+        self.assertIn("nt_exc_user_fault(regs", (t / "arch/x86/mm/fault.c").read_text())
+        self.assertIn("nt_exc_user_trap(regs", (t / "arch/x86/kernel/traps.c").read_text())
         self.assertIn('source "arch/x86/Kconfig.nt"', (t / "arch/x86/Kconfig").read_text())
         self.assertIn("obj-$(CONFIG_NT_PERSONALITY) += nt/", (t / "arch/x86/Kbuild").read_text())
         self.assertIn("obj-$(CONFIG_BINFMT_PE)\t+= binfmt_pe.o", (t / "fs/Makefile").read_text())

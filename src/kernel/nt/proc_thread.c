@@ -84,6 +84,13 @@
 #include "../../ntdll/os_identity.h"
 #include "../../ntdll/ntstatus.h"
 
+#ifdef __KERNEL__
+#include <linux/ptrace.h>
+#include <asm/processor.h>
+#include <asm/processor-flags.h>
+#include "exc_frame_pure.h"
+#endif
+
 #ifndef __KERNEL__
 #include <pthread.h>
 #include <unistd.h>
@@ -2254,6 +2261,165 @@ static NTSTATUS pt_copy_context_in(PCONTEXT user, CONTEXT *dst)
     return STATUS_SUCCESS;
 }
 
+#ifdef __KERNEL__
+/* ------------------------------------------------------------------ */
+/* User-mode exception delivery (kernel branch)                        */
+/* ------------------------------------------------------------------ */
+
+/* A fault, trap or NtRaiseException in an NT task is turned into an
+ * EXCEPTION_RECORD and a CONTEXT on the user stack, and the thread resumes at
+ * the ntdll export KiUserExceptionDispatcher (its address is recorded per task
+ * by binfmt_pe, see nt_exc_set_dispatcher). The layout comes from
+ * exc_frame_pure.h. The frame is written before any register is touched, so a
+ * failed copy leaves the thread as it was and the caller falls back to the
+ * Linux signal. */
+
+/* Register snapshot to CONTEXT (CONTROL and INTEGER sets, no FP state). The
+ * FP and XMM state is left in the CPU, which a kernel fault path does not
+ * modify. */
+static void nt_exc_context_from_regs(CONTEXT *c, const struct pt_regs *r)
+{
+    memset(c, 0, sizeof(*c));
+    c->ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+    c->SegCs = (WORD)r->cs;
+    c->SegSs = (WORD)r->ss;
+    c->EFlags = (DWORD)r->flags;
+    c->Rip = r->ip;
+    c->Rsp = r->sp;
+    c->Rbp = r->bp;
+    c->Rax = r->ax;
+    c->Rbx = r->bx;
+    c->Rcx = r->cx;
+    c->Rdx = r->dx;
+    c->Rsi = r->si;
+    c->Rdi = r->di;
+    c->R8 = r->r8;
+    c->R9 = r->r9;
+    c->R10 = r->r10;
+    c->R11 = r->r11;
+    c->R12 = r->r12;
+    c->R13 = r->r13;
+    c->R14 = r->r14;
+    c->R15 = r->r15;
+}
+
+/* CONTEXT to trap frame, only for the sets the context carries. The caller has
+ * checked that Rip and Rsp are user addresses. */
+static void nt_exc_regs_from_context(struct pt_regs *r, const CONTEXT *c)
+{
+    if (c->ContextFlags & CONTEXT_CONTROL) {
+        r->ip = c->Rip;
+        r->sp = c->Rsp;
+        r->bp = c->Rbp;
+        r->flags = exc_pure_eflags_merge(c->EFlags, r->flags);
+    }
+    if (c->ContextFlags & CONTEXT_INTEGER) {
+        r->ax = c->Rax;
+        r->bx = c->Rbx;
+        r->cx = c->Rcx;
+        r->dx = c->Rdx;
+        r->si = c->Rsi;
+        r->di = c->Rdi;
+        r->r8 = c->R8;
+        r->r9 = c->R9;
+        r->r10 = c->R10;
+        r->r11 = c->R11;
+        r->r12 = c->R12;
+        r->r13 = c->R13;
+        r->r14 = c->R14;
+        r->r15 = c->R15;
+    }
+}
+
+/* Write the record and context to the user stack and redirect the trap frame
+ * to KiUserExceptionDispatcher. Returns false when the task has no dispatcher
+ * or the stack cannot hold the frame. */
+static bool nt_exc_deliver_regs(struct pt_regs *regs, const EXCEPTION_RECORD *rec,
+                                const CONTEXT *ctx)
+{
+    struct exc_pure_frame f;
+    u64 zero = 0;
+    u64 disp = current->nt_exc_dispatch;
+
+    if (!disp || disp >= TASK_SIZE_MAX)
+        return false;
+    if (exc_pure_frame_layout(regs->sp, sizeof(*rec), sizeof(*ctx), &f))
+        return false;
+    if (copy_to_user((void __user *)(uintptr_t)f.ctx_va, ctx, sizeof(*ctx)))
+        return false;
+    if (copy_to_user((void __user *)(uintptr_t)f.rec_va, rec, sizeof(*rec)))
+        return false;
+    if (put_user(zero, (u64 __user *)(uintptr_t)f.new_sp))
+        return false;
+    regs->ip = disp;
+    regs->sp = f.new_sp;
+    regs->cx = f.rec_va;
+    regs->dx = f.ctx_va;
+    regs->flags &= ~X86_EFLAGS_TF;
+    regs->orig_ax = -1; /* a fault is not a syscall to restart */
+    return true;
+}
+
+void nt_exc_set_dispatcher(unsigned long va)
+{
+    current->nt_exc_dispatch = va;
+}
+
+/* Page fault in user mode (arch/x86/mm/fault.c, __bad_area_nosemaphore). The
+ * record is STATUS_ACCESS_VIOLATION with the read/write/execute type and the
+ * fault address, as Windows reports it. */
+bool nt_exc_user_fault(struct pt_regs *regs, unsigned long address, unsigned long error_code)
+{
+    EXCEPTION_RECORD rec;
+    CONTEXT ctx;
+
+    if (!test_thread_flag(TIF_NTABI) || !current->nt_exc_dispatch)
+        return false;
+    memset(&rec, 0, sizeof(rec));
+    rec.ExceptionCode = EXC_PURE_STATUS_ACCESS_VIOLATION;
+    rec.ExceptionAddress = (PVOID)(uintptr_t)regs->ip;
+    rec.NumberParameters = 2;
+    rec.ExceptionInformation[0] = (ULONG_PTR)exc_pure_access_type(error_code);
+    rec.ExceptionInformation[1] = (ULONG_PTR)address;
+    nt_exc_context_from_regs(&ctx, regs);
+    return nt_exc_deliver_regs(regs, &rec, &ctx);
+}
+
+/* Divide error, overflow, breakpoint and invalid opcode in user mode (do_trap,
+ * arch/x86/kernel/traps.c). A breakpoint's ExceptionAddress is the int3 itself,
+ * one byte before the resume address, as on Windows. */
+bool nt_exc_user_trap(struct pt_regs *regs, int trapnr)
+{
+    EXCEPTION_RECORD rec;
+    CONTEXT ctx;
+    u32 code;
+
+    if (!test_thread_flag(TIF_NTABI) || !current->nt_exc_dispatch)
+        return false;
+    code = exc_pure_status_for_trap(trapnr);
+    if (!code)
+        return false;
+    memset(&rec, 0, sizeof(rec));
+    rec.ExceptionCode = code;
+    rec.ExceptionAddress = (PVOID)(uintptr_t)(trapnr == EXC_PURE_TRAP_BP ? regs->ip - 1 : regs->ip);
+    nt_exc_context_from_regs(&ctx, regs);
+    return nt_exc_deliver_regs(regs, &rec, &ctx);
+}
+
+/* NtContinue, kernel branch. The CONTEXT must name user addresses for Rip and
+ * Rsp, else STATUS_ACCESS_VIOLATION. The trap frame is rewritten; the caller
+ * (do_nt_syscall) then leaves RAX as set here. */
+static NTSTATUS pt_kernel_resume(const CONTEXT *in)
+{
+    if (in->ContextFlags & CONTEXT_CONTROL) {
+        if (in->Rip >= TASK_SIZE_MAX || in->Rsp >= TASK_SIZE_MAX)
+            return STATUS_ACCESS_VIOLATION;
+    }
+    nt_exc_regs_from_context(task_pt_regs(current), in);
+    return NT_CONTINUE_RESUMED;
+}
+#endif /* __KERNEL__ */
+
 /* Shared by NtContinue and NtContinueEx. In NT a successful continue resumes the
  * thread with the context and does not return. Here:
  *
@@ -2262,9 +2428,10 @@ static NTSTATUS pt_copy_context_in(PCONTEXT user, CONTEXT *dst)
  *        context is NOT recorded. Otherwise the copied context is recorded in
  *        pending_continue and the call returns STATUS_SUCCESS. Nothing consumes
  *        the record yet: the shim has no CPU state to restore.
- *  Kernel: the argument is validated and then STATUS_NOT_IMPLEMENTED is
- *        returned. Applying the context needs the calling task's trap frame,
- *        which this build does not rewrite. */
+ *  Kernel: the context is validated and applied to the calling task's trap
+ *        frame; the call returns NT_CONTINUE_RESUMED, which do_nt_syscall
+ *        recognises so RAX keeps the restored value. TestAlert is not modelled
+ *        in the kernel branch yet. */
 static NTSTATUS pt_continue_common(PCONTEXT ContextRecord, BOOLEAN test_alert)
 {
     CONTEXT in;
@@ -2273,7 +2440,7 @@ static NTSTATUS pt_continue_common(PCONTEXT ContextRecord, BOOLEAN test_alert)
     st = pt_copy_context_in(ContextRecord, &in);
     if (!NT_SUCCESS(st)) return st;
     (void)test_alert;
-    return STATUS_NOT_IMPLEMENTED;
+    return pt_kernel_resume(&in);
 #else
     struct nt_ethread *cur = PT_CUR_THREAD();
     struct nt_thread *sync;
@@ -2319,14 +2486,12 @@ NTSTATUS nt_svc_NtContinueEx(PCONTEXT ContextRecord, PVOID ContinueArgument)
 
 /* NtRaiseException(ExceptionRecord, ContextRecord, FirstChance). The record and
  * the context are validated (NULL or unreadable is an access violation, the
- * context follows the NtContinue rules). Then STATUS_NOT_IMPLEMENTED is
- * returned: this build has no exception delivery queue. In NT the kernel would
- * push the record and context onto the user stack and redirect the thread to
- * KiUserExceptionDispatcher. The dispatch that exists in this codebase is in
- * user mode, src/ntdll/except.c: _NtRaiseException runs RtlDispatchException
- * in-process and calls UnhandledExceptionFilter when nothing handles the
- * exception. That path never enters the kernel, so this service does not
- * reach it. FirstChance is not used. */
+ * context follows the NtContinue rules). Kernel branch: the given record and
+ * context are placed on the user stack and the thread is redirected to
+ * KiUserExceptionDispatcher, so the dispatcher sees exactly what the caller
+ * raised. If the task has no dispatcher, STATUS_NOT_IMPLEMENTED is returned.
+ * The shim branch has no CPU state to redirect and still returns
+ * STATUS_NOT_IMPLEMENTED after validation. FirstChance is not used. */
 NTSTATUS nt_svc_NtRaiseException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord, BOOLEAN FirstChance)
 {
     EXCEPTION_RECORD rec;
@@ -2338,7 +2503,13 @@ NTSTATUS nt_svc_NtRaiseException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT Con
         return STATUS_ACCESS_VIOLATION;
     st = pt_copy_context_in(ContextRecord, &ctx);
     if (!NT_SUCCESS(st)) return st;
+#ifdef __KERNEL__
+    if (!nt_exc_deliver_regs(task_pt_regs(current), &rec, &ctx))
+        return STATUS_NOT_IMPLEMENTED;
+    return NT_CONTINUE_RESUMED;
+#else
     return STATUS_NOT_IMPLEMENTED;
+#endif
 }
 
 /* ------------------------------------------------------------------ */

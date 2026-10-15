@@ -1,5 +1,43 @@
 # NT personality kernel: build, boot and M0 status
 
+## User-mode exception delivery (branch `haiku/seh`, 2026-10-15)
+
+Kernel: `bzImage` sha256 `993ed32c3566391c2f1638c9837d37063f14a17004e4106c447331e5cb4eacec` (1,135,616 bytes), built from
+`~/syncfix/linux-src` under `flock ~/.kbuild.lock` with `tools/ntpers_kpatch.py` (80 applied, 15 applicable before the
+run; 95 edits). Probes: `probes-nonvm.cpio.gz` sha256 `7915a31f79d6e6758da4a2d41d64980c6349a1d65b69d67276ac1f6d56b495c3`,
+the 15 NONVM probes built with `make -C src/ntdll all kernel32 msvcrt advapi32 user32` and `NONVM=1 probes-initramfs.sh`.
+
+**What changed.** A user-mode page fault (`arch/x86/mm/fault.c`, `__bad_area_nosemaphore`), a user trap (`arch/x86/kernel/traps.c`,
+`do_trap`: #DE, #OF, #BP, #UD) of an NT task is no longer a SIGSEGV. `src/kernel/nt/proc_thread.c` writes an EXCEPTION_RECORD
+and a CONTEXT to the user stack (layout in `src/kernel/nt/exc_frame_pure.h`) and resumes the thread at
+`KiUserExceptionDispatcher`, whose address `binfmt_pe.c` records per task. `NtContinue` and `NtRaiseException` now rewrite the
+trap frame instead of returning STATUS_NOT_IMPLEMENTED; `do_nt_syscall` keeps the RAX they set, and `nt_can_sysret` takes the IRET
+path for a non-user RIP. `KiUserExceptionDispatcher` (`src/ntdll/ntdll_main.c`) calls `NtContinue` when a handler resumes, and
+ends the process with the exception code otherwise.
+
+**Tests.** `tests/kernel-host/exc_deliver_test` (guest, gcc): trap and access-type mapping, frame alignment and
+non-overlap over 200000 stack pointers, EFLAGS merge, Windows CONTEXT (0x4D0) and EXCEPTION_RECORD (0x98) sizes: 6 groups, 0 failed.
+`tests/unit/test_ntpers_kpatch.py`: 20 OK (new anchors asserted). Host unit suite: 836 tests OK.
+Not compiled here: the `__KERNEL__` branch of `proc_thread.c` and `dispatch.c` (compiled only by the kernel build, which passed).
+
+**Boot (host QEMU, `boot-m0-host.ps1 -Mem 2048 -Append "... log_buf_len=16M"`):** all 15 probes reach `NTPERS_ALL_DONE`
+and every probe exits 0. Before this change `probe_exception` exited 139.
+
+| probe | matched / golden | verdict | before |
+|---|---|---|---|
+| probe_exception | 61 / 76 | FAIL | 0 / 76, exit 139 |
+| probe_fileinfo | 183 / 221 | FAIL | 165 / 221 |
+| probe_path | 55105 / 72523 | FAIL | 51355 / 72523 |
+| probe_teb_peb | 81 / 104 | FAIL | 79 / 104 |
+| probe_sharemode | 458857 / 458857 | PASS | same |
+
+No probe went down; the rest are the same as the last recorded run. Full table in `DIFFERENTIAL-RESULTS.md`.
+
+**Not done (remaining probe_exception gaps):** guard pages (`PAGE_GUARD`) are still reported as ACCESS_VIOLATION, not
+GUARD_PAGE_VIOLATION (`is_guard_page_hit` is 0 on this path); the FP/XMM state is not carried in the CONTEXT (CONTEXT_CONTROL and
+INTEGER only); `TestAlert` is not modelled in the kernel branch of NtContinue; `RtlRaiseException` still dispatches in-process
+(`unwind.c`), not through the kernel.
+
 Kernel: Linux **6.18.56** (newest 6.18.y in kernel.org `sha256sums.asc`), built in the Debian 12 guest
 (`~/ntpers/linux-6.18.56`) with the NT wiring from `tools/ntpers_kpatch.py`. Session date 2026-10-13.
 

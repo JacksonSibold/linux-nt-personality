@@ -42,8 +42,19 @@ BOOL __stdcall _DllMainCRTStartup(HINSTANCE h, DWORD r, LPVOID v) {
 BOOL __stdcall DllMainCRTStartup(HINSTANCE h, DWORD r, LPVOID v) {
     return DllMain(h, r, v);
 }
+/* Entered by the kernel when a user-mode fault or trap (or NtRaiseException) is
+ * delivered to this thread (src/kernel/nt/proc_thread.c). RCX = the record and
+ * RDX = the context, both on the user stack. A handler that resumes execution
+ * edits the context in place, and NtContinue restores it and does not return.
+ * When nothing handles the exception the process ends with the exception code,
+ * as Windows does, rather than returning into a frame that does not exist. */
 void NTAPI KiUserExceptionDispatcher(PEXCEPTION_RECORD rec, PCONTEXT ctx) {
-    RtlDispatchException(rec, ctx);
+    EXCEPTION_DISPOSITION d = RtlDispatchException(rec, ctx);
+    if (d == ExceptionContinueExecution) {
+        NtContinue(ctx, 0);
+    }
+    NtTerminateProcess((HANDLE)(intptr_t)-1, (NTSTATUS)rec->ExceptionCode);
+    while (1) {}
 }
 void NTAPI KiUserApcDispatcher(PCONTEXT ctx, PVOID apc1, PVOID apc2, PVOID func) {
     (void)ctx; (void)apc1; (void)apc2; (void)func;

@@ -62,6 +62,8 @@ SYSCALL_H = "arch/x86/include/asm/syscall.h"
 AUDIT_H = "include/uapi/linux/audit.h"
 ELF_EM_H = "include/uapi/linux/elf-em.h"
 SCHED_H = "include/linux/sched.h"
+FAULT_C = "arch/x86/mm/fault.c"
+TRAPS_C = "arch/x86/kernel/traps.c"
 FORK_C = "kernel/fork.c"
 EXIT_C = "kernel/exit.c"
 KCONFIG = "arch/x86/Kconfig"
@@ -536,6 +538,31 @@ def build_plan(project):
     edits.append(AppendEdit(eid(), KSTUBS, BANNER_CALLER,
                             "late_initcall(nt_banner_initcall)",
                             "boot-time caller for nt_banner_init", gap="G10"))
+
+    # 12. User-mode exception delivery (src/kernel/nt/proc_thread.c). A fault or trap
+    # in an NT task is turned into an EXCEPTION_RECORD and CONTEXT and the thread
+    # resumes at KiUserExceptionDispatcher, instead of getting SIGSEGV. The
+    # per-task dispatcher address is the field the first edit below adds.
+    edits.append(InsertEdit(
+        eid(), SCHED_H, r"^\tvoid\t+\*nt_thread;\n",
+        "\tunsigned long\t\t\tnt_exc_dispatch;\n",
+        "nt_exc_dispatch;", "task_struct nt_exc_dispatch (KiUserExceptionDispatcher VA)"))
+    edits.append(InsertEdit(
+        eid(), FAULT_C, r"^\tif \(likely\(show_unhandled_signals\)\)\n",
+        "#ifdef CONFIG_NT_PERSONALITY\n\t{\n"
+        "\t\textern bool nt_exc_user_fault(struct pt_regs *, unsigned long, unsigned long);\n"
+        "\t\tif (nt_exc_user_fault(regs, address, error_code))\n\t\t\treturn;\n"
+        "\t}\n#endif\n",
+        "nt_exc_user_fault(regs", "user page fault to KiUserExceptionDispatcher",
+        where="before"))
+    edits.append(InsertEdit(
+        eid(), TRAPS_C, r"^\tshow_signal\(tsk, signr, \"trap \", str, regs, error_code\);\n",
+        "#ifdef CONFIG_NT_PERSONALITY\n\tif (user_mode(regs)) {\n"
+        "\t\textern bool nt_exc_user_trap(struct pt_regs *, int);\n"
+        "\t\tif (nt_exc_user_trap(regs, trapnr))\n\t\t\treturn;\n"
+        "\t}\n#endif\n",
+        "nt_exc_user_trap(regs", "user trap to KiUserExceptionDispatcher",
+        where="before"))
 
     # 11. No arch/x86/entry/nt/enter.c (patch 0002). The generic entry in the
     # NT branch (section 5i) runs seccomp, ptrace and audit with the NT arch,

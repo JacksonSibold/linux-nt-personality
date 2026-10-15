@@ -56,6 +56,13 @@ typedef struct _KERNEL_USER_TIMES {
 #define THREAD_CREATE_SUSPENDED 0x00000001UL
 #define STILL_ACTIVE 259
 
+#ifdef __KERNEL__
+struct pt_regs;
+void nt_exc_set_dispatcher(unsigned long va);
+bool nt_exc_user_fault(struct pt_regs *regs, unsigned long address, unsigned long error_code);
+bool nt_exc_user_trap(struct pt_regs *regs, int trapnr);
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Suspend count design (documented in proc_thread.c)                   */
 /* ------------------------------------------------------------------ */

@@ -5,6 +5,32 @@ host QEMU with `-kernel`. Oracle: host-captured Windows goldens `tests/different
 Comparator: the repo's own `tests/differential/dualrun.py` (`normalize_json`, `diff_jsons`, `evaluate_probe`),
 called by `tools/linux-env/probe_results.py compare`.
 
+## Exception dispatch, 2026-10-15 (branch `haiku/seh`)
+
+NONVM probes on the rebuilt kernel (`docs/status/KERNEL-BOOT.md`, section "User-mode exception delivery"). All 15 reach
+`NTPERS_ALL_DONE` and exit 0. Comparator: `probe_results.py compare`, golden `windows-26200.9457`.
+
+| probe | matched / golden | verdict |
+|---|---|---|
+| probe_directory | 19 / 67 | FAIL |
+| probe_exception | 61 / 76 | FAIL (was 0 / 76, exit 139) |
+| probe_fileinfo | 183 / 221 | FAIL |
+| probe_handles | 82 / 111 | FAIL |
+| probe_namedpipe | 3 / 45 | FAIL |
+| probe_ntstatus | 2191 / 2199 | FAIL |
+| probe_path | 55105 / 72523 | FAIL |
+| probe_peloader | 33 / 34 | FAIL |
+| probe_process_thread | 0 / 182 | FAIL |
+| probe_registry | 128 / 140 | FAIL |
+| probe_section | 128 / 129 | FAIL |
+| probe_sharemode | 458857 / 458857 | PASS |
+| probe_sync | 0 / 74 | FAIL |
+| probe_teb_peb | 81 / 104 | FAIL |
+| probe_virtualquery | 128 / 139 | FAIL |
+
+Verdict level: 1 of 15 (`probe_sharemode`), unchanged. Field level: no probe lower than the previous run. The
+`probe_exception` remaining gaps (guard page code, FP state in CONTEXT, TestAlert) are listed in KERNEL-BOOT.md.
+
 ## Five-line report
 
 1. Probes run in the personality: 8 of 8 VM-capable probes (`*_direct`). All 8 ran to exit status 0 in the final boot. Not run: the 14 non-direct probes, which have no VM branch and need ntdll (`binfmt_pe`: "ntdll not mapped").

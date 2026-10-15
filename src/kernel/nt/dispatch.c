@@ -17,6 +17,7 @@
 #include <linux/init.h>
 
 #include "nt_internal.h"
+#include "exc_frame_pure.h"
 #include "sync.h"
 #include "object.h"
 extern void nt_thread_check_suspend(void);
@@ -146,7 +147,10 @@ __visible noinstr void do_nt_syscall(struct pt_regs *regs, unsigned int ssn)
 	status = svc->fn(args[0], args[1], args[2], args[3],
 			 args[4], args[5], args[6], args[7],
 			 args[8], args[9], args[10], args[11]);
-	regs->ax = (unsigned long)status;
+	/* NtContinue and NtRaiseException rewrite the trap frame, RAX included, and
+	 * return NT_CONTINUE_RESUMED. Their RAX must not be overwritten here. */
+	if (status != NT_CONTINUE_RESUMED)
+		regs->ax = (unsigned long)status;
 out:
 	if (test_thread_flag(TIF_NTSUSPEND))
 		nt_thread_check_suspend();
@@ -416,7 +420,10 @@ void nt_report_missing_service(unsigned int ssn)
 
 bool nt_can_sysret(struct pt_regs *regs)
 {
-	return true;
+	/* sysret faults in the kernel when RCX (the return RIP) is not canonical.
+	 * NtContinue can name any Rip, so a non-user address takes the IRET path,
+	 * where the fault is reported to the thread instead. */
+	return regs->ip < TASK_SIZE_MAX;
 }
 
 /* Debugfs exposure - distinct from debugfs_tests.c's ntpers dir handling */
