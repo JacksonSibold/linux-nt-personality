@@ -2074,6 +2074,132 @@ TEST(std_handle_install_release)
 	PASS();
 }
 
+/* Process exit (ntio_release_owned_handles; do_exit calls it in the kernel build).
+ * Each cycle is one PE run: a new process object takes three standard handles,
+ * as binfmt_pe does for fd 0, 1 and 2, and then exits without closing them.
+ * 1100 cycles take 3300 slots, more than the 1024-slot table, so a table that
+ * exit does not free would fail an exec with STATUS_TOO_MANY_OPENED_FILES
+ * (ENOMEM in the kernel) after about 320 cycles. */
+TEST(process_exit_releases_handles)
+{
+	char full[PATH_MAX];
+	ULONG base;
+	int cycle;
+
+	reset_state();
+	ASSERT(write_file_at("exit_in.txt", "stdin!"));
+	snprintf(full, sizeof(full), "%s/%s", g_test_root, "exit_in.txt");
+	base = ntio_handles_in_use();
+
+	for (cycle = 0; cycle < 1100; cycle++) {
+		struct nt_eprocess *p = NULL;
+		u64 h[3];
+		int k;
+
+		ASSERT_STATUS(ObCreateProcessObject(&p, 9000 + cycle, "exit_child"),
+			      STATUS_SUCCESS);
+		kshim_set_current_process(p);
+		for (k = 0; k < 3; k++) {
+			struct file *f = kshim_filp_open(full, O_RDONLY, 0);
+
+			ASSERT(f != NULL);
+			ASSERT(ntio_install_std_file(f, &h[k]) == 0);
+		}
+		ASSERT(ntio_handles_owned_by(p->pid) == 3);
+		kshim_set_current_process(NULL);
+
+		ntio_release_owned_handles(p->pid);
+		ASSERT(ntio_handles_owned_by(p->pid) == 0);
+		ASSERT(ntio_handle_peek((HANDLE)(ULONG_PTR)h[0]) == NULL);
+		ObDestroyProcessObject(p);
+		if (ntio_handles_in_use() != base) {
+			fprintf(stderr, "exit cycle %d: in use %lu, baseline %lu\n",
+				cycle, (unsigned long)ntio_handles_in_use(),
+				(unsigned long)base);
+			return;
+		}
+	}
+	ASSERT(ntio_handles_in_use() == base);
+	PASS();
+}
+
+/* An exiting process's file object is released with the slot: the handle is
+ * gone, and no slot still refers to the file. The pipe case in the kernel is
+ * the same path: the file's last reference is dropped, which closes the pipe. */
+TEST(process_exit_closes_file)
+{
+	char full[PATH_MAX];
+	struct nt_eprocess *p = NULL;
+	struct file *f;
+	u64 h = 0;
+	void *obj;
+
+	reset_state();
+	ASSERT(write_file_at("exit_close.txt", "payload"));
+	snprintf(full, sizeof(full), "%s/%s", g_test_root, "exit_close.txt");
+
+	ASSERT_STATUS(ObCreateProcessObject(&p, 9900, "exit_close"), STATUS_SUCCESS);
+	kshim_set_current_process(p);
+	f = kshim_filp_open(full, O_RDONLY, 0);
+	ASSERT(f != NULL);
+	ASSERT(ntio_install_std_file(f, &h) == 0);
+	obj = ntio_handle_peek((HANDLE)(ULONG_PTR)h);
+	ASSERT(obj != NULL);
+	kshim_set_current_process(NULL);
+
+	ntio_release_owned_handles(p->pid);
+	ASSERT(ntio_handle_peek((HANDLE)(ULONG_PTR)h) == NULL);
+	ASSERT(ntio_handle_lookup((HANDLE)(ULONG_PTR)h, 0) == NULL);
+	ASSERT(ntio_handles_owned_by(p->pid) == 0);
+	ObDestroyProcessObject(p);
+	PASS();
+}
+
+/* Exit frees only the exiting process's slots. A slot created with no current
+ * process (owner NULL) and a slot of another live process both survive. */
+TEST(process_exit_spares_other_owners)
+{
+	char full[PATH_MAX];
+	struct nt_eprocess *a = NULL, *b = NULL;
+	struct file *f;
+	u64 hn = 0, ha = 0, hb = 0;
+
+	reset_state();
+	ASSERT(write_file_at("exit_spare.txt", "spare"));
+	snprintf(full, sizeof(full), "%s/%s", g_test_root, "exit_spare.txt");
+
+	ASSERT_STATUS(ObCreateProcessObject(&a, 9901, "exit_a"), STATUS_SUCCESS);
+	ASSERT_STATUS(ObCreateProcessObject(&b, 9902, "exit_b"), STATUS_SUCCESS);
+
+	f = kshim_filp_open(full, O_RDONLY, 0);
+	ASSERT(f != NULL);
+	ASSERT(ntio_install_std_file(f, &hn) == 0);
+
+	kshim_set_current_process(a);
+	f = kshim_filp_open(full, O_RDONLY, 0);
+	ASSERT(f != NULL);
+	ASSERT(ntio_install_std_file(f, &ha) == 0);
+	kshim_set_current_process(b);
+	f = kshim_filp_open(full, O_RDONLY, 0);
+	ASSERT(f != NULL);
+	ASSERT(ntio_install_std_file(f, &hb) == 0);
+	kshim_set_current_process(NULL);
+
+	ntio_release_owned_handles(a->pid);
+	ASSERT(ntio_handle_peek((HANDLE)(ULONG_PTR)ha) == NULL);
+	ASSERT(ntio_handle_peek((HANDLE)(ULONG_PTR)hb) != NULL);
+	ASSERT(ntio_handle_peek((HANDLE)(ULONG_PTR)hn) != NULL);
+
+	ntio_release_owned_handles(b->pid);
+	ntio_release_owned_handles(0);
+	ASSERT(ntio_handle_peek((HANDLE)(ULONG_PTR)hb) == NULL);
+	ASSERT(ntio_handle_peek((HANDLE)(ULONG_PTR)hn) != NULL);
+	ntio_release_std_handle(hn);
+	ObDestroyProcessObject(a);
+	ObDestroyProcessObject(b);
+	PASS();
+}
+
 /* No volume information can be set: valid classes are not implemented and
  * unknown classes are invalid. */
 TEST(set_volume_unsupported)
@@ -2294,6 +2420,9 @@ int main(void)
 	RUN(query_directory_replaced_by_file);
 	RUN(query_volume_device);
 	RUN(std_handle_install_release);
+	RUN(process_exit_releases_handles);
+	RUN(process_exit_closes_file);
+	RUN(process_exit_spares_other_owners);
 	RUN(set_volume_unsupported);
 	RUN(iocp_open_by_name);
 	RUN(iocp_query_depth);

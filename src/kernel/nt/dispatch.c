@@ -437,6 +437,26 @@ static const struct file_operations nt_dispatch_count_fops = {
 	.release = single_release,
 };
 
+/* ntpers/handles_in_use: File and IOCP slots in the NT handle table (io.c).
+ * The booted S11 step reads it before and after 1500 PE runs. */
+static int nt_handles_in_use_show(struct seq_file *m, void *v)
+{
+	extern ULONG ntio_handles_in_use(void);
+	seq_printf(m, "%u\n", ntio_handles_in_use());
+	return 0;
+}
+static int nt_handles_in_use_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, nt_handles_in_use_show, NULL);
+}
+static const struct file_operations nt_handles_in_use_fops = {
+	.owner = THIS_MODULE,
+	.open = nt_handles_in_use_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 static int nt_host_count_show(struct seq_file *m, void *v)
 {
 	seq_printf(m, "%llu\n", (unsigned long long)nt_sum_host_count());
@@ -497,6 +517,7 @@ static int __init nt_counters_debugfs_init(void)
 	debugfs_create_file("dispatch_count", 0444, dir, NULL, &nt_dispatch_count_fops);
 	debugfs_create_file("host_count", 0444, dir, NULL, &nt_host_count_fops);
 	debugfs_create_file("dispatch_per_ssn", 0444, dir, NULL, &nt_per_ssn_fops);
+	debugfs_create_file("handles_in_use", 0444, dir, NULL, &nt_handles_in_use_fops);
 	return 0;
 }
 late_initcall(nt_counters_debugfs_init);

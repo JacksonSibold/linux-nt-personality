@@ -75,7 +75,8 @@ def make_tree(root, tif_addr32_bit=28, elf_em_extra=None):
            "\tif (err)\n\t\tgoto free_tsk;\n\treturn tsk;\n}\n")
     _write(root, "kernel/exit.c",
            "void __noreturn do_exit(long code)\n{\n"
-           "\tstruct task_struct *tsk = current;\n\n\tcode = code;\n}\n")
+           "\tstruct task_struct *tsk = current;\n\n\tcode = code;\n"
+           "\tgroup_dead = atomic_dec_and_test(&tsk->signal->live);\n}\n")
     _write(root, "arch/x86/include/asm/thread_info.h",
            "#ifndef _ASM_X86_THREAD_INFO_H\n#define _ASM_X86_THREAD_INFO_H\n"
            "#define TIF_BLOCKSTEP\t\t25\t/* set when we want DEBUGCTLMSR_BTF */\n"

@@ -1,0 +1,46 @@
+# S11 step: process exit releases the NT handle table (io.c ntio_release_owned_handles).
+#
+# Sourced by /init (tools/linux-env/step-initramfs.sh, STEP_SCRIPT) in place of a single
+# exe run, under busybox sh. Sets RC: 0 when every check passes, 1 otherwise.
+#
+#   1. console_s11.exe runs 1500 times from this loop. Each run must exit 0. Each PE
+#      exec takes three standard handles and exit must free them, so the table is
+#      larger than the 1024-slot table would allow without release.
+#   2. The handle count (debugfs ntpers/handles_in_use) after the loop, and after the
+#      pipe run, must equal the count before the loop.
+#   3. pipe_s11.exe reads a pipe standard input (echo | pipe_s11.exe). It must see
+#      FILE_TYPE_PIPE and the 13 bytes "pipe-payload\n", and exit 0.
+
+HANDLES=/sys/kernel/debug/ntpers/handles_in_use
+RUNS=1500
+
+base=$(cat $HANDLES)
+echo "S11 handles in use before: $base"
+
+i=0
+bad=0
+while [ $i -lt $RUNS ]; do
+    /tests_kernel/console_s11.exe
+    r=$?
+    if [ $r -ne 0 ]; then
+        bad=$((bad + 1))
+        echo "S11 run $i exit $r"
+    fi
+    i=$((i + 1))
+done
+mid=$(cat $HANDLES)
+echo "S11 runs: $i, nonzero exits: $bad, handles in use after the runs: $mid"
+
+echo pipe-payload | /tests_kernel/pipe_s11.exe
+pr=$?
+echo "S11 pipe exit: $pr (expected 0)"
+end=$(cat $HANDLES)
+echo "S11 handles in use after the pipe run: $end (baseline $base)"
+
+if [ $bad -eq 0 ] && [ $pr -eq 0 ] && [ "$mid" = "$base" ] && [ "$end" = "$base" ]; then
+    echo "S11 PASS"
+    RC=0
+else
+    echo "S11 FAIL"
+    RC=1
+fi

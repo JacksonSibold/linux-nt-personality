@@ -619,6 +619,13 @@ void *ntio_handle_lookup_any_of(HANDLE h, ACCESS_MASK mask);
 /* Standard handles for exec (binfmt_pe): install a file as a handle, release one. */
 int ntio_install_std_file(struct file *filp, u64 *out_handle);
 void ntio_release_std_handle(u64 h);
+/* Process exit: free every slot owned by process id owner (see io.c). */
+void ntio_release_owned_handles(ULONG owner);
+ULONG ntio_handles_in_use(void);
+ULONG ntio_handles_owned_by(ULONG owner);
+#ifdef __KERNEL__
+void nt_process_exit_handles(void);
+#endif
 NTSTATUS ntio_handle_close(HANDLE h);
 NTSTATUS ntio_duplicate_file_handle(struct nt_file_object *f, ACCESS_MASK new_access, HANDLE *out_handle);
 ACCESS_MASK ntio_handle_granted(HANDLE h);

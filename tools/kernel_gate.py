@@ -66,6 +66,7 @@ ENTRY_SYMBOLS = (
     "nt_service_table",
     "nt_enter_personality",
     "nt_exit_personality",
+    "nt_process_exit_handles",
     "nt_banner_init",
     "ObCreateHandle",
     "ObReferenceObjectByHandle",

@@ -493,6 +493,16 @@ def build_plan(project):
         "#ifdef CONFIG_NT_PERSONALITY\n\textern void nt_thread_exit_abandon(void);\n"
         "\tnt_thread_exit_abandon();\n#endif\n",
         "nt_thread_exit_abandon", "abandon owned mutants at task exit", gap="G5"))
+    # Release the exiting process's NT handles (io.c, ntio_release_owned_handles) once
+    # its last thread is going. group_dead is the kernel's own last-thread decision, so
+    # no thread can release the table while a sibling still makes NT calls.
+    edits.append(InsertEdit(
+        eid(), EXIT_C,
+        r"^\tgroup_dead = atomic_dec_and_test\(&tsk->signal->live\);\n",
+        "#ifdef CONFIG_NT_PERSONALITY\n\tif (group_dead) {\n"
+        "\t\textern void nt_process_exit_handles(void);\n"
+        "\t\tnt_process_exit_handles();\n\t}\n#endif\n",
+        "nt_process_exit_handles", "release the exiting process's NT handles", gap="G5"))
 
     # 8. Syscall dispatch (BUILD-RECIPE 5i, G6): one form, the NT branch in
     # do_syscall_64() after add_random_kstack_offset().

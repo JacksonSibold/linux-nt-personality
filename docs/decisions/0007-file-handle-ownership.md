@@ -1,6 +1,6 @@
 # 0007: File handle table is global with no owner (IO-2)
 
-Status: Proposed. Needs a policy for duplicates and inheritance. Not implemented.
+Status: Proposed. Needs a policy for duplicates and inheritance. Partly implemented (2026-10-14, branch `haiku/hndl`): each slot records its owner process (`ntio_handle_entry.owner`), and process exit frees every slot the process owns, including the standard handles and any it leaked (`ntio_release_owned_handles`, called from do_exit when the last thread of the group exits). That fixes the exhaustion of the 1024-slot table (about 320 PE execs). Not implemented: the ownership check in lookup, peek and close (a process can still use another process's handle number), and the duplicate and inheritance rule. Option 1 is still the end state.
 Finding: `docs/review/kernel-nt.md` IO-2 (Medium).
 Date: 2026-10-12
 

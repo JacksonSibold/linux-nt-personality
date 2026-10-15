@@ -69,15 +69,32 @@ if [ -n "$STEP_STDIN" ]; then
     STDIN_REDIR="< /tests_kernel/$NAME.stdin"
 fi
 
+# STEP_SCRIPT: a repo-relative shell fragment that replaces the single exe run. It is
+# copied in as /tests_kernel/NAME.step and sourced by /init, and it must set RC. The
+# debugfs mount is for the ntpers counters it reads (S11). Empty runs NAME.exe (S1-S10).
+STEP_SCRIPT="${STEP_SCRIPT:-}"
+RUN_LINE="/tests_kernel/$NAME.exe $STEP_ARGS $STDIN_REDIR"
+RC_LINE='RC=$?'
+DEBUGFS_LINE=""
+if [ -n "$STEP_SCRIPT" ]; then
+    [ -f "$REPO/$STEP_SCRIPT" ] || { echo "step-initramfs: missing script $REPO/$STEP_SCRIPT" >&2; exit 1; }
+    cp "$REPO/$STEP_SCRIPT" "$W/tests_kernel/$NAME.step"
+    chmod 644 "$W/tests_kernel/$NAME.step"
+    RUN_LINE=". /tests_kernel/$NAME.step"
+    RC_LINE=""
+    DEBUGFS_LINE="mount -t debugfs debugfs /sys/kernel/debug"
+fi
+
 cat > "$W/init" <<EOF
 #!/bin/sh
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t tmpfs tmpfs /tmp
+$DEBUGFS_LINE
 echo "=== STEP init: $NAME (no 9p share) ==="
 $ENV_LINE
-/tests_kernel/$NAME.exe $STEP_ARGS $STDIN_REDIR
-RC=\$?
+$RUN_LINE
+$RC_LINE
 echo "STEP exit status: \$RC (expected $EXPECT)"
 if [ "\$RC" -eq $EXPECT ]; then echo "STEP PASS"; else echo "STEP FAIL"; fi
 echo o > /proc/sysrq-trigger

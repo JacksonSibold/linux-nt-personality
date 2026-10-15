@@ -3,6 +3,59 @@
 Kernel: Linux **6.18.56** (newest 6.18.y in kernel.org `sha256sums.asc`), built in the Debian 12 guest
 (`~/ntpers/linux-6.18.56`) with the NT wiring from `tools/ntpers_kpatch.py`. Session date 2026-10-13.
 
+## Handle release at process exit, S11 (2026-10-15)
+
+Branch `haiku/hndl` on main `3fac7e9`. Fixes the exhaustion left open by S10: each PE exec took up to three of the
+1024 global handle slots and nothing freed them, so about 320 execs failed with ENOMEM. A PE's pipe ends stayed open.
+
+**What changed.**
+- `io.c`: each handle slot records its owner, the calling process id (`tgid` in the kernel; the process id in the
+  userspace shim). The id is read without creating a process object, because creating one during exec captured a
+  null PEB in an earlier attempt. `ntio_release_owned_handles(owner)` frees every slot the owner holds, including the
+  standard handles and leaked ones, and drops each object's reference the way NtClose does (file put, delete on close,
+  IOCP put). A file's last reference closes it, so a pipe's ends close with it.
+- kernel hook: `tools/ntpers_kpatch.py` inserts `nt_process_exit_handles()` into `kernel/exit.c` right after
+  `group_dead = atomic_dec_and_test(&tsk->signal->live)`, so it runs once, when the last thread of the group goes.
+- `dispatch.c`: debugfs `ntpers/handles_in_use` (slots in use). S11 reads it before and after the runs.
+- `weak.c`: weak default for `nt_exc_user_trap` and `nt_exc_user_fault`. The shared kernel tree had call sites in
+  `arch/x86/kernel/traps.c` and `fault.c` with no definition, so the link failed. A strong definition replaces the default.
+- ADR 0007 status updated: owner recorded and freed at exit; the lookup ownership check and duplicate rule are still open.
+
+**Tests.**
+- Kernel-host (`io_test`, new): `process_exit_releases_handles` (1100 cycles of 3 std handles with no close, 3300
+  slots, more than the table), `process_exit_closes_file`, `process_exit_spares_other_owners`. `io_test` 40 of 40 on the
+  host; `io_test rc=0` in the guest. `make -C tests/kernel-host check-quick` in the guest: `KH_RC=0`.
+- ntdll-host, in the guest: `make test` exits 0, all tests passed (run before the pid-keyed owner change; ntdll code is unchanged).
+- Host unit suite: `python -m unittest discover tests/unit`: 836 tests OK, 1 skipped (WSL). The kpatch fixture
+  `kernel/exit.c` gained the `group_dead` line so the new hook can be checked.
+- Booted S11 (`tests/kernel/s11/s11.step`, `STEP_SCRIPT` in `step-initramfs.sh`): `console_s11.exe` runs 1500 times
+  from the init shell loop, each must exit 0, and the handle count must return to the baseline after the loop and after
+  the pipe run. `pipe_s11.exe` runs as `echo pipe-payload | pipe_s11.exe` and asserts `GetFileType == FILE_TYPE_PIPE`
+  (3), reads the 13-byte payload, and exits 0.
+
+**Boots (host QEMU, `boot-m0-host.ps1`, bzImage built from `~/syncfix/linux-src` with `vm/incremental-kernel.sh --all`
+under `flock ~/.kbuild.lock`).**
+
+| step | expected | result | serial line |
+|---|---|---|---|
+| M0 | 42 | 42, PASS | `M0 exit status: 42 (expected 42)`, `M0 PASS` |
+| S1 | 0 | 0, PASS | `hello from NT`; image without the ntdll DLLs (see below) |
+| S2 | 0 | 0, PASS | `STEP PASS` |
+| S3 | 0 | 0, PASS | `STEP PASS` |
+| S4 | 0 | 0, PASS | `STEP PASS` |
+| S5 | 53 | 53, PASS | `STEP exit status: 53 (expected 53)` |
+| S6 | 0 | 0, PASS | `STEP PASS` |
+| S7 | 0 | 0, PASS | `STEP PASS` |
+| S8 | 0 | 0, PASS | `STEP PASS` |
+| S9 | 0 | 0, PASS | `STEP PASS` |
+| S10 | 0 | 0, PASS | `STEP PASS` |
+| S11 | 0 | 0, PASS | `S11 PASS` |
+
+S1 is the raw-syscall test on the no-ntdll path. Its image must not contain `windows/system32/*.dll`: with ntdll
+present the loader takes the other path, and S1 read a null `ProcessParameters` (segfault at 0x28). The first
+boot batch packed the DLLs into every image, which caused that failure. It is an image error, not a kernel
+regression, and the S1 image was rebuilt without them.
+
 ## Standard handles: fd 0, 1, 2 at exec, S10 (2026-10-14)
 
 Branch `haiku/stdio` on main `4b012b4` (rebased from `256571a`). Kernel: `bzImage` sha256 `936c64e7d5e67617bc806ff8641b8679ffd212586d62147dd52f7e9a6e3916c9`

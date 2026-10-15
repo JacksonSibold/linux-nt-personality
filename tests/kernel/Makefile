@@ -76,6 +76,17 @@ $(BINDIR)/console_s10.exe: s10/console_s10.c $(BINDIR)/libkernel32_imp.a
 
 s10: $(BINDIR)/console_s10.exe
 
+# S11: process exit releases NT handles (io.c ntio_release_owned_handles). console_s11 is
+# started 1500 times from the step's shell loop; pipe_s11 reads a pipe standard input and
+# checks GetFileType == FILE_TYPE_PIPE. Both need the kernel's exit release.
+$(BINDIR)/console_s11.exe: s11/console_s11.c $(BINDIR)/libkernel32_imp.a
+	$(CC) -nostdlib -Wl,-e,_start -Wl,--no-seh -Wl,--no-insert-timestamp -Os -s -ffreestanding -fno-builtin -fno-stack-protector -o $@ $< -L$(BINDIR) -lkernel32_imp
+
+$(BINDIR)/pipe_s11.exe: s11/pipe_s11.c $(BINDIR)/libkernel32_imp.a
+	$(CC) -nostdlib -Wl,-e,_start -Wl,--no-seh -Wl,--no-insert-timestamp -Os -s -ffreestanding -fno-builtin -fno-stack-protector -o $@ $< -L$(BINDIR) -lkernel32_imp
+
+s11: $(BINDIR)/console_s11.exe $(BINDIR)/pipe_s11.exe
+
 $(BINDIR)/libmsvcrt_imp.a: ../../src/ntdll/msvcrt.def | $(BINDIR)
 	x86_64-w64-mingw32-dlltool -d $< -l $@ -D msvcrt.dll
 

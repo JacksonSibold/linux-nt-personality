@@ -11,7 +11,7 @@ nm "$VM" > /tmp/nmout.txt 2>/dev/null
 echo "total symbols: $(wc -l < /tmp/nmout.txt)"
 echo
 
-for s in do_nt_syscall nt_service_table nt_enter_personality nt_exit_personality \
+for s in do_nt_syscall nt_service_table nt_enter_personality nt_exit_personality nt_process_exit_handles \
          ObCreateHandle ObReferenceObjectByHandle nt_create_event se_access_check \
          nt_banner_init; do
     printf '%-32s ' "$s"

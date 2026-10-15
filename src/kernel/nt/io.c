@@ -18,6 +18,9 @@
 
 #include "io.h"
 #include "iocp.h"
+#ifndef __KERNEL__
+#include "object.h"
+#endif
 
 #ifndef MAXIMUM_ALLOWED
 #define MAXIMUM_ALLOWED 0x02000000
@@ -38,6 +41,7 @@
 #include <linux/namei.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+#include <linux/sched.h>
 #include <linux/dcache.h>
 #include <linux/stat.h>
 #include <linux/fcntl.h>
@@ -343,11 +347,35 @@ struct ntio_handle_entry {
 	void *object;
 	ACCESS_MASK granted_access;
 	bool used;
+	/*
+	 * The process that created the slot (kshim_current_process() at create).
+	 * ntio_release_owned_handles frees every slot of an exiting process, so the
+	 * table cannot fill with the handles of finished processes. NULL when the
+	 * slot was created with no current process; exit never frees such a slot.
+	 */
+	ULONG owner;
 };
 
 static struct ntio_handle_entry ntio_handles[NTIO_MAX_HANDLES];
 static spinlock_t ntio_handle_lock;
 static atomic_t ntio_handle_inuse;
+
+/*
+ * Owner id recorded in a new slot: the calling process id (tgid in the kernel),
+ * 0 when there is none. It is read without creating a process object. The exec
+ * path (binfmt_pe) creates std handles before the PEB is set, and creating the
+ * object there (nt_current_eprocess) captures a null PEB.
+ */
+static ULONG ntio_current_owner(void)
+{
+#ifdef __KERNEL__
+	return (ULONG)current->tgid;
+#else
+	struct nt_eprocess *p = kshim_current_process();
+
+	return p ? p->pid : 0;
+#endif
+}
 
 void ntio_reset_handle_table(void)
 {
@@ -355,6 +383,30 @@ void ntio_reset_handle_table(void)
 	memset(ntio_handles, 0, sizeof(ntio_handles));
 	atomic_set(&ntio_handle_inuse, 0);
 	spin_unlock(&ntio_handle_lock);
+}
+
+/* Slots in use across all processes (debugfs ntpers/handles_in_use, and the
+ * exit tests: the count returns to its baseline after every process exits). */
+ULONG ntio_handles_in_use(void)
+{
+	return (ULONG)atomic_read(&ntio_handle_inuse);
+}
+
+/* Slots owned by proc. Used by the exit tests. */
+ULONG ntio_handles_owned_by(ULONG owner)
+{
+	ULONG n = 0;
+	int i;
+
+	if (!owner)
+		return 0;
+	spin_lock(&ntio_handle_lock);
+	for (i = 0; i < NTIO_MAX_HANDLES; i++) {
+		if (ntio_handles[i].used && ntio_handles[i].owner == owner)
+			n++;
+	}
+	spin_unlock(&ntio_handle_lock);
+	return n;
 }
 
 static void ntio_handle_table_init(void)
@@ -366,6 +418,7 @@ static void ntio_handle_table_init(void)
 NTSTATUS ntio_handle_create(void *obj, ACCESS_MASK granted, HANDLE __user *out)
 {
 	int i;
+	ULONG owner;
 
 	if (!out)
 		return STATUS_INVALID_PARAMETER;
@@ -374,6 +427,8 @@ NTSTATUS ntio_handle_create(void *obj, ACCESS_MASK granted, HANDLE __user *out)
 		return STATUS_ACCESS_VIOLATION;
 #endif
 
+	/* Read before the lock: the kernel build may create the process object. */
+	owner = ntio_current_owner();
 	spin_lock(&ntio_handle_lock);
 	/* Handles are multiples of 4 (index<<2). File handles start at 0x100 (index 64) to avoid colliding with object handles at 0xC8 (50). */
 	for (i = 64; i < NTIO_MAX_HANDLES; i++) {
@@ -381,6 +436,7 @@ NTSTATUS ntio_handle_create(void *obj, ACCESS_MASK granted, HANDLE __user *out)
 			ntio_handles[i].used = true;
 			ntio_handles[i].object = obj;
 			ntio_handles[i].granted_access = granted;
+			ntio_handles[i].owner = owner;
 			atomic_inc(&ntio_handle_inuse);
 			spin_unlock(&ntio_handle_lock);
 #ifdef __KERNEL__
@@ -511,13 +567,16 @@ void *ntio_handle_peek(HANDLE h)
 NTSTATUS ntio_duplicate_file_handle(struct nt_file_object *f, ACCESS_MASK new_access, HANDLE *out_handle)
 {
 	int i;
+	ULONG owner;
 	if (!f || !out_handle) return STATUS_INVALID_PARAMETER;
+	owner = ntio_current_owner();
 	spin_lock(&ntio_handle_lock);
 	for (i = 64; i < NTIO_MAX_HANDLES; i++) {
 		if (!ntio_handles[i].used) {
 			ntio_handles[i].used = true;
 			ntio_handles[i].object = f;
 			ntio_handles[i].granted_access = new_access;
+			ntio_handles[i].owner = owner;
 			atomic_inc(&ntio_handle_inuse);
 			spin_unlock(&ntio_handle_lock);
 			ntio_file_get(f);
@@ -543,6 +602,7 @@ NTSTATUS ntio_handle_close(HANDLE h)
 	}
 	ntio_handles[idx].used = false;
 	ntio_handles[idx].object = NULL;
+	ntio_handles[idx].owner = 0;
 	atomic_dec_and_test(&ntio_handle_inuse);
 	spin_unlock(&ntio_handle_lock);
 	return STATUS_SUCCESS;
@@ -1286,6 +1346,7 @@ static ACCESS_MASK ntio_std_granted_access(struct file *filp)
 int ntio_install_std_file(struct file *filp, u64 *out_handle)
 {
 	struct nt_file_object *file;
+	ULONG owner;
 	int i;
 
 	if (!filp || !out_handle) {
@@ -1301,6 +1362,7 @@ int ntio_install_std_file(struct file *filp, u64 *out_handle)
 	file->filp = filp;
 	file->granted_access = ntio_std_granted_access(filp);
 	file->synchronous = true;
+	owner = ntio_current_owner();
 
 	spin_lock(&ntio_handle_lock);
 	for (i = 64; i < NTIO_MAX_HANDLES; i++) {
@@ -1308,6 +1370,7 @@ int ntio_install_std_file(struct file *filp, u64 *out_handle)
 			ntio_handles[i].used = true;
 			ntio_handles[i].object = file;
 			ntio_handles[i].granted_access = file->granted_access;
+			ntio_handles[i].owner = owner;
 			atomic_inc(&ntio_handle_inuse);
 			spin_unlock(&ntio_handle_lock);
 			*out_handle = (u64)(i << 2);
@@ -1336,12 +1399,78 @@ void ntio_release_std_handle(u64 h)
 		file = ntio_handles[idx].object;
 		ntio_handles[idx].used = false;
 		ntio_handles[idx].object = NULL;
+		ntio_handles[idx].owner = 0;
 		atomic_dec_and_test(&ntio_handle_inuse);
 	}
 	spin_unlock(&ntio_handle_lock);
 	if (file)
 		ntio_file_put(file);
 }
+
+/*
+ * Drops the reference a slot holds on its object, as NtClose does after it
+ * closes a handle: an IOCP is put, and a file is unlinked if it was marked
+ * delete-on-close and then put.
+ */
+static void ntio_drop_slot_object(void *obj)
+{
+	ULONG m;
+
+	if (!obj)
+		return;
+	m = *(ULONG *)obj;
+	if (m == 0x494F4350) {
+		ntio_iocp_put((struct nt_iocp *)obj);
+	} else if (m == NTIO_FILE_MAGIC) {
+		struct nt_file_object *file = (struct nt_file_object *)obj;
+
+		if ((file->delete_on_close || file->delete_pending) && file->linux_path)
+			kshim_vfs_unlink(file->linux_path);
+		ntio_file_put(file);
+	}
+}
+
+/*
+ * Frees every slot owned by proc, and drops each slot's object reference, so a
+ * file behind a std handle closes (a pipe's ends with it). Handles the process
+ * leaked are freed too. Called when the process exits: the kernel calls
+ * nt_process_exit_handles from do_exit once the last thread of the group is
+ * going; the kernel-host tests call this directly. A NULL proc frees nothing.
+ */
+void ntio_release_owned_handles(ULONG owner)
+{
+	int i;
+
+	if (!owner)
+		return;
+	for (i = 1; i < NTIO_MAX_HANDLES; i++) {
+		void *obj = NULL;
+
+		spin_lock(&ntio_handle_lock);
+		if (ntio_handles[i].used && ntio_handles[i].owner == owner) {
+			obj = ntio_handles[i].object;
+			ntio_handles[i].used = false;
+			ntio_handles[i].object = NULL;
+			ntio_handles[i].owner = 0;
+			atomic_dec_and_test(&ntio_handle_inuse);
+		}
+		spin_unlock(&ntio_handle_lock);
+		/* Outside the lock: a put can unlink or close the file. */
+		ntio_drop_slot_object(obj);
+	}
+}
+
+#ifdef __KERNEL__
+/*
+ * Process-exit hook (kernel/exit.c do_exit, after group_dead is set by the last
+ * thread of the group). Frees by tgid, the id the slots were created with, so no
+ * process object is looked up or created here.
+ */
+void nt_process_exit_handles(void)
+{
+	ntio_release_owned_handles((ULONG)current->tgid);
+}
+#endif
 
 /*
  * Apply CreateDisposition semantics on top of a POSIX open.
