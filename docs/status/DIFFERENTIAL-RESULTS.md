@@ -501,6 +501,24 @@ Left, with reasons:
 
 **Not started:** probe_teb_peb (23 S1) and probe_fileinfo (38 S1), as before.
 
+## Directory status codes, sync and stale error, dodrun (diff5, 2026-10-15)
+
+Boot: `main` ac86323 plus this change, same NONVM arguments, `NTPERS_ALL_DONE`, 15 probes. Measured (matched / golden leaves), against the previous measured boot (diff4, b942f80):
+
+| probe | diff4 | diff5 | cause |
+|---|---|---|---|
+| probe_directory | 56 / 67 (11) | 64 / 67 (3) | fixed: NULL or undersized buffer returns STATUS_INFO_LENGTH_MISMATCH for all four classes (golden) |
+| probe_exception | 0 / 76 (76) | 61 / 76 (15) | main's c4d28bc (user fault delivery), not this change |
+| probe_handles | 99 / 111 (12) | 99 / 111 (12) | the stale-error fields did not move, see below |
+| probe_virtualquery | 139 / 139 | 139 / 139 | unchanged |
+| the rest | unchanged | unchanged | no regression |
+
+probe_directory remaining 3 fields: `test_dir` (host path), `win32_find.count` (0 against 7) and its pattern path. Environmental or not yet verified. The fix: `ntio_dir_service` (`src/kernel/nt/io.c`) checks NULL and the fixed header length before enumerating. A buffer that holds the header but not the full name stays STATUS_BUFFER_OVERFLOW (the golden does not cover that case). io_test `query_directory_small_buffer` covers all four classes.
+
+probe_handles stale error (open, 5 fields: `duplicate_handle[0]`, `duplicate_handle[3]`, `close_tests[2]`, and two S2 neighbours). The golden keeps 32 (ERROR_SHARING_VIOLATION from the failed `CreateFile` of `hFile2`) through a successful `CreateEvent`, `CreateMutex`, `DuplicateHandle`, `CloseHandle(pseudo)` and `printf` output. The VM reports 0. Changes made in this cycle, each the Windows rule, none of which moved the measured value: `k32_create_sync_result` no longer clears on success; `k32_transfer` (ReadFile and WriteFile) no longer clears on success; `CloseHandle` no longer clears on success. Not yet found: the call that clears the error between the failed open and the duplicate. Ruled out by reading: the sync-create helper, `WaitFor*`, `k32_transfer`, `CreateFileW` success.
+
+dodrun (`python tests/harness/dodrun.py --reports-dir <scratch> --no-gate-exit`, all criteria, 2026-10-15 09:33 UTC): PASS 3 (DOD-DRV-B003, DOD-SEC-A008, DOD-EVI-B006, the same three as 2026-10-13), UNIMPLEMENTED 400, GATED 17, ERROR 3 (DOD-ARCH-A001, DOD-ARCH-A002, DOD-ARCH-B001, exit 125 from a host check). Tier roll-up: P0 1/143, P1 2/175, P2 0/89, P3 0/16. Regressions 0. No criterion newly passes from probe_virtualquery at 139/139: no criterion is wired to a probe (the dual-run wiring in `tests/harness/registry.yaml` is commented out, "DO NOT ENABLE").
+
 ## Reproduce
 
 Guest (SSH via `tools/linux-env/ssh-guest.sh`, repo synced with `GUEST_DEST=dualrun tools/linux-env/sync-repo.sh`):
