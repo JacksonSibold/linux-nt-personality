@@ -469,7 +469,7 @@ Reading the result:
 Guest (SSH via `tools/linux-env/ssh-guest.sh`; the build runs detached, log in `~/ntpers/`):
 
 ```sh
-cd ~/ntpers-research                                   # sync first: tools/linux-env/sync-repo.sh <repo>
+cd ~/$GUEST_DEST                                        # sync first: GUEST_DEST=<name> tools/linux-env/sync-repo.sh <repo>
 sed -i 's/\r$//' vm/make-kernel-config.sh tests/kernel/check_kernel_complete.sh
 python3 tools/ntpers_kpatch.py --tree ~/ntpers/linux-6.18.56          # idempotent; copies changed sources
 KDIR=$HOME/ntpers/linux-6.18.56 bash vm/make-kernel-config.sh         # PASS expected

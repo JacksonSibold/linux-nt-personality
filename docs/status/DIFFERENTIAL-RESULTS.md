@@ -387,6 +387,50 @@ The change is `ntio_store_query_status`: it writes `Information` on success and 
 
 Left unfixed: section (blocked, above), ntstatus 8 environmental fields, virtualquery 11, handles 29.
 
+## NONVM path and registry cycle: wide formatter (pathreg, 2026-10-14)
+
+Before = `main` at 3fac7e9 (NONVM initramfs built from that tree in the guest, `~/pathreg-base`). After = the same tree
+with `src/ntdll/msvcrt.c` and `src/ntdll/msvcrt_format.h` changed (`~/pathreg`). Kernel `bzImage` unchanged for both
+(`kernel-stdio/bzImage`). Both booted with `boot-m0-host.ps1 -Mem 2048 -Initrd probes-nonvm.cpio.gz`, `log_buf_len=16M`,
+both reached `NTPERS_ALL_DONE` with 15 of 15 probes ended. Compared with `probe_results.py compare` against
+`windows-26200.9457`.
+
+Cause (found and fixed): `_snwprintf` (`ms_wformat`, now `src/ntdll/msvcrt_wformat.h`) did not parse length modifiers,
+so `%ls` was copied out as the literal text `%ls`. The path probe builds every NT name that way
+(`tests/differential/probes/probe_path.c`, `build_prefixes`), so the names carried `%ls` instead of the root directory.
+The narrow formatter (`msvcrt_format.h`) treated `%ls` as a narrow string. Both are fixed; `test_msvcrt_policy` has 5 new
+cases (16 of 16 pass on the host).
+
+| probe | before matched / golden | after matched / golden | verdict after |
+|---|---|---|---|
+| probe_path | 51355 / 72523 | **55105 / 72523** (+3750) | FAIL |
+| all other 14 probes | unchanged | unchanged | |
+
+Path mismatches after the fix (17418 fields, 21168 before), by prefix (decoded from the generator index):
+
+- `\?\` prefix: 0 mismatches. Bare `C:\` prefix: 0 (was 1250, now matches 3B). `\??\` prefix: 440 status fields
+  are `3A` in Windows and `33` in the VM; the cause is a lone `/` treated as a separator in the kernel
+  (`src/kernel/nt/io.c`, `kshim_ntpath_to_linux`). Object-namespace prefix (`\dir\`): 1053 `3A` vs `33`, double separator
+  rejected before the first lookup. `\Device\HarddiskVolume` prefix: 563, mostly the same `/` cause.
+- Handle-relative prefix (`RootDirectory`): 1250 tests return `0xC0000008` (invalid handle) in the VM. The probe's
+  directory handle from `CreateFileA(dir, FILE_FLAG_BACKUP_SEMANTICS)` is probably invalid. Not diagnosed.
+- `nt_path` display field: 7500 fields differ because the probe's MinGW `printf("%lc")` output loses every
+  non-backslash character in the guest. This is in the probe's printf path, not the NT name; not fixed.
+
+Kernel path rules (not in this commit): the `/` and double-separator rules in `kshim_ntpath_to_linux` were changed
+(`/` is an ordinary character and rejected with `PATH_NOT_FOUND`, `\` in an object name gives `PATH_NOT_FOUND`), with
+`io_test` cases. They were not booted: the shared kernel tree (`~/syncfix/linux-src`) does not build from `main`
+(undefined `nt_exc_user_trap`, `nt_exc_user_fault`, `nt_process_exit_handles` in another agent's uncommitted hooks in
+`arch/x86/kernel/traps.c`, `arch/x86/mm/fault.c`, `kernel/exit.c`). The patch is kept outside the repo; it needs a
+boot to confirm the expected gain (about 2000 status fields) before it is committed.
+
+Registry (128 / 140, unchanged): 12 remaining S1 fields are environmental. `nt_query_key` retLen and `test_key` depend on the
+PID and tick digits in the probe's key name (a 10-byte difference per 5 digits). `nt_enumerate.key_idx0` reports an
+existing HKLM child on the golden host; the guest registry is empty. No registry semantic change in this cycle.
+
+Checks: `make -C tests/ntdll-host test_msvcrt_policy` 16 of 16; `python -m unittest discover tests/unit` 840 tests OK
+(one skip, WSL); `tests/unit/test_sync_repo_guard.py` covers the `GUEST_DEST` guard in `tools/linux-env/sync-repo.sh`.
+
 ## Reproduce
 
 Guest (SSH via `tools/linux-env/ssh-guest.sh`, repo synced with `GUEST_DEST=dualrun tools/linux-env/sync-repo.sh`):

@@ -4,7 +4,7 @@ Date: 2026-10-13. Branch `haiku/guesttests`, worktree `ntpers-guesttests`, based
 Host: Debian 12 x86_64 guest under QEMU (TCG, 4 vCPU, of which at most 2 used here; another agent
 builds a kernel in the same guest). Toolchain: gcc 12.2.0, glibc 2.36, Python 3.11.2, binutils 2.40,
 Debian `gcc-mingw-w64-x86-64` 12.2 (fixtures), libasan/libubsan/libtsan from gcc 12.
-Source copy: `~/guesttests` in the guest (sync with `tools/linux-env/sync-repo.sh`, which now ships LF).
+Source copy: `~/guesttests` in the guest (sync with `GUEST_DEST=guesttests tools/linux-env/sync-repo.sh`, which now ships LF).
 
 Every finding has an id (`LNX-nn`). Each fix is one commit, named in its message. Where a test was
 red before the fix, the red run is recorded under the finding. Open race sites are listed in the

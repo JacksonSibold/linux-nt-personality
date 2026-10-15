@@ -6,7 +6,7 @@ Recorded 2026-10-13 on branch `haiku/guesttests`. Findings and fixes are in
 - Host: Debian 12 (bookworm) x86_64 guest under QEMU/TCG, 4 vCPU (this run used at most 2), 3.9 GB RAM.
 - Toolchain: gcc 12.2.0, glibc 2.36, GNU make 4.3, Python 3.11.2, binutils 2.40,
   `gcc-mingw-w64-x86-64` 12.2 (for real PE fixtures), libasan/libubsan/libtsan (gcc 12), valgrind.
-- Source: `~/guesttests` in the guest, synced from the worktree with `tools/linux-env/sync-repo.sh`.
+- Source: `~/guesttests` in the guest, synced from the worktree with `GUEST_DEST=guesttests tools/linux-env/sync-repo.sh`.
 - Durations are wall-clock times recorded by the runs (TCG, so slower than native).
 
 ## Matrix

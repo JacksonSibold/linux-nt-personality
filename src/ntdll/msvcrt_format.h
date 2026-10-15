@@ -48,11 +48,11 @@ static int my_vsprintf(char *out, size_t outsz, const char *fmt, va_list ap){
             if(p[1]=='6'&&p[2]=='4'){ is_ll=1; p+=3; }
         }
         char spec=*p;
-        if(spec=='s'){
+        if(spec=='s' && !is_long){
             const char *s=va_arg(ap,const char*);
             if(!s) s="(null)";
             ms_puts(out,outsz,&pos,s);
-        } else if(spec=='S'){ // wide string
+        } else if(spec=='s' || spec=='S'){ // %ls and %S: wide string, narrowed to one byte per character
             const WCHAR *ws=va_arg(ap,const WCHAR*);
             if(!ws) ms_puts(out,outsz,&pos,"(null)");
             else for(size_t i=0; ws[i]; i++) ms_put(out,outsz,&pos,(char)(ws[i]&0xFF));

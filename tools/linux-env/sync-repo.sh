@@ -10,7 +10,22 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="${1:-$(cd "$HERE/../.." && pwd)}"
-DEST="${GUEST_DEST:-ntpers-research}"
+# GUEST_DEST is required. It names a private directory under the guest home. The old default
+# (ntpers-research) is the shared working copy that other agents use, and a sync into it
+# overwrites their files. Refuse it unless GUEST_DEST_FORCE=1 is set on purpose.
+DEST="${GUEST_DEST:-}"
+if [ -z "$DEST" ]; then
+    echo "sync-repo.sh: GUEST_DEST is required (a private directory name under ~, e.g. GUEST_DEST=pathreg)" >&2
+    exit 2
+fi
+case "$DEST" in
+    */*|*..*|/*|.*|"") echo "sync-repo.sh: GUEST_DEST must be a plain directory name under ~, got '$DEST'" >&2; exit 2 ;;
+esac
+if [ "$DEST" = "ntpers-research" ] && [ "${GUEST_DEST_FORCE:-0}" != "1" ]; then
+    echo "sync-repo.sh: refusing GUEST_DEST=ntpers-research (the shared guest copy). Use a private name," >&2
+    echo "  or set GUEST_DEST_FORCE=1 if you really mean to overwrite it." >&2
+    exit 2
+fi
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 "$HERE/ssh-guest.sh" "mkdir -p ~/$DEST"

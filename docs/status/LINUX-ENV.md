@@ -16,7 +16,7 @@ ssh -i C:/Users/Jackson/repos/linux-env/keys/id_ed25519 -p 2222 -o IdentitiesOnl
 ```
 
 User `ntpers` (uid 1000, groups `sudo`). Password login is disabled (locked password); key only.
-Passwordless sudo. Guest project copy: `~/ntpers-research` (synced with `tools/linux-env/sync-repo.sh`).
+Passwordless sudo. Guest project copy: a private directory per checkout, e.g. `~/pathreg` (synced with `GUEST_DEST=pathreg tools/linux-env/sync-repo.sh`). `GUEST_DEST` is required; the shared `~/ntpers-research` is refused unless `GUEST_DEST_FORCE=1`.
 
 Fingerprint of the client key authorized in the guest (`ssh-keygen -lf keys/id_ed25519.pub`):
 `SHA256:xQ1XzOYlKBUe4LrSQjz+nfxcG/xywqGfYZSYtCZH1qQ`.
@@ -96,7 +96,7 @@ generated with `ssh-keygen`), `linux-env\disk\ntpers-guest.qcow2` (overlay), `li
    dropped (`chmood`, a stray `C` in the key). Every key was verified afterwards with `ssh-keygen -lf`
    and `visudo -c`. `provision.sh` ends with the same fingerprint check.
 4. **9p share is not available.** `vm/runvm.sh` uses `-virtfs local` and KVM; neither exists in QEMU for Windows.
-   The replacement is `tools/linux-env/sync-repo.sh` (tar over SSH into `~/ntpers-research`). The VM scripts
+   The replacement is `tools/linux-env/sync-repo.sh` (tar over SSH into `~/$GUEST_DEST`, which is required). The VM scripts
    (`vm/runvm.sh`, `vm/kbuild.sh`) are still Linux-host scripts and were not run.
 5. **Repository check finding (pre-existing, not changed here).** Running the project's
    `tools/check_repo.py` in the guest reports `FAIL [crlf-mix] tests/kernel-host/Makefile: 232 CRLF lines and
@@ -113,7 +113,7 @@ generated with `ssh-keygen`), `linux-env\disk\ntpers-guest.qcow2` (overlay), `li
 | `provision.sh` | Git Bash | One-time guest setup over serial (run after `start-vm.ps1 -Shell`) |
 | `stop-vm.ps1` | PowerShell | `system_powerdown` via the monitor, waits, then kills QEMU |
 | `ssh-guest.sh [cmd]` | Git Bash | SSH helper for the guest |
-| `sync-repo.sh [dir]` | Git Bash | Copies a checkout (no `.git`) into `~/ntpers-research` |
+| `GUEST_DEST=<name> sync-repo.sh [dir]` | Git Bash | Copies a checkout (no `.git`) into `~/<name>`; `GUEST_DEST` is required |
 | `guest-bootstrap.sh` | guest | Installs build dependencies (`ssh-guest.sh 'sh -s' < guest-bootstrap.sh`) |
 
 Start the guest (normal boot), then wait about a minute for SSH:

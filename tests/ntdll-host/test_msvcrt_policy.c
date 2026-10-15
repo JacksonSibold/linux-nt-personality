@@ -6,6 +6,7 @@
 #include "minitest.h"
 #include "msvcrt_policy.h"
 #include "msvcrt_format.h"
+#include "msvcrt_wformat.h"
 #include <stdarg.h>
 #include <string.h>
 
@@ -163,6 +164,99 @@ static void split_empty_and_limits(void)
     MT_EXPECT(ms_split_cmdline("abcde", buf, 6, argv, 4) == 1);
 }
 
+
+/* Narrow and wide formatters: length modifiers and %ls. The path probes build
+ * NT names with _snwprintf(L"\??\%ls\dir\\", root), so %ls must expand. */
+static void w_from_ascii(WCHAR *d, const char *s)
+{
+    while ((*d++ = (WCHAR)(unsigned char)*s++) != 0) { }
+}
+
+static int nfmt(char *out, SIZE_T n, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int r = my_vsprintf(out, n, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+static int wfmt(WCHAR *out, SIZE_T n, const char *fmt_ascii, ...)
+{
+    WCHAR fmt[256];
+    w_from_ascii(fmt, fmt_ascii);
+    va_list ap;
+    va_start(ap, fmt_ascii);
+    int r = ms_wformat(out, n, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+static void wide_ls_expands_the_wide_root(void)
+{
+    WCHAR root[16], out[128];
+    char got[128];
+    w_from_ascii(root, "C:\\tmp");
+    /* Same shape as the probe prefix, with %ls for the wide root. */
+    int r = wfmt(out, 128, "\\??\\%ls\\probe_path_direct\\", root);
+    for (int i = 0; i < 128; i++) got[i] = (char)out[i];
+    MT_EXPECT_EQ(r, 4 + 6 + 1 + 17 + 1);
+    MT_EXPECT(memcmp(got, "\\??\\C:\\tmp\\probe_path_direct\\", 29) == 0);
+    MT_EXPECT(out[r] == 0);
+}
+
+static void wide_ls_is_not_copied_as_literal_text(void)
+{
+    WCHAR root[4], out[64];
+    char got[64];
+    w_from_ascii(root, "X");
+    int r = wfmt(out, 64, "[%ls]", root);
+    for (int i = 0; i < 64; i++) got[i] = (char)out[i];
+    MT_EXPECT_EQ(r, 3);
+    MT_EXPECT(memcmp(got, "[X]", 4) == 0);
+}
+
+static void wide_length_modifiers_are_parsed(void)
+{
+    WCHAR out[64];
+    char got[64];
+    int r;
+
+    r = wfmt(out, 64, "%ld|%lu|%hs", (int)-5, (unsigned)7, "ab");
+    for (int i = 0; i < 64; i++) got[i] = (char)out[i];
+    MT_EXPECT_EQ(r, 7);
+    MT_EXPECT(memcmp(got, "-5|7|ab", 8) == 0);
+
+    r = wfmt(out, 64, "%I64d|%lld|%zu", (long long)-9000000000LL, (long long)1, (SIZE_T)12);
+    for (int i = 0; i < 64; i++) got[i] = (char)out[i];
+    MT_EXPECT(memcmp(got, "-9000000000|1|12", 16) == 0);
+
+    r = wfmt(out, 64, "%-4d|%04X", 3, 0xbeef);
+    for (int i = 0; i < 64; i++) got[i] = (char)out[i];
+    MT_EXPECT(memcmp(got, "3   |BEEF", 9) == 0);
+    (void)r;
+}
+
+static void wide_truncation_still_reports_minus_one(void)
+{
+    WCHAR out[4];
+    WCHAR root[8];
+    w_from_ascii(root, "abcdef");
+    MT_EXPECT_EQ(wfmt(out, 4, "%ls", root), -1);
+    MT_EXPECT(out[3] == 0);
+    MT_EXPECT_EQ(wfmt(out, 0, "x"), -1);
+}
+
+static void narrow_ls_expands_the_wide_root(void)
+{
+    WCHAR root[16];
+    char out[64];
+    w_from_ascii(root, "C:\\tmp");
+    int r = nfmt(out, sizeof(out), "%ls|%lc|%s", root, (int)L'Q', "z");
+    MT_EXPECT_EQ(r, 6 + 1 + 1 + 1 + 1);
+    MT_EXPECT(memcmp(out, "C:\\tmp|Q|z", 10) == 0);
+}
+
 static const mt_case_t cases[] = {
     MT_CASE(mul_accepts_products_that_fit),
     MT_CASE(mul_rejects_wrapping_products),
@@ -175,6 +269,11 @@ static const mt_case_t cases[] = {
     MT_CASE(split_plain_and_quoted),
     MT_CASE(split_backslashes),
     MT_CASE(split_empty_and_limits),
+    MT_CASE(wide_ls_expands_the_wide_root),
+    MT_CASE(wide_ls_is_not_copied_as_literal_text),
+    MT_CASE(wide_length_modifiers_are_parsed),
+    MT_CASE(wide_truncation_still_reports_minus_one),
+    MT_CASE(narrow_ls_expands_the_wide_root),
 };
 
 int main(void)

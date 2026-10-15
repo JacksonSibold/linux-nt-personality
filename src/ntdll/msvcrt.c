@@ -491,82 +491,9 @@ char *getenv(const char *name){
     return NULL;
 }
 
-/* Wide formatter for _snwprintf. %d %i %u %x %X %c (int as a wide character),
- * %s (wide string), %S (narrow string) and %% are supported, with the '-' and
- * '0' flags, a field width and a string precision. Returns the length, or -1
- * when the output and its NUL do not fit; the buffer then holds the cut text. */
-static void ms_wput(WCHAR *out, SIZE_T cap, SIZE_T *pos, int *trunc, WCHAR c){
-    if(*pos + 1 < cap) out[*pos] = c;
-    else *trunc = 1;
-    ++*pos;
-}
-static int ms_wformat(WCHAR *out, SIZE_T cap, const WCHAR *fmt, va_list ap){
-    SIZE_T pos = 0;
-    int trunc = 0;
-    for(SIZE_T i = 0; fmt[i]; ++i){
-        if(fmt[i] != '%'){ ms_wput(out, cap, &pos, &trunc, fmt[i]); continue; }
-        ++i;
-        int left = 0, zero = 0, width = 0, prec = -1;
-        while(fmt[i] == '-' || fmt[i] == '0'){ if(fmt[i] == '-') left = 1; else zero = 1; ++i; }
-        while(fmt[i] >= '0' && fmt[i] <= '9'){ width = width * 10 + (fmt[i] - '0'); ++i; }
-        if(fmt[i] == '.'){ ++i; prec = 0; while(fmt[i] >= '0' && fmt[i] <= '9'){ prec = prec * 10 + (fmt[i] - '0'); ++i; } }
-        if(fmt[i] == 0) break;
-        WCHAR wbuf[256];
-        SIZE_T wn = 0;
-        switch(fmt[i]){
-        case '%':
-            ms_wput(out, cap, &pos, &trunc, '%');
-            continue;
-        case 'c':
-            wbuf[0] = (WCHAR)va_arg(ap, int);
-            wn = 1;
-            break;
-        case 's': {
-            const WCHAR *s = va_arg(ap, const WCHAR *);
-            static const WCHAR nullw[] = { 0x28, 0x6E, 0x75, 0x6C, 0x6C, 0x29, 0 };
-            if(!s) s = nullw;
-            while(s[wn] && (prec < 0 || (int)wn < prec) && wn < 255){ wbuf[wn] = s[wn]; ++wn; }
-            break;
-        }
-        case 'S': {
-            const char *s = va_arg(ap, const char *);
-            if(!s) s = "(null)";
-            while(s[wn] && (prec < 0 || (int)wn < prec) && wn < 255){ wbuf[wn] = (WCHAR)(unsigned char)s[wn]; ++wn; }
-            break;
-        }
-        case 'd': case 'i': case 'u': case 'x': case 'X': {
-            unsigned long long v;
-            int neg = 0;
-            if(fmt[i] == 'd' || fmt[i] == 'i'){
-                long long sv = va_arg(ap, int);
-                if(sv < 0){ neg = 1; v = (unsigned long long)(-sv); }
-                else v = (unsigned long long)sv;
-            } else {
-                v = va_arg(ap, unsigned int);
-            }
-            unsigned base = (fmt[i] == 'x' || fmt[i] == 'X') ? 16u : 10u;
-            const char *digits = (fmt[i] == 'X') ? "0123456789ABCDEF" : "0123456789abcdef";
-            char tmp[32];
-            SIZE_T k = sizeof(tmp);
-            do { tmp[--k] = digits[v % base]; v /= base; } while(v && k > 0);
-            if(neg && k > 0) tmp[--k] = '-';
-            for(; k < sizeof(tmp); ++k) wbuf[wn++] = (WCHAR)tmp[k];
-            break;
-        }
-        default:
-            ms_wput(out, cap, &pos, &trunc, '%');
-            ms_wput(out, cap, &pos, &trunc, fmt[i]);
-            continue;
-        }
-        SIZE_T padn = ((SIZE_T)width > wn) ? (SIZE_T)width - wn : 0;
-        if(!left) for(SIZE_T j = 0; j < padn; ++j) ms_wput(out, cap, &pos, &trunc, zero ? '0' : ' ');
-        for(SIZE_T j = 0; j < wn; ++j) ms_wput(out, cap, &pos, &trunc, wbuf[j]);
-        if(left) for(SIZE_T j = 0; j < padn; ++j) ms_wput(out, cap, &pos, &trunc, ' ');
-    }
-    if(cap > 0) out[pos < cap ? pos : cap - 1] = 0;
-    if(trunc || cap == 0) return -1;
-    return (int)pos;
-}
+/* The wide formatter (ms_wformat) is in msvcrt_wformat.h, so the host suite can test it. */
+#include "msvcrt_wformat.h"
+
 int _snwprintf(WCHAR *buf, SIZE_T n, const WCHAR *fmt, ...){
     va_list ap;
     va_start(ap, fmt);
