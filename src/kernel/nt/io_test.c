@@ -506,6 +506,58 @@ TEST(scratch_root_keeps_trailing_dot)
 	PASS();
 }
 
+/* Separators and name shape (golden 26200.9457, probe_path). A slash is an ordinary name
+ * character. An empty component is 0xC0000033 in DOS-device names of ordinary length, and
+ * 0xC000003A in object-namespace names and in names of 384 characters or more. */
+TEST(path_separators)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	OBJECT_ATTRIBUTES oa;
+	LARGE_INTEGER alloc = { 0 };
+	char longpath[PATH_MAX];
+	char *p;
+	int i;
+
+	reset_state();
+	create_file_at("path/sub/deep.txt");
+	create_dir_at("path/sub");
+
+	oa = make_obj_attr("\\??\\C:\\path\\sub/deep.txt");
+	ASSERT_STATUS(nt_svc_NtCreateFile(&h, FILE_GENERIC_READ, &oa, &iosb,
+					  &alloc, 0, FILE_SHARE_READ,
+					  FILE_OPEN, FILE_NON_DIRECTORY_FILE,
+					  NULL, 0),
+		      STATUS_OBJECT_PATH_NOT_FOUND);
+
+	oa = make_obj_attr("\\??\\C:\\path\\\\sub\\deep.txt");
+	ASSERT_STATUS(nt_svc_NtCreateFile(&h, FILE_GENERIC_READ, &oa, &iosb,
+					  &alloc, 0, FILE_SHARE_READ,
+					  FILE_OPEN, FILE_NON_DIRECTORY_FILE,
+					  NULL, 0),
+		      STATUS_OBJECT_NAME_INVALID);
+
+	oa = make_obj_attr("\\nosuchdir\\\\deep.txt");
+	ASSERT_STATUS(nt_svc_NtCreateFile(&h, FILE_GENERIC_READ, &oa, &iosb,
+					  &alloc, 0, FILE_SHARE_READ,
+					  FILE_OPEN, FILE_NON_DIRECTORY_FILE,
+					  NULL, 0),
+		      STATUS_OBJECT_PATH_NOT_FOUND);
+
+	/* A directory opened with backup intent (kernel32 CreateFile with
+	 * FILE_FLAG_BACKUP_SEMANTICS) gives a handle. */
+	oa = make_obj_attr("\\??\\C:\\path\\sub");
+	ASSERT_STATUS(nt_svc_NtCreateFile(&h, FILE_GENERIC_READ, &oa, &iosb,
+					  &alloc, 0, FILE_SHARE_READ,
+					  FILE_OPEN,
+					  FILE_OPEN_FOR_BACKUP_INTENT |
+					  FILE_SYNCHRONOUS_IO_NONALERT,
+					  NULL, 0),
+		      STATUS_SUCCESS);
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 TEST(path_parsing)
 {
 	HANDLE h;
@@ -545,7 +597,7 @@ TEST(path_parsing)
 	nt_svc_NtClose(h);
 
 	/* Relative-to-handle open. */
-	oa = make_obj_attr("path/sub");
+	oa = make_obj_attr("path\\sub");
 	ASSERT_STATUS(nt_svc_NtCreateFile(&h, FILE_GENERIC_READ, &oa, &iosb,
 					  &alloc, 0, FILE_SHARE_READ,
 					  FILE_OPEN, FILE_DIRECTORY_FILE,
@@ -2013,7 +2065,7 @@ TEST(query_directory_scan)
 		      STATUS_ACCESS_VIOLATION);
 
 	/* A regular file handle is not a directory. */
-	ASSERT_STATUS(open_test_file("qdir/a.txt", FILE_GENERIC_READ,
+	ASSERT_STATUS(open_test_file("qdir\\a.txt", FILE_GENERIC_READ,
 				     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &fh),
 		      STATUS_SUCCESS);
@@ -2476,6 +2528,7 @@ int main(void)
 	RUN(share_mode_matrix);
 	RUN(byte_round_trip);
 	RUN(access_denied_on_valid_handle);
+	RUN(path_separators);
 	RUN(path_parsing);
 	RUN(iocp_ordering);
 	RUN(iocp_concurrency);

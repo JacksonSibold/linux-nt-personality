@@ -318,6 +318,9 @@ static bool is_reserved_name(const char *comp) {
 #define STATUS_NAME_TOO_LONG ((NTSTATUS)0xC0000106L)
 #endif
 
+#ifndef KSHIM_NT_EMPTY_COMPONENT_LIMIT
+#define KSHIM_NT_EMPTY_COMPONENT_LIMIT 384
+#endif
 NTSTATUS kshim_ntpath_to_linux(const struct _UNICODE_STRING *us, char *out, size_t outlen) {
     if (!us || !us->Buffer || !out || outlen==0) return STATUS_OBJECT_NAME_INVALID;
     /* Heap-allocate large buffers to avoid kernel stack overflow (was 12KB stack). */
@@ -356,16 +359,31 @@ NTSTATUS kshim_ntpath_to_linux(const struct _UNICODE_STRING *us, char *out, size
     }
     wpath[chars]='\0';
 
-    /* NT layer rejects forward slash for absolute NT paths (probe_path: forward slash in device prefix is INVALID),
-       but relative Win32-style paths like "path/sub" used as RootDirectory-relative must be allowed and normalized.
-       We therefore only reject '/' when the path is absolute (starts with '\' or drive letter with ':'). */
-    if (strchr(wpath, '/') && (wpath[0]=='\\' || wpath[0]=='/' || (chars>=2 && wpath[1]==':'))) {
+    /* Golden 26200.9457 (probe_path): a slash is an ordinary character of an NT name, not a
+     * separator. The directory before it is missing, so the lookup is PATH_NOT_FOUND. */
+    if (strchr(wpath, '/')) {
 #ifdef __KERNEL__
         kfree(wpath); kfree(rel); kfree(combined);
 #else
         free(wpath); free(rel); free(combined);
 #endif
-        return STATUS_OBJECT_NAME_INVALID;
+        return STATUS_OBJECT_PATH_NOT_FOUND;
+    }
+    /* An empty component is 0xC0000033 inside a DOS-device or device name shorter than
+     * KSHIM_NT_EMPTY_COMPONENT_LIMIT characters, and 0xC000003A otherwise (the same rule as
+     * io.c kshim_ntpath_to_linux; golden 26200.9457, probe_path). A \?\ prefix is always
+     * 0xC0000033. */
+    if (strstr(wpath, "\\\\")) {
+        int dos_or_dev = strncmp(wpath, "\\??\\", 4) == 0 || strncmp(wpath, "\\Device\\", 8) == 0;
+        NTSTATUS e = STATUS_OBJECT_PATH_NOT_FOUND;
+        if (strncmp(wpath, "\\\\?\\", 4) == 0) e = STATUS_OBJECT_NAME_INVALID;
+        else if (dos_or_dev && chars < KSHIM_NT_EMPTY_COMPONENT_LIMIT) e = STATUS_OBJECT_NAME_INVALID;
+#ifdef __KERNEL__
+        kfree(wpath); kfree(rel); kfree(combined);
+#else
+        free(wpath); free(rel); free(combined);
+#endif
+        return e;
     }
 
     /* Normalize backslashes to forward slash for internal processing, but keep original for prefix detection */

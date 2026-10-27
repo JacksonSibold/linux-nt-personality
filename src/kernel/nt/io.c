@@ -152,6 +152,10 @@ int kshim_vfs_mkdir(const char *path, umode_t mode)
     return (int)do_mkdirat(AT_FDCWD, name, mode);
 }
 
+/* A name of this many characters or more fails its lookup (PATH_NOT_FOUND) before an empty
+ * component is reached; shorter names report NAME_INVALID. See kshim_ntpath_to_linux. */
+#define NT_EMPTY_COMPONENT_LIMIT 384
+
 /*
  * Kernel NT path translation – matches userspace kshim_ntpath_to_linux and
  * the golden probe_path.json (26200.9168).  Key rules:
@@ -220,10 +224,26 @@ NTSTATUS kshim_ntpath_to_linux(const UNICODE_STRING *us, char *out, size_t outle
             goto out_free;
         }
     }
-    /* Double separator anywhere (\\, //, \/, /\) is INVALID per live probe:
-     * \??\C:\tmp\...\\file.txt -> 0xC0000033 */
-    if (strstr(wpath, "\\\\") || strstr(wpath, "//") || strstr(wpath, "\\/") || strstr(wpath, "/\\")) {
-        _ret = STATUS_OBJECT_NAME_INVALID;
+    /* An empty component ("\\") is not a valid name inside \??\ or \Device\: golden 26200.9457
+     * (probe_path, sep "\\") is 0xC0000033. A name of NT_EMPTY_COMPONENT_LIMIT characters or
+     * more fails its lookup before the empty component is reached (0xC000003A). The golden
+     * boundary is between 290 and 394 characters (root scrubbed), see io_test path_parsing.
+     * In the object namespace (rooted, no \??\ and no \Device\) the first lookup fails before
+     * the empty component (golden prefix 4: 0xC000003A in every case). */
+    if (strstr(wpath, "\\\\")) {
+        bool dos_or_dev = strncmp(wpath, "\\??\\", 4) == 0 ||
+                          strncmp(wpath, "\\Device\\", 8) == 0;
+        if (!dos_or_dev || chars >= NT_EMPTY_COMPONENT_LIMIT)
+            _ret = STATUS_OBJECT_PATH_NOT_FOUND;
+        else
+            _ret = STATUS_OBJECT_NAME_INVALID;
+        goto out_free;
+    }
+    /* A "/" is an ordinary character of an NT name, not a separator. kernel32 turns Win32
+     * names into "\" separators, so a "/" here is part of a component. The directory before
+     * it is missing in golden 26200.9457 (probe_path, sep "/"): 0xC000003A in every case. */
+    if (strchr(wpath, '/')) {
+        _ret = STATUS_OBJECT_PATH_NOT_FOUND;
         goto out_free;
     }
     /* Long path: Windows MAX_PATH 260. For \??\ paths exceeding 260, NT returns

@@ -5,6 +5,59 @@ host QEMU with `-kernel`. Oracle: host-captured Windows goldens `tests/different
 Comparator: the repo's own `tests/differential/dualrun.py` (`normalize_json`, `diff_jsons`, `evaluate_probe`),
 called by `tools/linux-env/probe_results.py compare`.
 
+## Baseline on main 79a5871, probes4 cycle (2026-10-27, NONVM probes, not yet fixed)
+
+Measured on the kernel built from `origin/main` 79a5871 (guest `kfast/linux-src` bzImage, 1160192 bytes) with the NONVM
+probe image built from the same sources. Serial log: host `linux-env\probes4-run\probes-base-serial.log`.
+All 15 probes reach their end marker with exit 0. Matched/golden leaves per probe:
+
+| probe | matched / golden | verdict |
+|---|---|---|
+| probe_directory | 64 / 67 | FAIL |
+| probe_exception | 61 / 76 | FAIL |
+| probe_fileinfo | 184 / 221 | FAIL |
+| probe_handles | 99 / 111 | FAIL |
+| probe_namedpipe | 3 / 45 | FAIL |
+| probe_ntstatus | 2191 / 2199 | FAIL |
+| probe_path | 55105 / 72523 | FAIL |
+| probe_peloader | 33 / 34 | FAIL |
+| probe_process_thread | 0 / 182 | FAIL |
+| probe_registry | 128 / 140 | FAIL |
+| probe_section | 128 / 129 | FAIL |
+| probe_sharemode | 458857 / 458857 | PASS |
+| probe_sync | 0 / 74 | FAIL |
+| probe_teb_peb | 81 / 104 | FAIL |
+| probe_virtualquery | 139 / 139 | PASS |
+
+Root causes found in this cycle, with the state of each fix:
+
+- probe_path, nt_path display (`%lc`): the probe's `printf("%lc")` is MinGW's own pformat, which converts the wide
+  character with `wcrtomb` under the msvcrt locale code page. The shim sets the code page to 65001 (UTF-8) with
+  one byte per character, so no letter is emitted and only the `\` escapes print. Fix: code page 1252 (CP_ACP), in
+  `src/ntdll/msvcrt.c`. Not yet booted.
+- probe_path, relative cases (1250 cases, 0xC0000008): `CreateFileA` with `FILE_FLAG_BACKUP_SEMANTICS` on a directory
+  returns INVALID_HANDLE_VALUE in the guest, so the RootDirectory handle is -1. The host model opens the directory
+  (`io_test` `path_separators`), so the failure is in the guest-side open or kernel32 path. Not diagnosed.
+- probe_path, converter rules: slash is an ordinary name character, the empty component is 0xC0000033 in DOS-device
+  names under 384 characters and 0xC000003A in the object namespace (`src/kernel/nt/io.c`, `kshim.c`). Host tests
+  pass (`io_test` 42 of 42). Not yet booted; the 384-character boundary is fitted to the golden (290 and 394
+  display characters, root scrubbed).
+
+After, on a fresh kernel tree (`/big/probes4/linux`: pristine linux-6.18.56, sha256 verified, `ntpers_kpatch.py`,
+`PROFILE=min` config, `make -j20 bzImage`) with the converter rules of commit be65508: probe_path 55105 to 60565 of
+72523; every other probe unchanged; probe_sharemode and probe_virtualquery still PASS. The msvcrt code page change is
+not in the booted DLL yet (`src/ntdll/out/msvcrt.dll` predates the edit), so the nt_path display is still broken.
+Regression on the same kernel (`/big/probes4/linux`, step images from `kernel-drvkernel`, boot runner on the host):
+M0 exit 42 (expected 42); S1 0; S2 to S4 0; S5 53 (expected 53); S6 to S13 0, S13 with `ntpers_driver=hello_drv`
+(the S11 run has the 1200 s bound, it passed well inside it). No Oops or BUG line in any serial log. This is a
+regression check of the path-rule kernel only; the msvcrt code page change was reverted (no measured effect).
+Not yet done: 0xC0000008 diagnosis, groups 2 and 3, M0 and S1-S13 regression boots.
+
+Build blocker, now resolved by the fresh tree (kept for the record): `vm/incremental-kernel.sh` reports its kpatch edits as applied, but
+`arch/x86/nt/{proc_thread,weak,dispatch,nt_services}.c` in the guest tree differ from the repo sources, so the
+kernel does not link (`nt_exc_user_trap` undefined). Until that copy is resolved the kernel cannot be rebuilt from
+this worktree.
+
 ## Exception dispatch, 2026-10-15 (branch `haiku/seh`)
 
 NONVM probes on the rebuilt kernel (`docs/status/KERNEL-BOOT.md`, section "User-mode exception delivery"). All 15 reach
