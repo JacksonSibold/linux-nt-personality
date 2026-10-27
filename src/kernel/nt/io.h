@@ -427,6 +427,9 @@ struct nt_file_object {
 
 	struct file *filp;
 	struct dentry *dentry; /* borrowed ref to the opened dentry */
+	/* Driver-host device handle (driver/drvhost_svc.c) for a file that names a driver
+	 * device; NULL otherwise. Such a file has no filp. Closed with the file. */
+	void *drv_handle;
 
 	ACCESS_MASK granted_access;
 	ULONG share_access;

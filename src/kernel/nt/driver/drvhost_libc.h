@@ -10,6 +10,7 @@
 #ifdef __KERNEL__
 #include <linux/ctype.h>
 #include <linux/errno.h>
+#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/slab.h>

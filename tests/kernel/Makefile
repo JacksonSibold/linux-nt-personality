@@ -123,3 +123,13 @@ clean:
 	rm -rf $(BINDIR)/*.exe
 
 .PHONY: all clean
+
+# S13: a userspace PE loads the kernel driver hello_drv.sys (tests/kernel-drivers) through
+# NtLoadDriver, opens its device, round-trips two IOCTLs and unloads it. Needs the driver
+# host and the device bridge in the kernel (io.c, driver/drvhost_svc.c).
+S13_EXES := $(BINDIR)/console_s13.exe
+
+$(BINDIR)/console_s13.exe: s13/console_s13.c $(BINDIR)/libntdll_imp.a
+	$(CC) -nostdlib -Wl,-e,_start -Wl,--no-seh -Wl,--no-insert-timestamp -Os -s -ffreestanding -fno-builtin -fno-stack-protector -o $@ $< -L$(BINDIR) -lntdll_imp
+
+s13: $(S13_EXES)

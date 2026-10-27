@@ -732,6 +732,17 @@ static void ntio_locks_drop_owner(struct nt_file_object *file)
 
 static void ntio_dir_clear(struct nt_file_object *file);
 
+/*
+ * Driver-host device bridge (driver/drvhost_svc.c). Weak: a build without the driver
+ * host has no definitions, the hooks are NULL, and the io path is unchanged. An open
+ * the driver host does not own returns STATUS_OBJECT_NAME_NOT_FOUND and falls through.
+ */
+NTSTATUS dh_io_open_device(POBJECT_ATTRIBUTES oa, ACCESS_MASK access, void **out)
+	__attribute__((weak));
+NTSTATUS dh_io_device_ioctl(void *h, ULONG code, void *in, ULONG inlen, void *out,
+			    ULONG outlen, ULONG *info) __attribute__((weak));
+void dh_io_device_close(void *h) __attribute__((weak));
+
 static void ntio_file_release(struct kref *ref)
 {
 	struct nt_file_object *file = container_of(ref, struct nt_file_object, ref);
@@ -743,6 +754,8 @@ static void ntio_file_release(struct kref *ref)
 	}
 	if (file->filp)
 		kshim_filp_close(file->filp);
+	if (file->drv_handle && dh_io_device_close)
+		dh_io_device_close(file->drv_handle);
 	ntio_unregister_share(file);
 	kfree(file->linux_path);
 	kfree(file);
@@ -1962,6 +1975,86 @@ static NTSTATUS ntio_read_alloc_size(PLARGE_INTEGER AllocationSize, LONGLONG *ou
 	return STATUS_SUCCESS;
 }
 
+/*
+ * Tries the driver host first. *claimed is set when the driver host owns the name;
+ * then the returned status is the answer. Otherwise the caller takes the io path.
+ */
+static NTSTATUS ntio_driver_open(PHANDLE __user FileHandle,
+				 POBJECT_ATTRIBUTES __user obj_attr,
+				 ACCESS_MASK access, bool *claimed)
+{
+	struct nt_file_object *file;
+	void *h = NULL;
+	NTSTATUS st;
+
+	*claimed = false;
+	if (!dh_io_open_device)
+		return STATUS_OBJECT_NAME_NOT_FOUND;
+	st = dh_io_open_device(obj_attr, access, &h);
+	if (st == STATUS_OBJECT_NAME_NOT_FOUND)
+		return st;
+	*claimed = true;
+	if (!NT_SUCCESS(st))
+		return st;
+	file = ntio_alloc_file_object();
+	if (!file) {
+		dh_io_device_close(h);
+		return STATUS_INSUFFICIENT_RESOURCES;
+	}
+	file->drv_handle = h;
+	file->granted_access = access;
+	st = ntio_handle_create(file, access, FileHandle);
+	if (!NT_SUCCESS(st))
+		ntio_file_put(file);	/* the release closes the driver handle */
+	return st;
+}
+
+/* IOCTL on a driver device file: bounce the buffers through kernel memory, call the
+ * driver host, copy the output and the IO_STATUS_BLOCK back. */
+static NTSTATUS ntio_driver_ioctl(struct nt_file_object *f, ULONG code,
+				  PVOID __user in, ULONG inlen,
+				  PVOID __user out, ULONG outlen,
+				  PIO_STATUS_BLOCK __user iosb)
+{
+	void *kin = NULL, *kout = NULL;
+	ULONG info = 0;
+	NTSTATUS st;
+
+	if (inlen > 65536 || outlen > 65536)
+		return STATUS_INVALID_PARAMETER;
+	if (inlen) {
+		kin = kmalloc(inlen, GFP_KERNEL);
+		if (!kin)
+			return STATUS_INSUFFICIENT_RESOURCES;
+		if (!in || copy_from_user(kin, in, inlen)) {
+			kfree(kin);
+			return STATUS_ACCESS_VIOLATION;
+		}
+	}
+	if (outlen) {
+		kout = kzalloc(outlen, GFP_KERNEL);
+		if (!kout) {
+			kfree(kin);
+			return STATUS_INSUFFICIENT_RESOURCES;
+		}
+	}
+	st = dh_io_device_ioctl(f->drv_handle, code, kin, inlen, kout, outlen, &info);
+	if (info > outlen)
+		info = outlen;
+	if (kout && info && out && copy_to_user(out, kout, info))
+		st = STATUS_ACCESS_VIOLATION;
+	if (iosb) {
+		IO_STATUS_BLOCK k;
+		k.DUMMYUNIONNAME.Status = st;
+		k.Information = info;
+		if (copy_to_user(iosb, &k, sizeof(k)))
+			st = STATUS_ACCESS_VIOLATION;
+	}
+	kfree(kin);
+	kfree(kout);
+	return st;
+}
+
 NTSTATUS nt_svc_NtCreateFile(PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
 			     POBJECT_ATTRIBUTES ObjectAttributes,
 			     PIO_STATUS_BLOCK IoStatusBlock,
@@ -1982,6 +2075,13 @@ NTSTATUS nt_svc_NtCreateFile(PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
 	if (!NT_SUCCESS(ast))
 		return ast;
 
+	{
+		bool claimed;
+		NTSTATUS dst = ntio_driver_open(FileHandle, ObjectAttributes,
+						DesiredAccess, &claimed);
+		if (claimed)
+			return dst;
+	}
 	return ntio_open_file(FileHandle, ObjectAttributes, DesiredAccess,
 			      ShareAccess, CreateDisposition, CreateOptions,
 			      IoStatusBlock, false, alloc);
@@ -1993,6 +2093,13 @@ NTSTATUS nt_svc_NtOpenFile(PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
 			   ULONG ShareAccess,
 			   ULONG OpenOptions)
 {
+	{
+		bool claimed;
+		NTSTATUS dst = ntio_driver_open(FileHandle, ObjectAttributes,
+						DesiredAccess, &claimed);
+		if (claimed)
+			return dst;
+	}
 	return ntio_open_file(FileHandle, ObjectAttributes, DesiredAccess,
 			      ShareAccess, FILE_OPEN, OpenOptions,
 			      IoStatusBlock, true, 0);
@@ -3383,14 +3490,26 @@ NTSTATUS nt_svc_NtDeviceIoControlFile(HANDLE FileHandle, HANDLE Event,
 				      PVOID InputBuffer, ULONG InputBufferLength,
 				      PVOID OutputBuffer, ULONG OutputBufferLength)
 {
+	struct nt_file_object *f;
+	NTSTATUS st;
+
 	(void)Event;
 	(void)ApcRoutine;
 	(void)ApcContext;
-	(void)IoControlCode;
+	f = ntio_handle_lookup(FileHandle, 0);
+	if (f && f->magic == NTIO_FILE_MAGIC && f->drv_handle) {
+		st = ntio_driver_ioctl(f, IoControlCode, InputBuffer, InputBufferLength,
+				       OutputBuffer, OutputBufferLength, IoStatusBlock);
+		ntio_file_put(f);
+		return st;
+	}
+	if (f)
+		ntio_file_put(f);
 	(void)InputBuffer;
 	(void)InputBufferLength;
 	(void)OutputBuffer;
 	(void)OutputBufferLength;
+	(void)IoControlCode;
 	return ntio_control_common(FileHandle, IoStatusBlock);
 }
 

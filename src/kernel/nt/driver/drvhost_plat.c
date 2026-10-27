@@ -217,7 +217,14 @@ void dh_free(void *p)
  * their final permissions. vmalloc areas can have their permissions changed. */
 void *dh_map_image(size_t n)
 {
-    return vzalloc(n);
+    /* Module-style lifecycle: set_memory_* changes the direct-map alias of these
+     * pages too. VM_FLUSH_RESET_PERMS makes vfree restore that alias before the
+     * pages go back to the allocator. Without it a freed image page could come
+     * back read-only in the direct map and fault when reused. */
+    void *p = vzalloc(n);
+    if (p)
+        set_vm_flush_reset_perms(p);
+    return p;
 }
 
 int dh_protect_rx(void *p, size_t n, int exec, int write)
@@ -226,9 +233,14 @@ int dh_protect_rx(void *p, size_t n, int exec, int write)
     int pages = (int)DIV_ROUND_UP(n, PAGE_SIZE);
     int rc;
     if (!p || (addr & (PAGE_SIZE - 1)) || pages <= 0) return -1;
-    rc = write ? set_memory_rw(addr, pages) : set_memory_ro(addr, pages);
-    if (rc) return -1;
-    rc = exec ? set_memory_x(addr, pages) : set_memory_nx(addr, pages);
+    /* One call per combination, as the module loader does (set_memory_rox for
+     * text), so no page is ever left writable and executable. */
+    if (write)
+        rc = set_memory_rw(addr, pages) ? -1 : (exec ? set_memory_x(addr, pages) : set_memory_nx(addr, pages));
+    else if (exec)
+        rc = set_memory_rox(addr, pages);
+    else
+        rc = set_memory_ro(addr, pages) ? -1 : set_memory_nx(addr, pages);
     return rc ? -1 : 0;
 }
 
@@ -248,7 +260,10 @@ int dh_read_file(const char *path, unsigned char **out, size_t *len)
     unsigned char *buf;
     ssize_t got;
     f = filp_open(path, O_RDONLY, 0);
-    if (IS_ERR(f)) return -1;
+    if (IS_ERR(f)) {
+        pr_info("drvhost: open %s failed: %ld\n", path, PTR_ERR(f));
+        return -1;
+    }
     size = i_size_read(file_inode(f));
     if (size <= 0 || size > DH_MAX_FILE) { filp_close(f, NULL); return -1; }
     buf = kvmalloc((size_t)size, GFP_KERNEL);

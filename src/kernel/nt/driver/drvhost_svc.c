@@ -183,8 +183,10 @@ DRVCALL NTSTATUS NtLoadDriver(PUNICODE_STRING RegistryPath)
 {
     char buf[DH_NAME_MAX];
     const char *svc = service_of_registry_path(RegistryPath, buf, sizeof buf);
+    NTSTATUS st;
     if (!svc || !*svc) return STATUS_INVALID_PARAMETER;
-    return NtLoadDriverInternal(svc);
+    st = NtLoadDriverInternal(svc);
+    return st;
 }
 
 DRVCALL NTSTATUS ZwLoadDriver(PUNICODE_STRING RegistryPath)
@@ -314,6 +316,8 @@ NTSTATUS drvhost_pnp_remove(const char *service_name, PDEVICE_OBJECT pdo)
 int drvhost_init(void)
 {
     if (g_inited) return 0;
+    if (!g_system_root[0])
+        drvhost_set_system_root("/windows/system32");
     memset(&g_bus_driver, 0, sizeof g_bus_driver);
     g_bus_driver.Type = 4;
     g_bus_driver.Size = (CSHORT)sizeof(DRIVER_OBJECT);
@@ -380,14 +384,30 @@ static NTSTATUS dh_copy_user_unistr(const UNICODE_STRING __user *u, UNICODE_STRI
     return STATUS_SUCCESS;
 }
 
+static void dh_install_cmdline_service(void);
+
 NTSTATUS dh_user_load_driver(void *RegistryPath)
 {
     UNICODE_STRING k;
     WCHAR *b = NULL;
+    drvhost_init();   /* sets the default \SystemRoot\ before any image path resolves */
+    dh_install_cmdline_service();
     NTSTATUS st = dh_copy_user_unistr((const UNICODE_STRING __user *)RegistryPath, &k, &b);
     if (!NT_SUCCESS(st))
         return st;
-    st = NtLoadDriver(&k);
+    {
+        /* Load = DriverEntry, then one PnP enumeration of the service's device
+         * (AddDevice creates the device object the NT name refers to). */
+        char svc[DH_NAME_MAX];
+        const char *name = service_of_registry_path(&k, svc, sizeof svc);
+        PDEVICE_OBJECT pdo = NULL;
+        st = NtLoadDriver(&k);
+        if (NT_SUCCESS(st) && name) {
+            NTSTATUS e = drvhost_pnp_enumerate(name, "Pdo0", &pdo);
+            if (!NT_SUCCESS(e))
+                st = e;
+        }
+    }
     dh_free(b);
     return st;
 }
@@ -402,5 +422,90 @@ NTSTATUS dh_user_unload_driver(void *RegistryPath)
     st = NtUnloadDriver(&k);
     dh_free(b);
     return st;
+}
+#endif /* __KERNEL__ */
+
+#ifdef __KERNEL__
+/*
+ * Device bridge for the io layer (io.c, weak hooks). The io layer passes the caller's
+ * OBJECT_ATTRIBUTES. The name is copied in here, and the driver host's own NtCreateFile
+ * opens it. STATUS_OBJECT_NAME_NOT_FOUND means the driver host does not own the name,
+ * and the io layer falls through to its own open.
+ */
+/*
+ * Boot-time service install. User mode cannot write HKLM (registry policy), so the
+ * service record a test driver needs comes from the kernel command line:
+ *   ntpers_driver=NAME:\SystemRoot\path\to\image.sys
+ * It is installed once, on the first driver load, through drvhost_service_add.
+ */
+static char g_cmdline_service[256];
+
+static int __init dh_cmdline_service_setup(char *s)
+{
+    strscpy(g_cmdline_service, s, sizeof g_cmdline_service);
+    return 1;
+}
+__setup("ntpers_driver=", dh_cmdline_service_setup);
+
+static void dh_install_cmdline_service(void)
+{
+    static int done;
+    char *image;
+    if (done || !g_cmdline_service[0])
+        return;
+    done = 1;
+    image = strchr(g_cmdline_service, ':');
+    if (!image)
+        return;
+    *image++ = 0;
+    if (drvhost_service_add(g_cmdline_service, image, 1, 3) != 0)
+        pr_warn("drvhost: boot service %s not installed\n", g_cmdline_service);
+}
+
+NTSTATUS dh_io_open_device(POBJECT_ATTRIBUTES oa_user, ACCESS_MASK access, void **out)
+{
+    OBJECT_ATTRIBUTES k_oa, oa;
+    UNICODE_STRING k_us;
+    WCHAR *buf = NULL;
+    IO_STATUS_BLOCK iosb;
+    HANDLE h = NULL;
+    NTSTATUS st;
+
+    if (!oa_user || !access_ok(oa_user, sizeof(k_oa)) || copy_from_user(&k_oa, oa_user, sizeof(k_oa)))
+        return STATUS_ACCESS_VIOLATION;
+    if (!k_oa.ObjectName || k_oa.RootDirectory)
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    st = dh_copy_user_unistr((const UNICODE_STRING __user *)k_oa.ObjectName, &k_us, &buf);
+    if (st == STATUS_INVALID_PARAMETER)
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    if (!NT_SUCCESS(st))
+        return st;
+    drvhost_init();
+    memset(&oa, 0, sizeof oa);
+    oa.Length = sizeof oa;
+    oa.ObjectName = &k_us;
+    oa.Attributes = k_oa.Attributes;
+    st = NtCreateFile(&h, access, &oa, &iosb, NULL, 0, 3 /* FILE_SHARE_READ|WRITE */,
+                      1 /* FILE_OPEN */, 0, NULL, 0);
+    dh_free(buf);
+    if (!NT_SUCCESS(st))
+        return st;
+    *out = h;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS dh_io_device_ioctl(void *h, ULONG code, void *in, ULONG inlen, void *out,
+                            ULONG outlen, ULONG *info)
+{
+    IO_STATUS_BLOCK iosb;
+    NTSTATUS st = NtDeviceIoControlFile((HANDLE)h, NULL, NULL, NULL, &iosb, code,
+                                        in, inlen, out, outlen);
+    *info = (ULONG)iosb.Information;
+    return st;
+}
+
+void dh_io_device_close(void *h)
+{
+    CloseHandle((HANDLE)h);
 }
 #endif /* __KERNEL__ */

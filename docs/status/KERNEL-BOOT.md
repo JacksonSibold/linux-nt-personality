@@ -1,5 +1,44 @@
 # NT personality kernel: build, boot and M0 status
 
+## Device bridge and S13 (branch `drvkernel`, 2026-10-27)
+
+**What landed.** `NtCreateFile` and `NtOpenFile` try the driver host first (`io.c`, `ntio_driver_open`). The driver host
+(`driver/drvhost_svc.c`, `dh_io_open_device`) copies the object name and opens it with its own `NtCreateFile`. A name it
+does not own returns `STATUS_OBJECT_NAME_NOT_FOUND`, and the io layer falls through to its own open. The file object
+carries the driver handle (`nt_file_object.drv_handle`). `NtDeviceIoControlFile` on such a handle bounces the buffers
+through kernel memory and calls the driver host (`ntio_driver_ioctl`). `NtClose` releases the handle through the file
+release (`dh_io_device_close`). The hooks are weak, so builds without the driver host keep the old io path.
+`dh_user_load_driver` now calls `drvhost_init` first (it sets `\SystemRoot\`), installs the boot-time service record
+(see below), runs `NtLoadDriver`, then one PnP enumeration of the service (`AddDevice` creates the device).
+
+**Boot-time service record.** User mode cannot write HKLM (`registry.c` denies `KEY_SET_VALUE` and `KEY_CREATE_SUB_KEY`
+under `\Registry\Machine`), so the record a driver needs cannot be created by a user PE. The kernel command line
+`ntpers_driver=NAME:\SystemRoot\...` installs it once, through `drvhost_service_add`. S13 is booted with that parameter.
+
+**S13 client** (`tests/kernel/s13/console_s13.c`, `make -C tests/kernel s13`): `NtLoadDriver`, `NtCreateFile` on
+`\??\HelloDrv`, `IOCTL_HELLO_PING` (expects `'HELO'`, version `0x00010000`), `IOCTL_HELLO_ADD` (`0xFFFFFFFF + 1`,
+expects `0x100000000`), `NtClose`, `NtUnloadDriver`. Expected values are in the source. Exit 0 on pass; 12, 13, 14, 15,
+16, 17 name the first failing step.
+
+**S13 result: PASSES** (`tests/kernel/s13/console_s13.c`, exit 0). The client logs `S13 <step> begin` and `S13 <step> end
+status <n>` for load, open, ping, add, close and unload to the serial console, then `S13 PASS`. Every step returns 0, and
+the IOCTL values are checked against constants written in the source (`'HELO'`, `0x00010000`, `0x100000000`).
+
+**Root cause of the earlier oops (fixed).** S13 unloads the driver before the process exits. `vfree` returned the image
+pages with their direct-map aliases still read-only: `set_memory_*` on the vmalloc image changes those aliases, and
+`vzalloc` does not restore them unless the area is flagged `VM_FLUSH_RESET_PERMS`. The freed pages were then reused for a
+page table, and the exit path's write faulted. Fix (`driver/drvhost_plat.c`): `dh_map_image` calls
+`set_vm_flush_reset_perms`, and `dh_protect_rx` uses `set_memory_rox` for text and `ro`+`nx` or `rw`+`x`/`nx` otherwise,
+one module-style call per combination, so no page is ever writable and executable. The execute bit is not skipped.
+
+**Boots on the final kernel** (`bzImage` sha256 `6ee36f930060f2cd...`, copied to `C:\Users\Jackson\repos\linux-env\kernel-drvkernel`):
+M0 42 (expected 42) PASS; S1 (no DLL) 0 PASS; S2 to S4 and S6 to S13 0 PASS; S5 53 PASS; no `Oops` or `BUG:` in any
+serial log; NONVM probes `NTPERS_ALL_DONE`, 15 of 15 exit 0, match counts unchanged from the previous section.
+
+**Boots on this kernel.** The full boot set (M0, S1 with no DLL, S2 to S12, NONVM probes) ran on the kernel with the
+bridge, before the final load-path change, which only S13 exercises. M0 42 PASS, S1 0 PASS, S2 to S4 and S6 to S12 PASS
+(S5 53), NONVM probes 15 of 15 exit 0 with the same match counts as the previous section. S13 PASS on the final kernel (see the S13 result above).
+
 ## Driver host in the kernel, partial (branch `drvkernel`, 2026-10-27)
 
 **Scope.** The NT driver host (`src/kernel/nt/driver/`) is now compiled into the personality kernel, and
