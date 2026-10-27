@@ -286,7 +286,10 @@ NTSTATUS kshim_ntpath_to_linux(const UNICODE_STRING *us, char *out, size_t outle
         while (*p && *p != '\\' && *p != '/') p++;
         size_t clen = p - start;
         if (clen == 0) continue;
-        if (clen > NAME_MAX) { _ret = STATUS_OBJECT_NAME_INVALID; goto out_free; }
+        /* A component over NAME_MAX fails its lookup as PATH_NOT_FOUND (golden 26200.9457,
+         * probe_path: 236 generated paths of 281 to 307 characters with a 255 to 260 character
+         * component, no double separator; every such \??\, \Device\ and rooted name is C000003A). */
+        if (clen > NAME_MAX) { _ret = STATUS_OBJECT_PATH_NOT_FOUND; goto out_free; }
         char comp[NAME_MAX+1];
         memcpy(comp, start, clen);
         comp[clen] = '\0';
@@ -1197,6 +1200,27 @@ static NTSTATUS ntio_resolve_ci(char *path)
  * If RootDirectory is supplied, the ObjectName is relative to that handle's
  * directory.
  */
+/*
+ * True if a component of a UTF-16 name is longer than NAME_MAX. A name relative to
+ * RootDirectory with such a component is STATUS_OBJECT_NAME_INVALID (golden 26200.9457,
+ * probe_path relative cases with 256 to 259 character components). An absolute name with
+ * one is STATUS_OBJECT_PATH_NOT_FOUND (kshim_ntpath_to_linux).
+ */
+static bool ntio_relative_long_component(const WCHAR *name, size_t chars)
+{
+	size_t run = 0;
+	for (size_t i = 0; i < chars; i++) {
+		WCHAR wc = name[i];
+		if (wc == '\\' || wc == '/') {
+			run = 0;
+			continue;
+		}
+		if (++run > NAME_MAX)
+			return true;
+	}
+	return false;
+}
+
 NTSTATUS ntio_resolve_path(POBJECT_ATTRIBUTES __user obj_attr, char *linux_path,
 			   size_t pathlen, bool *is_dir)
 {
@@ -1250,6 +1274,11 @@ NTSTATUS ntio_resolve_path(POBJECT_ATTRIBUTES __user obj_attr, char *linux_path,
 		/* need to keep root alive until after resolve - will put after */
 		if (parent_path) {
 			char rel[PATH_MAX];
+			if (ntio_relative_long_component(full.Buffer, full.Length / sizeof(WCHAR))) {
+				ntio_file_put(root);
+				kfree(k_buf);
+				return STATUS_OBJECT_NAME_INVALID;
+			}
 			status = kshim_ntpath_to_linux(&full, rel, sizeof(rel));
 			if (!NT_SUCCESS(status)) {
 				ntio_file_put(root);

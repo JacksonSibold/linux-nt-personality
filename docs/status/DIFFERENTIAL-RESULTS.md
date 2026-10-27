@@ -5,6 +5,33 @@ host QEMU with `-kernel`. Oracle: host-captured Windows goldens `tests/different
 Comparator: the repo's own `tests/differential/dualrun.py` (`normalize_json`, `diff_jsons`, `evaluate_probe`),
 called by `tools/linux-env/probe_results.py compare`.
 
+## probes6 cycle: over-length path components (2026-10-27)
+
+Tree: branch `probes6` from `origin/main` 070b9b2. Kernel rebuilt incrementally (`vm/incremental-kernel.sh --all`, `/big/probes6/linux`). Three NONVM boots of the same 15 probes (`probes-initramfs.sh NONVM=1`, host QEMU via `boot-m0-host.ps1`, `log_buf_len=16M`), compared with `probe_results.py compare` against `tests/differential/golden/windows-26200.9457`.
+
+| probe | before (070b9b2) | attempt 1 (all long components NOT_FOUND) | after (final) |
+|---|---|---|---|
+| probe_path | 71815 / 72523 (708 mismatched) | 71113 / 72523 (1410 mismatched) | **72523 / 72523** |
+| every other probe | as in the probes5 cycle | same | same |
+
+Root cause of the 708 mismatches (all `probe_path`): 236 generated cases, each with three mismatched fields (`dos`, `hex`, `ntstatus`). Each is an absolute name of 281 to 307 characters with a single 255 to 260 character component. Windows returns OBJECT_NAME_NOT_FOUND (0xC000003A); the kernel returned OBJECT_NAME_INVALID (0xC0000033) because it rejected any component over NAME_MAX as INVALID.
+
+The fix in `src/kernel/nt/io.c` (`kshim_ntpath_to_linux`) and its userspace model `src/kernel/nt/kshim.c` returns OBJECT_PATH_NOT_FOUND for a component over NAME_MAX. Attempt 1 applied that to every name, which fixed the 236 and broke 234 relative cases (470 fields, all golden 0xC0000033 with a RootDirectory handle). The final rule is in `ntio_resolve_path`: a name relative to RootDirectory with a component over NAME_MAX returns OBJECT_NAME_INVALID, checked before the translator runs (`ntio_relative_long_component`).
+
+How the rule was checked: a Python port of the probe's `gen_path` reproduces the golden `nt_path` display for all 7,500 non-relative cases. A port of the translator's pre-filesystem rules agrees with the golden on every absolute case it decides (5,737 cases) with the NOT_FOUND rule. The relative cases were checked against the golden in the boot itself.
+
+Host tests (guest, `make KHOST_OS=linux build/io_test.exe`): `io_test` 44 passed, 0 failed. New case `path_long_component`: an absolute 256-character component gives OBJECT_PATH_NOT_FOUND, and the same component with RootDirectory gives OBJECT_NAME_INVALID. `long_name_rejected` accepts the new status.
+
+Host unit suite (`python -m unittest discover tests/unit`): 871 run, 1 skipped (WSL), 2 errors in `test_criteria_evidence_map` because PyYAML is not installed in this Python. Not related to the path change.
+
+Regression batch on the final kernel (`bzImage` from `/big/probes6/linux`, step images from `kp5-run`, `log_buf_len=16M`): M0 PASS (expected 42); S1 0; S2 to S4 0; S6 to S10 0; S12 0; S5 53 (expected 53); S11 0 under its 1200 s bound; S13 0 with `ntpers_driver=hello_drv:\SystemRoot\drivers\hello_drv.sys`. No `Oops` or `BUG:` in any serial log.
+
+Not addressed in this cycle (the remaining counts are unchanged):
+- probe_teb_peb 81 / 104. The 23 mismatches are mostly stack, module and PEB addresses that depend on the VM's layout. `DeallocationStack` (0x1478) is 0 here and set on Windows, and two PEB pointer fields are NULL here and non-null on Windows (`peb_checks[4]`, `peb_checks[5]`). Those two are real semantic gaps, not yet investigated.
+- probe_fileinfo 183 / 221. Real gaps: volume information classes return STATUS_INVALID_INFO_CLASS (0xC0000003) or UNSUPPORTED (0xC0000002) where Windows returns success, some file-info classes differ, `nLinks` and attribute bits in `by_handle_info`. `win32_filetime` fields are clock-dependent and are not counted as a fix.
+- probe_directory 65 / 67. The 2 remaining fields are the host path string (`test_dir`, `win32_find.pattern`): Windows reports the user temp directory and the VM reports its own root. Environmental.
+- probe_peloader 33 / 34. The 1 remaining field is the `vacuous` header field, environmental.
+
 ## probes5 cycle: nt_path %lc, RootDirectory opens, and the open-rights mask (2026-10-27)
 
 Tree: `origin/main` de48830. Three full NONVM boots of the same 15 probes (`NONVM=1 probes-initramfs.sh`, host QEMU

@@ -558,6 +558,54 @@ TEST(path_separators)
 	PASS();
 }
 
+/* A component of 256 characters (over NAME_MAX) in a DOS-device name with no double
+ * separator fails its lookup as PATH_NOT_FOUND (golden 26200.9457, probe_path). A component
+ * of exactly 255 characters is a legal name and is not rejected by the parser. */
+TEST(path_long_component)
+{
+	char longname[300];
+	char path[400];
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	LARGE_INTEGER alloc = { 0 };
+	OBJECT_ATTRIBUTES oa;
+	int i;
+
+	reset_state();
+	for (i = 0; i < 256; i++)
+		longname[i] = 'a';
+	longname[256] = '\0';
+	snprintf(path, sizeof(path), "\\??\\C:\\path\\%s", longname);
+	oa = make_obj_attr(path);
+	ASSERT_STATUS(nt_svc_NtCreateFile(&h, FILE_GENERIC_READ, &oa, &iosb,
+					  &alloc, 0, FILE_SHARE_READ,
+					  FILE_OPEN, FILE_NON_DIRECTORY_FILE,
+					  NULL, 0),
+		      STATUS_OBJECT_PATH_NOT_FOUND);
+
+	/* The same component relative to RootDirectory is INVALID (golden, relative cases). */
+	create_dir_at("path/sub");
+	oa = make_obj_attr("\\??\\C:\\path\\sub");
+	ASSERT_STATUS(nt_svc_NtCreateFile(&h, FILE_GENERIC_READ, &oa, &iosb,
+					  &alloc, 0, FILE_SHARE_READ,
+					  FILE_OPEN,
+					  FILE_OPEN_FOR_BACKUP_INTENT |
+					  FILE_SYNCHRONOUS_IO_NONALERT,
+					  NULL, 0),
+		      STATUS_SUCCESS);
+	{
+		HANDLE dir = h;
+		oa = make_obj_attr_rel(dir, longname);
+		ASSERT_STATUS(nt_svc_NtCreateFile(&h, FILE_GENERIC_READ, &oa, &iosb,
+						  &alloc, 0, FILE_SHARE_READ,
+						  FILE_OPEN, FILE_NON_DIRECTORY_FILE,
+						  NULL, 0),
+			      STATUS_OBJECT_NAME_INVALID);
+		nt_svc_NtClose(dir);
+	}
+	PASS();
+}
+
 TEST(path_parsing)
 {
 	HANDLE h;
@@ -948,12 +996,14 @@ TEST(query_set_info)
  */
 /*
  * Either NT-layer check may reject an over-long name: a component over
- * NAME_MAX gets STATUS_OBJECT_NAME_INVALID, and the total-length check gets
- * STATUS_NAME_TOO_LONG. The tests accept either as a rejection.
+ * NAME_MAX gets STATUS_OBJECT_PATH_NOT_FOUND (golden 26200.9457, probe_path),
+ * and the total-length check gets STATUS_NAME_TOO_LONG. The tests accept any
+ * of them as a rejection; path_separators pins the golden status.
  */
 static bool long_name_rejected(NTSTATUS st)
 {
-	return st == STATUS_OBJECT_NAME_INVALID || st == STATUS_NAME_TOO_LONG;
+	return st == STATUS_OBJECT_PATH_NOT_FOUND || st == STATUS_OBJECT_NAME_INVALID ||
+	       st == STATUS_NAME_TOO_LONG;
 }
 
 /* Object attributes for an ASCII name of any length (make_obj_attr caps at PATH_MAX). */
@@ -2564,6 +2614,7 @@ int main(void)
 	RUN(byte_round_trip);
 	RUN(access_denied_on_valid_handle);
 	RUN(path_separators);
+	RUN(path_long_component);
 	RUN(path_parsing);
 	RUN(root_directory_from_backup_handle);
 	RUN(iocp_ordering);

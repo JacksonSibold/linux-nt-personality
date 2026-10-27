@@ -443,7 +443,8 @@ NTSTATUS kshim_ntpath_to_linux(const struct _UNICODE_STRING *us, char *out, size
 #else
             free(wpath); free(rel); free(combined);
 #endif
-            return STATUS_NAME_TOO_LONG;
+            /* Same rule as io.c kshim_ntpath_to_linux (golden 26200.9457, probe_path). */
+            return STATUS_OBJECT_PATH_NOT_FOUND;
         }
         char comp[NAME_MAX+1];
         memcpy(comp, start, clen);
