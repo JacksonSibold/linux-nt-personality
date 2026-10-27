@@ -243,7 +243,8 @@ class RepositoryParityTests(unittest.TestCase):
             report.findings, [],
             "syscall table copies disagree:\n" + "\n".join(
                 f"  {k} {p}: {d}" for k, p, d in report.findings))
-        self.assertEqual(count, 171)
+        # 173 = the 171 services plus NtLoadDriver and NtUnloadDriver (owner pre-authorised).
+        self.assertEqual(count, 173)
 
     def test_repository_exit_status_is_zero(self):
         code, _ = MainTests().run_main(["--root", str(REPO)])

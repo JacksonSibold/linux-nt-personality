@@ -5,7 +5,6 @@
  * docs/status/DRIVERHOST-EXPORTS.md.  Keep one row per name; the loader matches
  * imports by exact name within the module the driver names.
  */
-#include <string.h>
 
 #include "drvhost_int.h"
 

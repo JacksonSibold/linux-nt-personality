@@ -362,6 +362,9 @@ def nt_resolution(project):
     """
     arch = project / "arch/x86/nt"
     src = project / "src/kernel/nt"
+    # The NT driver host lives in a subdirectory, and its PE parser and two
+    # ntdll headers live beside other trees. The walk searches them too.
+    search = [src, src / "driver", project / "src/loader", project / "src/ntdll"]
     mk = (arch / "Makefile").read_text(encoding=ENC)
     objects = OBJ_RE.findall(mk)
     queue = [o + ".c" for o in objects]
@@ -372,8 +375,9 @@ def nt_resolution(project):
         if name in seen:
             continue
         seen.add(name)
-        if (src / name).is_file():
-            cand, origin = src / name, "src"
+        found = next((d / name for d in search if (d / name).is_file()), None)
+        if found is not None:
+            cand, origin = found, "src"
         else:
             cand, origin = arch / name, "arch"
         if not cand.is_file():
@@ -416,7 +420,7 @@ def build_plan(project):
     for name in sorted(overrides):
         edits.append(CopyEdit(eid(), overrides[name],
                               "arch/x86/nt/" + name,
-                              "src/kernel/nt/%s (canonical)" % name))
+                              "%s (canonical)" % overrides[name].relative_to(project).as_posix()))
     # 3. generated, empty stubs.c (BUILD-RECIPE 4.4).
     edits.append(WriteEdit(eid(), "arch/x86/nt/stubs.c", b"",
                            "generated empty stubs (BUILD-RECIPE 4.4)"))

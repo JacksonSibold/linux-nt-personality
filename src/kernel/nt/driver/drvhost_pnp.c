@@ -4,8 +4,6 @@
  * attaching each FDO to the PDO below it, and the top of the stack receives
  * IRP_MJ_PNP and IRP_MJ_POWER.  Power is recorded per device, not managed.
  */
-#include <stdio.h>
-#include <string.h>
 
 #include "drvhost_int.h"
 

@@ -8,9 +8,6 @@
  * is stored in the lower location by the driver above it, and runs with the
  * upper device object.
  */
-#include <stdio.h>
-#include <string.h>
-#include <strings.h>
 
 #include "drvhost_int.h"
 

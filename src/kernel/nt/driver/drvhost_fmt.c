@@ -7,9 +7,11 @@
  * %d %i %u %x %X %p %Z %wZ %% with the l, ll, I64, z size modifiers, a width,
  * and the '0' and '-' flags.
  */
+#ifdef __KERNEL__
+#include <linux/stdarg.h>
+#else
 #include <stdarg.h>
-#include <stdio.h>
-#include <string.h>
+#endif
 
 #include "drvhost_int.h"
 
@@ -28,7 +30,11 @@ void dh_emit(const char *text, SIZE_T len)
         g_sink(g_sink_ctx, text, len);
         return;
     }
+#ifdef __KERNEL__
+    pr_info("%.*s", (int)len, text);
+#else
     fwrite(text, 1, len, stderr);
+#endif
 }
 
 typedef struct fmtbuf {

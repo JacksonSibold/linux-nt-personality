@@ -15,6 +15,7 @@
 #include <stdint.h>
 #endif
 
+#include "drvhost_libc.h"
 #include "drvhost.h"
 #include "drvhost_types.h"
 #include "drvhost_ntos.h"
@@ -61,8 +62,21 @@ typedef struct dh_thread {
 } dh_thread_t;
 
 dh_thread_t *dh_current_thread(void);
+
+/* Per-thread executive state. Host: __thread variables. Kernel: a per-task
+ * slot (plat.c), looked up by the current task on each access. */
+#ifdef __KERNEL__
+KIRQL       *dh_tls_irql_ptr(void);
+struct dh_thread **dh_tls_thread_ptr(void);
+#define dh_irql       (*dh_tls_irql_ptr())
+#define dh_tls_thread (*dh_tls_thread_ptr())
+/* Kernel thread exit. Releases the calling kthread's TLS slot and signals its
+ * completion, then kthread_exit. Never returns. Host builds use longjmp. */
+void dh_thread_exit_current(void) __attribute__((noreturn));
+#else
 extern __thread KIRQL dh_irql;
 extern __thread dh_thread_t *dh_tls_thread;
+#endif
 
 /* Bugcheck: records the code and aborts.  Drivers reach it through KeBugCheckEx
  * and through the host's own IRQL and lock-order checks. */

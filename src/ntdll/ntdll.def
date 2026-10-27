@@ -342,6 +342,10 @@ EXPORTS
     ZwQuerySymbolicLinkObject=NtQuerySymbolicLinkObject
     NtRtlNtStatusToDosError
     ZwRtlNtStatusToDosError=NtRtlNtStatusToDosError
+    NtLoadDriver
+    ZwLoadDriver=NtLoadDriver
+    NtUnloadDriver
+    ZwUnloadDriver=NtUnloadDriver
     LdrLoadDll
     LdrUnloadDll
     LdrGetDllHandle

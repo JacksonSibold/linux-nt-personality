@@ -186,6 +186,7 @@ void dh_thread_join(void *handle)
 #include <linux/mutex.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/vmalloc.h>
 #include <linux/wait.h>
 #include <linux/ktime.h>
@@ -328,6 +329,69 @@ void dh_notify_all(void)
     wake_up_all(&g_wq);
 }
 
+/* Per-task executive state (replaces __thread in the host build). A slot is
+ * keyed by the task pointer and claimed on first use. A kthread releases its
+ * slot when it exits. A user task keeps its slot until the table is exhausted:
+ * the process-exit release is not wired yet (see KERNEL-BOOT.md), so the
+ * table is bounded and exhaustion panics instead of reusing a live slot. */
+#define DH_TLS_SLOTS 256
+struct dh_tls_slot {
+    struct task_struct *task;
+    KIRQL irql;
+    struct dh_thread *thread;
+};
+static DEFINE_SPINLOCK(g_tls_lock);
+static struct dh_tls_slot g_tls[DH_TLS_SLOTS];
+
+static struct dh_tls_slot *tls_slot_for_current(void)
+{
+    struct task_struct *t = current;
+    unsigned long flags;
+    int i, free_i = -1;
+    spin_lock_irqsave(&g_tls_lock, flags);
+    for (i = 0; i < DH_TLS_SLOTS; i++) {
+        if (g_tls[i].task == t) {
+            spin_unlock_irqrestore(&g_tls_lock, flags);
+            return &g_tls[i];
+        }
+        if (!g_tls[i].task && free_i < 0) free_i = i;
+    }
+    if (free_i < 0) {
+        spin_unlock_irqrestore(&g_tls_lock, flags);
+        panic("drvhost: per-task slots exhausted (%d)", DH_TLS_SLOTS);
+    }
+    g_tls[free_i].task = t;
+    g_tls[free_i].irql = 0;
+    g_tls[free_i].thread = NULL;
+    spin_unlock_irqrestore(&g_tls_lock, flags);
+    return &g_tls[free_i];
+}
+
+KIRQL *dh_tls_irql_ptr(void)
+{
+    return &tls_slot_for_current()->irql;
+}
+
+struct dh_thread **dh_tls_thread_ptr(void)
+{
+    return &tls_slot_for_current()->thread;
+}
+
+void dh_tls_release_current(void)
+{
+    unsigned long flags;
+    int i;
+    spin_lock_irqsave(&g_tls_lock, flags);
+    for (i = 0; i < DH_TLS_SLOTS; i++) {
+        if (g_tls[i].task == current) {
+            g_tls[i].task = NULL;
+            g_tls[i].thread = NULL;
+            g_tls[i].irql = 0;
+        }
+    }
+    spin_unlock_irqrestore(&g_tls_lock, flags);
+}
+
 /* A host thread is a kthread. The completion is signalled after fn returns,
  * and join waits for it, then drops the task reference with kthread_stop. */
 typedef struct dh_native {
@@ -341,8 +405,19 @@ static int native_entry(void *p)
 {
     dh_native_t *n = p;
     n->fn(n->arg);
+    dh_tls_release_current();
     complete(&n->done);
     return 0;
+}
+
+/* Thread exit from inside fn (PsTerminateSystemThread). The completion is
+ * signalled here because fn never returns to native_entry. */
+void dh_thread_exit_current(void)
+{
+    dh_native_t *n = kthread_data(current);
+    dh_tls_release_current();
+    complete(&n->done);
+    kthread_exit(0);
 }
 
 void *dh_thread_start(dh_thread_fn fn, void *arg, int *err)

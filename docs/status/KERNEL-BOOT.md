@@ -1,48 +1,108 @@
 # NT personality kernel: build, boot and M0 status
 
-## Driver host: platform layer, kernel branch (branch `drvkernel`, 2026-10-26)
+## Driver host in the kernel, partial (branch `drvkernel`, 2026-10-27)
 
-**Scope.** The NT driver host (`src/kernel/nt/driver/`, from `9ac442e`) is still not linked into the personality kernel.
-This pass changed no kernel object, service table or initramfs. No kernel build and no QEMU boot were run for it, and
-no M0, S1-S12 or NONVM probe number moved. S13 (driver load, IOCTL round trip) is not added yet.
+**Scope.** The NT driver host (`src/kernel/nt/driver/`) is now compiled into the personality kernel, and
+`NtLoadDriver` and `NtUnloadDriver` are wired as service entries. The IOCTL path is not: `NtCreateFile` and
+`NtDeviceIoControlFile` do not reach driver devices yet, so S13 (hello_drv round trip) is not added. The driver host
+is reached only through the two load and unload entries.
 
-**What landed.**
-- `drvhost_plat.c`: a `#ifdef __KERNEL__` branch with kernel primitives. `dh_alloc` is `kzalloc` with a stored
-  base pointer, so the 16-byte alignment contract holds. Images are `vzalloc`ed and `dh_protect_rx` uses
-  `set_memory_{ro,rw,x,nx}`. `dh_read_file` uses `filp_open` and `kernel_read`. Clocks use `ktime_get_*`. The monitor is
-  a mutex with a wait queue and a generation counter, so a notify between a waiter's unlock and sleep is not lost.
-  Threads are `kthread_run` with a completion, and join waits on the completion and then calls `kthread_stop`.
-  The host branch is unchanged.
-- `drvhost_types.h`, `drvhost_int.h`: the hosted `<stdint.h>`, `<stddef.h>` and `<setjmp.h>` includes are host-only.
-  The kernel branch uses `linux/types.h` and `linux/stddef.h`. `exit_jb` is host-only.
-- `drvhost_ex.c`: `#error` under `__KERNEL__`. It still needs `__thread` and `setjmp`.
+**Kernel build.** `vm/incremental-kernel.sh` under `flock ~/.kbuild.lock` (guest `kfast/linux-src`, `GUEST_REPO=drvkernel`).
+`bzImage` sha256 `034ec21eba848a29...` (copied to `C:\Users\Jackson\repos\linux-env\kernel-drvkernel\`). Build:
+`INCREMENTAL_OK`. kpatch: 94 applied, 26 applicable before the run, 0 blocked, 0 todo.
 
-**Verification.**
-- Host, guest (Debian 12, gcc and MinGW): `tests/kernel-drivers` `make check`: `driver_unit_test` 101 checks, 0 failed;
-  `driver_host_test` 97 checks, 0 failed. The two `-Wformat-truncation` warnings in `drvhost_svc.c` and
-  `drvhost_svcdb.h` predate this change.
-- Kernel: `drvhost_plat.c` compiles as an out-of-tree object against the guest kernel tree
-  (`make -C ~/kfast/linux-src M=<dir> drvhost_plat.o`, with `-isystem` for the compiler's include directory), 0 warnings.
-  `drvhost_types.h` and `drvhost_int.h` compile under the same flags, including the `_Static_assert` layout checks.
-- `tests/ntdll-host` and `tests/kernel-host`: see the run record in the commit message.
+**What changed.**
+- `drvhost_ex.c`: `__thread dh_irql` and `dh_tls_thread` are per-task slots in the kernel (`drvhost_plat.c`, 256 slots
+  keyed by `current`; a kthread releases its slot at exit). `setjmp`/`longjmp` in thread exit are replaced by
+  `thread_finish` and `dh_thread_exit_current` (`kthread_exit`). The host build keeps `__thread` and `setjmp`.
+- Bugcheck panics in the kernel; the debug sink uses `pr_info`.
+- `drvhost_libc.h` (new): the libc names the driver files use, from linux headers in the kernel build.
+- `drvhost_rtl.c`: `MmIsAddressValid` uses `copy_from_kernel_nofault` in the kernel.
+- `drvhost_svcdb.c`: `nt_types.h` and `ntstatus.h` by bare name (kpatch copies them beside it).
+- `tools/ntpers_kpatch.py`: the walk searches `src/kernel/nt/driver/`, `src/loader/` and `src/ntdll/`. The label for
+  a canonical copy names its real source. `arch/x86/nt/Makefile` lists the 12 driver objects, `pe_parse.o` and
+  `nt_driver_svc.o`. `vm/incremental-kernel.sh` stages `src/loader/pe_parse.*`.
+- `src/kernel/nt/nt_driver_svc.c` (new): `nt_svc_NtLoadDriver` and `nt_svc_NtUnloadDriver`, with weak fallbacks that
+  return `STATUS_NOT_IMPLEMENTED`. `driver/drvhost_svc.c` copies the user `UNICODE_STRING` and calls the driver host.
+- `nt_service_list.h`: `NT_SERVICE(0x0106, NtLoadDriver, 1)` and `NT_SERVICE(0x0107, NtUnloadDriver, 1)`.
+  **The two numbers are repo-assigned and unverified.** The reference `ntdll.dll` on the guest
+  (`~/base-dlls/windows/system32/`, 95 KB) is the repo's own build, not a Windows binary, and the repo has no source for
+  these numbers. `NtDeviceIoControlFile` (0x0007) and `NtCreateFile` (0x0055) read from the same file match the table.
+  Check the two numbers against a Windows build before any parity claim.
+- `docs/status/SERVICES.md` and `TRACEABILITY.md` regenerated with `tools/service_inventory.py` and
+  `tools/criteria_trace.py`. Total 171 to 173; IMPLEMENTED 68 to 70.
+
+**Tests.**
+- Host, guest (Debian 12): `tests/kernel-drivers` `make check`: `driver_unit_test` 101 checks, 0 failed;
+  `driver_host_test` 97 checks, 0 failed. `tests/ntdll-host` `make test`: rc 0. `tests/kernel-host` `make check`:
+  rc 0 (`kernel-host` after the `drvhost_svcdb.o` include-path fix). `tests/unit/test_ntpers_kpatch.py`: 20 OK.
+- The 12 driver objects compile under the kernel flags with 0 warnings (out-of-tree `make M=`).
+
+**Boots** (host QEMU, `boot-m0-host.ps1`, `-KernelDir kernel-drvkernel`, `log_buf_len=16M`, final kernel above):
+
+| step | exit (expected) | verdict |
+|---|---|---|
+| M0 | 42 (42) | PASS |
+| S1 (no DLL in the image) | 0 (0) | PASS |
+| S2 | 0 (0) | PASS |
+| S3 | 0 (0) | PASS |
+| S4 | 0 (0) | PASS |
+| S5 | 53 (53) | PASS |
+| S6 | 0 (0) | PASS |
+| S7 | 0 (0) | PASS |
+| S8 | 0 (0) | PASS |
+| S9 | 0 (0) | PASS |
+| S10 | 0 (0) | PASS |
+| S11 | 0 (0) | PASS (a rerun; the first run timed out under host load) |
+| S12 | 0 (0) | PASS |
+| S13 | not built | not added |
+
+The S1 image must not carry the DLLs: with them packed, `binfmt_pe` loads `ntdll` and S1 exits 5. That was the
+image build, not the kernel.
+
+NONVM probes (`NONVM=1 probes-initramfs.sh`, one boot, `NTPERS_ALL_DONE` printed, all 15 exit 0). Compared with the
+goldens (`tests/differential/golden/windows-26200.9457`) and the recorded table in `DIFFERENTIAL-RESULTS.md`:
+
+| probe | recorded matched | this boot matched | verdict |
+|---|---|---|---|
+| probe_directory | 19 / 67 | 64 / 67 | FAIL |
+| probe_exception | 61 / 76 | 61 / 76 | FAIL |
+| probe_fileinfo | 183 / 221 | 183 / 221 | FAIL |
+| probe_handles | 82 / 111 | 99 / 111 | FAIL |
+| probe_namedpipe | 3 / 45 | 3 / 45 | FAIL |
+| probe_ntstatus | 2191 / 2199 | 2191 / 2199 | FAIL |
+| probe_path | 55105 / 72523 | 55105 / 72523 | FAIL |
+| probe_peloader | 33 / 34 | 33 / 34 | FAIL |
+| probe_process_thread | 0 / 182 | 0 / 182 | FAIL |
+| probe_registry | 128 / 140 | 128 / 140 | FAIL |
+| probe_section | 128 / 129 | 128 / 129 | FAIL |
+| probe_sharemode | 458857 / 458857 | 458857 / 458857 | PASS |
+| probe_sync | 0 / 74 | 0 / 74 | FAIL |
+| probe_teb_peb | 81 / 104 | 81 / 104 | FAIL |
+| probe_virtualquery | 128 / 139 | 139 / 139 | PASS |
+
+No probe went down. Three rose (directory, handles, virtualquery). The recorded table predates later kernel commits,
+so the rises are not attributed to this change. A strict A/B against a kernel without the driver host was not run.
+
+**proc_thread_test (kernel-host) intermittent exit 139.** Reproduced under load: 8 parallel loops of
+`proc_thread_test.exe` with `SYNC_TEST_ITERATIONS=2000` gave 2 crashes in 240 runs and 1 in 480. Core dumps and gdb
+both put the fault at the same place every time: `ObDestroyHandleTable` (`handle.c:240`, `kfree(l2->l3[j])`), called by
+`ObCleanupObjectManager` (`object.c:1805`) from `setup_proc` at the start of
+`test_thread_exit_frees_sync_thread` (`proc_thread_test.c:332`). The handle-table L2 pointer is already freed, so the
+table was destroyed twice or after a use. Not yet root-caused. A candidate race, a thread that still touches its
+process after it publishes `terminated` (`proc_thread.c`), was tested by moving the debug post before the publish. The
+crash still reproduced, so that change was reverted and nothing is committed for it. Open: find what destroys the
+table a second time (candidates: `ObDestroyProcessObject` does not clear `proc->handle_table`, and the list cleanup
+walks processes that a concurrent path may have freed).
 
 **Remaining, in order.**
-1. Thread-local state: `__thread dh_irql` and `dh_tls_thread` (`drvhost_ex.c`). A kernel port needs per-task storage,
-   released when the task exits. A bare per-CPU slot is wrong, because the calls come from user tasks.
-2. Thread exit: `setjmp` in `thread_main_common` and `longjmp` in `PsTerminateSystemThread` (`drvhost_ex.c`). The kernel
-   form runs the body, then completes and calls `kthread_exit`. Adopted user-task threads need a separate design.
-3. libc calls in the other driver files: `calloc` and `getpid` in `drvhost_ex.c`, `snprintf`, `strncmp` and `strcasecmp`
-   in `drvhost_nt.c`, `drvhost_svc.c` and `drvhost_io.c`, and `sys/mman.h` and `unistd.h` in `drvhost_rtl.c`. Each file
-   needs a compile check under the kernel flags. Only `drvhost_plat.c` has one so far.
-4. Build wiring: `tools/ntpers_kpatch.py` `nt_resolution` walks only the top level of `src/kernel/nt/`, not `driver/`.
-   The driver objects, `pe_parse.c` and `os_identity.h` need entries in `arch/x86/nt/Makefile` and the copy list.
-5. Syscalls: `NtLoadDriver`, `NtUnloadDriver` and `NtDeviceIoControlFile` are not in `nt_service_list.h`. Add them, then
-   regenerate the service inventory and parity docs with the repo tools.
-6. S13: an initramfs with `hello_drv.sys` (`tests/kernel-drivers`, MinGW) and a userspace PE client that loads the driver
-   through the service path, opens the device, round-trips an IOCTL, and unloads. Follow the S12 pattern in
-   `tools/linux-env/step-initramfs.sh` and `tests/kernel/s12`.
-7. Kernel build, then boot: `vm/incremental-kernel.sh` in `flock ~/.kbuild.lock`, `boot-m0-host.ps1` for M0 (expects
-   42), S5 (expects 53), the other steps (expect 0), and the NONVM probes.
+1. S13: an `hello_drv.sys` image (`tests/kernel-drivers`, MinGW) and a PE client that creates the service key, calls
+   `NtLoadDriver`, opens the device, round-trips an IOCTL and calls `NtUnloadDriver`. Needs a bridge from the kernel
+   handle table to driver-host file objects (`NtCreateFile`, `NtDeviceIoControlFile`), so it is a separate slice.
+2. Verify `0x0106` and `0x0107` against a Windows build.
+3. The proc_thread_test double destroy above (its own commit).
+4. Per-task slot release at process exit. Slots are released for kthreads only; a user task keeps its slot until the
+   table fills (256), and then the kernel panics with a clear message.
 
 ## User-mode exception delivery (branch `haiku/seh`, 2026-10-15)
 

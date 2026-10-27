@@ -1369,4 +1369,20 @@ NtRtlNtStatusToDosError:
     ret
     .globl ZwRtlNtStatusToDosError
     .set ZwRtlNtStatusToDosError, NtRtlNtStatusToDosError
+    .globl NtLoadDriver
+NtLoadDriver:
+    mov %rcx, %r10
+    mov $0x0106, %eax
+    syscall
+    ret
+    .globl ZwLoadDriver
+    .set ZwLoadDriver, NtLoadDriver
+    .globl NtUnloadDriver
+NtUnloadDriver:
+    mov %rcx, %r10
+    mov $0x0107, %eax
+    syscall
+    ret
+    .globl ZwUnloadDriver
+    .set ZwUnloadDriver, NtUnloadDriver
 

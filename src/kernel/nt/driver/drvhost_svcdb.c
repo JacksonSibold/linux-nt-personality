@@ -3,16 +3,19 @@
  * Uses only the kernel-side registry API (NtCreateKey, NtOpenKey, NtSetValueKey,
  * NtQueryValueKey, NtDeleteKey) and the handle table of the current process.
  */
+#ifdef __KERNEL__
+#include <linux/stddef.h>
+#else
 #include <stddef.h>
-#include <string.h>
+#endif
 
 #include "registry.h"
 #include "handle.h"
 #include "object.h"
 #include "kshim.h"
 #include "drvhost_svcdb.h"
-#include "../../../ntdll/nt_types.h"
-#include "../../../ntdll/ntstatus.h"
+#include "nt_types.h"
+#include "ntstatus.h"
 
 #define SVC_NAME_MAX 128
 #define SVC_DATA_MAX 512

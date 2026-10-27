@@ -50,7 +50,7 @@ GUEST_MANIFEST="${GUEST_MANIFEST:-kfast/nt-sync.manifest}"
 JOBS="${JOBS:-2}"
 CCACHE="${CCACHE:-1}"
 
-NT_PATHS=(src/kernel/nt src/kernel/fs/binfmt_pe.c src/kernel/fs/kshim.c src/kernel/fs/kshim.h arch/x86/nt src/loader/pe_text.c src/loader/pe_text.h)
+NT_PATHS=(src/kernel/nt src/kernel/fs/binfmt_pe.c src/kernel/fs/kshim.c src/kernel/fs/kshim.h arch/x86/nt src/loader/pe_text.c src/loader/pe_text.h src/loader/pe_parse.c src/loader/pe_parse.h)
 # Every ntdll header is staged, not only those a file names: kpatch copies all of them.
 NTDLL_HEADERS=(src/ntdll/*.h)
 

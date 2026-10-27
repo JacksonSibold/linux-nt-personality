@@ -7,9 +7,6 @@
  * DIRECT_IO codes are passed like NEITHER (no MDL is built).  The Win32 names
  * DeviceIoControl, CreateFileA and CloseHandle sit on top of these.
  */
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include "drvhost_int.h"
 

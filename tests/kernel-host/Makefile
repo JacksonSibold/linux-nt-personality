@@ -183,7 +183,7 @@ $(BUILD)/%.o: $(NT)/%.c | $(BUILD)
 # The driver host's service database (src/kernel/nt/driver/drvhost_svcdb.c): plain
 # C over the registry API, so it builds with the same kshim flags as the modules.
 $(BUILD)/drvhost_svcdb.o: $(NT)/driver/drvhost_svcdb.c $(NT)/driver/drvhost_svcdb.h | $(BUILD)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(NTDLL) -c $< -o $@
 
 # The PE parser from src/loader, built plain (no kernel prelude), like tests/host.
 $(BUILD)/pe_parse.o: $(LOADER)/pe_parse.c $(LOADER)/pe_parse.h $(LOADER)/pe_format.h | $(BUILD)

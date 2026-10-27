@@ -6,9 +6,6 @@
  * path, reads the entry, maps the image, creates a DRIVER_OBJECT and calls
  * DriverEntry with the key path as RegistryPath.
  */
-#include <stdio.h>
-#include <string.h>
-#include <strings.h>
 
 #include "drvhost_int.h"
 
@@ -355,3 +352,55 @@ void drvhost_get_stats(drvhost_stats_t *out)
     out->timers_fired = g_timers_fired;
     out->io_timer_ticks = g_io_timer_ticks;
 }
+
+#ifdef __KERNEL__
+/* Syscall entry points (nt_service_list.h). The RegistryPath UNICODE_STRING
+ * and its buffer are in user memory: copy both into kernel memory first. */
+static NTSTATUS dh_copy_user_unistr(const UNICODE_STRING __user *u, UNICODE_STRING *out, WCHAR **buf)
+{
+    UNICODE_STRING k;
+    WCHAR *b;
+    if (!u || !access_ok(u, sizeof k) || copy_from_user(&k, u, sizeof k))
+        return STATUS_ACCESS_VIOLATION;
+    if (!k.Buffer || k.Length == 0 || (k.Length & 1) || k.Length > DH_NAME_MAX * 2)
+        return STATUS_INVALID_PARAMETER;
+    if (!access_ok(k.Buffer, k.Length))
+        return STATUS_ACCESS_VIOLATION;
+    b = dh_alloc((size_t)k.Length + 2);
+    if (!b)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    if (copy_from_user(b, k.Buffer, k.Length)) {
+        dh_free(b);
+        return STATUS_ACCESS_VIOLATION;
+    }
+    out->Buffer = b;
+    out->Length = k.Length;
+    out->MaximumLength = (USHORT)(k.Length + 2);
+    *buf = b;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS dh_user_load_driver(void *RegistryPath)
+{
+    UNICODE_STRING k;
+    WCHAR *b = NULL;
+    NTSTATUS st = dh_copy_user_unistr((const UNICODE_STRING __user *)RegistryPath, &k, &b);
+    if (!NT_SUCCESS(st))
+        return st;
+    st = NtLoadDriver(&k);
+    dh_free(b);
+    return st;
+}
+
+NTSTATUS dh_user_unload_driver(void *RegistryPath)
+{
+    UNICODE_STRING k;
+    WCHAR *b = NULL;
+    NTSTATUS st = dh_copy_user_unistr((const UNICODE_STRING __user *)RegistryPath, &k, &b);
+    if (!NT_SUCCESS(st))
+        return st;
+    st = NtUnloadDriver(&k);
+    dh_free(b);
+    return st;
+}
+#endif /* __KERNEL__ */

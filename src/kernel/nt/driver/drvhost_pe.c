@@ -6,8 +6,6 @@
  * export table has no ordinals.  Every unresolved name is printed before the
  * load fails with STATUS_PROCEDURE_NOT_FOUND, so one attempt lists them all.
  */
-#include <stdio.h>
-#include <string.h>
 
 #include "pe_parse.h"
 #include "drvhost_int.h"

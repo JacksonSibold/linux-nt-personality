@@ -41,8 +41,8 @@ hybrid, the first strong definition in file order decides the class.
 
 | Status | Services |
 |---|---:|
-| total | 171 |
-| IMPLEMENTED | 68 |
+| total | 173 |
+| IMPLEMENTED | 70 |
 | STUB-NOT-IMPLEMENTED | 6 |
 | REFUSES | 0 |
 | WEAK-FALLBACK | 0 |
@@ -66,6 +66,7 @@ hybrid, the first strong definition in file order decides the class.
 | registry | 11 | 0 | 0 | 0 | 0 | 0 | 0 | 11 |
 | ports | 10 | 9 | 1 | 0 | 0 | 0 | 0 | 0 |
 | object | 6 | 0 | 0 | 0 | 0 | 0 | 0 | 6 |
+| other | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 0 |
 
 ## Area: system
 
@@ -282,3 +283,10 @@ hybrid, the first strong definition in file order decides the class.
 | 0x005c | `NtSetInformationObject` | 4 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_obj.c` |
 | 0x0115 | `NtMakeTemporaryObject` | 1 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_obj.c` |
 | 0x0114 | `NtMakePermanentObject` | 1 | IMPLEMENTED (userspace) / IMPLEMENTED (kernel) | `src/kernel/nt/nt_obj.c` |
+
+## Area: other
+
+| SSN | Service | Argc | Status | Handler file |
+|---|---|---:|---|---|
+| 0x0106 | `NtLoadDriver` | 1 | IMPLEMENTED | `src/kernel/nt/nt_driver_svc.c` |
+| 0x0107 | `NtUnloadDriver` | 1 | IMPLEMENTED | `src/kernel/nt/nt_driver_svc.c` |

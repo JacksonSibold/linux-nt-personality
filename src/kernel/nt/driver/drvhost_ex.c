@@ -2,25 +2,16 @@
  * locks and IRQL, events and waits, DPC queue, timers, the executive worker
  * thread, system threads, and the handle table.
  */
-#ifdef __KERNEL__
-/* Not ported yet: __thread (dh_irql, dh_tls_thread) and setjmp/longjmp
- * (thread exit) have no kernel equivalent in this file. See docs/status/KERNEL-BOOT.md. */
-#error "drvhost_ex.c is host-only until the TLS and thread-exit port lands"
-#endif
-#include <sched.h>
-#include <setjmp.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
 
 #include "drvhost_int.h"
 
 /* -------------------------------------------------------------------------- */
 /* Global counters and state                                                  */
 /* -------------------------------------------------------------------------- */
-__thread KIRQL dh_irql = 0;
+#ifndef __KERNEL__
+__thread KIRQL dh_irql = 0;      /* kernel: per-task slots in drvhost_plat.c */
 __thread dh_thread_t *dh_tls_thread = NULL;
+#endif
 
 SIZE_T g_pool_outstanding = 0;
 SIZE_T g_pool_bytes = 0;
@@ -57,11 +48,17 @@ ULONG KeNumberProcessors = 1;
 /* -------------------------------------------------------------------------- */
 void dh_bugcheck(ULONG code, ULONG_PTR p1, ULONG_PTR p2, ULONG_PTR p3, ULONG_PTR p4)
 {
+#ifdef __KERNEL__
+    panic("drvhost: BUGCHECK 0x%08x (0x%lx 0x%lx 0x%lx 0x%lx)\n",
+          (unsigned)code, (unsigned long)p1, (unsigned long)p2,
+          (unsigned long)p3, (unsigned long)p4);
+#else
     fprintf(stderr, "drvhost: BUGCHECK 0x%08x (0x%lx 0x%lx 0x%lx 0x%lx)\n",
             (unsigned)code, (unsigned long)p1, (unsigned long)p2,
             (unsigned long)p3, (unsigned long)p4);
     fflush(stderr);
     abort();
+#endif
 }
 
 DRVCALL void KeBugCheckEx(ULONG BugCheckCode, ULONG_PTR P1, ULONG_PTR P2, ULONG_PTR P3, ULONG_PTR P4)
@@ -92,7 +89,7 @@ _Static_assert(sizeof(dh_pool_hdr_t) == 32, "pool header keeps 16-byte alignment
 static PVOID pool_alloc(ULONG type, SIZE_T n, ULONG tag)
 {
     if (n == 0 || n > ((SIZE_T)1 << 31)) return NULL;
-    dh_pool_hdr_t *h = calloc(1, sizeof *h + n);
+    dh_pool_hdr_t *h = dh_alloc(sizeof *h + n);
     if (!h) return NULL;
     h->magic = DH_POOL_MAGIC;
     h->size = n;
@@ -130,7 +127,7 @@ DRVCALL void ExFreePoolWithTag(PVOID P, ULONG Tag)
     h->magic = 0;   /* a second free now fails the magic check */
     __atomic_sub_fetch(&g_pool_outstanding, 1, __ATOMIC_SEQ_CST);
     __atomic_sub_fetch(&g_pool_bytes, h->size, __ATOMIC_SEQ_CST);
-    free(h);
+    dh_free(h);
 }
 
 DRVCALL void ExFreePool(PVOID P)
@@ -705,20 +702,36 @@ dh_thread_t *dh_current_thread(void)
     return dh_tls_thread;
 }
 
-static void thread_main_common(dh_thread_t *th)
+/* Signals the thread object and wakes waiters. Runs once per thread, on both
+ * the normal return path and PsTerminateSystemThread. */
+static void thread_finish(dh_thread_t *th)
 {
-    dh_tls_thread = th;
-    dh_irql = IRQL_PASSIVE;
-    if (setjmp(th->exit_jb) == 0) {
-        th->exit_armed = 1;
-        th->start(th->start_ctx);
-        th->exit_status = STATUS_SUCCESS;
-    }
     th->exit_armed = 0;
     dh_lock();
     th->hdr.SignalState = 1;
     dh_notify_all();
     dh_unlock();
+}
+
+static void thread_main_common(dh_thread_t *th)
+{
+    dh_tls_thread = th;
+    dh_irql = IRQL_PASSIVE;
+#ifdef __KERNEL__
+    /* No setjmp in the kernel: PsTerminateSystemThread finishes the thread
+     * and exits the kthread itself, so the normal path just returns here. */
+    th->exit_armed = 1;
+    th->start(th->start_ctx);
+    th->exit_status = STATUS_SUCCESS;
+    thread_finish(th);
+#else
+    if (setjmp(th->exit_jb) == 0) {
+        th->exit_armed = 1;
+        th->start(th->start_ctx);
+        th->exit_status = STATUS_SUCCESS;
+    }
+    thread_finish(th);
+#endif
 }
 
 static void *system_thread_entry(void *arg)
@@ -765,8 +778,15 @@ DRVCALL void PsTerminateSystemThread(NTSTATUS ExitStatus)
     th->exit_status = ExitStatus;
     if (!th->exit_armed)
         dh_bugcheck(DH_BUGCHECK_TERMINATE_NONPOOL, (ULONG_PTR)th, 0, 0, 0);
+#ifdef __KERNEL__
+    /* kthread_exit does not unwind, so the PE frames are abandoned the way
+     * longjmp abandons them on the host. Nothing below this point runs. */
+    thread_finish(th);
+    dh_thread_exit_current();
+#else
     /* longjmp, not pthread_exit: unwinding through PE frames has no DWARF. */
     longjmp(th->exit_jb, 1);
+#endif
 }
 
 static char g_fake_eprocess[256];

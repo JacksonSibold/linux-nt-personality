@@ -1,9 +1,6 @@
 /* drvhost_rtl.c - Rtl string and version services, C-library-style memory and
  * string functions for drivers, and the Mm address probes.
  */
-#include <string.h>
-#include <sys/mman.h>
-#include <unistd.h>
 
 #include "drvhost_int.h"
 #include "os_identity.h"
@@ -188,10 +185,18 @@ DRVCALL SIZE_T drv_wcslen(const WCHAR *S)
 DRVCALL BOOLEAN MmIsAddressValid(PVOID VirtualAddress)
 {
     if (!VirtualAddress) return FALSE;
+#ifdef __KERNEL__
+    {
+        /* One-byte read that returns an error instead of faulting. */
+        unsigned char b;
+        return copy_from_kernel_nofault(&b, VirtualAddress, 1) == 0;
+    }
+#else
     uintptr_t page = (uintptr_t)VirtualAddress & ~(uintptr_t)(getpagesize() - 1);
     unsigned char vec = 0;
     if (mincore((void *)page, (size_t)getpagesize(), &vec) != 0) return FALSE;
     return (vec & 1) != 0;
+#endif
 }
 
 DRVCALL PVOID MmGetSystemRoutineAddress(PUNICODE_STRING SystemRoutineName)
