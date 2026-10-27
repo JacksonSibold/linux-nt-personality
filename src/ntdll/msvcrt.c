@@ -46,12 +46,17 @@ BOOL __stdcall DllMainCRTStartup(HINSTANCE h, DWORD r, LPVOID v){ return DllMain
 static int g_errno = 0;
 static int g_fmode = 0x4000;
 static int g_commode = 0;
-static unsigned int g_codepage = 65001;
+/* C locale, as MSVCRT reports it: code page 0 and one byte per multibyte
+ * character. MinGW's wcrtomb (linked into the probe PE, used by printf "%lc")
+ * takes its byte path for code page 0 and stores wc when wc <= 0xFF. A
+ * nonzero code page sends it to WideCharToMultiByte, which rejects CP_UTF8
+ * when lpUsedDefaultChar is set, so %lc printed nothing. */
+static unsigned int g_codepage = 0;
 static unsigned int g_mb_cur_max = 1;
 static char* g_initenv = NULL;
 static int g_app_type = 0;
 static void* g_iob[3] = {0};
-static int g_lc_codepage = 65001;
+static int g_lc_codepage = 0;
 static int g_lc_mb_cur_max = 1;
 
 /* FILE-like dummy - msvcrt's FILE is opaque but probe uses it via __iob_func */
@@ -62,8 +67,11 @@ int _fmode = 0x4000;
 int _commode = 0;
 int* __p__fmode(void){ return &_fmode; }
 int* __p__commode(void){ return &_commode; }
-unsigned int* ___lc_codepage_func(void){ return &g_codepage; }
-unsigned int* ___mb_cur_max_func(void){ return &g_mb_cur_max; }
+/* Value-returning, as in MSVCRT (MinGW wcrtomb reads the result as an integer).
+ * They returned pointers before, so the caller got the low bits of an address as
+ * the code page and the byte path was never taken. */
+unsigned int ___lc_codepage_func(void){ return g_codepage; }
+int ___mb_cur_max_func(void){ return (int)g_mb_cur_max; }
 char** __initenv = &g_initenv;
 int __set_app_type(int t){ g_app_type=t; return t; }
 int __setusermatherr(void *f){ (void)f; return 0; }

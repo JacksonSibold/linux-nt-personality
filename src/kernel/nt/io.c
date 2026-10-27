@@ -958,9 +958,15 @@ static int ntio_access_to_flags(ACCESS_MASK desired, ULONG create_options,
 
 	desired = ntio_map_generic_access(desired);
 
-	if (desired & (FILE_READ_DATA | FILE_EXECUTE | FILE_GENERIC_READ))
+	/* Test the specific rights, not the composite FILE_GENERIC_READ/WRITE.
+	 * Both composites contain SYNCHRONIZE (0x100000) and READ_CONTROL, and
+	 * almost every open asks for SYNCHRONIZE, so the composite test made every
+	 * such open read-write (O_RDWR). A directory opened O_RDWR fails with EISDIR,
+	 * which is why a backup-intent GENERIC_READ open of a directory failed in the
+	 * guest (probe_path RootDirectory handles, 0xC0000008). */
+	if (desired & (FILE_READ_DATA | FILE_EXECUTE))
 		read = true;
-	if (desired & (FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_GENERIC_WRITE |
+	if (desired & (FILE_WRITE_DATA | FILE_APPEND_DATA |
 		       FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA | DELETE))
 		write = true;
 

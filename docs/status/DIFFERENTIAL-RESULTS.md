@@ -5,6 +5,67 @@ host QEMU with `-kernel`. Oracle: host-captured Windows goldens `tests/different
 Comparator: the repo's own `tests/differential/dualrun.py` (`normalize_json`, `diff_jsons`, `evaluate_probe`),
 called by `tools/linux-env/probe_results.py compare`.
 
+## probes5 cycle: nt_path %lc, RootDirectory opens, and the open-rights mask (2026-10-27)
+
+Tree: `origin/main` de48830. Three full NONVM boots of the same 15 probes (`NONVM=1 probes-initramfs.sh`, host QEMU
+through `boot-m0-host.ps1`, `log_buf_len=16M`), compared with `probe_results.py compare` against
+`tests/differential/golden/windows-26200.9457`. Columns: **base** = de48830 as it is; **+msvcrt** = base plus the
+shim fix (`src/ntdll/msvcrt.c`); **+io.c** = that plus the open-rights fix (`src/kernel/nt/io.c`, rebuilt kernel).
+
+| probe | base | +msvcrt | +io.c |
+|---|---|---|---|
+| probe_directory | 64 / 67 | 64 / 67 | **65 / 67** |
+| probe_exception | 61 / 76 | 61 / 76 | 61 / 76 |
+| probe_fileinfo | 184 / 221 | 183 / 221 (note 1) | 183 / 221 (note 1) |
+| probe_handles | 99 / 111 | 99 / 111 | 99 / 111 |
+| probe_namedpipe | 3 / 45 | 3 / 45 | 3 / 45 |
+| probe_ntstatus | 2191 / 2199 | 2191 / 2199 | 2191 / 2199 |
+| probe_path | 55105 / 72523 | **62605 / 72523** | **71815 / 72523** |
+| probe_peloader | 33 / 34 | 33 / 34 | 33 / 34 |
+| probe_process_thread | 0 / 182 | 0 / 182 | 0 / 182 |
+| probe_registry | 128 / 140 | 128 / 140 | 128 / 140 |
+| probe_section | 128 / 129 | 128 / 129 | 128 / 129 |
+| probe_sharemode | 458857 / 458857 PASS | same | same |
+| probe_sync | 0 / 74 | 0 / 74 | 0 / 74 |
+| probe_teb_peb | 81 / 104 | 81 / 104 | 81 / 104 |
+| probe_virtualquery | 139 / 139 PASS | same | same |
+
+Root causes, both diagnosed on the guest with a diagnostic PE (kept out of the repo):
+
+- **nt_path display (`%lc`), fixed.** The probe's `printf("%lc")` is MinGW's own `__mingw_pformat`, linked into the
+  PE. For `%lc` it calls `wcrtomb`, which calls `___lc_codepage_func()` and `___mb_cur_max_func()` through the
+  msvcrt shim. The shim returned `unsigned int *` and `int *` (pointers to its globals), but `wcrtomb` reads the
+  result as a value. The low bits of the address became the code page, so `WideCharToMultiByte` was called with a
+  garbage code page and failed, and no letter was printed. Fix: both functions return the values, and the C-locale
+  code page is 0 (the byte path). The earlier "CP1252 did not fix it" result is explained by this: the code page
+  value was never read.
+- **0xC0000008 on the 1250 RootDirectory cases, fixed.** `ntio_access_to_flags` (`src/kernel/nt/io.c`) tested
+  the composite constants `FILE_GENERIC_READ` and `FILE_GENERIC_WRITE`. Both contain `SYNCHRONIZE` (0x100000),
+  which almost every open requests, so each such open was read-write (`O_RDWR`). A directory opened `O_RDWR`
+  fails with `EISDIR`, which is what the probe's backup-intent directory handle hit (a GENERIC_READ backup open
+  of a directory returned ERROR_ACCESS_DENIED). The test now uses the data bits (`FILE_READ_DATA`, `FILE_EXECUTE`,
+  `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_ATTRIBUTES`, `FILE_WRITE_EA`, `DELETE`). Relative
+  `probe_path` cases returning 0xC0000008: 1250 before, 0 after. Host `io_test` has a new case,
+  `root_directory_from_backup_handle` (43 of 43 in the guest, `make KHOST_OS=linux`). The host-side Windows build
+  of `io_test.exe` was blocked by a local Application Control policy, so the host run was not used.
+
+Notes:
+
+1. **probe_fileinfo 184 to 183 is not a logic change.** The only raw difference between the base and +msvcrt
+   outputs is `win32_filetime.write_low/write_high`, the FILETIME of a file the probe creates (the VM clock at that
+   moment). The comparator accepts a timing field within a 15% band. The base run's `write_low` (769128576 against
+   golden 681811968, 12.8% off) was in the band; the +msvcrt run's (1874161280, 175% off) was not. The field is
+   clock-dependent, so this count flips between boots. Recorded as a timing-band flip, not as a fix or a regression.
+2. Remaining `probe_path` mismatches: 708 (of 72523). They are path-converter and status cases, for example
+   `tests[1164]` returns `ERROR_INVALID_NAME` (0xC0000033) where Windows returns `OBJECT_NAME_NOT_FOUND`
+   (0xC000003A). Not addressed in this cycle.
+3. Regression batch on the rebuilt kernel (`/big/probes5/linux`, `vm/incremental-kernel.sh --all`, bzImage
+   sha from `kp5-run`): M0 exit 42 (expected 42); S1 0; S2 to S4 0; S5 53 (expected 53); S6 to S13 0, S11 under its
+   1200 s bound, S13 with `ntpers_driver=hello_drv`. No Oops or BUG line in any serial log.
+4. Host checks: `python -m unittest discover tests/unit` 871 run, OK (1 skip, WSL). Guest `ntdll-host`
+   `test_msvcrt_policy` 16 of 16. Guest kernel-host `make KHOST_OS=linux check-quick` exit 0.
+5. Not started: the probe_peloader, probe_teb_peb and probe_fileinfo root-cause work (task 3), beyond note 1.
+
 ## Baseline on main 79a5871, probes4 cycle (2026-10-27, NONVM probes, not yet fixed)
 
 Measured on the kernel built from `origin/main` 79a5871 (guest `kfast/linux-src` bzImage, 1160192 bytes) with the NONVM

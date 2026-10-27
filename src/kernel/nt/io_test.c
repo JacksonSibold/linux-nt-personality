@@ -678,6 +678,41 @@ TEST(path_parsing)
 /* IOCP tests                                                                   */
 /* -------------------------------------------------------------------------- */
 
+/* probe_path opens its relative cases with RootDirectory set to a directory
+ * handle from a backup-intent open (kernel32 CreateFile with
+ * FILE_FLAG_BACKUP_SEMANTICS). That handle must be a valid root for a relative
+ * open of a file inside the directory. */
+TEST(root_directory_from_backup_handle)
+{
+	HANDLE dh = NULL, h = NULL;
+	IO_STATUS_BLOCK iosb;
+	OBJECT_ATTRIBUTES oa;
+	LARGE_INTEGER alloc = { 0 };
+
+	reset_state();
+	create_file_at("rootdir/sub/inner.txt");
+	create_dir_at("rootdir/sub");
+
+	oa = make_obj_attr("\\??\\C:\\rootdir\\sub");
+	ASSERT_STATUS(nt_svc_NtCreateFile(&dh, FILE_READ_ATTRIBUTES | SYNCHRONIZE, &oa, &iosb,
+					  &alloc, 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+					  FILE_OPEN,
+					  FILE_OPEN_FOR_BACKUP_INTENT | FILE_SYNCHRONOUS_IO_NONALERT,
+					  NULL, 0),
+		      STATUS_SUCCESS);
+
+	oa = make_obj_attr_rel(dh, "inner.txt");
+	ASSERT_STATUS(nt_svc_NtCreateFile(&h, FILE_READ_ATTRIBUTES | SYNCHRONIZE, &oa, &iosb,
+					  &alloc, 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+					  FILE_OPEN,
+					  FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+					  NULL, 0),
+		      STATUS_SUCCESS);
+	nt_svc_NtClose(h);
+	nt_svc_NtClose(dh);
+	PASS();
+}
+
 TEST(iocp_ordering)
 {
 	HANDLE iocp;
@@ -2530,6 +2565,7 @@ int main(void)
 	RUN(access_denied_on_valid_handle);
 	RUN(path_separators);
 	RUN(path_parsing);
+	RUN(root_directory_from_backup_handle);
 	RUN(iocp_ordering);
 	RUN(iocp_concurrency);
 	RUN(iocp_timeout);
