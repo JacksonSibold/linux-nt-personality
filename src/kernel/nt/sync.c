@@ -1308,6 +1308,12 @@ void nt_wake_by_address_all(void *addr) {
 }
 
 /* abandonment */
+/* Test seam (userspace model only; NULL in production). Called by the abandon
+ * between dropping the header lock and waking waiters, the window where a waiter
+ * that runs on the signal can free the header. proc_thread_test uses it to hold
+ * that window open. */
+void (*nt_test_abandon_gap_hook)(struct nt_dispatcher_header *h) = NULL;
+
 void nt_abandon_owned_mutants(struct nt_thread *thread) {
     if (!thread) return;
     /* Detach one owned mutant at a time under the thread lock, until the list is
@@ -1329,8 +1335,15 @@ void nt_abandon_owned_mutants(struct nt_thread *thread) {
         m->owner = NULL;
         m->recursion = 0;
         h->signal_state = 1;
+        /* The signal above lets a waiter wake and drop its own reference, which
+         * can free the header before the wake below runs. Hold a reference across
+         * the wake (proc_thread_test: mutant_abandon_refcount_race). */
+        nt_header_addref(h);
         pthread_mutex_unlock(&h->lock);
+        if (nt_test_abandon_gap_hook)
+            nt_test_abandon_gap_hook(h);
         wake_waiters_for_header(h);
+        nt_header_release(h);
     }
 }
 #else /* __KERNEL__ : real kernel wait engine

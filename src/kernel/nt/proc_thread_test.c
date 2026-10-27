@@ -283,6 +283,74 @@ static ULONG thr_proc_hold(PVOID a){
     for(int i=0;i<100;i++){ struct nt_ethread *t=kshim_current_thread(); if(t&&t->terminated) break; usleep(100*1000); }
     return 0;
 }
+/* Regression: nt_abandon_owned_mutants signals a mutant, then wakes its waiters
+ * after dropping the header lock. A waiter that wakes on the signal may drop
+ * its reference and free the header before that wake runs. The abandoner must
+ * hold its own reference across the wake (the fix in sync.c). Run 2000 times:
+ * under SANITIZE=address the unfixed code reports a heap-use-after-free here. */
+struct abandon_race_waiter { struct nt_mutant *m; NTSTATUS st; };
+/* The gap hook (sync.c) runs in the abandoner after it drops the header lock and
+ * before it wakes waiters. It holds that window open until the waiter has
+ * released the mutant and dropped its reference, so the waiter's reference is
+ * the last one the window can see. */
+static struct nt_dispatcher_header *volatile g_gap_target = NULL;
+static volatile int g_gap_waiter_done = 0;
+extern void (*nt_test_abandon_gap_hook)(struct nt_dispatcher_header *h);
+static void abandon_gap_hook(struct nt_dispatcher_header *h){
+    if (h != g_gap_target) return;
+    while (!g_gap_waiter_done) usleep(20);
+}
+static void *abandon_race_waiter_main(void *p){
+    struct abandon_race_waiter *a = p;
+    struct nt_thread *t = NULL;
+    nt_thread_create(&t);
+    nt_set_current_thread(t);
+    LARGE_INTEGER zero = {0};
+    do {
+        a->st = nt_wait_for_single_object(&a->m->header, 0, &zero);
+    } while (a->st == STATUS_TIMEOUT);
+    if (a->st == STATUS_ABANDONED_WAIT_0 || a->st == STATUS_WAIT_0)
+        nt_release_mutant(a->m, NULL);
+    nt_put_mutant(a->m);   /* the waiter's own reference */
+    g_gap_waiter_done = 1;
+    nt_set_current_thread(NULL);
+    nt_thread_destroy(t);
+    return NULL;
+}
+static void test_mutant_abandon_refcount_race(void){
+    setup_proc();
+    struct nt_thread *prev = nt_current_thread();
+    int i, bad = 0;
+    nt_test_abandon_gap_hook = abandon_gap_hook;
+    for (i = 0; i < 2000 && !bad; i++) {
+        struct nt_thread *owner = NULL;
+        ASSERT(nt_thread_create(&owner) == STATUS_SUCCESS);
+        nt_set_current_thread(owner);
+        struct nt_mutant *m = NULL;
+        ASSERT(nt_create_mutant(&m, 1) == STATUS_SUCCESS);   /* owned by owner */
+        nt_header_addref(&m->header);                        /* the waiter's reference */
+        struct abandon_race_waiter w = { m, 0 };
+        pthread_t tid;
+        ASSERT(pthread_create(&tid, NULL, abandon_race_waiter_main, &w) == 0);
+        /* Drop the creator's reference now: the waiter's reference is the last one,
+         * so the waiter's release can free the header while the abandon is still
+         * waking waiters. */
+        g_gap_target = &m->header;
+        g_gap_waiter_done = 0;
+        nt_put_mutant(m);
+        nt_abandon_owned_mutants(owner);
+        pthread_join(tid, NULL);
+        g_gap_target = NULL;
+        if (w.st != STATUS_ABANDONED_WAIT_0 && w.st != STATUS_WAIT_0) bad = 1;
+        nt_set_current_thread(NULL);
+        nt_thread_destroy(owner);
+    }
+    nt_test_abandon_gap_hook = NULL;
+    nt_set_current_thread(prev);
+    if (bad) { fprintf(stderr, "FAIL mutant_abandon_refcount_race: iteration %d\n", i); g_fail++; return; }
+    PASS();
+}
+
 static void test_mutant_abandon_process_exit(void){
     setup_proc();
     struct nt_thread *waiter=NULL; nt_thread_create(&waiter); nt_set_current_thread(waiter);
@@ -986,6 +1054,7 @@ int main(void){
     RUN(test_open);
     RUN(test_mutant_abandon_self_terminate);
     RUN(test_mutant_abandon_peer_terminate);
+    RUN(test_mutant_abandon_refcount_race);
     RUN(test_mutant_abandon_process_exit);
     RUN(test_thread_exit_frees_sync_thread);
     RUN(test_query_returnlength_discipline);

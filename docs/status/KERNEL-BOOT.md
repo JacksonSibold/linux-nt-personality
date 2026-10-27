@@ -84,23 +84,24 @@ goldens (`tests/differential/golden/windows-26200.9457`) and the recorded table 
 No probe went down. Three rose (directory, handles, virtualquery). The recorded table predates later kernel commits,
 so the rises are not attributed to this change. A strict A/B against a kernel without the driver host was not run.
 
-**proc_thread_test (kernel-host) intermittent exit 139.** Reproduced under load: 8 parallel loops of
-`proc_thread_test.exe` with `SYNC_TEST_ITERATIONS=2000` gave 2 crashes in 240 runs and 1 in 480. Core dumps and gdb
-both put the fault at the same place every time: `ObDestroyHandleTable` (`handle.c:240`, `kfree(l2->l3[j])`), called by
-`ObCleanupObjectManager` (`object.c:1805`) from `setup_proc` at the start of
-`test_thread_exit_frees_sync_thread` (`proc_thread_test.c:332`). The handle-table L2 pointer is already freed, so the
-table was destroyed twice or after a use. Not yet root-caused. A candidate race, a thread that still touches its
-process after it publishes `terminated` (`proc_thread.c`), was tested by moving the debug post before the publish. The
-crash still reproduced, so that change was reverted and nothing is committed for it. Open: find what destroys the
-table a second time (candidates: `ObDestroyProcessObject` does not clear `proc->handle_table`, and the list cleanup
-walks processes that a concurrent path may have freed).
+**proc_thread_test (kernel-host) intermittent exit 139: root cause and fix.** Reproduced under load (8 parallel loops,
+`SYNC_TEST_ITERATIONS=2000`): 2 crashes in 240 runs, then 1 in 480. It is a use-after-free of a mutant header in the
+userspace model. `nt_abandon_owned_mutants` (`sync.c`) set `signal_state` under the header lock, dropped the lock, and
+only then woke waiters. A waiter that woke on the signal could drop its reference and free the header in that gap; the
+abandoner then touched the freed header (`wake_waiters_for_header`). The freed block was reused by a later allocation,
+so the corruption later showed up in `ObDestroyHandleTable` (`handle.c:240`), in the next test's setup. The fix holds a
+reference across the wake. `SANITIZE=address` reports the use-after-free with the free and allocation stacks, and the
+new regression test `test_mutant_abandon_refcount_race` (`proc_thread_test.c`) reproduces it deterministically through a
+test seam (`nt_test_abandon_gap_hook`, NULL in production, userspace model only). Unfixed: heap-use-after-free in
+`wake_waiters_for_header`, every run. Fixed: passes. Stress after the fix: 480 of 480 runs rc 0 on the normal build and
+480 of 480 on the ASan build, both under 8-way load.
 
 **Remaining, in order.**
 1. S13: an `hello_drv.sys` image (`tests/kernel-drivers`, MinGW) and a PE client that creates the service key, calls
    `NtLoadDriver`, opens the device, round-trips an IOCTL and calls `NtUnloadDriver`. Needs a bridge from the kernel
    handle table to driver-host file objects (`NtCreateFile`, `NtDeviceIoControlFile`), so it is a separate slice.
 2. Verify `0x0106` and `0x0107` against a Windows build.
-3. The proc_thread_test double destroy above (its own commit).
+3. (done) The proc_thread_test exit 139 is fixed in its own slice, see above.
 4. Per-task slot release at process exit. Slots are released for kthreads only; a user task keeps its slot until the
    table fills (256), and then the kernel panics with a clear message.
 
