@@ -2,6 +2,11 @@
  * locks and IRQL, events and waits, DPC queue, timers, the executive worker
  * thread, system threads, and the handle table.
  */
+#ifdef __KERNEL__
+/* Not ported yet: __thread (dh_irql, dh_tls_thread) and setjmp/longjmp
+ * (thread exit) have no kernel equivalent in this file. See docs/status/KERNEL-BOOT.md. */
+#error "drvhost_ex.c is host-only until the TLS and thread-exit port lands"
+#endif
 #include <sched.h>
 #include <setjmp.h>
 #include <stdio.h>

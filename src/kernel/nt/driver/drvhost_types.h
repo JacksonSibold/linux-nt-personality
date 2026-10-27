@@ -18,8 +18,13 @@
 #ifndef DRVHOST_TYPES_H
 #define DRVHOST_TYPES_H
 
+#ifdef __KERNEL__
+#include <linux/stddef.h>
+#include <linux/types.h>
+#else
 #include <stddef.h>
 #include <stdint.h>
+#endif
 
 #define DRVCALL __attribute__((ms_abi))
 

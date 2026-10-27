@@ -4,9 +4,16 @@
 #ifndef DRVHOST_INT_H
 #define DRVHOST_INT_H
 
+#ifndef __KERNEL__
 #include <setjmp.h>
+#endif
+#ifdef __KERNEL__
+#include <linux/stddef.h>
+#include <linux/types.h>
+#else
 #include <stddef.h>
 #include <stdint.h>
+#endif
 
 #include "drvhost.h"
 #include "drvhost_types.h"
@@ -42,7 +49,9 @@ void   dh_thread_join(void *handle);
 typedef struct dh_thread {
     DISPATCHER_HEADER hdr;     /* signalled when the thread exits (DISPATCHER_THREAD_OBJECT) */
     void     *native;          /* pthread handle, or NULL for an adopted thread */
-    jmp_buf   exit_jb;         /* PsTerminateSystemThread longjmps here */
+#ifndef __KERNEL__
+    jmp_buf   exit_jb;         /* PsTerminateSystemThread longjmps here (host only) */
+#endif
     int       exit_armed;
     NTSTATUS  exit_status;
     PKSTART_ROUTINE start;

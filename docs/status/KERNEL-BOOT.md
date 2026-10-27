@@ -1,5 +1,49 @@
 # NT personality kernel: build, boot and M0 status
 
+## Driver host: platform layer, kernel branch (branch `drvkernel`, 2026-10-26)
+
+**Scope.** The NT driver host (`src/kernel/nt/driver/`, from `9ac442e`) is still not linked into the personality kernel.
+This pass changed no kernel object, service table or initramfs. No kernel build and no QEMU boot were run for it, and
+no M0, S1-S12 or NONVM probe number moved. S13 (driver load, IOCTL round trip) is not added yet.
+
+**What landed.**
+- `drvhost_plat.c`: a `#ifdef __KERNEL__` branch with kernel primitives. `dh_alloc` is `kzalloc` with a stored
+  base pointer, so the 16-byte alignment contract holds. Images are `vzalloc`ed and `dh_protect_rx` uses
+  `set_memory_{ro,rw,x,nx}`. `dh_read_file` uses `filp_open` and `kernel_read`. Clocks use `ktime_get_*`. The monitor is
+  a mutex with a wait queue and a generation counter, so a notify between a waiter's unlock and sleep is not lost.
+  Threads are `kthread_run` with a completion, and join waits on the completion and then calls `kthread_stop`.
+  The host branch is unchanged.
+- `drvhost_types.h`, `drvhost_int.h`: the hosted `<stdint.h>`, `<stddef.h>` and `<setjmp.h>` includes are host-only.
+  The kernel branch uses `linux/types.h` and `linux/stddef.h`. `exit_jb` is host-only.
+- `drvhost_ex.c`: `#error` under `__KERNEL__`. It still needs `__thread` and `setjmp`.
+
+**Verification.**
+- Host, guest (Debian 12, gcc and MinGW): `tests/kernel-drivers` `make check`: `driver_unit_test` 101 checks, 0 failed;
+  `driver_host_test` 97 checks, 0 failed. The two `-Wformat-truncation` warnings in `drvhost_svc.c` and
+  `drvhost_svcdb.h` predate this change.
+- Kernel: `drvhost_plat.c` compiles as an out-of-tree object against the guest kernel tree
+  (`make -C ~/kfast/linux-src M=<dir> drvhost_plat.o`, with `-isystem` for the compiler's include directory), 0 warnings.
+  `drvhost_types.h` and `drvhost_int.h` compile under the same flags, including the `_Static_assert` layout checks.
+- `tests/ntdll-host` and `tests/kernel-host`: see the run record in the commit message.
+
+**Remaining, in order.**
+1. Thread-local state: `__thread dh_irql` and `dh_tls_thread` (`drvhost_ex.c`). A kernel port needs per-task storage,
+   released when the task exits. A bare per-CPU slot is wrong, because the calls come from user tasks.
+2. Thread exit: `setjmp` in `thread_main_common` and `longjmp` in `PsTerminateSystemThread` (`drvhost_ex.c`). The kernel
+   form runs the body, then completes and calls `kthread_exit`. Adopted user-task threads need a separate design.
+3. libc calls in the other driver files: `calloc` and `getpid` in `drvhost_ex.c`, `snprintf`, `strncmp` and `strcasecmp`
+   in `drvhost_nt.c`, `drvhost_svc.c` and `drvhost_io.c`, and `sys/mman.h` and `unistd.h` in `drvhost_rtl.c`. Each file
+   needs a compile check under the kernel flags. Only `drvhost_plat.c` has one so far.
+4. Build wiring: `tools/ntpers_kpatch.py` `nt_resolution` walks only the top level of `src/kernel/nt/`, not `driver/`.
+   The driver objects, `pe_parse.c` and `os_identity.h` need entries in `arch/x86/nt/Makefile` and the copy list.
+5. Syscalls: `NtLoadDriver`, `NtUnloadDriver` and `NtDeviceIoControlFile` are not in `nt_service_list.h`. Add them, then
+   regenerate the service inventory and parity docs with the repo tools.
+6. S13: an initramfs with `hello_drv.sys` (`tests/kernel-drivers`, MinGW) and a userspace PE client that loads the driver
+   through the service path, opens the device, round-trips an IOCTL, and unloads. Follow the S12 pattern in
+   `tools/linux-env/step-initramfs.sh` and `tests/kernel/s12`.
+7. Kernel build, then boot: `vm/incremental-kernel.sh` in `flock ~/.kbuild.lock`, `boot-m0-host.ps1` for M0 (expects
+   42), S5 (expects 53), the other steps (expect 0), and the NONVM probes.
+
 ## User-mode exception delivery (branch `haiku/seh`, 2026-10-15)
 
 Kernel: `bzImage` sha256 `993ed32c3566391c2f1638c9837d37063f14a17004e4106c447331e5cb4eacec` (1,135,616 bytes), built from
