@@ -813,6 +813,11 @@ done:
  * OSMajorVersion..OSPlatformId in struct _PEB (src/ntdll/nt_types.h); the
  * unit test checks them against that struct. */
 #define PEB_OFF_OS_IDENTITY 0x118
+#define PEB_OFF_APISETMAP 0x68
+/* Where the empty API set namespace header sits in the PEB page (see pe_init_peb). */
+#define PEB_OFF_APISET_NS 0xE00
+/* TEB.DeallocationStack, the stack allocation base (see pe_init_teb). */
+#define PE_TEB_OFF_DEALLOC_STACK 0x1478
 struct pe_peb_os_identity {
     u32 OSMajorVersion;   /* +0x118 */
     u32 OSMinorVersion;   /* +0x11c */
@@ -847,6 +852,15 @@ static int pe_init_peb(struct pe_load_state *st)
     os.OSBuildNumber = NT_OS_BUILD_NUMBER;
     os.OSPlatformId = NT_OS_PLATFORM_ID;
     if (copy_to_user((void __user *)(p+PEB_OFF_OS_IDENTITY), &os, sizeof(os))) return -EFAULT;
+    /* ApiSetMap (0x68): an API set namespace header with no entries (Version 6, Size 0x1C,
+     * Count 0), in the PEB page past the fields this kernel writes. The loader resolves
+     * api-ms names from its own schema (ldr.c), so this pointer is informational. */
+    {
+        u32 ns[7] = { 6, sizeof(ns), 0, 0, 0, 0, 0 };
+        u64 nsptr = p + PEB_OFF_APISET_NS;
+        if (copy_to_user((void __user *)(p+PEB_OFF_APISET_NS), ns, sizeof(ns))) return -EFAULT;
+        if (copy_to_user((void __user *)(p+PEB_OFF_APISETMAP), &nsptr, 8)) return -EFAULT;
+    }
     u32 flag=0;
     if (copy_to_user((void __user *)(p+0xbc), &flag, 4)) return -EFAULT;
     st->peb = (void *)p;
@@ -877,6 +891,9 @@ static int pe_init_teb(struct pe_load_state *st)
     if (copy_to_user((void __user *)(p+0x60), &peb, 8)) return -EFAULT;
     u32 zero=0;
     if (copy_to_user((void __user *)(p+0x68), &zero, 4)) return -EFAULT;
+    // DeallocationStack (0x1478): the allocation base of the stack reservation, the lowest
+    // address pe_setup_stack mapped (stack_bot above). Windows keeps the same value here.
+    if (copy_to_user((void __user *)(p+PE_TEB_OFF_DEALLOC_STACK), &stack_bot, 8)) return -EFAULT;
     // ClientId at 0x40? Not needed but set pid
     u64 pid = (u64)current->pid;
     if (copy_to_user((void __user *)(p+0x40), &pid, 8)) return -EFAULT;

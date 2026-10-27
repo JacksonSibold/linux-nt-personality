@@ -5,6 +5,54 @@ host QEMU with `-kernel`. Oracle: host-captured Windows goldens `tests/different
 Comparator: the repo's own `tests/differential/dualrun.py` (`normalize_json`, `diff_jsons`, `evaluate_probe`),
 called by `tools/linux-env/probe_results.py compare`.
 
+## probes7 cycle: volume and file classes, TEB/PEB gaps (2026-10-27)
+
+Tree: branch `probes7` from `origin/main` 245576a. Kernel: `vm/incremental-kernel.sh --all` on a private copy of the probes6 tree (`/big/probes7/linux`), bzImage sha256 prefix `fbaf480a1563b40b`. NONVM image `probes-nonvm.cpio.gz` built with `NONVM=1 probes-initramfs.sh` after `make -C src/ntdll all kernel32 msvcrt advapi32 user32`. One boot with `log_buf_len=16M` through `boot-m0-host.ps1`, all 15 probes reach `NTPERS_ALL_DONE`. Compared with `tests/differential/golden/windows-26200.9457` by `probe_results.py compare`.
+
+Before is the probes6 serial log of the same commit (245576a, `probes6-run/after2`), split and compared with the same tool. Counts are matched fields / golden leaves.
+
+| probe | before (245576a) | after (probes7) | verdict |
+|---|---|---|---|
+| probe_directory | 65 / 67 | 65 / 67 | FAIL (unchanged) |
+| probe_exception | 61 / 76 | 61 / 76 | FAIL (unchanged) |
+| probe_fileinfo | 183 / 221 | **216 / 221** | FAIL |
+| probe_handles | 99 / 111 | 99 / 111 | FAIL (unchanged) |
+| probe_namedpipe | 3 / 45 | 3 / 45 | FAIL (unchanged) |
+| probe_ntstatus | 2191 / 2199 | 2191 / 2199 | FAIL (unchanged) |
+| probe_path | 72523 / 72523 | 72523 / 72523 | PASS (unchanged) |
+| probe_peloader | 33 / 34 | 33 / 34 | FAIL (unchanged) |
+| probe_process_thread | 0 / 182 | 0 / 182 | FAIL (unchanged) |
+| probe_registry | 128 / 140 | 128 / 140 | FAIL (unchanged) |
+| probe_section | 128 / 129 | 128 / 129 | FAIL (unchanged) |
+| probe_sharemode | 458857 / 458857 | 458857 / 458857 | PASS (unchanged) |
+| probe_sync | 0 / 74 | 0 / 74 | FAIL (unchanged) |
+| probe_teb_peb | 81 / 104 | **83 / 104** | FAIL |
+| probe_virtualquery | 139 / 139 | 139 / 139 | PASS (unchanged) |
+
+No probe lost a matched field. Clock-dependent fields are reported as they are, not counted as fixes.
+
+**probe_fileinfo, fixed (33 fields).** Root causes, grouped:
+- Volume classes were a stub that returned NOT_IMPLEMENTED. `GetFileInformationByHandle` calls FileFsVolumeInformation, so it failed and the probe printed uninitialised stack for `by_handle_info` (size 0, attrs 0xC0000003, nLinks 0). Fixed in `NtQueryVolumeInformationFile` (`src/kernel/nt/io.c`, `ntio_volume_fill`) for FileFsVolumeInformation, Size, Attribute, Control, FullSize and ObjectId, using statfs (kernel `vfs_statfs`, host `fstatfs`). FileFsLabelInformation is a set-only class, so its query returns INVALID_INFO_CLASS. The attribute name is the real filesystem's name (EXTFS, TMPFS, ..., LINUXFS otherwise), never NTFS.
+- FileStreamInformation (22) and FileCompressionInformation (28) were unimplemented. Stream returns the single `::$DATA` entry (38 bytes). Compression returns format NONE with the file size.
+- Class 33 (`FileReparsePointInformation`, which the probe labels NetworkOpen) is not a query class on Windows: length check, then INVALID_PARAMETER.
+- FileBasicInformation set was unimplemented. The access and write times are now stored (`notify_change` in the kernel, `futimens` on the host). FileAttributes other than NORMAL are refused with NOT_SUPPORTED, not dropped.
+- FileAllInformation always reported a zero-length name. It now carries the name that FileNameInformation reports.
+
+**probe_fileinfo, remaining 5 fields.** `win32_filetime.creation_high/low`: birth time, clock-dependent, not kept by this kernel (documented, not counted). `query[5].full_info` and `query[9].full_info`: the name length. The probe creates its file under GetTempPath, so the Windows name and the VM name differ by path, not by logic (environmental). `query[19].full_info`: Windows reports Information 0 for the INVALID_PARAMETER result; the store rule leaves the caller's Information for that status, and the probe's IO_STATUS_BLOCK is not reset between calls, so this is a probe-side value (not changed here).
+
+**probe_teb_peb, fixed (2 fields).** `peb_checks[4].non_null` (ProcessHeap) and `peb_checks[5].non_null` (ApiSetMap) were NULL. ApiSetMap now points at an API set namespace header with no entries (Version 6, Count 0) in the PEB page at offset 0xE00 (`pe_init_peb`, `src/kernel/fs/binfmt_pe.c`). ProcessHeap is published into PEB by kernel32's DllMain at DLL_PROCESS_ATTACH (`src/ntdll/kernel32.c`), the heap that GetProcessHeap returns. A process that never loads kernel32 keeps ProcessHeap NULL: this is a real gap, not closed here. `teb.DeallocationStack` (TEB+0x1478) was 0 for the initial thread (`pe_init_teb` set nothing there); it now holds the allocation base of the stack reservation. The value differs from Windows by address only (environmental).
+
+**probe_teb_peb, remaining 21 fields.** Stack, TEB, module and PEB addresses that depend on the VM's layout (environmental). `DeallocationStack` is now non-zero but its value is an address.
+
+**Host tests.**
+- `io_test` (guest, `make KHOST_OS=linux build/io_test.exe`): 47 passed, 0 failed. New cases `query_volume_classes`, `query_file_classes`, `set_basic_times`. Two existing expectations changed because those classes are now implemented: the stream query on a short buffer (INFO_LENGTH_MISMATCH, was INVALID_INFO_CLASS) and the size query on an 8-byte buffer (INFO_LENGTH_MISMATCH, was NOT_IMPLEMENTED).
+- `check-quick` (guest, `make KHOST_OS=linux check-quick` in `tests/kernel-host`): exit 0. This includes `binfmt_pe_test`, which now asserts `TEB.DeallocationStack`, `PEB.ApiSetMap` and the namespace header.
+- Host Python unit suite (`python -m unittest discover tests/unit`): 871 run, OK, 1 skip (WSL).
+
+**Regression batch** (`bzImage` `fbaf480a1563b40b`, step images from `kp5-run`, `log_buf_len=16M`, host QEMU through `boot-m0-host.ps1`): M0 42 (expected 42) PASS; S1 0; S2 to S4 0; S5 53 (expected 53); S6 to S10 0; S11 0 under its 1200 s bound; S12 0; S13 0 with `ntpers_driver=hello_drv:\SystemRoot\drivers\hello_drv.sys` and `S13 PASS` in the serial log. No `Oops` or `BUG:` in any serial log.
+
+**Other host suites** (guest): `tests/ntdll-host` `make test` exit 0. `tests/kernel-host` `make check-quick` exit 0. `io_test` 47 of 47.
+
 ## probes6 cycle: over-length path components (2026-10-27)
 
 Tree: branch `probes6` from `origin/main` 070b9b2. Kernel rebuilt incrementally (`vm/incremental-kernel.sh --all`, `/big/probes6/linux`). Three NONVM boots of the same 15 probes (`probes-initramfs.sh NONVM=1`, host QEMU via `boot-m0-host.ps1`, `log_buf_len=16M`), compared with `probe_results.py compare` against `tests/differential/golden/windows-26200.9457`.

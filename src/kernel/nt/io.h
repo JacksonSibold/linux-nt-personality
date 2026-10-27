@@ -326,6 +326,76 @@ typedef struct _FILE_FS_DEVICE_INFORMATION {
 	ULONG Characteristics;
 } FILE_FS_DEVICE_INFORMATION, *PFILE_FS_DEVICE_INFORMATION;
 
+/* Volume classes of NtQueryVolumeInformationFile (sizes as in winternl / ntifs). */
+typedef struct _FILE_FS_VOLUME_INFORMATION {
+	LARGE_INTEGER VolumeCreationTime;
+	ULONG VolumeSerialNumber;
+	ULONG VolumeLabelLength;
+	BOOLEAN SupportsObjects;
+	WCHAR VolumeLabel[1];
+} FILE_FS_VOLUME_INFORMATION, *PFILE_FS_VOLUME_INFORMATION;
+
+typedef struct _FILE_FS_SIZE_INFORMATION {
+	LARGE_INTEGER TotalAllocationUnits;
+	LARGE_INTEGER AvailableAllocationUnits;
+	ULONG SectorsPerAllocationUnit;
+	ULONG BytesPerSector;
+} FILE_FS_SIZE_INFORMATION, *PFILE_FS_SIZE_INFORMATION;
+
+typedef struct _FILE_FS_ATTRIBUTE_INFORMATION {
+	ULONG FileSystemAttributes;
+	LONG MaximumComponentNameLength;
+	ULONG FileSystemNameLength;
+	WCHAR FileSystemName[1];
+} FILE_FS_ATTRIBUTE_INFORMATION, *PFILE_FS_ATTRIBUTE_INFORMATION;
+
+typedef struct _FILE_FS_CONTROL_INFORMATION {
+	LARGE_INTEGER FreeSpaceStartFilteringThreshold;
+	LARGE_INTEGER FreeSpaceThresholdLowerBound;
+	LARGE_INTEGER FreeSpaceThresholdUpperBound;
+	LARGE_INTEGER DefaultQuotaThreshold;
+	LARGE_INTEGER DefaultQuotaLimit;
+	ULONG FileSystemControlFlags;
+	ULONG Padding;
+} FILE_FS_CONTROL_INFORMATION, *PFILE_FS_CONTROL_INFORMATION;
+
+typedef struct _FILE_FS_FULL_SIZE_INFORMATION {
+	LARGE_INTEGER TotalAllocationUnits;
+	LARGE_INTEGER CallerAvailableAllocationUnits;
+	LARGE_INTEGER ActualAvailableAllocationUnits;
+	ULONG SectorsPerAllocationUnit;
+	ULONG BytesPerSector;
+} FILE_FS_FULL_SIZE_INFORMATION, *PFILE_FS_FULL_SIZE_INFORMATION;
+
+typedef struct _FILE_FS_OBJECTID_INFORMATION {
+	UCHAR ObjectId[16];
+	UCHAR ExtendedInfo[48];	/* BirthVolumeId, BirthObjectId, DomainId */
+} FILE_FS_OBJECTID_INFORMATION, *PFILE_FS_OBJECTID_INFORMATION;
+
+typedef struct _FILE_STREAM_INFORMATION {
+	ULONG NextEntryOffset;
+	ULONG StreamNameLength;
+	LARGE_INTEGER StreamSize;
+	LARGE_INTEGER StreamAllocationSize;
+	WCHAR StreamName[1];
+} FILE_STREAM_INFORMATION, *PFILE_STREAM_INFORMATION;
+
+/* NT times are 100 ns ticks since 1601-01-01. 0 and -1 mean "unchanged" in a basic-info set. */
+#define NTIO_EPOCH_TICKS	116444736000000000LL
+/* The largest volume class (FILE_FS_OBJECTID_INFORMATION), and the fixed part of
+ * FILE_REPARSE_POINT_INFORMATION (FileReference, Tag). */
+#define NTIO_VOL_MAX		64
+#define NTIO_REPARSE_POINT_MIN	16
+
+typedef struct _FILE_COMPRESSION_INFORMATION {
+	LARGE_INTEGER CompressedFileSize;
+	USHORT CompressionFormat;
+	UCHAR CompressionUnitShift;
+	UCHAR ChunkShift;
+	UCHAR ClusterShift;
+	UCHAR Reserved[3];
+} FILE_COMPRESSION_INFORMATION, *PFILE_COMPRESSION_INFORMATION;
+
 typedef struct _FILE_ALL_INFORMATION {
 	FILE_BASIC_INFORMATION BasicInformation;
 	FILE_STANDARD_INFORMATION StandardInformation;

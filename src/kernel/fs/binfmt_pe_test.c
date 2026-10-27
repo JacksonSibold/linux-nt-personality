@@ -647,6 +647,13 @@ static void test_peb_teb_population(void)
     ASSERT_EQ(teb->NtTib.StackLimit, st.stack_base);
     ASSERT_EQ(teb->LastErrorValue, 0);
     ASSERT_EQ(teb->ClientId.UniqueProcess, (HANDLE)(uintptr_t)current->pid);
+    /* DeallocationStack (TEB+0x1478) is the allocation base of the stack reservation. */
+    _Static_assert(offsetof(TEB, DeallocationStack) == 0x1478, "TEB.DeallocationStack offset");
+    ASSERT_EQ((uintptr_t)teb->DeallocationStack, (uintptr_t)st.stack_base);
+    /* ApiSetMap (PEB+0x68) points at an API set namespace header with no entries. */
+    ASSERT((uintptr_t)peb->ApiSetMap == (uintptr_t)peb + 0xE00);
+    ASSERT_EQ(((const u32 *)peb->ApiSetMap)[0], 6);
+    ASSERT_EQ(((const u32 *)peb->ApiSetMap)[3], 0);
 
     ASSERT(peb->ProcessParameters->CommandLine.Length > 0);
     ASSERT(peb->ProcessParameters->CommandLine.Buffer != NULL);

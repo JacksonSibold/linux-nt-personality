@@ -34,6 +34,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/vfs.h>
 #include <dirent.h>
 #else
 #include <linux/fs.h>
@@ -47,6 +48,7 @@
 #include <linux/fcntl.h>
 #include <linux/errno.h>
 #include <linux/mnt_idmapping.h>
+#include <linux/statfs.h>
 #include <linux/printk.h>
 #include <linux/limits.h>
 #include <linux/string.h>
@@ -2843,6 +2845,64 @@ static NTSTATUS ntio_query_attribute_tag(struct nt_file_object *file,
 	return STATUS_SUCCESS;
 }
 
+/* FileStreamInformation: the unnamed data stream only ("::$DATA"). Its size is the file size. */
+static NTSTATUS ntio_query_stream(struct nt_file_object *file,
+				  PVOID buf, ULONG len, PULONG retlen)
+{
+	static const WCHAR stream_name[] = { ':', ':', '$', 'D', 'A', 'T', 'A' };
+	ULONG name_off = offsetof(FILE_STREAM_INFORMATION, StreamName);
+	ULONG need = name_off + sizeof(stream_name);
+	PFILE_STREAM_INFORMATION si;
+	struct kstat st;
+
+	if (len < need)
+		return STATUS_INFO_LENGTH_MISMATCH;
+	if (kshim_vfs_getattr(file->filp, &st) != 0)
+		return STATUS_UNSUCCESSFUL;
+	si = (PFILE_STREAM_INFORMATION)buf;
+	si->NextEntryOffset = 0;
+	si->StreamNameLength = sizeof(stream_name);
+	si->StreamSize.QuadPart = st.size;
+	si->StreamAllocationSize.QuadPart = st.size;
+	memcpy((unsigned char *)buf + name_off, stream_name, sizeof(stream_name));
+	if (retlen)
+		*retlen = need;
+	return STATUS_SUCCESS;
+}
+
+/* FileCompressionInformation: no file is compressed, so the compressed size is the file size and
+ * the format is COMPRESSION_FORMAT_NONE (0). */
+static NTSTATUS ntio_query_compression(struct nt_file_object *file,
+				       PVOID buf, ULONG len, PULONG retlen)
+{
+	PFILE_COMPRESSION_INFORMATION ci;
+	struct kstat st;
+
+	if (len < sizeof(*ci))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	if (kshim_vfs_getattr(file->filp, &st) != 0)
+		return STATUS_UNSUCCESSFUL;
+	ci = (PFILE_COMPRESSION_INFORMATION)buf;
+	ci->CompressedFileSize.QuadPart = st.size;
+	ci->CompressionFormat = 0;
+	ci->CompressionUnitShift = 0;
+	ci->ChunkShift = 0;
+	ci->ClusterShift = 0;
+	ci->Reserved[0] = ci->Reserved[1] = ci->Reserved[2] = 0;
+	if (retlen)
+		*retlen = sizeof(*ci);
+	return STATUS_SUCCESS;
+}
+
+/* Class 33 (FileReparsePointInformation) is not a query class on Windows: the buffer length is
+ * checked first, then the call fails with STATUS_INVALID_PARAMETER (golden probe_fileinfo). */
+static NTSTATUS ntio_query_reparse_point(ULONG len)
+{
+	if (len < NTIO_REPARSE_POINT_MIN)
+		return STATUS_INFO_LENGTH_MISMATCH;
+	return STATUS_INVALID_PARAMETER;
+}
+
 static NTSTATUS ntio_query_all(struct nt_file_object *file,
 			       PVOID buf, ULONG len, PULONG retlen)
 {
@@ -2872,11 +2932,26 @@ static NTSTATUS ntio_query_all(struct nt_file_object *file,
 	ai->AccessInformation.AccessFlags = file->granted_access;
 	ai->ModeInformation.Mode = file->create_options & FILE_MODE_OPTIONS_MASK;
 	ai->AlignmentInformation.AlignmentRequirement = 0;
-	ai->NameInformation.FileNameLength = 0;
+	/* NameInformation: the name FileNameInformation reports (the Linux path, as ntio_query_name),
+	 * cut to the buffer. len >= sizeof(FILE_ALL_INFORMATION) - sizeof(WCHAR) leaves room for at
+	 * least one character after the name's length field. */
+	{
+		const char *p = file->linux_path ? file->linux_path : "";
+		size_t plen = strlen(p);
+		ULONG full = (ULONG)(plen * sizeof(WCHAR));
+		ULONG name_off = (ULONG)offsetof(FILE_ALL_INFORMATION, NameInformation) +
+				 (ULONG)offsetof(FILE_NAME_INFORMATION, FileName);
+		ULONG avail = len - name_off;
+		ULONG n, i;
 
-	if (retlen)
-		*retlen = sizeof(FILE_ALL_INFORMATION) - sizeof(WCHAR);
-	return STATUS_SUCCESS;
+		ai->NameInformation.FileNameLength = full;
+		n = full < avail ? full : (avail & ~(ULONG)(sizeof(WCHAR) - 1));
+		for (i = 0; i < n / sizeof(WCHAR); i++)
+			((WCHAR *)((unsigned char *)buf + name_off))[i] = (WCHAR)(unsigned char)p[i];
+		if (retlen)
+			*retlen = full > avail ? len : name_off + full;
+		return full > avail ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
+	}
 }
 
 /*
@@ -2983,6 +3058,15 @@ NTSTATUS nt_svc_NtQueryInformationFile(HANDLE FileHandle,
 	case FileAttributeTagInformation:
 		status = ntio_query_attribute_tag(file, kbuf, Length, &retlen);
 		break;
+	case FileStreamInformation:
+		status = ntio_query_stream(file, kbuf, Length, &retlen);
+		break;
+	case FileCompressionInformation:
+		status = ntio_query_compression(file, kbuf, Length, &retlen);
+		break;
+	case FileReparsePointInformation:
+		status = ntio_query_reparse_point(Length);
+		break;
 	default:
 		status = STATUS_INVALID_INFO_CLASS;
 		break;
@@ -3035,6 +3119,15 @@ NTSTATUS nt_svc_NtQueryInformationFile(HANDLE FileHandle,
 	case FileAttributeTagInformation:
 		status = ntio_query_attribute_tag(file, FileInformation, Length, &retlen);
 		break;
+	case FileStreamInformation:
+		status = ntio_query_stream(file, FileInformation, Length, &retlen);
+		break;
+	case FileCompressionInformation:
+		status = ntio_query_compression(file, FileInformation, Length, &retlen);
+		break;
+	case FileReparsePointInformation:
+		status = ntio_query_reparse_point(Length);
+		break;
 	default:
 		status = STATUS_INVALID_INFO_CLASS;
 		break;
@@ -3059,6 +3152,96 @@ static NTSTATUS ntio_set_position(struct nt_file_object *file,
 	file->current_byte_offset = pi->CurrentByteOffset.QuadPart;
 	spin_unlock(&file->lock);
 	return STATUS_SUCCESS;
+}
+
+#ifdef __KERNEL__
+static struct timespec64 ntio_ticks_to_ts(LONGLONG ticks)
+{
+	u64 u = (u64)(ticks - NTIO_EPOCH_TICKS);
+	struct timespec64 ts;
+
+	ts.tv_sec = (time64_t)(u / 10000000ULL);
+	ts.tv_nsec = (long)((u % 10000000ULL) * 100ULL);
+	return ts;
+}
+
+/* Sets the access and/or write time through notify_change, the path utimes takes. The change
+ * time is set by the kernel itself. */
+static int ntio_set_times(struct file *filp, bool set_a, LONGLONG at,
+			  bool set_m, LONGLONG mt)
+{
+	struct inode *inode = file_inode(filp);
+	struct iattr ia;
+	int err;
+
+	memset(&ia, 0, sizeof(ia));
+	ia.ia_valid = ATTR_CTIME;
+	ia.ia_ctime = current_time(inode);
+	if (set_a) {
+		ia.ia_valid |= ATTR_ATIME | ATTR_ATIME_SET;
+		ia.ia_atime = ntio_ticks_to_ts(at);
+	}
+	if (set_m) {
+		ia.ia_valid |= ATTR_MTIME | ATTR_MTIME_SET;
+		ia.ia_mtime = ntio_ticks_to_ts(mt);
+	}
+	inode_lock(inode);
+	err = notify_change(mnt_idmap(filp->f_path.mnt), filp->f_path.dentry, &ia, NULL);
+	inode_unlock(inode);
+	return err;
+}
+#else
+static struct timespec ntio_ticks_to_ts(LONGLONG ticks)
+{
+	unsigned long long u = (unsigned long long)(ticks - NTIO_EPOCH_TICKS);
+	struct timespec ts;
+
+	ts.tv_sec = (time_t)(u / 10000000ULL);
+	ts.tv_nsec = (long)((u % 10000000ULL) * 100ULL);
+	return ts;
+}
+
+/* futimens on the descriptor; a time that is not set is UTIME_OMIT. */
+static int ntio_set_times(struct file *filp, bool set_a, LONGLONG at,
+			  bool set_m, LONGLONG mt)
+{
+	struct timespec ts[2];
+
+	ts[0] = set_a ? ntio_ticks_to_ts(at) : (struct timespec){ 0, UTIME_OMIT };
+	ts[1] = set_m ? ntio_ticks_to_ts(mt) : (struct timespec){ 0, UTIME_OMIT };
+	return futimens(filp->fd, ts);
+}
+#endif
+
+/*
+ * FileBasicInformation set. The access and write times are stored on the file. Creation and
+ * change times are accepted and not stored (Linux keeps the change time itself, and creation
+ * time is not kept). FileAttributes other than 0 and FILE_ATTRIBUTE_NORMAL are refused:
+ * Linux mode bits do not carry the Windows attributes, so they are not silently dropped.
+ */
+static NTSTATUS ntio_set_basic(struct nt_file_object *file, PVOID buf, ULONG len)
+{
+	PFILE_BASIC_INFORMATION bi;
+	LONGLONG at, mt;
+	bool set_a, set_m;
+
+	if (len < sizeof(*bi))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	bi = (PFILE_BASIC_INFORMATION)buf;
+	if (bi->FileAttributes != 0 && bi->FileAttributes != FILE_ATTRIBUTE_NORMAL)
+		return STATUS_NOT_SUPPORTED;
+	at = bi->LastAccessTime.QuadPart;
+	mt = bi->LastWriteTime.QuadPart;
+	set_a = at != 0 && at != -1;
+	set_m = mt != 0 && mt != -1;
+	if ((set_a && at < NTIO_EPOCH_TICKS) || (set_m && mt < NTIO_EPOCH_TICKS))
+		return STATUS_INVALID_PARAMETER;	/* before 1970: not representable here */
+	if (!file->filp)
+		return STATUS_NOT_IMPLEMENTED;
+	if (!set_a && !set_m)
+		return STATUS_SUCCESS;
+	return ntio_set_times(file->filp, set_a, at, set_m, mt) ? STATUS_UNSUCCESSFUL
+								  : STATUS_SUCCESS;
 }
 
 static NTSTATUS ntio_set_eof(struct nt_file_object *file,
@@ -3302,6 +3485,9 @@ NTSTATUS nt_svc_NtSetInformationFile(HANDLE FileHandle,
 	case FilePositionInformation:
 		status = ntio_set_position(file, kbuf, Length);
 		break;
+	case FileBasicInformation:
+		status = ntio_set_basic(file, kbuf, Length);
+		break;
 	case FileEndOfFileInformation:
 		status = ntio_set_eof(file, kbuf, Length);
 		break;
@@ -3336,6 +3522,9 @@ NTSTATUS nt_svc_NtSetInformationFile(HANDLE FileHandle,
 	switch (FileInformationClass) {
 	case FilePositionInformation:
 		status = ntio_set_position(file, FileInformation, Length);
+		break;
+	case FileBasicInformation:
+		status = ntio_set_basic(file, FileInformation, Length);
 		break;
 	case FileEndOfFileInformation:
 		status = ntio_set_eof(file, FileInformation, Length);
@@ -4613,6 +4802,181 @@ static NTSTATUS ntio_complete_iosb_info(PIO_STATUS_BLOCK __user IoStatusBlock,
 	return status;
 }
 
+#ifndef FILE_CASE_SENSITIVE_SEARCH
+#define FILE_CASE_SENSITIVE_SEARCH	0x00000001
+#endif
+#ifndef FILE_CASE_PRESERVED_NAMES
+#define FILE_CASE_PRESERVED_NAMES	0x00000002
+#endif
+#ifndef FILE_UNICODE_ON_DISK
+#define FILE_UNICODE_ON_DISK		0x00000004
+#endif
+
+struct ntio_fsstat {
+	unsigned long long blocks, bfree, bavail;
+	unsigned long bsize;
+	long type;
+	unsigned int fsid;
+};
+
+/* statfs of the file's filesystem: vfs_statfs on the file's path in the kernel, fstatfs on the
+ * descriptor in the host model. */
+static NTSTATUS ntio_fs_stat(struct nt_file_object *file, struct ntio_fsstat *fs)
+{
+	if (!file->filp)
+		return STATUS_NOT_IMPLEMENTED;
+#ifdef __KERNEL__
+	struct kstatfs kst;
+
+	if (vfs_statfs(&file->filp->f_path, &kst))
+		return STATUS_UNSUCCESSFUL;
+	fs->blocks = kst.f_blocks;
+	fs->bfree = kst.f_bfree;
+	fs->bavail = kst.f_bavail;
+	fs->bsize = (unsigned long)kst.f_bsize;
+	fs->type = kst.f_type;
+	fs->fsid = (unsigned int)kst.f_fsid.val[0];
+#else
+	struct statfs sfs;
+
+	if (fstatfs(file->filp->fd, &sfs) != 0)
+		return STATUS_UNSUCCESSFUL;
+	fs->blocks = (unsigned long long)sfs.f_blocks;
+	fs->bfree = (unsigned long long)sfs.f_bfree;
+	fs->bavail = (unsigned long long)sfs.f_bavail;
+	fs->bsize = (unsigned long)sfs.f_bsize;
+	fs->type = (long)sfs.f_type;
+	fs->fsid = (unsigned int)sfs.f_fsid.__val[0];
+#endif
+	return STATUS_SUCCESS;
+}
+
+/* Filesystem name for FileFsAttributeInformation. The name is the real filesystem's, so NTFS is
+ * never claimed for a Linux filesystem; a type not listed here is LINUXFS. */
+static const char *ntio_fs_name(long type)
+{
+	switch ((unsigned long)type) {
+	case 0xEF53UL:		return "EXTFS";	/* ext2, ext3 and ext4 share this magic */
+	case 0x01021994UL:	return "TMPFS";
+	case 0x9123683EUL:	return "BTRFS";
+	case 0x58465342UL:	return "XFS";
+	case 0x794C7630UL:	return "OVERLAYFS";
+	case 0x4D44UL:		return "FAT";
+	default:		return "LINUXFS";
+	}
+}
+
+/*
+ * Fills one volume class into out (NTIO_VOL_MAX bytes) and sets *n to the bytes the caller
+ * receives. The fixed part is checked against Length first (STATUS_INFO_LENGTH_MISMATCH). Values
+ * that the filesystem does not track are zero: the volume label and the object id, the quota and
+ * free-space thresholds, and the volume creation time.
+ */
+static NTSTATUS ntio_volume_fill(struct nt_file_object *file, ULONG cls,
+				 unsigned char *out, ULONG Length, ULONG *n)
+{
+	struct ntio_fsstat fs;
+	NTSTATUS status;
+
+	*n = 0;
+	switch (cls) {
+	case FileFsVolumeInformation: {
+		PFILE_FS_VOLUME_INFORMATION vi = (PFILE_FS_VOLUME_INFORMATION)out;
+		ULONG need = offsetof(FILE_FS_VOLUME_INFORMATION, VolumeLabel);
+
+		if (Length < need)
+			return STATUS_INFO_LENGTH_MISMATCH;
+		status = ntio_fs_stat(file, &fs);
+		if (!NT_SUCCESS(status))
+			return status;
+		memset(out, 0, need);
+		vi->VolumeSerialNumber = fs.fsid;
+		vi->VolumeLabelLength = 0;
+		vi->SupportsObjects = 0;
+		*n = need;
+		return STATUS_SUCCESS;
+	}
+	case FileFsSizeInformation: {
+		PFILE_FS_SIZE_INFORMATION si = (PFILE_FS_SIZE_INFORMATION)out;
+
+		if (Length < sizeof(*si))
+			return STATUS_INFO_LENGTH_MISMATCH;
+		status = ntio_fs_stat(file, &fs);
+		if (!NT_SUCCESS(status))
+			return status;
+		si->TotalAllocationUnits.QuadPart = (LONGLONG)fs.blocks;
+		si->AvailableAllocationUnits.QuadPart = (LONGLONG)fs.bavail;
+		si->SectorsPerAllocationUnit = fs.bsize >= 512 ? (ULONG)(fs.bsize / 512) : 1;
+		si->BytesPerSector = 512;
+		*n = sizeof(*si);
+		return STATUS_SUCCESS;
+	}
+	case FileFsAttributeInformation: {
+		PFILE_FS_ATTRIBUTE_INFORMATION ai = (PFILE_FS_ATTRIBUTE_INFORMATION)out;
+		ULONG hdr = offsetof(FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName);
+		WCHAR *nm = (WCHAR *)(out + hdr);
+		const char *name;
+		ULONG chars, want, i;
+
+		if (Length < hdr)
+			return STATUS_INFO_LENGTH_MISMATCH;
+		status = ntio_fs_stat(file, &fs);
+		if (!NT_SUCCESS(status))
+			return status;
+		name = ntio_fs_name(fs.type);
+		chars = (ULONG)strlen(name);
+		want = hdr + chars * sizeof(WCHAR);
+		memset(out, 0, hdr);
+		ai->FileSystemAttributes = FILE_CASE_SENSITIVE_SEARCH |
+					   FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK;
+		ai->MaximumComponentNameLength = 255;	/* NAME_MAX on Linux */
+		ai->FileSystemNameLength = chars * sizeof(WCHAR);
+		if (Length < want) {
+			ULONG fit = (Length - hdr) / sizeof(WCHAR);
+
+			for (i = 0; i < fit; i++)
+				nm[i] = (WCHAR)(unsigned char)name[i];
+			*n = Length;
+			return STATUS_BUFFER_OVERFLOW;
+		}
+		for (i = 0; i < chars; i++)
+			nm[i] = (WCHAR)(unsigned char)name[i];
+		*n = want;
+		return STATUS_SUCCESS;
+	}
+	case FileFsControlInformation:
+		if (Length < sizeof(FILE_FS_CONTROL_INFORMATION))
+			return STATUS_INFO_LENGTH_MISMATCH;
+		memset(out, 0, sizeof(FILE_FS_CONTROL_INFORMATION));
+		*n = sizeof(FILE_FS_CONTROL_INFORMATION);
+		return STATUS_SUCCESS;
+	case FileFsFullSizeInformation: {
+		PFILE_FS_FULL_SIZE_INFORMATION fi = (PFILE_FS_FULL_SIZE_INFORMATION)out;
+
+		if (Length < sizeof(*fi))
+			return STATUS_INFO_LENGTH_MISMATCH;
+		status = ntio_fs_stat(file, &fs);
+		if (!NT_SUCCESS(status))
+			return status;
+		fi->TotalAllocationUnits.QuadPart = (LONGLONG)fs.blocks;
+		fi->CallerAvailableAllocationUnits.QuadPart = (LONGLONG)fs.bavail;
+		fi->ActualAvailableAllocationUnits.QuadPart = (LONGLONG)fs.bfree;
+		fi->SectorsPerAllocationUnit = fs.bsize >= 512 ? (ULONG)(fs.bsize / 512) : 1;
+		fi->BytesPerSector = 512;
+		*n = sizeof(*fi);
+		return STATUS_SUCCESS;
+	}
+	case FileFsObjectIdInformation:
+		if (Length < sizeof(FILE_FS_OBJECTID_INFORMATION))
+			return STATUS_INFO_LENGTH_MISMATCH;
+		memset(out, 0, sizeof(FILE_FS_OBJECTID_INFORMATION));
+		*n = sizeof(FILE_FS_OBJECTID_INFORMATION);
+		return STATUS_SUCCESS;
+	default:
+		return STATUS_INVALID_INFO_CLASS;
+	}
+}
+
 NTSTATUS nt_svc_NtQueryVolumeInformationFile(HANDLE FileHandle,
 					     PIO_STATUS_BLOCK __user IoStatusBlock,
 					     PVOID __user FsInformation, ULONG Length,
@@ -4647,6 +5011,36 @@ NTSTATUS nt_svc_NtQueryVolumeInformationFile(HANDLE FileHandle,
 		memcpy(FsInformation, &di, sizeof(di));
 #endif
 		return ntio_complete_iosb_info(IoStatusBlock, STATUS_SUCCESS, sizeof(di));
+	}
+
+	switch (FsInformationClass) {
+	case FileFsVolumeInformation:
+	case FileFsSizeInformation:
+	case FileFsAttributeInformation:
+	case FileFsControlInformation:
+	case FileFsFullSizeInformation:
+	case FileFsObjectIdInformation: {
+		unsigned char tmp[NTIO_VOL_MAX];
+		ULONG n = 0;
+
+		status = ntio_volume_fill(file, FsInformationClass, tmp, Length, &n);
+		if (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW) {
+#ifdef __KERNEL__
+			if (copy_to_user(FsInformation, tmp, n))
+				return ntio_complete_iosb_info(IoStatusBlock,
+							       STATUS_ACCESS_VIOLATION, 0);
+#else
+			memcpy(FsInformation, tmp, n);
+#endif
+			return ntio_complete_iosb_info(IoStatusBlock, status, n);
+		}
+		return ntio_complete_iosb_info(IoStatusBlock, status, 0);
+	}
+	case FileFsLabelInformation:
+		/* A set-only class on Windows: a query is an invalid class at any length. */
+		return ntio_complete_iosb_info(IoStatusBlock, STATUS_INVALID_INFO_CLASS, 0);
+	default:
+		break;
 	}
 
 	if (FsInformationClass >= FileFsVolumeInformation &&

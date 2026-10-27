@@ -79,8 +79,14 @@ static inline void SetLastErrorFromStatus(NTSTATUS s) {
     else SetLastError(RtlNtStatusToDosError(s));
 }
 
-/* DllMain */
-BOOL NTAPI DllMain(HINSTANCE h, DWORD r, LPVOID v) { (void)h;(void)r;(void)v; return 1; }
+/* DllMain. At DLL_PROCESS_ATTACH the process heap is published in the PEB (see
+ * k32_publish_process_heap). */
+static void k32_publish_process_heap(void);
+BOOL NTAPI DllMain(HINSTANCE h, DWORD r, LPVOID v) {
+    (void)h;(void)v;
+    if (r == 1 /* DLL_PROCESS_ATTACH */) k32_publish_process_heap();
+    return 1;
+}
 BOOL __stdcall _DllMainCRTStartup(HINSTANCE h, DWORD r, LPVOID v){ return DllMain(h,r,v); }
 BOOL __stdcall DllMainCRTStartup(HINSTANCE h, DWORD r, LPVOID v){ return DllMain(h,r,v); }
 
@@ -687,6 +693,14 @@ BOOL WINAPI DisableThreadLibraryCalls(HMODULE h) {
 static uint8_t g_k32_heap[1024*1024];
 static size_t g_k32_off=0;
 HANDLE WINAPI GetProcessHeap(void) { return (HANDLE)g_k32_heap; }
+/* PEB.ProcessHeap names the heap GetProcessHeap returns, as Windows sets it at process start. The
+ * heap is a static block in this module, so the field is set when this module attaches; a process
+ * that never loads kernel32 keeps the field NULL. */
+static void k32_publish_process_heap(void) {
+    PTEB teb = NtCurrentTebMingw();
+    PEB *peb = teb ? teb->ProcessEnvironmentBlock : NULL;
+    if (peb) peb->ProcessHeap = (PVOID)g_k32_heap;
+}
 LPVOID WINAPI HeapAlloc(HANDLE heap, DWORD flags, SIZE_T size) {
     (void)heap;(void)flags;
     if (!win32_heap_block_size(size, g_k32_off, sizeof(g_k32_heap), &size)) { SetLastError(8); return NULL; }

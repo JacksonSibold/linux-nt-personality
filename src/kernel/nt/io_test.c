@@ -761,6 +761,188 @@ TEST(root_directory_from_backup_handle)
 	PASS();
 }
 
+static bool write_file_at(const char *relpath, const char *data);
+
+/* Volume classes of NtQueryVolumeInformationFile. The values come from statfs; the
+ * buffer rules are the ones the golden probe_fileinfo records (short buffer is a length
+ * mismatch, the label class is set-only). */
+TEST(query_volume_classes)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	FILE_FS_SIZE_INFORMATION si;
+	FILE_FS_VOLUME_INFORMATION vi;
+	FILE_FS_CONTROL_INFORMATION ci;
+	FILE_FS_FULL_SIZE_INFORMATION fi;
+	FILE_FS_OBJECTID_INFORMATION oi;
+	unsigned char abuf[64];
+	PFILE_FS_ATTRIBUTE_INFORMATION ai = (PFILE_FS_ATTRIBUTE_INFORMATION)abuf;
+
+	reset_state();
+	ASSERT(write_file_at("vols.txt", "x"));
+	ASSERT_STATUS(open_test_file("vols.txt", FILE_GENERIC_READ, FILE_SHARE_READ,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, &si, sizeof(si),
+							  FileFsSizeInformation),
+		      STATUS_SUCCESS);
+	ASSERT(iosb.Information == sizeof(si));
+	ASSERT(si.BytesPerSector == 512);
+	ASSERT(si.SectorsPerAllocationUnit >= 1);
+	ASSERT(si.TotalAllocationUnits.QuadPart > 0);
+	ASSERT(si.AvailableAllocationUnits.QuadPart <= si.TotalAllocationUnits.QuadPart);
+
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, &vi, sizeof(vi),
+							  FileFsVolumeInformation),
+		      STATUS_SUCCESS);
+	ASSERT(iosb.Information == offsetof(FILE_FS_VOLUME_INFORMATION, VolumeLabel));
+	ASSERT(vi.VolumeLabelLength == 0);
+
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, abuf, sizeof(abuf),
+							  FileFsAttributeInformation),
+		      STATUS_SUCCESS);
+	ASSERT(ai->FileSystemAttributes & 0x1);	/* FILE_CASE_SENSITIVE_SEARCH */
+	ASSERT(ai->MaximumComponentNameLength == 255);
+	ASSERT(ai->FileSystemNameLength > 0 && ai->FileSystemNameLength <= 2 * 9);
+	ASSERT(iosb.Information == offsetof(FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName) +
+				   ai->FileSystemNameLength);
+
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, &ci, sizeof(ci),
+							  FileFsControlInformation),
+		      STATUS_SUCCESS);
+	ASSERT(iosb.Information == sizeof(ci));
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, &fi, sizeof(fi),
+							  FileFsFullSizeInformation),
+		      STATUS_SUCCESS);
+	ASSERT(fi.BytesPerSector == 512);
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, &oi, sizeof(oi),
+							  FileFsObjectIdInformation),
+		      STATUS_SUCCESS);
+	ASSERT(iosb.Information == sizeof(oi));
+
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, abuf, 4,
+							  FileFsAttributeInformation),
+		      STATUS_INFO_LENGTH_MISMATCH);
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, abuf, 4,
+							  FileFsControlInformation),
+		      STATUS_INFO_LENGTH_MISMATCH);
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, abuf, sizeof(abuf),
+							  FileFsLabelInformation),
+		      STATUS_INVALID_INFO_CLASS);
+	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, abuf, sizeof(abuf),
+							  FileFsDriverPathInformation),
+		      STATUS_NOT_IMPLEMENTED);
+
+	nt_svc_NtClose(h);
+	PASS();
+}
+
+/* FileStreamInformation (the "::$DATA" entry), FileCompressionInformation, the class-33
+ * reparse query, and the name FileAllInformation carries. */
+TEST(query_file_classes)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	unsigned char buf[1024];
+	const WCHAR want[] = { ':', ':', '$', 'D', 'A', 'T', 'A' };
+	ULONG name_len;
+
+	reset_state();
+	ASSERT(write_file_at("streams.txt", "abcdef"));
+	ASSERT_STATUS(open_test_file("streams.txt", FILE_GENERIC_READ, FILE_SHARE_READ,
+				     FILE_OPEN, FILE_NON_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, buf, 38, FileStreamInformation),
+		      STATUS_SUCCESS);
+	ASSERT(iosb.Information == 38);
+	ASSERT(((PFILE_STREAM_INFORMATION)buf)->NextEntryOffset == 0);
+	ASSERT(((PFILE_STREAM_INFORMATION)buf)->StreamNameLength == sizeof(want));
+	ASSERT(((PFILE_STREAM_INFORMATION)buf)->StreamSize.QuadPart == 6);
+	ASSERT(memcmp(buf + 24, want, sizeof(want)) == 0);
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, buf, 37, FileStreamInformation),
+		      STATUS_INFO_LENGTH_MISMATCH);
+
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, buf, 16,
+						    FileCompressionInformation),
+		      STATUS_SUCCESS);
+	ASSERT(iosb.Information == 16);
+	ASSERT(((PFILE_COMPRESSION_INFORMATION)buf)->CompressedFileSize.QuadPart == 6);
+	ASSERT(((PFILE_COMPRESSION_INFORMATION)buf)->CompressionFormat == 0);
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, buf, 15,
+						    FileCompressionInformation),
+		      STATUS_INFO_LENGTH_MISMATCH);
+
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, buf, 64,
+						    FileReparsePointInformation),
+		      STATUS_INVALID_PARAMETER);
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, buf, 8,
+						    FileReparsePointInformation),
+		      STATUS_INFO_LENGTH_MISMATCH);
+
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, buf, sizeof(buf),
+						    FileNameInformation),
+		      STATUS_SUCCESS);
+	name_len = ((PFILE_NAME_INFORMATION)buf)->FileNameLength;
+	ASSERT(name_len > 0);
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, buf, sizeof(buf),
+						    FileAllInformation),
+		      STATUS_SUCCESS);
+	ASSERT(((PFILE_ALL_INFORMATION)buf)->NameInformation.FileNameLength == name_len);
+	ASSERT(iosb.Information == offsetof(FILE_ALL_INFORMATION, NameInformation) +
+				   offsetof(FILE_NAME_INFORMATION, FileName) + name_len);
+
+	nt_svc_NtClose(h);
+	PASS();
+}
+
+/* FileBasicInformation set: the write time is stored and reads back; READONLY and
+ * pre-1970 times are refused rather than dropped; a short buffer is a length mismatch. */
+TEST(set_basic_times)
+{
+	HANDLE h = NULL;
+	IO_STATUS_BLOCK iosb;
+	FILE_BASIC_INFORMATION bi;
+	const LONGLONG want = 116444736000000000LL + 1600000000LL * 10000000LL;
+
+	reset_state();
+	ASSERT(write_file_at("btimes.txt", "x"));
+	ASSERT_STATUS(open_test_file("btimes.txt", FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+				     FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN,
+				     FILE_NON_DIRECTORY_FILE, &h),
+		      STATUS_SUCCESS);
+
+	memset(&bi, 0, sizeof(bi));
+	bi.LastWriteTime.QuadPart = want;
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, &bi, sizeof(bi),
+						  FileBasicInformation),
+		      STATUS_SUCCESS);
+	memset(&bi, 0, sizeof(bi));
+	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &bi, sizeof(bi),
+						    FileBasicInformation),
+		      STATUS_SUCCESS);
+	ASSERT(bi.LastWriteTime.QuadPart == want);
+
+	memset(&bi, 0, sizeof(bi));
+	bi.FileAttributes = FILE_ATTRIBUTE_READONLY;
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, &bi, sizeof(bi),
+						  FileBasicInformation),
+		      STATUS_NOT_SUPPORTED);
+
+	memset(&bi, 0, sizeof(bi));
+	bi.LastWriteTime.QuadPart = 1000;	/* before 1970 */
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, &bi, sizeof(bi),
+						  FileBasicInformation),
+		      STATUS_INVALID_PARAMETER);
+
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(h, &iosb, &bi, 4, FileBasicInformation),
+		      STATUS_INFO_LENGTH_MISMATCH);
+
+	nt_svc_NtClose(h);
+	PASS();
+}
+
 TEST(iocp_ordering)
 {
 	HANDLE iocp;
@@ -1268,10 +1450,11 @@ TEST(query_info_classes)
 						    FileNetworkOpenInformation),
 		      STATUS_INFO_LENGTH_MISMATCH);
 
-	/* Classes that are not implemented still report invalid class. */
+	/* FileStreamInformation is implemented (query_file_classes); a buffer shorter than
+	 * the "::$DATA" entry is refused. */
 	ASSERT_STATUS(nt_svc_NtQueryInformationFile(h, &iosb, &ii, sizeof(ii),
 						    FileStreamInformation),
-		      STATUS_INVALID_INFO_CLASS);
+		      STATUS_INFO_LENGTH_MISMATCH);
 
 	nt_svc_NtClose(h);
 	PASS();
@@ -2163,8 +2346,8 @@ TEST(query_directory_scan)
 	PASS();
 }
 
-/* FileFsDeviceInformation reports a disk device. Other volume classes are
- * not implemented yet, and unknown classes are invalid. */
+/* FileFsDeviceInformation reports a disk device. The other implemented volume
+ * classes are in query_volume_classes; unknown classes are invalid. */
 TEST(query_volume_device)
 {
 	HANDLE h = NULL;
@@ -2189,10 +2372,11 @@ TEST(query_volume_device)
 	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, &di, sizeof(di) - 1,
 							  FileFsDeviceInformation),
 		      STATUS_INFO_LENGTH_MISMATCH);
+	/* FileFsSizeInformation is 24 bytes: a buffer the size of di is too short. */
 	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, &di, sizeof(di),
 							  FileFsSizeInformation),
-		      STATUS_NOT_IMPLEMENTED);
-	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_NOT_IMPLEMENTED);
+		      STATUS_INFO_LENGTH_MISMATCH);
+	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_INFO_LENGTH_MISMATCH);
 	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(h, &iosb, &di, sizeof(di), 99),
 		      STATUS_INVALID_INFO_CLASS);
 	ASSERT_STATUS(nt_svc_NtQueryVolumeInformationFile(NULL, &iosb, &di, sizeof(di),
@@ -2617,6 +2801,9 @@ int main(void)
 	RUN(path_long_component);
 	RUN(path_parsing);
 	RUN(root_directory_from_backup_handle);
+	RUN(query_volume_classes);
+	RUN(query_file_classes);
+	RUN(set_basic_times);
 	RUN(iocp_ordering);
 	RUN(iocp_concurrency);
 	RUN(iocp_timeout);
