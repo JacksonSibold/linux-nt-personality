@@ -381,3 +381,43 @@ EXPORTS
     IsDBCSLeadByte
     FormatMessageW
     FormatMessageA
+    GetUserDefaultLCID
+    GetSystemDefaultLCID
+    GetUserDefaultLangID
+    GetSystemDefaultLangID
+    GetUserDefaultUILanguage
+    GetSystemDefaultUILanguage
+    GetThreadUILanguage
+    GetThreadLocale
+    SetThreadLocale
+    IsValidLocale
+    IsValidLocaleName
+    GetUserDefaultLocaleName
+    GetSystemDefaultLocaleName
+    LCIDToLocaleName
+    LocaleNameToLCID
+    GetUserPreferredUILanguages
+    SetThreadPreferredUILanguages
+    EnumSystemLocalesEx
+    EnumSystemLocalesW
+    GetNLSVersion
+    GetNLSVersionEx
+    GetLocaleInfoW
+    GetLocaleInfoEx
+    GetLocaleInfoA
+    CompareStringW
+    CompareStringEx
+    CompareStringOrdinal
+    CompareStringA
+    LCMapStringW
+    LCMapStringEx
+    LCMapStringA
+    GetStringTypeW
+    GetStringTypeExW
+    GetStringTypeA
+    GetStringTypeExA
+    FoldStringW
+    GetNumberFormatW
+    GetNumberFormatEx
+    GetCurrencyFormatW
+    GetCurrencyFormatEx
