@@ -517,3 +517,46 @@ EXPORTS
     DeleteFiber
     GetCurrentFiber
     GetFiberData
+    QueueUserWorkItem
+    CreateThreadpool
+    CloseThreadpool
+    SetThreadpoolThreadMaximum
+    SetThreadpoolThreadMinimum
+    SetThreadpoolStackInformation
+    QueryThreadpoolStackInformation
+    SetEventWhenCallbackReturns
+    ReleaseSemaphoreWhenCallbackReturns
+    ReleaseMutexWhenCallbackReturns
+    LeaveCriticalSectionWhenCallbackReturns
+    FreeLibraryWhenCallbackReturns
+    CallbackMayRunLong
+    DisassociateCurrentThreadFromCallback
+    CreateThreadpoolCleanupGroup
+    CloseThreadpoolCleanupGroupMembers
+    CloseThreadpoolCleanupGroup
+    CreateThreadpoolWork
+    SubmitThreadpoolWork
+    WaitForThreadpoolWorkCallbacks
+    CloseThreadpoolWork
+    TrySubmitThreadpoolCallback
+    CreateThreadpoolTimer
+    SetThreadpoolTimer
+    SetThreadpoolTimerEx
+    IsThreadpoolTimerSet
+    WaitForThreadpoolTimerCallbacks
+    CloseThreadpoolTimer
+    CreateThreadpoolWait
+    SetThreadpoolWait
+    SetThreadpoolWaitEx
+    WaitForThreadpoolWaitCallbacks
+    CloseThreadpoolWait
+    CreateTimerQueue
+    CreateTimerQueueTimer
+    ChangeTimerQueueTimer
+    CancelTimerQueueTimer
+    DeleteTimerQueueTimer
+    DeleteTimerQueueEx
+    DeleteTimerQueue
+    RegisterWaitForSingleObject
+    UnregisterWait
+    UnregisterWaitEx
