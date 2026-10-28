@@ -922,6 +922,7 @@ DRVCALL NTSTATUS ZwClose(HANDLE Handle)
     dh_unlock();
     if (!dh_handle_remove(Handle, &obj)) return STATUS_INVALID_HANDLE;
     if (kind == DH_KIND_FILE) dh_nt_file_closed(obj);
+    else if (kind == DH_KIND_KEY) dh_reg_key_closed(obj);
     return STATUS_SUCCESS;
 }
 

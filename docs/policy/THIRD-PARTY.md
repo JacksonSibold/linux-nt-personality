@@ -34,6 +34,14 @@ Not taken, whichever project it comes from:
   written to fit the Linux-hosted executive.
 - Any D3D-to-OpenGL or D3D-to-Vulkan translation. Graphics here goes through the native display driver.
 
+## Read, not copied
+
+Some driver-host code follows the behaviour of ReactOS routines without containing their source. The registry helpers in
+`src/kernel/nt/driver/drvhost_zwreg.c` (`RtlQueryRegistryValues` and the other `Rtl*Registry*` functions) were written from the
+documented behaviour; ReactOS's `sdk/lib/rtl/registry.c` was read to settle edge cases (what terminates a query table, how a
+DIRECT store treats binary data, what a multi-string delivers). Its tests are the model for `tests/kernel-drivers/driver_reg_test.c`.
+No line of it is in the tree, so no row appears in the table below.
+
 ## Rules
 
 1. Each file that holds copied or closely derived code keeps the upstream copyright lines and licence text in its header,

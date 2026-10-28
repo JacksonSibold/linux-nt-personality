@@ -104,7 +104,7 @@ extern SIZE_T g_pool_bytes;
 /* -------------------------------------------------------------------------- */
 /* Handle table (drvhost_ex.c)                                                */
 /* -------------------------------------------------------------------------- */
-enum dh_kind { DH_KIND_NONE = 0, DH_KIND_FILE = 1, DH_KIND_THREAD = 2, DH_KIND_EVENT = 3 };
+enum dh_kind { DH_KIND_NONE = 0, DH_KIND_FILE = 1, DH_KIND_THREAD = 2, DH_KIND_EVENT = 3, DH_KIND_KEY = 4 };
 typedef struct dh_handle {
     int   kind;
     void *object;
@@ -231,6 +231,11 @@ void dh_ex_join_threads(void); /* joins system threads and frees their objects *
 void dh_symlinks_clear(void);
 ULONG dh_devices_registered(void);
 void *dh_host_export_module(const char *module, const char *name, size_t len);
+
+/* Closes a registry key handle's bridged key (drvhost_zwreg.c); called by ZwClose. */
+void dh_reg_key_closed(void *key);
+#define DH_RTL_TAG_UNICODE 0x74735272u  /* 'rStr': what RtlFreeUnicodeString expects */
+WCHAR dh_upcase(WCHAR c);
 
 /* Closes an NT file handle's object (drvhost_nt.c); called by ZwClose. */
 void dh_nt_file_closed(void *file_object);

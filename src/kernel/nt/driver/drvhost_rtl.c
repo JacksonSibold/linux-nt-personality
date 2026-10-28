@@ -5,7 +5,6 @@
 #include "drvhost_int.h"
 #include "os_identity.h"
 
-#define DH_RTL_TAG_UNICODE 0x74735272u  /* 'rStr' */
 #define DH_RTL_TAG_ANSI    0x6d745272u  /* 'rMt' */
 
 DRVCALL void RtlInitUnicodeString(PUNICODE_STRING Dest, PCWSTR Source)

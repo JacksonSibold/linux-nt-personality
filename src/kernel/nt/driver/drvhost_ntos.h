@@ -180,6 +180,32 @@ DRVCALL BOOLEAN RtlTimeFieldsToTime(PTIME_FIELDS TimeFields, PLARGE_INTEGER Time
 DRVCALL void   ExSystemTimeToLocalTime(PLARGE_INTEGER SystemTime, PLARGE_INTEGER LocalTime);
 DRVCALL void   ExLocalTimeToSystemTime(PLARGE_INTEGER LocalTime, PLARGE_INTEGER SystemTime);
 
+/* -- Registry (drvhost_zwreg.c) --------------------------------------------------------------------------------- */
+DRVCALL NTSTATUS ZwOpenKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes);
+DRVCALL NTSTATUS ZwCreateKey(PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes,
+                             ULONG TitleIndex, PUNICODE_STRING Class, ULONG CreateOptions, PULONG Disposition);
+DRVCALL NTSTATUS ZwQueryValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG InfoClass, PVOID Info,
+                                 ULONG Length, PULONG ResultLength);
+DRVCALL NTSTATUS ZwSetValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName, ULONG TitleIndex, ULONG Type, PVOID Data,
+                               ULONG DataSize);
+DRVCALL NTSTATUS ZwDeleteValueKey(HANDLE KeyHandle, PUNICODE_STRING ValueName);
+DRVCALL NTSTATUS ZwEnumerateValueKey(HANDLE KeyHandle, ULONG Index, ULONG InfoClass, PVOID Info, ULONG Length,
+                                     PULONG ResultLength);
+DRVCALL NTSTATUS ZwEnumerateKey(HANDLE KeyHandle, ULONG Index, ULONG InfoClass, PVOID Info, ULONG Length,
+                                PULONG ResultLength);
+DRVCALL NTSTATUS ZwQueryKey(HANDLE KeyHandle, ULONG InfoClass, PVOID Info, ULONG Length, PULONG ResultLength);
+DRVCALL NTSTATUS ZwDeleteKey(HANDLE KeyHandle);
+DRVCALL NTSTATUS ZwFlushKey(HANDLE KeyHandle);
+DRVCALL NTSTATUS RtlCheckRegistryKey(ULONG RelativeTo, PWSTR Path);
+DRVCALL NTSTATUS RtlCreateRegistryKey(ULONG RelativeTo, PWSTR Path);
+DRVCALL NTSTATUS RtlWriteRegistryValue(ULONG RelativeTo, PCWSTR Path, PCWSTR ValueName, ULONG ValueType,
+                                       PVOID ValueData, ULONG ValueLength);
+DRVCALL NTSTATUS RtlDeleteRegistryValue(ULONG RelativeTo, PCWSTR Path, PCWSTR ValueName);
+DRVCALL NTSTATUS RtlQueryRegistryValues(ULONG RelativeTo, PCWSTR Path, PRTL_QUERY_REGISTRY_TABLE QueryTable,
+                                        PVOID Context, PVOID Environment);
+DRVCALL NTSTATUS RtlQueryRegistryValuesEx(ULONG RelativeTo, PCWSTR Path, PRTL_QUERY_REGISTRY_TABLE QueryTable,
+                                          PVOID Context, PVOID Environment);
+
 /* -- Mutexes, semaphores, multi-object waits, guarded mutexes, resources,
  *    SLISTs, lookaside lists (drvhost_sync.c) ---------------------------------- */
 DRVCALL void   KeInitializeMutex(PKMUTEX Mutex, ULONG Level);

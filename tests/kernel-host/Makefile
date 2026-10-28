@@ -185,6 +185,10 @@ $(BUILD)/%.o: $(NT)/%.c | $(BUILD)
 $(BUILD)/drvhost_svcdb.o: $(NT)/driver/drvhost_svcdb.c $(NT)/driver/drvhost_svcdb.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(NTDLL) -c $< -o $@
 
+# The driver host's registry bridge (src/kernel/nt/driver/drvhost_regbridge.c): the same, for the Zw and Rtl registry calls.
+$(BUILD)/drvhost_regbridge.o: $(NT)/driver/drvhost_regbridge.c $(NT)/driver/drvhost_regbridge.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(NTDLL) -c $< -o $@
+
 # The PE parser from src/loader, built plain (no kernel prelude), like tests/host.
 $(BUILD)/pe_parse.o: $(LOADER)/pe_parse.c $(LOADER)/pe_parse.h $(LOADER)/pe_format.h | $(BUILD)
 	$(CC) -std=gnu11 -g $(WARN) $(DEPFLAGS) $(COV_FLAGS) -I$(LOADER) -c $< -o $@
