@@ -20,3 +20,4 @@ tests/ntdll-host/out-cov/
 build/static-analysis*/
 build/fixed-stash/
 tests/fuzz/out/
+tests/crt-host/out/
