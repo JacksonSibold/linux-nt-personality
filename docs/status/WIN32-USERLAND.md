@@ -18,7 +18,7 @@ probes ([DIFFERENTIAL-RESULTS.md](DIFFERENTIAL-RESULTS.md)) are the first place 
 | DLL | Source | Exports | Notes |
 |---|---|---|---|
 | `ntdll.dll` | `ntdll*.c`, `ldr*.c`, `rtl_*` | `ntdll.def` | Syscall stubs, loader, heap, Rtl pieces. |
-| `kernel32.dll` | `kernel32*.c` (21 files) | `kernel32.def` | Files, memory, threads, sync objects, wide-character file functions, system information, message formatting, NLS (en-US only), private-profile (INI) files, PE resources, fibers, logical-processor topology, the thread pool, timer queues and registered waits. Pure logic in `k32_*_pure.h`. |
+| `kernel32.dll` | `kernel32*.c` (22 files) | `kernel32.def` | Files, memory, threads, sync objects, wide-character file functions, system information, message formatting, NLS (en-US only), private-profile (INI) files, PE resources, fibers, logical-processor topology, console screen-buffer state, the thread pool, timer queues and registered waits. Pure logic in `k32_*_pure.h`. |
 | `kernelbase.dll`, `advapi32.dll`, `user32.dll`, `win32u.dll`, `gdi32.dll` | `kernelbase.c`, `advapi32.c`, `user32*.c`, `win32u.c`, `gdi32_win32k.c` | `*.def` | Subsets. user32 and gdi32 are far from complete. |
 | `msvcrt.dll` | `msvcrt.c` | `msvcrt.def` | The older minimal CRT (77 lines of exports). |
 | `ucrtbase.dll` | `ucrtbase.c` and `ucrtbase_*.inc` | `ucrtbase.def` (generated) | The Universal C Runtime; see below. |
@@ -101,6 +101,7 @@ Each of these has its logic in a `k32_*_pure.h` header that a host test compiles
 | PE resources (`FindResource*`, `LoadResource`, `EnumResourceNames*`) | `test_k32_res_pure` | Handing out module images from the loader. |
 | Fibers | `test_k32_fiber_pure` (real stack switches) | TEB updates with a real TEB. |
 | Logical-processor information | `test_k32_y_pure` | Real topology (the records describe one package, one core per CPU). |
+| Console screen buffer, cell access, scrolling, title, Ctrl handlers, key records | `test_k32_con_pure` | `kernel32_con.c` (only built and export-checked). The state is in this process; `WriteConsole` does not update the cells, and `ReadConsoleInput` builds key records from bytes read on the input handle. |
 | Thread pool, timer queues, `RegisterWaitForSingleObject` | `test_k32_tp_pure` (engine on pthreads) | `kernel32_tp.c`, which supplies the engine's operations from kernel32 and is only built and export-checked. |
 
 Not implemented in the thread pool: cleanup groups do not track `TrySubmitThreadpoolCallback` items, a closed private pool is

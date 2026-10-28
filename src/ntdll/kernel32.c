@@ -1260,7 +1260,7 @@ static DWORD g_k32_console_out_mode = K32_CONSOLE_OUT_DEFAULT;
 
 /* 0 when h is a console handle (output is set to 0 for the standard input
  * slot and 1 for any other console handle); otherwise the Win32 error. */
-static DWORD k32_console_handle(HANDLE h, int *output)
+DWORD k32_console_handle(HANDLE h, int *output)
 {
     if (!h || h == K32_INVALID_HANDLE_VALUE) return K32_ERROR_INVALID_HANDLE;
     K32_FS_DEVICE_INFORMATION info;
