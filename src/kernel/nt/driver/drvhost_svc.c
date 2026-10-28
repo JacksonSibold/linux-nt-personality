@@ -330,6 +330,7 @@ int drvhost_init(void)
 void drvhost_shutdown(void)
 {
     if (!g_inited) return;
+    dh_io_send_shutdown();
     for (;;) {
         dh_lock();
         dh_driver_t *d = g_drivers;
@@ -340,6 +341,7 @@ void drvhost_shutdown(void)
     dh_ex_shutdown();
     dh_ex_join_threads();
     dh_symlinks_clear();
+    dh_io_named_events_clear();
     g_inited = 0;
 }
 

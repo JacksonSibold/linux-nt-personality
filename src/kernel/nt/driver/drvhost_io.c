@@ -224,7 +224,7 @@ DRVCALL PIRP IoAllocateIrp(CCHAR StackSize, BOOLEAN ChargeQuota)
     PIRP irp = dh_alloc(bytes);
     if (!irp) return NULL;
     irp->Type = 6;                                   /* IO_TYPE_IRP */
-    irp->Size = (USHORT)sizeof(IRP);
+    irp->Size = (USHORT)bytes;
     irp->RequestorMode = KernelMode;
     dh_irp_set_stack(irp, StackSize);
     dh_lock();
@@ -368,16 +368,7 @@ DRVCALL PIRP IoBuildDeviceIoControlRequest(ULONG IoControlCode, PDEVICE_OBJECT D
     return irp;
 }
 
-DRVCALL BOOLEAN IoCancelIrp(PIRP Irp)
-{
-    if (!Irp || !Irp->CancelRoutine) return FALSE;
-    Irp->Cancel = TRUE;
-    PDRIVER_CANCEL routine = Irp->CancelRoutine;
-    Irp->CancelRoutine = NULL;
-    PDEVICE_OBJECT dev = Irp->Tail.Overlay.CurrentStackLocation->DeviceObject;
-    routine(dev, Irp);
-    return TRUE;
-}
+/* IoCancelIrp is in drvhost_ioext.c with the cancel spin lock it needs. */
 
 /* -------------------------------------------------------------------------- */
 /* IoTimers (fired by the worker thread once per second)                      */
@@ -449,6 +440,17 @@ ULONG dh_devices_registered(void)
 }
 
 /* Removes every symbolic link (shutdown cleanup of a stopped host). */
+/* Devices that asked for IRP_MJ_SHUTDOWN, collected under the monitor so the IRPs can be sent without it. */
+int dh_devices_with_shutdown(PDEVICE_OBJECT *out, int cap)
+{
+    int n = 0;
+    dh_lock();
+    for (dh_device_t *d = g_all_devices; d && n < cap; d = d->all_next)
+        if (d->shutdown_notify && !d->deleted) out[n++] = &d->dev;
+    dh_unlock();
+    return n;
+}
+
 void dh_symlinks_clear(void)
 {
     dh_lock();

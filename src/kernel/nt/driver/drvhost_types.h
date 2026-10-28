@@ -61,13 +61,22 @@ typedef int32_t   NTSTATUS;
 typedef uint32_t  ACCESS_MASK;
 typedef uint32_t  DWORD;
 typedef void     *PVOID;
+typedef void      VOID;
+typedef ULONG    *PULONG;
 typedef void     *HANDLE;
 typedef HANDLE   *PHANDLE;
 typedef UCHAR     KIRQL;
+typedef ULONG_PTR KAFFINITY, *PKAFFINITY;
 typedef ULONG_PTR KSPIN_LOCK;
 typedef KSPIN_LOCK *PKSPIN_LOCK;
 typedef CHAR      KPROCESSOR_MODE;
 typedef KIRQL    *PKIRQL;
+#define PASSIVE_LEVEL  0
+#define APC_LEVEL      1
+#define DISPATCH_LEVEL 2
+#ifndef CONTAINING_RECORD
+#define CONTAINING_RECORD(addr, type, field) ((type *)((char *)(addr) - offsetof(type, field)))
+#endif
 
 #define TRUE  1
 #define FALSE 0
@@ -157,6 +166,8 @@ typedef struct _CLIENT_ID {
 #define STATUS_INFO_LENGTH_MISMATCH      ((NTSTATUS)0xC0000004)
 #define STATUS_ACCESS_VIOLATION          ((NTSTATUS)0xC0000005)
 #define STATUS_INVALID_HANDLE            ((NTSTATUS)0xC0000008)
+#define STATUS_INVALID_CID               ((NTSTATUS)0xC000000B)
+#define STATUS_DELETE_PENDING            ((NTSTATUS)0xC0000056)
 #define STATUS_INVALID_PARAMETER         ((NTSTATUS)0xC000000D)
 #define STATUS_NO_SUCH_DEVICE            ((NTSTATUS)0xC000000E)
 #define STATUS_NO_SUCH_FILE              ((NTSTATUS)0xC000000F)
@@ -880,5 +891,64 @@ _Static_assert(sizeof(KGUARDED_MUTEX) == 0x38, "KGUARDED_MUTEX size");
 _Static_assert(sizeof(ERESOURCE) == 0x68, "ERESOURCE size");
 _Static_assert(sizeof(SLIST_HEADER) == 0x10, "SLIST_HEADER size");
 _Static_assert(sizeof(GENERAL_LOOKASIDE) == 0x80, "GENERAL_LOOKASIDE size");
+
+
+/* -------------------------------------------------------------------------- */
+/* Remove locks, GUIDs, time fields, processor numbers                        */
+/* -------------------------------------------------------------------------- */
+typedef struct _GUID {
+    ULONG   Data1;
+    USHORT  Data2;
+    USHORT  Data3;
+    UCHAR   Data4[8];
+} GUID, *LPGUID;
+typedef const GUID *LPCGUID;
+typedef GUID UUID;
+
+typedef struct _TIME_FIELDS {
+    CSHORT Year;
+    CSHORT Month;
+    CSHORT Day;
+    CSHORT Hour;
+    CSHORT Minute;
+    CSHORT Second;
+    CSHORT Milliseconds;
+    CSHORT Weekday;
+} TIME_FIELDS, *PTIME_FIELDS;
+
+typedef struct _PROCESSOR_NUMBER {
+    USHORT Group;
+    UCHAR  Number;
+    UCHAR  Reserved;
+} PROCESSOR_NUMBER, *PPROCESSOR_NUMBER;
+
+typedef struct _IO_REMOVE_LOCK_COMMON_BLOCK {
+    BOOLEAN Removed;
+    BOOLEAN Reserved[3];
+    LONG    IoCount;
+    KEVENT  RemoveEvent;
+} IO_REMOVE_LOCK_COMMON_BLOCK;
+
+typedef struct _IO_REMOVE_LOCK_DBG_BLOCK {
+    LONG       Signature;
+    LONG       HighWatermark;
+    LONGLONG   MaxLockedTicks;
+    LONG       AllocateTag;
+    LIST_ENTRY LockList;
+    KSPIN_LOCK Spin;
+    LONG       LowMemoryCount;
+    ULONG      Reserved1[4];
+    PVOID      Reserved2;
+    PVOID      Blocks;
+} IO_REMOVE_LOCK_DBG_BLOCK;
+
+typedef struct _IO_REMOVE_LOCK {
+    IO_REMOVE_LOCK_COMMON_BLOCK Common;
+    IO_REMOVE_LOCK_DBG_BLOCK    Dbg;
+} IO_REMOVE_LOCK, *PIO_REMOVE_LOCK;
+
+_Static_assert(sizeof(IO_REMOVE_LOCK) == 0x78, "IO_REMOVE_LOCK size");
+_Static_assert(sizeof(GUID) == 16, "GUID size");
+_Static_assert(sizeof(TIME_FIELDS) == 16, "TIME_FIELDS size");
 
 #endif /* DRVHOST_TYPES_H */

@@ -4,6 +4,9 @@
  * build goes through this file: memory, image mapping, the executive monitor,
  * clocks and threads.  The rest of the driver host calls only these functions.
  */
+#ifndef __KERNEL__
+#define _GNU_SOURCE 1
+#endif
 #include "drvhost_int.h"
 
 #ifndef __KERNEL__
@@ -12,7 +15,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sched.h>
 #include <sys/mman.h>
+#include <sys/random.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -97,6 +102,28 @@ uint64_t dh_system_time_100ns(void)
     uint64_t unix100 = (uint64_t)ts.tv_sec * 10000000ull + (uint64_t)ts.tv_nsec / 100u;
     /* Offset between 1601-01-01 and 1970-01-01 in 100ns units. */
     return unix100 + 116444736000000000ull;
+}
+
+void dh_random_bytes(void *p, size_t n)
+{
+    unsigned char *b = p;
+    while (n) {
+        ssize_t r = getrandom(b, n, 0);
+        if (r <= 0) { if (errno == EINTR) continue; memset(b, 0, n); return; }
+        b += r; n -= (size_t)r;
+    }
+}
+
+unsigned dh_cpu_count(void)
+{
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n < 1 ? 1u : (unsigned)n;
+}
+
+unsigned dh_cpu_current(void)
+{
+    int c = sched_getcpu();
+    return c < 0 ? 0u : (unsigned)c;
 }
 
 void dh_sleep_ns(uint64_t ns)
@@ -190,6 +217,9 @@ void dh_thread_join(void *handle)
 #include <linux/vmalloc.h>
 #include <linux/wait.h>
 #include <linux/ktime.h>
+#include <linux/random.h>
+#include <linux/smp.h>
+#include <linux/cpumask.h>
 #include <asm/set_memory.h>
 
 /* dh_alloc hands out 16-byte aligned blocks (the host contract). kmalloc only
@@ -292,6 +322,21 @@ uint64_t dh_system_time_100ns(void)
 {
     /* ktime_get_real_ns counts from 1970; the offset is to 1601. */
     return (uint64_t)ktime_get_real_ns() / 100u + 116444736000000000ull;
+}
+
+void dh_random_bytes(void *p, size_t n)
+{
+    get_random_bytes(p, n);
+}
+
+unsigned dh_cpu_count(void)
+{
+    return num_online_cpus();
+}
+
+unsigned dh_cpu_current(void)
+{
+    return raw_smp_processor_id();
 }
 
 void dh_sleep_ns(uint64_t ns)
