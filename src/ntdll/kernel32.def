@@ -461,3 +461,29 @@ EXPORTS
     RtlAddFunctionTable = ntdll.RtlAddFunctionTable
     RtlDeleteFunctionTable = ntdll.RtlDeleteFunctionTable
     __C_specific_handler = ntdll.__C_specific_handler
+    GetPrivateProfileStringW
+    GetPrivateProfileStringA
+    GetPrivateProfileIntW
+    GetPrivateProfileIntA
+    GetPrivateProfileSectionW
+    GetPrivateProfileSectionA
+    GetPrivateProfileSectionNamesW
+    GetPrivateProfileSectionNamesA
+    GetPrivateProfileStructW
+    GetPrivateProfileStructA
+    WritePrivateProfileStringW
+    WritePrivateProfileStringA
+    WritePrivateProfileSectionW
+    WritePrivateProfileSectionA
+    WritePrivateProfileStructW
+    WritePrivateProfileStructA
+    GetProfileStringW
+    GetProfileStringA
+    GetProfileIntW
+    GetProfileIntA
+    GetProfileSectionW
+    GetProfileSectionA
+    WriteProfileStringW
+    WriteProfileStringA
+    WriteProfileSectionW
+    WriteProfileSectionA
