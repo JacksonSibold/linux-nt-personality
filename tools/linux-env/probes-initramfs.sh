@@ -7,8 +7,8 @@
 #                    (tools/linux-env/ntpers_vm_stdout.c). Freestanding, no DLLs in the image.
 #   NONVM=1:         the probes with no NTPERS_VM branch (the 15 non-direct probes), built with the
 #                    default CRT. The image carries the PE DLLs they import under /windows/system32:
-#                    ntdll.dll, kernel32.dll, msvcrt.dll, advapi32.dll and user32.dll from src/ntdll/out (build
-#                    with `make -C src/ntdll all kernel32 msvcrt advapi32 user32`, serially). A probe whose
+#                    ntdll.dll, kernel32.dll, msvcrt.dll, advapi32.dll, user32.dll, win32u.dll and gdi32.dll from src/ntdll/out (build
+#                    with `make -C src/ntdll all kernel32 msvcrt advapi32 win32u user32 gdi32`, serially). A probe whose
 #                    imports are not in the image fails the load (STATUS_DLL_NOT_FOUND, S5).
 #
 # Runs inside the guest (Debian 12), needs x86_64-w64-mingw32-gcc, busybox-static (with the timeout
@@ -40,7 +40,7 @@ PROBE_TIMEOUT="${PROBE_TIMEOUT:-900}"
 NONVM="${NONVM:-0}"
 NTDLL_OUT="$REPO/src/ntdll/out"
 # DLLs packed for NONVM mode: ntdll and the Win32 shims. advapi32 is the registry shim; user32 has wsprintf.
-SYSTEM_DLLS="ntdll kernel32 msvcrt advapi32 user32"
+SYSTEM_DLLS="ntdll kernel32 msvcrt advapi32 user32 win32u gdi32"
 
 if [ "$NONVM" = 1 ]; then
     echo "probes-initramfs: NONVM mode (system DLLs from $NTDLL_OUT)" >&2

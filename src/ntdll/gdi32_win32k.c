@@ -28,9 +28,9 @@ BOOL_T DllMain(void *h, uint32_t reason, void *reserved)
 {
     (void)h;
     (void)reserved;
-    /* DLL_PROCESS_ATTACH: set up this DLL's copy of the model (see the note at the top). */
+    /* DLL_PROCESS_ATTACH: the model lives in win32u.dll; init is idempotent. */
     if (reason == 1)
-        w32k_init();
+        w32k_init_once();
     return 1;
 }
 

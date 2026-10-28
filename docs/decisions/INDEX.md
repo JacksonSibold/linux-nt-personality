@@ -88,7 +88,7 @@ Snapshot: 2026-10-14, `HEAD` at the time this index was written. 75 records: 17 
 | [0073](0073-golden-accepted-builds.md) | Golden corpus accepts a list of builds (option 3) | fixed | none (golden policy) | 97fa1d4 |
 | [0074](0074-per-process-address-space.md) | Per-process address spaces for the memory manager | fixed | none (architecture gap) | 021e475 |
 | [0075](0075-os-identity-golden-build.md) | OS identity reports the accepted golden build 26200.9457 (client) | fixed | none (identity policy) | see git log |
-| [0076](0076-win32k-hosting.md) | Hosting of the win32k windowing layer: per-process model, blocking through NT events | decided | none (service layer gap) | see git log |
+| [0076](0076-win32k-hosting.md) | Hosting of the win32k windowing layer: per-process model, blocking through NT events | fixed | none (service layer gap) | see git log |
 
 ## Notes
 

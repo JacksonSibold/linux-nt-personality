@@ -356,6 +356,9 @@ typedef struct w32k_size {
 /* ---- Lifecycle, thread context, last error --------------------------------- */
 
 void w32k_init(void);
+/* Runs w32k_init once per process; later calls return at once. win32u.dll, user32.dll and
+ * gdi32.dll each call it on attach, so the load order does not matter. */
+void w32k_init_once(void);
 void w32k_set_now(uint32_t ms);
 uint32_t w32k_now(void);
 uint32_t w32k_get_last_error(void);

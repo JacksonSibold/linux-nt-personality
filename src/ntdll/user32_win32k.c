@@ -448,7 +448,7 @@ BOOL_T PeekMessageW(void *msg, uintptr_t hwnd, uint32_t min, uint32_t max, uint3
  * the default thread for the shim, and installs the wake hook. */
 void w32k_shim_attach(void)
 {
-    w32k_init();
+    w32k_init_once();
     w32k_set_current_thread(os_tid());
     w32k_set_wake_hook(wake_thread);
 }

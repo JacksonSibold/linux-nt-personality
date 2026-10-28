@@ -173,7 +173,7 @@ write_digest() {
     sha256sum "$INITRAMFS" | awk '{print $1}' > "$INITRAMFS_SHA" 2>/dev/null || true
   fi
   # stamp DLLs sidecars
-  for dll in ntdll.dll kernel32.dll msvcrt.dll advapi32.dll user32.dll kernelbase.dll ucrtbase.dll; do
+  for dll in ntdll.dll kernel32.dll msvcrt.dll advapi32.dll user32.dll win32u.dll gdi32.dll kernelbase.dll ucrtbase.dll; do
     if [ -f "$PROJECT_ROOT/build/$dll" ]; then
       sha256sum "$PROJECT_ROOT/build/$dll" | awk '{print $1}' > "$PROJECT_ROOT/build/$dll.sha256" 2>/dev/null || true
       echo "$overall" > "$PROJECT_ROOT/build/$dll.digest" 2>/dev/null || true
@@ -412,7 +412,7 @@ check_freshness() {
       return 1
     fi
     # Verify DLLs inside initramfs vs sidecar: ensure build DLLs are fresh relative to src
-    for dll in ntdll.dll kernel32.dll msvcrt.dll advapi32.dll user32.dll kernelbase.dll ucrtbase.dll; do
+    for dll in ntdll.dll kernel32.dll msvcrt.dll advapi32.dll user32.dll win32u.dll gdi32.dll kernelbase.dll ucrtbase.dll; do
       local dll_path="$PROJECT_ROOT/build/$dll"
       if [ -f "$dll_path" ]; then
         local dll_sha_file="$dll_path.sha256"

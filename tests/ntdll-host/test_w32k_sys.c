@@ -349,6 +349,23 @@ static void test_cursor_and_icon_objects(void)
     MT_EXPECT(!w32k_destroy_icon(w32k_load_icon(W32K_IDI_APPLICATION)));
 }
 
+/* user32, gdi32 and win32u each call w32k_init_once on attach. The first call sets the
+ * model up and later calls must leave its state alone, or a second DLL attach would drop
+ * the first one's windows and DCs. */
+static void test_init_once_keeps_state(void)
+{
+    w32k_handle dc, dc2;
+    w32k_init();
+    dc = w32k_get_dc(0);
+    MT_ASSERT(dc != 0);
+    w32k_init_once();
+    w32k_init_once();
+    dc2 = w32k_create_compatible_dc(dc);
+    MT_EXPECT(dc2 != 0);
+    MT_EXPECT(w32k_delete_dc(dc2));
+    MT_EXPECT(w32k_release_dc(0, dc));
+}
+
 int main(void)
 {
     static const mt_case_t cases[] = {
@@ -364,6 +381,7 @@ int main(void)
         {"input_desktop_switch", test_input_desktop_switch_isolates_input},
         {"thread_desktop_busy", test_thread_desktop_busy_with_windows},
         {"cursor_icon_objects", test_cursor_and_icon_objects},
+        {"init_once_keeps_state", test_init_once_keeps_state},
     };
     setvbuf(stdout, NULL, _IONBF, 0);
     return mt_run("test_w32k_sys", cases, sizeof(cases) / sizeof(cases[0]));

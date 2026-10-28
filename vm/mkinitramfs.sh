@@ -101,7 +101,7 @@ for f in /tmp/minimal*.exe /tmp/pe_min*.exe; do
 done
 
 # Include ntdll/kernel32 and common import DLLs for differential probes
-for dll in ntdll.dll kernel32.dll msvcrt.dll advapi32.dll user32.dll kernelbase.dll ucrtbase.dll; do
+for dll in ntdll.dll kernel32.dll msvcrt.dll advapi32.dll user32.dll win32u.dll gdi32.dll kernelbase.dll ucrtbase.dll; do
     if [ -f "/tmp/$dll" ]; then
         cp "/tmp/$dll" "${WORK}/$dll"
         chmod 755 "${WORK}/$dll"

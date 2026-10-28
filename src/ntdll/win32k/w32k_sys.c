@@ -44,8 +44,17 @@ static uint32_t active_monitor_count(void)
     return n;
 }
 
+static int w32k_inited;
+
+void w32k_init_once(void)
+{
+    if (!w32k_inited)
+        w32k_init();
+}
+
 void w32k_init(void)
 {
+    w32k_inited = 1;
     w32k_core_reset();
     w32k_zero(&w32k_g, sizeof(w32k_g));
     w32k_g.cur_tid = 1;

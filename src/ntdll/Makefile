@@ -145,6 +145,8 @@ $(OUT)/user32.o: user32.c | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 # win32k model (src/ntdll/win32k): the service layer behind user32 and gdi32. One object per
 # source; the shims (user32_win32k.c, gdi32_win32k.c) convert the Win32 ABI to the model.
+# The model is linked once, into win32u.dll (win32u.c, exports from out/win32u.def); user32.dll
+# and gdi32.dll import it, so both see the same windows, handles and DCs (decision 0076).
 W32K_CORE_OBJS := $(addprefix $(OUT)/,w32k_core.o w32k_msg.o w32k_input.o w32k_sys.o w32k_gdi.o w32k_clip.o w32k_font.o w32k_region.o)
 $(OUT)/w32k_%.o: win32k/w32k_%.c win32k/w32k.h win32k/w32k_int.h win32k/w32k_evdev.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
@@ -152,22 +154,25 @@ $(OUT)/user32_win32k.o: user32_win32k.c win32k/w32k.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OUT)/gdi32_win32k.o: gdi32_win32k.c win32k/w32k.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
-$(OUT)/user32.dll: $(OUT)/user32.o $(OUT)/user32_win32k.o $(W32K_CORE_OBJS) user32.def $(OUT)/libntdll_imp.a $(OUT)/libkernel32_imp.a
-	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/user32.o $(OUT)/user32_win32k.o $(W32K_CORE_OBJS) user32.def -L$(OUT) -lkernel32_imp -lntdll_imp -lgcc
+$(OUT)/win32u.o: win32u.c win32k/w32k.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(OUT)/win32u.def: $(ROOT)/build/gen_win32u_def.py win32k/w32k.h | $(OUT)
+	$(PYTHON) $(ROOT)/build/gen_win32u_def.py win32k/w32k.h $@
+$(OUT)/win32u.dll: $(OUT)/win32u.o $(W32K_CORE_OBJS) $(OUT)/win32u.def $(OUT)/libntdll_imp.a
+	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/win32u.o $(W32K_CORE_OBJS) $(OUT)/win32u.def -L$(OUT) -lntdll_imp -lgcc
+$(OUT)/libwin32u_imp.a: $(OUT)/win32u.def
+	x86_64-w64-mingw32-dlltool -d $< -l $@ -D win32u.dll
+.PHONY: win32u
+win32u: $(OUT)/win32u.dll
+
+$(OUT)/user32.dll: $(OUT)/user32.o $(OUT)/user32_win32k.o user32.def $(OUT)/libntdll_imp.a $(OUT)/libkernel32_imp.a $(OUT)/libwin32u_imp.a
+	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/user32.o $(OUT)/user32_win32k.o user32.def -L$(OUT) -lkernel32_imp -lntdll_imp -lwin32u_imp -lgcc
 .PHONY: user32
 user32: $(OUT)/user32.dll
 
-# gdi32.dll: GDI objects and blits (gdi32.def) over the same win32k model objects as user32.
-$(OUT)/gdi32.dll: $(OUT)/gdi32_win32k.o $(W32K_CORE_OBJS) gdi32.def $(OUT)/libntdll_imp.a
-	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/gdi32_win32k.o $(W32K_CORE_OBJS) gdi32.def -L$(OUT) -lntdll_imp -lgcc
+# gdi32.dll: GDI objects and blits (gdi32.def) over the same win32k model as user32, through win32u.dll.
+$(OUT)/gdi32.dll: $(OUT)/gdi32_win32k.o gdi32.def $(OUT)/libntdll_imp.a $(OUT)/libwin32u_imp.a
+	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/gdi32_win32k.o gdi32.def -L$(OUT) -lntdll_imp -lwin32u_imp -lgcc
 .PHONY: gdi32
 gdi32: $(OUT)/gdi32.dll
-# check: the export names of advapi32.dll against advapi32.def (build-only, not run).
-check-advapi32: $(OUT)/advapi32.dll
-	$(ROOT)/tests/ntdll-host/check_exports.sh $(OUT)/advapi32.dll advapi32.def
-
-$(OUT):
-	mkdir -p $(OUT)
-
-clean:
-	rm -rf $(OUT)
