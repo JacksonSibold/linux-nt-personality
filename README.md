@@ -29,7 +29,7 @@ Each statement links to the file it comes from. These are recorded results; they
 
 ## Repository map
 
-The snapshot tracks <!-- counts:tracked_files:begin -->876<!-- counts:tracked_files:end --> files (`git ls-files`).
+The snapshot tracks <!-- counts:tracked_files:begin -->881<!-- counts:tracked_files:end --> files (`git ls-files`).
 
 - `src/`: kernel-personality components, loader, ntdll and Win32 experiments.
 - `arch/`: architecture-specific integration.
