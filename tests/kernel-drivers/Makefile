@@ -25,7 +25,7 @@ CFLAGS := -std=gnu11 -g -O1 $(WARN) -I$(DRV) -I$(LOADER) -I$(NTDLL) -I.
 LDLIBS := -lpthread
 
 HOST_SRCS := drvhost_plat drvhost_ex drvhost_sync drvhost_mm drvhost_io drvhost_ioext drvhost_pnp drvhost_rtl drvhost_fmt \
-             drvhost_pe drvhost_svc drvhost_nt drvhost_exports
+             drvhost_pe drvhost_svc drvhost_nt drvhost_zwreg drvhost_exports
 HOST_OBJS := $(addprefix $(BUILD)/,$(addsuffix .o,$(HOST_SRCS))) $(BUILD)/pe_parse.o
 
 # The personality registry (service records) and the object manager, built by the
@@ -34,7 +34,7 @@ HOST_OBJS := $(addprefix $(BUILD)/,$(addsuffix .o,$(HOST_SRCS))) $(BUILD)/pe_par
 NT := ../../src/kernel/nt
 KH := ../kernel-host
 KH_BUILD := $(KH)/build
-KH_OBJS := $(addprefix $(KH_BUILD)/,$(addsuffix .o,security registry object handle nt_obj sync kshim drvhost_svcdb khost_linux))
+KH_OBJS := $(addprefix $(KH_BUILD)/,$(addsuffix .o,security registry object handle nt_obj sync kshim drvhost_svcdb drvhost_regbridge khost_linux))
 $(KH_OBJS):
 	$(MAKE) -C $(KH) $(patsubst $(KH)/%,%,$@)
 HOST_OBJS += $(KH_OBJS)
@@ -57,7 +57,7 @@ layout: $(BUILD)/layout_wine $(BUILD)/layout_host
 	diff -u $(BUILD)/layout_wine.txt $(BUILD)/layout_host.txt
 	@echo "layout: $$(wc -l < $(BUILD)/layout_wine.txt) measurements match the WDK definitions"
 
-all: $(BUILD)/driver_unit_test $(BUILD)/driver_sync_test $(BUILD)/driver_mm_test $(BUILD)/driver_ioext_test $(BUILD)/driver_host_test \
+all: $(BUILD)/driver_unit_test $(BUILD)/driver_sync_test $(BUILD)/driver_mm_test $(BUILD)/driver_ioext_test $(BUILD)/driver_reg_test $(BUILD)/driver_host_test \
      $(SYSROOT)/drivers/hello_drv.sys $(SYSROOT)/drivers/bad_import.sys
 
 $(BUILD):
@@ -97,6 +97,12 @@ $(BUILD)/driver_ioext_test.o: driver_ioext_test.c dh_test.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/driver_ioext_test: $(BUILD)/driver_ioext_test.o $(HOST_OBJS)
+	$(CC) -o $@ $^ $(LDLIBS)
+
+$(BUILD)/driver_reg_test.o: driver_reg_test.c dh_test.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/driver_reg_test: $(BUILD)/driver_reg_test.o $(BUILD)/reg_boot.o $(HOST_OBJS)
 	$(CC) -o $@ $^ $(LDLIBS)
 
 $(BUILD)/reg_boot.o: reg_boot.c | $(BUILD)
@@ -150,6 +156,7 @@ check: all layout
 	$(BUILD)/driver_sync_test
 	$(BUILD)/driver_mm_test
 	$(BUILD)/driver_ioext_test
+	$(BUILD)/driver_reg_test
 	$(BUILD)/driver_host_test $(SYSROOT)
 
 surface:

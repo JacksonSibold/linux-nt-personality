@@ -12,18 +12,18 @@ DbgPrint names every unresolved import, so one attempt lists them all.
 ## Summary
 
 - Ranked names in the manifest: 342
-- Ranked and implemented: 158 (46.2%)
-- Ranked and missing: 184
-- Implemented exports in total: 217
-- Implemented but not in the ranking: 59
+- Ranked and implemented: 171 (50.0%)
+- Ranked and missing: 171
+- Implemented exports in total: 233
+- Implemented but not in the ranking: 62
 
 Per tier (1 = needed by almost every driver, 4 = niche):
 
 | Tier | Ranked | Implemented | Missing |
 |-----:|-------:|------------:|--------:|
 | 1 | 38 | 38 | 0 |
-| 2 | 141 | 107 | 34 |
-| 3 | 119 | 6 | 113 |
+| 2 | 141 | 115 | 26 |
+| 3 | 119 | 11 | 108 |
 | 4 | 44 | 7 | 37 |
 
 ## Ranked surface
@@ -173,16 +173,16 @@ a driver corpus.
 | 137 | 2 | ntoskrnl.exe | `ZwDeviceIoControlFile` | missing |  |
 | 138 | 2 | ntoskrnl.exe | `ZwQueryInformationFile` | missing |  |
 | 139 | 2 | ntoskrnl.exe | `ZwSetInformationFile` | missing |  |
-| 140 | 2 | ntoskrnl.exe | `ZwOpenKey` | missing |  |
-| 141 | 2 | ntoskrnl.exe | `ZwQueryValueKey` | missing |  |
-| 142 | 2 | ntoskrnl.exe | `ZwCreateKey` | missing |  |
-| 143 | 2 | ntoskrnl.exe | `ZwSetValueKey` | missing |  |
+| 140 | 2 | ntoskrnl.exe | `ZwOpenKey` | implemented | `ZwOpenKey` |
+| 141 | 2 | ntoskrnl.exe | `ZwQueryValueKey` | implemented | `ZwQueryValueKey` |
+| 142 | 2 | ntoskrnl.exe | `ZwCreateKey` | implemented | `ZwCreateKey` |
+| 143 | 2 | ntoskrnl.exe | `ZwSetValueKey` | implemented | `ZwSetValueKey` |
 | 144 | 2 | ntoskrnl.exe | `ZwWaitForSingleObject` | missing |  |
 | 145 | 2 | ntoskrnl.exe | `ZwCreateEvent` | missing |  |
-| 146 | 2 | ntoskrnl.exe | `RtlQueryRegistryValues` | missing |  |
-| 147 | 2 | ntoskrnl.exe | `RtlQueryRegistryValuesEx` | missing |  |
-| 148 | 2 | ntoskrnl.exe | `RtlWriteRegistryValue` | missing |  |
-| 149 | 2 | ntoskrnl.exe | `RtlDeleteRegistryValue` | missing |  |
+| 146 | 2 | ntoskrnl.exe | `RtlQueryRegistryValues` | implemented | `RtlQueryRegistryValues` |
+| 147 | 2 | ntoskrnl.exe | `RtlQueryRegistryValuesEx` | implemented | `RtlQueryRegistryValuesEx` |
+| 148 | 2 | ntoskrnl.exe | `RtlWriteRegistryValue` | implemented | `RtlWriteRegistryValue` |
+| 149 | 2 | ntoskrnl.exe | `RtlDeleteRegistryValue` | implemented | `RtlDeleteRegistryValue` |
 | 150 | 2 | ntoskrnl.exe | `IoOpenDeviceRegistryKey` | missing |  |
 | 151 | 2 | ntoskrnl.exe | `ExSystemTimeToLocalTime` | implemented | `ExSystemTimeToLocalTime` |
 | 152 | 2 | ntoskrnl.exe | `ExUuidCreate` | implemented | `ExUuidCreate` |
@@ -267,11 +267,11 @@ a driver corpus.
 | 231 | 3 | ntoskrnl.exe | `ZwFreeVirtualMemory` | missing |  |
 | 232 | 3 | ntoskrnl.exe | `ZwOpenProcess` | missing |  |
 | 233 | 3 | ntoskrnl.exe | `ZwOpenThread` | missing |  |
-| 234 | 3 | ntoskrnl.exe | `ZwEnumerateKey` | missing |  |
-| 235 | 3 | ntoskrnl.exe | `ZwEnumerateValueKey` | missing |  |
-| 236 | 3 | ntoskrnl.exe | `ZwDeleteKey` | missing |  |
-| 237 | 3 | ntoskrnl.exe | `ZwDeleteValueKey` | missing |  |
-| 238 | 3 | ntoskrnl.exe | `ZwFlushKey` | missing |  |
+| 234 | 3 | ntoskrnl.exe | `ZwEnumerateKey` | implemented | `ZwEnumerateKey` |
+| 235 | 3 | ntoskrnl.exe | `ZwEnumerateValueKey` | implemented | `ZwEnumerateValueKey` |
+| 236 | 3 | ntoskrnl.exe | `ZwDeleteKey` | implemented | `ZwDeleteKey` |
+| 237 | 3 | ntoskrnl.exe | `ZwDeleteValueKey` | implemented | `ZwDeleteValueKey` |
+| 238 | 3 | ntoskrnl.exe | `ZwFlushKey` | implemented | `ZwFlushKey` |
 | 239 | 3 | ntoskrnl.exe | `CmRegisterCallbackEx` | missing |  |
 | 240 | 3 | ntoskrnl.exe | `CmUnRegisterCallback` | missing |  |
 | 241 | 3 | ntoskrnl.exe | `WmiSystemControl` | missing |  |
@@ -434,12 +434,15 @@ a driver corpus.
 | ntoskrnl.exe | `NtClose` | `NtClose` |
 | ntoskrnl.exe | `PsGetThreadId` | `PsGetThreadId` |
 | ntoskrnl.exe | `PsThreadType` | `PsThreadType` |
+| ntoskrnl.exe | `RtlCheckRegistryKey` | `RtlCheckRegistryKey` |
+| ntoskrnl.exe | `RtlCreateRegistryKey` | `RtlCreateRegistryKey` |
 | ntoskrnl.exe | `RtlFirstEntrySList` | `RtlFirstEntrySList` |
 | ntoskrnl.exe | `RtlInitializeSListHead` | `RtlInitializeSListHead` |
 | ntoskrnl.exe | `RtlInterlockedFlushSList` | `RtlInterlockedFlushSList` |
 | ntoskrnl.exe | `RtlInterlockedPopEntrySList` | `RtlInterlockedPopEntrySList` |
 | ntoskrnl.exe | `RtlInterlockedPushEntrySList` | `RtlInterlockedPushEntrySList` |
 | ntoskrnl.exe | `RtlQueryDepthSList` | `RtlQueryDepthSList` |
+| ntoskrnl.exe | `ZwQueryKey` | `ZwQueryKey` |
 
 ## Notes
 

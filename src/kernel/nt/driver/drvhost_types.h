@@ -168,6 +168,11 @@ typedef struct _CLIENT_ID {
 #define STATUS_INVALID_HANDLE            ((NTSTATUS)0xC0000008)
 #define STATUS_INVALID_CID               ((NTSTATUS)0xC000000B)
 #define STATUS_DELETE_PENDING            ((NTSTATUS)0xC0000056)
+#define STATUS_BUFFER_OVERFLOW           ((NTSTATUS)0x80000005)
+#define STATUS_NO_MORE_ENTRIES           ((NTSTATUS)0x8000001A)
+#define STATUS_OBJECT_PATH_SYNTAX_BAD    ((NTSTATUS)0xC000003B)
+#define STATUS_DATA_OVERRUN              ((NTSTATUS)0xC000003C)
+#define STATUS_NAME_TOO_LONG             ((NTSTATUS)0xC0000106)
 #define STATUS_INVALID_PARAMETER         ((NTSTATUS)0xC000000D)
 #define STATUS_NO_SUCH_DEVICE            ((NTSTATUS)0xC000000E)
 #define STATUS_NO_SUCH_FILE              ((NTSTATUS)0xC000000F)
@@ -950,5 +955,136 @@ typedef struct _IO_REMOVE_LOCK {
 _Static_assert(sizeof(IO_REMOVE_LOCK) == 0x78, "IO_REMOVE_LOCK size");
 _Static_assert(sizeof(GUID) == 16, "GUID size");
 _Static_assert(sizeof(TIME_FIELDS) == 16, "TIME_FIELDS size");
+
+
+/* -------------------------------------------------------------------------- */
+/* Registry: value types, key access, information classes, query tables       */
+/* -------------------------------------------------------------------------- */
+#define REG_NONE                0
+#define REG_SZ                  1
+#define REG_EXPAND_SZ           2
+#define REG_BINARY              3
+#define REG_DWORD               4
+#define REG_LINK                6
+#define REG_MULTI_SZ            7
+#define REG_QWORD               11
+
+#define REG_CREATED_NEW_KEY     1
+#define REG_OPENED_EXISTING_KEY 2
+
+#define KEY_QUERY_VALUE         0x0001
+#define KEY_SET_VALUE           0x0002
+#define KEY_CREATE_SUB_KEY      0x0004
+#define KEY_ENUMERATE_SUB_KEYS  0x0008
+#define KEY_NOTIFY              0x0010
+#define KEY_CREATE_LINK         0x0020
+#define KEY_READ                0x20019
+#define KEY_WRITE               0x20006
+#define KEY_ALL_ACCESS          0xF003F
+
+#define DELETE                  0x00010000
+#define GENERIC_READ            0x80000000u
+#define GENERIC_WRITE           0x40000000u
+#define GENERIC_EXECUTE         0x20000000u
+#define GENERIC_ALL             0x10000000u
+#define MAXIMUM_ALLOWED         0x02000000
+
+#define OBJ_INHERIT             0x00000002
+#define OBJ_CASE_INSENSITIVE    0x00000040
+#define OBJ_KERNEL_HANDLE       0x00000200
+
+#define KeyBasicInformation          0
+#define KeyNodeInformation           1
+#define KeyFullInformation           2
+#define KeyNameInformation           3
+#define KeyValueBasicInformation     0
+#define KeyValueFullInformation      1
+#define KeyValuePartialInformation   2
+
+typedef struct _KEY_BASIC_INFORMATION {
+    LARGE_INTEGER LastWriteTime;
+    ULONG         TitleIndex;
+    ULONG         NameLength;
+    WCHAR         Name[1];
+} KEY_BASIC_INFORMATION, *PKEY_BASIC_INFORMATION;
+
+typedef struct _KEY_NODE_INFORMATION {
+    LARGE_INTEGER LastWriteTime;
+    ULONG         TitleIndex;
+    ULONG         ClassOffset;
+    ULONG         ClassLength;
+    ULONG         NameLength;
+    WCHAR         Name[1];
+} KEY_NODE_INFORMATION, *PKEY_NODE_INFORMATION;
+
+typedef struct _KEY_FULL_INFORMATION {
+    LARGE_INTEGER LastWriteTime;
+    ULONG         TitleIndex;
+    ULONG         ClassOffset;
+    ULONG         ClassLength;
+    ULONG         SubKeys;
+    ULONG         MaxNameLen;
+    ULONG         MaxClassLen;
+    ULONG         Values;
+    ULONG         MaxValueNameLen;
+    ULONG         MaxValueDataLen;
+    WCHAR         Class[1];
+} KEY_FULL_INFORMATION, *PKEY_FULL_INFORMATION;
+
+typedef struct _KEY_VALUE_BASIC_INFORMATION {
+    ULONG TitleIndex;
+    ULONG Type;
+    ULONG NameLength;
+    WCHAR Name[1];
+} KEY_VALUE_BASIC_INFORMATION, *PKEY_VALUE_BASIC_INFORMATION;
+
+typedef struct _KEY_VALUE_FULL_INFORMATION {
+    ULONG TitleIndex;
+    ULONG Type;
+    ULONG DataOffset;
+    ULONG DataLength;
+    ULONG NameLength;
+    WCHAR Name[1];
+} KEY_VALUE_FULL_INFORMATION, *PKEY_VALUE_FULL_INFORMATION;
+
+typedef struct _KEY_VALUE_PARTIAL_INFORMATION {
+    ULONG TitleIndex;
+    ULONG Type;
+    ULONG DataLength;
+    UCHAR Data[1];
+} KEY_VALUE_PARTIAL_INFORMATION, *PKEY_VALUE_PARTIAL_INFORMATION;
+
+#define RTL_REGISTRY_ABSOLUTE   0
+#define RTL_REGISTRY_SERVICES   1
+#define RTL_REGISTRY_CONTROL    2
+#define RTL_REGISTRY_WINDOWS_NT 3
+#define RTL_REGISTRY_DEVICEMAP  4
+#define RTL_REGISTRY_USER       5
+#define RTL_REGISTRY_MAXIMUM    6
+#define RTL_REGISTRY_HANDLE     0x40000000
+#define RTL_REGISTRY_OPTIONAL   0x80000000u
+
+#define RTL_QUERY_REGISTRY_SUBKEY    0x00000001
+#define RTL_QUERY_REGISTRY_TOPKEY    0x00000002
+#define RTL_QUERY_REGISTRY_REQUIRED  0x00000004
+#define RTL_QUERY_REGISTRY_NOVALUE   0x00000008
+#define RTL_QUERY_REGISTRY_NOEXPAND  0x00000010
+#define RTL_QUERY_REGISTRY_DIRECT    0x00000020
+#define RTL_QUERY_REGISTRY_DELETE    0x00000040
+
+typedef NTSTATUS (DRVCALL *PRTL_QUERY_REGISTRY_ROUTINE)(PCWSTR ValueName, ULONG ValueType, PVOID ValueData,
+                                                        ULONG ValueLength, PVOID Context, PVOID EntryContext);
+
+typedef struct _RTL_QUERY_REGISTRY_TABLE {
+    PRTL_QUERY_REGISTRY_ROUTINE QueryRoutine;
+    ULONG  Flags;
+    PWSTR  Name;
+    PVOID  EntryContext;
+    ULONG  DefaultType;
+    PVOID  DefaultData;
+    ULONG  DefaultLength;
+} RTL_QUERY_REGISTRY_TABLE, *PRTL_QUERY_REGISTRY_TABLE;
+
+_Static_assert(sizeof(RTL_QUERY_REGISTRY_TABLE) == 0x38, "RTL_QUERY_REGISTRY_TABLE size");
 
 #endif /* DRVHOST_TYPES_H */
