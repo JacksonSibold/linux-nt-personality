@@ -127,53 +127,38 @@ int snprintf(char *s, size_t n, const char *fmt, ...) { (void)fmt; if(n) s[0]=0;
 int vsnprintf(char *s, size_t n, const char *fmt, va_list ap) { (void)fmt;(void)ap; if(n) s[0]=0; return 0; }
 
 /* ------------------------------------------------------------------ */
-/* Bump allocator (2 MB static)                                       */
+/* malloc and friends, on the process heap (ntdll_heap.c)              */
 /* ------------------------------------------------------------------ */
-#define HEAP_SIZE (2*1024*1024)
-static uint8_t g_heap[HEAP_SIZE];
-static size_t g_heap_off = 0;
-static int g_heap_inited = 0;
-
-static void heap_init(void) {
-    if (!g_heap_inited) {
-        g_heap_inited = 1;
-        g_heap_off = 0;
-    }
-}
-
-/* Each block is preceded by a 16-byte header holding its rounded size, so
- * realloc knows how much of the old block is valid (RT-2). */
-#define BLOCK_HDR 16
+/* A NULL heap handle names the process heap. ntdll calls RtlAllocateHeap in its own module; the
+ * other DLLs that link this file import it from ntdll.dll. */
+#ifdef NTDLL_BUILD
+PVOID __stdcall RtlAllocateHeap(PVOID heap, ULONG flags, SIZE_T size);
+BOOLEAN __stdcall RtlFreeHeap(PVOID heap, ULONG flags, PVOID ptr);
+PVOID __stdcall RtlReAllocateHeap(PVOID heap, ULONG flags, PVOID ptr, SIZE_T size);
+#else
+__declspec(dllimport) PVOID __stdcall RtlAllocateHeap(PVOID heap, ULONG flags, SIZE_T size);
+__declspec(dllimport) BOOLEAN __stdcall RtlFreeHeap(PVOID heap, ULONG flags, PVOID ptr);
+__declspec(dllimport) PVOID __stdcall RtlReAllocateHeap(PVOID heap, ULONG flags, PVOID ptr, SIZE_T size);
+#endif
+#define RT_HEAP_ZERO_MEMORY 0x00000008u
 
 void *malloc(size_t sz) {
-    if (sz==0) sz=1;
-    /* Reject before rounding: sz + 15 must not wrap. */
-    if (sz > HEAP_SIZE) return NULL;
-    sz = (sz + 15) & ~ (size_t)15; /* 16-byte align */
-    heap_init();
-    if (sz > HEAP_SIZE - BLOCK_HDR || g_heap_off > HEAP_SIZE - BLOCK_HDR - sz) return NULL;
-    uint8_t *blk = g_heap + g_heap_off;
-    g_heap_off += BLOCK_HDR + sz;
-    *(size_t *)blk = sz;
-    return blk + BLOCK_HDR;
+    return RtlAllocateHeap(NULL, 0, sz ? sz : 1);
 }
-void free(void *p) { (void)p; /* bump allocator: no free */ }
+void free(void *p) {
+    if (p) RtlFreeHeap(NULL, 0, p);
+}
 void *calloc(size_t n, size_t sz) {
     /* n * sz must fit in size_t; otherwise return NULL instead of a short block. */
     if (sz != 0 && n > (size_t)-1 / sz) return NULL;
     size_t tot = n*sz;
-    void *p = malloc(tot);
-    if (p) memset(p,0,tot);
-    return p;
+    return RtlAllocateHeap(NULL, RT_HEAP_ZERO_MEMORY, tot ? tot : 1);
 }
 void *realloc(void *ptr, size_t sz) {
     if (!ptr) return malloc(sz);
     if (sz==0) { free(ptr); return NULL; }
-    size_t old = *(size_t *)((uint8_t *)ptr - BLOCK_HDR);
-    void *np = malloc(sz);
-    /* Copy only what the old block holds. On failure np is NULL and ptr stays valid. */
-    if (np) memcpy(np, ptr, old < sz ? old : sz);
-    return np;
+    /* On failure the old block stays valid and NULL is returned. */
+    return RtlReAllocateHeap(NULL, 0, ptr, sz);
 }
 char *strdup(const char *s) {
     size_t n=strlen(s)+1;

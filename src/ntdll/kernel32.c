@@ -81,7 +81,7 @@ static inline void SetLastErrorFromStatus(NTSTATUS s) {
 
 /* DllMain. At DLL_PROCESS_ATTACH the process heap is published in the PEB (see
  * k32_publish_process_heap). */
-static void k32_publish_process_heap(void);
+void k32_publish_process_heap(void); /* kernel32_heap.c */
 BOOL NTAPI DllMain(HINSTANCE h, DWORD r, LPVOID v) {
     (void)h;(void)v;
     if (r == 1 /* DLL_PROCESS_ATTACH */) k32_publish_process_heap();
@@ -689,29 +689,7 @@ BOOL WINAPI DisableThreadLibraryCalls(HMODULE h) {
     return 1;
 }
 
-/* Heap - minimal bump using ntdll heap (or own) */
-static uint8_t g_k32_heap[1024*1024];
-static size_t g_k32_off=0;
-HANDLE WINAPI GetProcessHeap(void) { return (HANDLE)g_k32_heap; }
-/* PEB.ProcessHeap names the heap GetProcessHeap returns, as Windows sets it at process start. The
- * heap is a static block in this module, so the field is set when this module attaches; a process
- * that never loads kernel32 keeps the field NULL. */
-static void k32_publish_process_heap(void) {
-    PTEB teb = NtCurrentTebMingw();
-    PEB *peb = teb ? teb->ProcessEnvironmentBlock : NULL;
-    if (peb) peb->ProcessHeap = (PVOID)g_k32_heap;
-}
-LPVOID WINAPI HeapAlloc(HANDLE heap, DWORD flags, SIZE_T size) {
-    (void)heap;(void)flags;
-    if (!win32_heap_block_size(size, g_k32_off, sizeof(g_k32_heap), &size)) { SetLastError(8); return NULL; }
-    void *p = g_k32_heap + g_k32_off;
-    g_k32_off += size;
-    SetLastError(0);
-    return p;
-}
-BOOL WINAPI HeapFree(HANDLE heap, DWORD flags, LPVOID mem) { (void)heap;(void)flags;(void)mem; SetLastError(0); return 1; }
-LPVOID WINAPI HeapReAlloc(HANDLE heap, DWORD flags, LPVOID mem, SIZE_T size){ (void)heap;(void)flags;(void)mem;(void)size; return NULL; }
-SIZE_T WINAPI HeapSize(HANDLE heap, DWORD flags, const void *mem){ (void)heap;(void)flags;(void)mem; return 0; }
+/* The heap API (GetProcessHeap, HeapAlloc, HeapCreate and the rest) is in kernel32_heap.c. */
 
 /* Critical sections (K32-S1). The RTL protocol, with the counting rules in
  * k32_sync_pure.h. The wake primitive is an auto-reset NT event in

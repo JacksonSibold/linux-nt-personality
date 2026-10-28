@@ -1,0 +1,18 @@
+# Exports of ntdll.dll beyond the system call stubs and the fixed list in build/gen_ntdll_def.py.
+# One name per line, or name=target for an alias. Read by build/gen_ntdll_def.py.
+
+# Heap (ntdll_heap.c)
+RtlCreateHeap
+RtlDestroyHeap
+RtlAllocateHeap
+RtlFreeHeap
+RtlReAllocateHeap
+RtlSizeHeap
+RtlValidateHeap
+RtlCompactHeap
+RtlLockHeap
+RtlUnlockHeap
+RtlWalkHeap
+RtlSetHeapInformation
+RtlQueryHeapInformation
+RtlGetProcessHeaps

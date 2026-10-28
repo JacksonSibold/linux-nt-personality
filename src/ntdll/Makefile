@@ -67,7 +67,7 @@ STUBS_S   := $(ROOT)/build/generated_stubs.S
 
 # Sources of the MinGW ntdll. Each file is guarded by __MINGW32__ where it
 # needs to be (ldr.c: real loader only in the non-MinGW build, stubs here).
-C_SRCS := ntdll_main.c ldr.c except.c unwind.c ntdll_runtime.c ntstatus_to_dos.c
+C_SRCS := ntdll_main.c ldr.c except.c unwind.c ntdll_runtime.c ntdll_heap.c ntstatus_to_dos.c
 
 CPPFLAGS := -I$(SRC) -I$(ROOT)/src/loader -DPE_FREESTANDING
 CFLAGS   := -std=c11 -O2 -Wall -Wextra -ffreestanding -fno-builtin \
@@ -85,11 +85,14 @@ OBJS := $(addprefix $(OUT)/,$(C_SRCS:.c=.o)) $(OUT)/generated_stubs.o $(OUT)/pe_
 
 all: $(OUT)/ntdll.dll
 
-$(OUT)/ntdll.def: $(DEF_GEN) $(SYSCALLS) | $(OUT)
+$(OUT)/ntdll.def: $(DEF_GEN) $(SYSCALLS) $(SRC)/ntdll_exports.txt | $(OUT)
 	$(PYTHON) "$(DEF_GEN)" "$(SYSCALLS)" "$@"
 
 $(OUT)/%.o: $(SRC)/%.c | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+# ntdll's own malloc calls RtlAllocateHeap in this module; the other DLLs import it (see ntdll_runtime.c).
+$(OUT)/ntdll_runtime.o: CPPFLAGS += -DNTDLL_BUILD
 
 $(OUT)/pe_parse.o: $(LOADER_PE) | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
@@ -108,7 +111,7 @@ check: $(OUT)/ntdll.dll $(OUT)/ntdll.def
 
 # kernel32.dll (S3 of the console milestone): kernel32.c with the runtime helpers
 # (memcpy, strlen, ...) that ntdll.dll does not export, importing ntdll.dll.
-K32_OBJS := $(OUT)/kernel32.o $(OUT)/kernel32_mm.o $(OUT)/kernel32_thread.o $(OUT)/kernel32_fs.o $(OUT)/kernel32_misc.o $(OUT)/kernel32_sys.o $(OUT)/kernel32_str.o $(OUT)/kernel32_env.o $(OUT)/kernel32_global.o $(OUT)/kernel32_time.o $(OUT)/k32_runtime.o
+K32_OBJS := $(OUT)/kernel32.o $(OUT)/kernel32_mm.o $(OUT)/kernel32_thread.o $(OUT)/kernel32_fs.o $(OUT)/kernel32_misc.o $(OUT)/kernel32_sys.o $(OUT)/kernel32_str.o $(OUT)/kernel32_env.o $(OUT)/kernel32_global.o $(OUT)/kernel32_time.o $(OUT)/kernel32_heap.o $(OUT)/k32_runtime.o
 
 $(OUT)/k32_runtime.o: ntdll_runtime.c | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@

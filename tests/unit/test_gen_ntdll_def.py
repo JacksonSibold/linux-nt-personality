@@ -37,6 +37,47 @@ def export_lines(lines):
     return [ln.strip() for ln in lines if ln.startswith("    ")]
 
 
+def run_with_extras(extras_text):
+    """Run the script with a ntdll_exports.txt next to the syscall table."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        (tmp_path / "syscall_table.def").write_text("NT_SYSCALL(NtClose, 0x0f)\n")
+        (tmp_path / "ntdll_exports.txt").write_text(extras_text)
+        dst = tmp_path / "ntdll.def"
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), str(tmp_path / "syscall_table.def"), str(dst)],
+            capture_output=True, text=True,
+        )
+        lines = dst.read_text().splitlines() if dst.exists() else None
+        return proc, lines
+
+
+class GenNtdllDefExtrasTests(unittest.TestCase):
+
+    def test_extra_exports_are_appended_after_the_fixed_ones(self):
+        proc, lines = run_with_extras("RtlAllocateHeap\nRtlFreeHeap\n")
+        self.assertEqual(proc.returncode, 0)
+        exports = export_lines(lines)
+        self.assertEqual(exports[-2:], ["RtlAllocateHeap", "RtlFreeHeap"])
+        self.assertEqual(len(exports), 2 + FIXED_EXPORT_COUNT + 2)
+        printed = int(re.search(r"with (\d+) exports", proc.stdout).group(1))
+        self.assertEqual(printed, len(exports))
+
+    def test_comments_blank_lines_and_aliases(self):
+        proc, lines = run_with_extras("# heap\n\n  RtlA   # trailing comment\nRtlB=RtlA\n")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(export_lines(lines)[-2:], ["RtlA", "RtlB=RtlA"])
+
+    def test_duplicate_extra_export_is_an_error(self):
+        proc, _ = run_with_extras("RtlA\nRtlA\n")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("RtlA is listed twice", proc.stderr)
+
+    def test_no_extras_file_changes_nothing(self):
+        _, _, lines = run_script("NT_SYSCALL(NtClose, 0x0f)\n")
+        self.assertEqual(len(export_lines(lines)), 2 + FIXED_EXPORT_COUNT)
+
+
 class GenNtdllDefTests(unittest.TestCase):
 
     def test_header(self):

@@ -38,6 +38,22 @@ with open(out_def, 'w') as out:
     out.write(f"    _DllMainCRTStartup\n")
     out.write(f"    DllMainCRTStartup\n")
 
+# Further exports, one per line in ntdll_exports.txt next to the syscall table. A line is `name` or
+# `name=target` (an alias of another export); text after # is a comment.
+extra_file = def_file.parent / "ntdll_exports.txt"
+if extra_file.exists():
+    seen = set()
+    with open(out_def, "a") as out:
+        for raw in extra_file.read_text().splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            name = line.split("=", 1)[0].strip()
+            if name in seen:
+                sys.exit(f"{extra_file}: {name} is listed twice")
+            seen.add(name)
+            out.write(f"    {line}\n")
+
 # Count the export lines actually written, so the printed total cannot drift
 with open(out_def) as check:
     written = sum(1 for line in check if line.startswith("    "))

@@ -184,3 +184,13 @@ EXPORTS
     GetTimeFormatW
     GetDateFormatEx
     GetTimeFormatEx
+    GetProcessHeaps
+    HeapCreate
+    HeapDestroy
+    HeapValidate
+    HeapCompact
+    HeapLock
+    HeapUnlock
+    HeapWalk
+    HeapSetInformation
+    HeapQueryInformation
