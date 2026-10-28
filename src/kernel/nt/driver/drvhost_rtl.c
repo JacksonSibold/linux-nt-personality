@@ -49,10 +49,23 @@ DRVCALL NTSTATUS RtlCopyUnicodeString(PUNICODE_STRING Dest, PCUNICODE_STRING Src
     return STATUS_SUCCESS;
 }
 
+/* Upper-case mapping for the scripts drivers meet in device and registry names: ASCII, Latin-1, Greek, Cyrillic. The
+ * complete Unicode table lives in the user-mode Rtl (src/ntdll/rtl/nls.c); the host does not carry it. */
+WCHAR dh_upcase(WCHAR c)
+{
+    if (c < 0x80) return (c >= 'a' && c <= 'z') ? (WCHAR)(c - 32) : c;
+    if (c == 0xb5) return 0x39c;
+    if (c >= 0xe0 && c <= 0xfe && c != 0xf7) return (WCHAR)(c - 0x20);
+    if (c == 0xff) return 0x178;
+    if (c >= 0x3b1 && c <= 0x3c9) return c == 0x3c2 ? 0x3a3 : (WCHAR)(c - 0x20);
+    if (c >= 0x430 && c <= 0x44f) return (WCHAR)(c - 0x20);
+    if (c >= 0x450 && c <= 0x45f) return (WCHAR)(c - 0x50);
+    return c;
+}
+
 static WCHAR fold(WCHAR c)
 {
-    if (c >= 'a' && c <= 'z') return (WCHAR)(c - 32);
-    return c;
+    return dh_upcase(c);
 }
 
 DRVCALL BOOLEAN RtlEqualUnicodeString(PCUNICODE_STRING A, PCUNICODE_STRING B, BOOLEAN CaseInsensitive)
@@ -205,4 +218,102 @@ DRVCALL PVOID MmGetSystemRoutineAddress(PUNICODE_STRING SystemRoutineName)
     char name[DH_NAME_MAX];
     dh_ascii_from_unicode(SystemRoutineName, name, sizeof name);
     return dh_host_export(name, strlen(name));
+}
+
+DRVCALL WCHAR RtlUpcaseUnicodeChar(WCHAR Source)
+{
+    return dh_upcase(Source);
+}
+
+DRVCALL NTSTATUS RtlAppendUnicodeToString(PUNICODE_STRING Dest, PCWSTR Source)
+{
+    if (!Source) return STATUS_SUCCESS;
+    SIZE_T n = drv_wcslen(Source) * sizeof(WCHAR);
+    if ((SIZE_T)Dest->Length + n > Dest->MaximumLength) return STATUS_BUFFER_TOO_SMALL;
+    memcpy((char *)Dest->Buffer + Dest->Length, Source, n);
+    Dest->Length = (USHORT)(Dest->Length + n);
+    if (Dest->Length + sizeof(WCHAR) <= Dest->MaximumLength)
+        *(WCHAR *)((char *)Dest->Buffer + Dest->Length) = 0;
+    return STATUS_SUCCESS;
+}
+
+DRVCALL SIZE_T RtlCompareMemory(const VOID *Source1, const VOID *Source2, SIZE_T Length)
+{
+    const unsigned char *a = Source1, *b = Source2;
+    SIZE_T i = 0;
+    while (i < Length && a[i] == b[i]) i++;
+    return i;
+}
+
+/* ---- time conversion ------------------------------------------------------------------------------------------- */
+#define DH_TICKS_PER_MS   10000ull
+#define DH_TICKS_PER_SEC  10000000ull
+#define DH_TICKS_PER_DAY  (86400ull * DH_TICKS_PER_SEC)
+
+static int is_leap(int y) { return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0; }
+
+static int days_in_month(int y, int m)
+{
+    static const int dim[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    return m == 2 && is_leap(y) ? 29 : dim[m - 1];
+}
+
+/* Days from 1601-01-01 to January 1 of year y (y >= 1601), on the proleptic Gregorian calendar. */
+static unsigned long long days_before_year(int y)
+{
+    unsigned long long n = (unsigned long long)(y - 1601);
+    return n * 365 + n / 4 - n / 100 + n / 400;
+}
+
+DRVCALL void RtlTimeToTimeFields(PLARGE_INTEGER Time, PTIME_FIELDS TimeFields)
+{
+    unsigned long long t = (unsigned long long)Time->QuadPart;
+    unsigned long long days = t / DH_TICKS_PER_DAY;
+    unsigned long long rem = t % DH_TICKS_PER_DAY;
+
+    TimeFields->Milliseconds = (CSHORT)((rem / DH_TICKS_PER_MS) % 1000);
+    unsigned long long secs = rem / DH_TICKS_PER_SEC;
+    TimeFields->Second = (CSHORT)(secs % 60);
+    TimeFields->Minute = (CSHORT)((secs / 60) % 60);
+    TimeFields->Hour = (CSHORT)(secs / 3600);
+    TimeFields->Weekday = (CSHORT)((days + 1) % 7);        /* 1601-01-01 was a Monday */
+
+    int y = 1601 + (int)(days / 366);                      /* never too large; walk forward */
+    while (days >= days_before_year(y + 1)) y++;
+    unsigned long long d = days - days_before_year(y);
+    int m = 1;
+    while (d >= (unsigned long long)days_in_month(y, m)) { d -= (unsigned long long)days_in_month(y, m); m++; }
+    TimeFields->Year = (CSHORT)y;
+    TimeFields->Month = (CSHORT)m;
+    TimeFields->Day = (CSHORT)(d + 1);
+}
+
+DRVCALL BOOLEAN RtlTimeFieldsToTime(PTIME_FIELDS TimeFields, PLARGE_INTEGER Time)
+{
+    const TIME_FIELDS *tf = TimeFields;
+    if (tf->Milliseconds < 0 || tf->Milliseconds > 999 || tf->Second < 0 || tf->Second > 59 ||
+        tf->Minute < 0 || tf->Minute > 59 || tf->Hour < 0 || tf->Hour > 23 ||
+        tf->Month < 1 || tf->Month > 12 || tf->Day < 1 || tf->Year < 1601)
+        return FALSE;
+    if (tf->Day > days_in_month(tf->Year, tf->Month)) return FALSE;
+
+    unsigned long long days = days_before_year(tf->Year);
+    for (int m = 1; m < tf->Month; m++) days += (unsigned long long)days_in_month(tf->Year, m);
+    days += (unsigned long long)(tf->Day - 1);
+    unsigned long long secs = (unsigned long long)tf->Hour * 3600 + (unsigned long long)tf->Minute * 60 +
+                              (unsigned long long)tf->Second;
+    Time->QuadPart = (LONGLONG)(days * DH_TICKS_PER_DAY + secs * DH_TICKS_PER_SEC +
+                                (unsigned long long)tf->Milliseconds * DH_TICKS_PER_MS);
+    return TRUE;
+}
+
+/* The personality keeps one time zone, UTC, until the time-zone information service exists. */
+DRVCALL void ExSystemTimeToLocalTime(PLARGE_INTEGER SystemTime, PLARGE_INTEGER LocalTime)
+{
+    LocalTime->QuadPart = SystemTime->QuadPart;
+}
+
+DRVCALL void ExLocalTimeToSystemTime(PLARGE_INTEGER LocalTime, PLARGE_INTEGER SystemTime)
+{
+    SystemTime->QuadPart = LocalTime->QuadPart;
 }

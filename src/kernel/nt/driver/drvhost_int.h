@@ -33,6 +33,9 @@ void   dh_free_file(unsigned char *p);
 uint64_t dh_now_ns(void);             /* CLOCK_MONOTONIC */
 uint64_t dh_system_time_100ns(void);  /* 100ns since 1601-01-01 */
 void   dh_sleep_ns(uint64_t ns);
+void   dh_random_bytes(void *p, size_t n);
+unsigned dh_cpu_count(void);          /* online processors, at least 1 */
+unsigned dh_cpu_current(void);
 
 void   dh_lock(void);                 /* the single executive monitor */
 void   dh_unlock(void);
@@ -101,7 +104,7 @@ extern SIZE_T g_pool_bytes;
 /* -------------------------------------------------------------------------- */
 /* Handle table (drvhost_ex.c)                                                */
 /* -------------------------------------------------------------------------- */
-enum dh_kind { DH_KIND_NONE = 0, DH_KIND_FILE = 1, DH_KIND_THREAD = 2 };
+enum dh_kind { DH_KIND_NONE = 0, DH_KIND_FILE = 1, DH_KIND_THREAD = 2, DH_KIND_EVENT = 3 };
 typedef struct dh_handle {
     int   kind;
     void *object;
@@ -135,12 +138,16 @@ typedef struct dh_device {
     int    deleted;
     struct dh_device *all_next;      /* g_all_devices list */
     int    io_timer_inflight;        /* IoTimer calls not yet returned */
+    int    shutdown_notify;          /* IoRegisterShutdownNotification */
 } dh_device_t;
 
 #define DH_FROM_DEV(d) ((dh_device_t *)(d))
 
 /* Symbolic-link and device namespace (drvhost_io.c). */
 dh_device_t *dh_device_by_name(const char *nt_name);
+int   dh_devices_with_shutdown(PDEVICE_OBJECT *out, int cap);
+void  dh_io_named_events_clear(void);
+void  dh_io_send_shutdown(void);     /* IRP_MJ_SHUTDOWN to every registered device (drvhost_ioext.c) */
 int   dh_symlink_lookup(const char *nt_link, char *target, size_t cap);
 void  dh_ascii_from_unicode(const UNICODE_STRING *u, char *out, size_t cap);
 

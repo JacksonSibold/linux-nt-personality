@@ -22,9 +22,9 @@ ULONG  g_dpcs_run = 0;
 ULONG  g_timers_fired = 0;
 ULONG  g_io_timer_ticks = 0;
 
-#define IRQL_PASSIVE  0
-#define IRQL_APC      1
-#define IRQL_DISPATCH 2
+#define IRQL_PASSIVE  PASSIVE_LEVEL
+#define IRQL_APC      APC_LEVEL
+#define IRQL_DISPATCH DISPATCH_LEVEL
 
 /* Stand-in OBJECT_TYPE markers.  Drivers compare these by value through the
  * exported PsThreadType / IoFileObjectType variables. */

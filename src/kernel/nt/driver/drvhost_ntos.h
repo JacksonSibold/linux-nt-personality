@@ -132,6 +132,54 @@ DRVCALL PVOID  MmAllocateContiguousMemorySpecifyCache(SIZE_T NumberOfBytes, ULON
 DRVCALL void   MmFreeContiguousMemory(PVOID BaseAddress);
 DRVCALL ULONGLONG MmGetPhysicalAddress(PVOID BaseAddress);
 
+/* -- Remove locks, cancel, StartIo, named events, Ps and misc (drvhost_ioext.c, drvhost_rtl.c) ---------------- */
+DRVCALL void   IoInitializeRemoveLockEx(PIO_REMOVE_LOCK Lock, ULONG AllocateTag, ULONG MaxLockedMinutes,
+                                        ULONG HighWatermark, ULONG RemlockSize);
+DRVCALL NTSTATUS IoAcquireRemoveLockEx(PIO_REMOVE_LOCK Lock, PVOID Tag, const CHAR *File, ULONG Line,
+                                       ULONG RemlockSize);
+DRVCALL void   IoReleaseRemoveLockEx(PIO_REMOVE_LOCK Lock, PVOID Tag, ULONG RemlockSize);
+DRVCALL void   IoReleaseRemoveLockAndWaitEx(PIO_REMOVE_LOCK Lock, PVOID Tag, ULONG RemlockSize);
+DRVCALL void   IoAcquireCancelSpinLock(PKIRQL Irql);
+DRVCALL void   IoReleaseCancelSpinLock(KIRQL Irql);
+DRVCALL PDRIVER_CANCEL IoSetCancelRoutine(PIRP Irp, PDRIVER_CANCEL CancelRoutine);
+DRVCALL BOOLEAN IoCancelIrp(PIRP Irp);
+DRVCALL void   IoStartPacket(PDEVICE_OBJECT DeviceObject, PIRP Irp, PULONG Key, PDRIVER_CANCEL CancelFunction);
+DRVCALL void   IoStartNextPacket(PDEVICE_OBJECT DeviceObject, BOOLEAN Cancelable);
+DRVCALL void   IoStartNextPacketByKey(PDEVICE_OBJECT DeviceObject, BOOLEAN Cancelable, ULONG Key);
+DRVCALL void   IoRequestDpc(PDEVICE_OBJECT DeviceObject, PIRP Irp, PVOID Context);
+DRVCALL void   IoInitializeIrp(PIRP Irp, USHORT PacketSize, CCHAR StackSize);
+DRVCALL void   IoReuseIrp(PIRP Irp, NTSTATUS Status);
+DRVCALL PKEVENT IoCreateNotificationEvent(PUNICODE_STRING EventName, PHANDLE EventHandle);
+DRVCALL PKEVENT IoCreateSynchronizationEvent(PUNICODE_STRING EventName, PHANDLE EventHandle);
+DRVCALL NTSTATUS IoRegisterShutdownNotification(PDEVICE_OBJECT DeviceObject);
+DRVCALL void   IoUnregisterShutdownNotification(PDEVICE_OBJECT DeviceObject);
+DRVCALL PVOID  PsGetCurrentThread(void);
+DRVCALL PVOID  IoGetCurrentProcess(void);
+DRVCALL HANDLE PsGetProcessId(PVOID Process);
+DRVCALL HANDLE PsGetThreadId(PVOID Thread);
+DRVCALL NTSTATUS PsLookupProcessByProcessId(HANDLE ProcessId, PVOID *Process);
+DRVCALL PVOID  IoGetRequestorProcess(PIRP Irp);
+DRVCALL HANDLE IoGetRequestorProcessId(PIRP Irp);
+DRVCALL PDEVICE_OBJECT IoGetLowerDeviceObject(PDEVICE_OBJECT DeviceObject);
+DRVCALL BOOLEAN IoIsWdmVersionAvailable(UCHAR MajorVersion, UCHAR MinorVersion);
+DRVCALL NTSTATUS IoCreateDeviceSecure(PDRIVER_OBJECT DriverObject, ULONG DeviceExtensionSize,
+                                      PUNICODE_STRING DeviceName, ULONG DeviceType, ULONG DeviceCharacteristics,
+                                      BOOLEAN Exclusive, PCUNICODE_STRING DefaultSDDLString,
+                                      LPCGUID DeviceClassGuid, PDEVICE_OBJECT *DeviceObject);
+DRVCALL PVOID  IoAllocateErrorLogEntry(PVOID IoObject, UCHAR EntrySize);
+DRVCALL void   IoWriteErrorLogEntry(PVOID ElEntry);
+DRVCALL NTSTATUS ExUuidCreate(UUID *Uuid);
+DRVCALL ULONG  KeQueryActiveProcessorCountEx(USHORT GroupNumber);
+DRVCALL ULONG  KeQueryActiveProcessorCount(PKAFFINITY ActiveProcessors);
+DRVCALL ULONG  KeGetCurrentProcessorNumberEx(PPROCESSOR_NUMBER ProcNumber);
+DRVCALL WCHAR  RtlUpcaseUnicodeChar(WCHAR Source);
+DRVCALL NTSTATUS RtlAppendUnicodeToString(PUNICODE_STRING Dest, PCWSTR Source);
+DRVCALL SIZE_T RtlCompareMemory(const VOID *Source1, const VOID *Source2, SIZE_T Length);
+DRVCALL void   RtlTimeToTimeFields(PLARGE_INTEGER Time, PTIME_FIELDS TimeFields);
+DRVCALL BOOLEAN RtlTimeFieldsToTime(PTIME_FIELDS TimeFields, PLARGE_INTEGER Time);
+DRVCALL void   ExSystemTimeToLocalTime(PLARGE_INTEGER SystemTime, PLARGE_INTEGER LocalTime);
+DRVCALL void   ExLocalTimeToSystemTime(PLARGE_INTEGER LocalTime, PLARGE_INTEGER SystemTime);
+
 /* -- Mutexes, semaphores, multi-object waits, guarded mutexes, resources,
  *    SLISTs, lookaside lists (drvhost_sync.c) ---------------------------------- */
 DRVCALL void   KeInitializeMutex(PKMUTEX Mutex, ULONG Level);

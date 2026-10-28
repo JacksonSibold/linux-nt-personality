@@ -12,19 +12,19 @@ DbgPrint names every unresolved import, so one attempt lists them all.
 ## Summary
 
 - Ranked names in the manifest: 342
-- Ranked and implemented: 126 (36.8%)
-- Ranked and missing: 216
-- Implemented exports in total: 177
-- Implemented but not in the ranking: 51
+- Ranked and implemented: 158 (46.2%)
+- Ranked and missing: 184
+- Implemented exports in total: 217
+- Implemented but not in the ranking: 59
 
 Per tier (1 = needed by almost every driver, 4 = niche):
 
 | Tier | Ranked | Implemented | Missing |
 |-----:|-------:|------------:|--------:|
 | 1 | 38 | 38 | 0 |
-| 2 | 141 | 77 | 64 |
+| 2 | 141 | 107 | 34 |
 | 3 | 119 | 6 | 113 |
-| 4 | 44 | 5 | 39 |
+| 4 | 44 | 7 | 37 |
 
 ## Ranked surface
 
@@ -114,16 +114,16 @@ a driver corpus.
 | 78 | 2 | ntoskrnl.exe | `PoRequestPowerIrp` | missing |  |
 | 79 | 2 | ntoskrnl.exe | `PoRegisterDeviceForIdleDetection` | missing |  |
 | 80 | 2 | ntoskrnl.exe | `PoSetDeviceBusy` | missing |  |
-| 81 | 2 | ntoskrnl.exe | `IoRegisterShutdownNotification` | missing |  |
-| 82 | 2 | ntoskrnl.exe | `IoUnregisterShutdownNotification` | missing |  |
-| 83 | 2 | ntoskrnl.exe | `IoWriteErrorLogEntry` | missing |  |
-| 84 | 2 | ntoskrnl.exe | `IoGetRequestorProcess` | missing |  |
+| 81 | 2 | ntoskrnl.exe | `IoRegisterShutdownNotification` | implemented | `IoRegisterShutdownNotification` |
+| 82 | 2 | ntoskrnl.exe | `IoUnregisterShutdownNotification` | implemented | `IoUnregisterShutdownNotification` |
+| 83 | 2 | ntoskrnl.exe | `IoWriteErrorLogEntry` | implemented | `IoWriteErrorLogEntry` |
+| 84 | 2 | ntoskrnl.exe | `IoGetRequestorProcess` | implemented | `IoGetRequestorProcess` |
 | 85 | 2 | ntoskrnl.exe | `PsGetCurrentProcessId` | implemented | `PsGetCurrentProcessId` |
 | 86 | 2 | ntoskrnl.exe | `PsGetCurrentThreadId` | implemented | `PsGetCurrentThreadId` |
 | 87 | 2 | ntoskrnl.exe | `PsGetCurrentProcess` | implemented | `PsGetCurrentProcess` |
-| 88 | 2 | ntoskrnl.exe | `PsGetCurrentThread` | missing |  |
-| 89 | 2 | ntoskrnl.exe | `PsLookupProcessByProcessId` | missing |  |
-| 90 | 2 | ntoskrnl.exe | `PsGetProcessId` | missing |  |
+| 88 | 2 | ntoskrnl.exe | `PsGetCurrentThread` | implemented | `PsGetCurrentThread` |
+| 89 | 2 | ntoskrnl.exe | `PsLookupProcessByProcessId` | implemented | `PsLookupProcessByProcessId` |
+| 90 | 2 | ntoskrnl.exe | `PsGetProcessId` | implemented | `PsGetProcessId` |
 | 91 | 2 | ntoskrnl.exe | `ExAllocatePool` | implemented | `ExAllocatePool` |
 | 92 | 2 | ntoskrnl.exe | `MmGetSystemRoutineAddress` | implemented | `MmGetSystemRoutineAddress` |
 | 93 | 2 | ntoskrnl.exe | `MmIsAddressValid` | implemented | `MmIsAddressValid` |
@@ -138,7 +138,7 @@ a driver corpus.
 | 102 | 2 | ntoskrnl.exe | `RtlAnsiStringToUnicodeString` | implemented | `RtlAnsiStringToUnicodeString` |
 | 103 | 2 | ntoskrnl.exe | `RtlInitAnsiString` | implemented | `RtlInitAnsiString` |
 | 104 | 2 | ntoskrnl.exe | `RtlAppendUnicodeStringToString` | implemented | `RtlAppendUnicodeStringToString` |
-| 105 | 2 | ntoskrnl.exe | `RtlAppendUnicodeToString` | missing |  |
+| 105 | 2 | ntoskrnl.exe | `RtlAppendUnicodeToString` | implemented | `RtlAppendUnicodeToString` |
 | 106 | 2 | ntoskrnl.exe | `memmove` | implemented | `drv_memmove` |
 | 107 | 2 | ntoskrnl.exe | `memcmp` | implemented | `drv_memcmp` |
 | 108 | 2 | ntoskrnl.exe | `strlen` | implemented | `drv_strlen` |
@@ -162,10 +162,10 @@ a driver corpus.
 | 126 | 2 | ntoskrnl.exe | `ExAcquireResourceSharedLite` | implemented | `ExAcquireResourceSharedLite` |
 | 127 | 2 | ntoskrnl.exe | `ExReleaseResourceLite` | implemented | `ExReleaseResourceLite` |
 | 128 | 2 | ntoskrnl.exe | `ExDeleteResourceLite` | implemented | `ExDeleteResourceLite` |
-| 129 | 2 | ntoskrnl.exe | `IoStartPacket` | missing |  |
-| 130 | 2 | ntoskrnl.exe | `IoStartNextPacket` | missing |  |
-| 131 | 2 | ntoskrnl.exe | `IoAcquireCancelSpinLock` | missing |  |
-| 132 | 2 | ntoskrnl.exe | `IoReleaseCancelSpinLock` | missing |  |
+| 129 | 2 | ntoskrnl.exe | `IoStartPacket` | implemented | `IoStartPacket` |
+| 130 | 2 | ntoskrnl.exe | `IoStartNextPacket` | implemented | `IoStartNextPacket` |
+| 131 | 2 | ntoskrnl.exe | `IoAcquireCancelSpinLock` | implemented | `IoAcquireCancelSpinLock` |
+| 132 | 2 | ntoskrnl.exe | `IoReleaseCancelSpinLock` | implemented | `IoReleaseCancelSpinLock` |
 | 133 | 2 | ntoskrnl.exe | `ZwCreateFile` | missing |  |
 | 134 | 2 | ntoskrnl.exe | `ZwOpenFile` | missing |  |
 | 135 | 2 | ntoskrnl.exe | `ZwReadFile` | missing |  |
@@ -184,30 +184,30 @@ a driver corpus.
 | 148 | 2 | ntoskrnl.exe | `RtlWriteRegistryValue` | missing |  |
 | 149 | 2 | ntoskrnl.exe | `RtlDeleteRegistryValue` | missing |  |
 | 150 | 2 | ntoskrnl.exe | `IoOpenDeviceRegistryKey` | missing |  |
-| 151 | 2 | ntoskrnl.exe | `ExSystemTimeToLocalTime` | missing |  |
-| 152 | 2 | ntoskrnl.exe | `ExUuidCreate` | missing |  |
-| 153 | 2 | ntoskrnl.exe | `RtlCompareMemory` | missing |  |
-| 154 | 2 | ntoskrnl.exe | `RtlUpcaseUnicodeChar` | missing |  |
+| 151 | 2 | ntoskrnl.exe | `ExSystemTimeToLocalTime` | implemented | `ExSystemTimeToLocalTime` |
+| 152 | 2 | ntoskrnl.exe | `ExUuidCreate` | implemented | `ExUuidCreate` |
+| 153 | 2 | ntoskrnl.exe | `RtlCompareMemory` | implemented | `RtlCompareMemory` |
+| 154 | 2 | ntoskrnl.exe | `RtlUpcaseUnicodeChar` | implemented | `RtlUpcaseUnicodeChar` |
 | 155 | 2 | ntoskrnl.exe | `KeTickCount` | missing |  |
 | 156 | 2 | ntoskrnl.exe | `KeNumberProcessors` | implemented (data) | `KeNumberProcessors` |
 | 157 | 2 | ntoskrnl.exe | `NtBuildNumber` | implemented (data) | `NtBuildNumber` |
-| 158 | 2 | ntoskrnl.exe | `IoCreateNotificationEvent` | missing |  |
-| 159 | 2 | ntoskrnl.exe | `IoCreateSynchronizationEvent` | missing |  |
-| 160 | 2 | ntoskrnl.exe | `IoGetLowerDeviceObject` | missing |  |
+| 158 | 2 | ntoskrnl.exe | `IoCreateNotificationEvent` | implemented | `IoCreateNotificationEvent` |
+| 159 | 2 | ntoskrnl.exe | `IoCreateSynchronizationEvent` | implemented | `IoCreateSynchronizationEvent` |
+| 160 | 2 | ntoskrnl.exe | `IoGetLowerDeviceObject` | implemented | `IoGetLowerDeviceObject` |
 | 161 | 2 | ntoskrnl.exe | `IoGetBaseFileSystemDeviceObject` | missing |  |
-| 162 | 2 | ntoskrnl.exe | `IoCreateDeviceSecure` | missing |  |
+| 162 | 2 | ntoskrnl.exe | `IoCreateDeviceSecure` | implemented | `IoCreateDeviceSecure` |
 | 163 | 2 | ntoskrnl.exe | `IoSizeOfIrp` | missing |  |
-| 164 | 2 | ntoskrnl.exe | `IoInitializeIrp` | missing |  |
-| 165 | 2 | ntoskrnl.exe | `IoReuseIrp` | missing |  |
-| 166 | 2 | ntoskrnl.exe | `IoRequestDpc` | missing |  |
+| 164 | 2 | ntoskrnl.exe | `IoInitializeIrp` | implemented | `IoInitializeIrp` |
+| 165 | 2 | ntoskrnl.exe | `IoReuseIrp` | implemented | `IoReuseIrp` |
+| 166 | 2 | ntoskrnl.exe | `IoRequestDpc` | implemented | `IoRequestDpc` |
 | 167 | 2 | ntoskrnl.exe | `KeFlushQueuedDpcs` | implemented | `KeFlushQueuedDpcs` |
-| 168 | 2 | ntoskrnl.exe | `KeQueryActiveProcessorCountEx` | missing |  |
-| 169 | 2 | ntoskrnl.exe | `KeGetCurrentProcessorNumberEx` | missing |  |
-| 170 | 2 | ntoskrnl.exe | `IoInitializeRemoveLockEx` | missing |  |
-| 171 | 2 | ntoskrnl.exe | `IoAcquireRemoveLockEx` | missing |  |
-| 172 | 2 | ntoskrnl.exe | `IoReleaseRemoveLockEx` | missing |  |
-| 173 | 2 | ntoskrnl.exe | `IoReleaseRemoveLockAndWaitEx` | missing |  |
-| 174 | 2 | ntoskrnl.exe | `IoIsWdmVersionAvailable` | missing |  |
+| 168 | 2 | ntoskrnl.exe | `KeQueryActiveProcessorCountEx` | implemented | `KeQueryActiveProcessorCountEx` |
+| 169 | 2 | ntoskrnl.exe | `KeGetCurrentProcessorNumberEx` | implemented | `KeGetCurrentProcessorNumberEx` |
+| 170 | 2 | ntoskrnl.exe | `IoInitializeRemoveLockEx` | implemented | `IoInitializeRemoveLockEx` |
+| 171 | 2 | ntoskrnl.exe | `IoAcquireRemoveLockEx` | implemented | `IoAcquireRemoveLockEx` |
+| 172 | 2 | ntoskrnl.exe | `IoReleaseRemoveLockEx` | implemented | `IoReleaseRemoveLockEx` |
+| 173 | 2 | ntoskrnl.exe | `IoReleaseRemoveLockAndWaitEx` | implemented | `IoReleaseRemoveLockAndWaitEx` |
+| 174 | 2 | ntoskrnl.exe | `IoIsWdmVersionAvailable` | implemented | `IoIsWdmVersionAvailable` |
 | 175 | 2 | ntoskrnl.exe | `ObRegisterCallbacks` | missing |  |
 | 176 | 2 | ntoskrnl.exe | `ObUnRegisterCallbacks` | missing |  |
 | 177 | 2 | ntoskrnl.exe | `ObOpenObjectByPointer` | missing |  |
@@ -336,8 +336,8 @@ a driver corpus.
 | 300 | 4 | hal.dll | `HalQueryDisplayParameters` | missing |  |
 | 301 | 4 | hal.dll | `HalPutDmaAdapter` | missing |  |
 | 302 | 4 | hal.dll | `HalEnumerateEnvironmentVariablesEx` | missing |  |
-| 303 | 4 | ntoskrnl.exe | `RtlTimeToTimeFields` | missing |  |
-| 304 | 4 | ntoskrnl.exe | `RtlTimeFieldsToTime` | missing |  |
+| 303 | 4 | ntoskrnl.exe | `RtlTimeToTimeFields` | implemented | `RtlTimeToTimeFields` |
+| 304 | 4 | ntoskrnl.exe | `RtlTimeFieldsToTime` | implemented | `RtlTimeFieldsToTime` |
 | 305 | 4 | ntoskrnl.exe | `RtlRandomEx` | missing |  |
 | 306 | 4 | ntoskrnl.exe | `RtlGenRandom` | missing |  |
 | 307 | 4 | ntoskrnl.exe | `RtlNtStatusToDosError` | missing |  |
@@ -394,6 +394,7 @@ a driver corpus.
 | ntoskrnl.exe | `ExInterlockedPushEntrySList` | `ExInterlockedPushEntrySList` |
 | ntoskrnl.exe | `ExIsResourceAcquiredExclusiveLite` | `ExIsResourceAcquiredExclusiveLite` |
 | ntoskrnl.exe | `ExIsResourceAcquiredSharedLite` | `ExIsResourceAcquiredSharedLite` |
+| ntoskrnl.exe | `ExLocalTimeToSystemTime` | `ExLocalTimeToSystemTime` |
 | ntoskrnl.exe | `ExReinitializeResourceLite` | `ExReinitializeResourceLite` |
 | ntoskrnl.exe | `ExReleaseResourceForThreadLite` | `ExReleaseResourceForThreadLite` |
 | ntoskrnl.exe | `ExSetResourceOwnerPointer` | `ExSetResourceOwnerPointer` |
@@ -401,9 +402,14 @@ a driver corpus.
 | ntoskrnl.exe | `ExpInterlockedFlushSList` | `ExpInterlockedFlushSList` |
 | ntoskrnl.exe | `ExpInterlockedPopEntrySList` | `ExpInterlockedPopEntrySList` |
 | ntoskrnl.exe | `ExpInterlockedPushEntrySList` | `ExpInterlockedPushEntrySList` |
+| ntoskrnl.exe | `IoAllocateErrorLogEntry` | `IoAllocateErrorLogEntry` |
 | ntoskrnl.exe | `IoDeviceObjectType` | `IoDeviceObjectType` |
 | ntoskrnl.exe | `IoFileObjectType` | `IoFileObjectType` |
 | ntoskrnl.exe | `IoGetAttachedDevice` | `IoGetAttachedDevice` |
+| ntoskrnl.exe | `IoGetCurrentProcess` | `IoGetCurrentProcess` |
+| ntoskrnl.exe | `IoGetRequestorProcessId` | `IoGetRequestorProcessId` |
+| ntoskrnl.exe | `IoSetCancelRoutine` | `IoSetCancelRoutine` |
+| ntoskrnl.exe | `IoStartNextPacketByKey` | `IoStartNextPacketByKey` |
 | ntoskrnl.exe | `KeAcquireGuardedMutexUnsafe` | `KeAcquireGuardedMutexUnsafe` |
 | ntoskrnl.exe | `KeAcquireSpinLock` | `KeAcquireSpinLock` |
 | ntoskrnl.exe | `KeAreApcsDisabled` | `KeAreApcsDisabled` |
@@ -411,6 +417,7 @@ a driver corpus.
 | ntoskrnl.exe | `KeGetCurrentThread` | `KeGetCurrentThread` |
 | ntoskrnl.exe | `KeInsertByKeyDeviceQueue` | `KeInsertByKeyDeviceQueue` |
 | ntoskrnl.exe | `KeLeaveGuardedRegion` | `KeLeaveGuardedRegion` |
+| ntoskrnl.exe | `KeQueryActiveProcessorCount` | `KeQueryActiveProcessorCount` |
 | ntoskrnl.exe | `KeReadStateEvent` | `KeReadStateEvent` |
 | ntoskrnl.exe | `KeReadStateMutex` | `KeReadStateMutex` |
 | ntoskrnl.exe | `KeReadStateSemaphore` | `KeReadStateSemaphore` |
@@ -425,6 +432,7 @@ a driver corpus.
 | ntoskrnl.exe | `MmGetPhysicalAddress` | `MmGetPhysicalAddress` |
 | ntoskrnl.exe | `MmMapLockedPages` | `MmMapLockedPages` |
 | ntoskrnl.exe | `NtClose` | `NtClose` |
+| ntoskrnl.exe | `PsGetThreadId` | `PsGetThreadId` |
 | ntoskrnl.exe | `PsThreadType` | `PsThreadType` |
 | ntoskrnl.exe | `RtlFirstEntrySList` | `RtlFirstEntrySList` |
 | ntoskrnl.exe | `RtlInitializeSListHead` | `RtlInitializeSListHead` |

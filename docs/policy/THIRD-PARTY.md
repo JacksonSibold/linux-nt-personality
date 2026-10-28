@@ -10,6 +10,30 @@ visible. It is a factual record and not legal advice. It does not change any lic
 | Wine (`wine-mirror/wine`) | LGPL-2.1-or-later, per file header | ntdll Rtl functions, Win32 behaviour, test expectations | `0738d528db52` (2026-10-28) |
 | ReactOS (`reactos/reactos`) | GPL-2.0-or-later, per file header (some files BSD or LGPL, named in the header) | ntoskrnl and Rtl behaviour, driver-facing structures | `e46f4bb1a1ea` (2026-10-25) |
 
+## What is copied and what is not
+
+This project is a native NT personality inside the Linux kernel. A Windows program runs as a process of the kernel, calls NT
+system services directly, and no layer translates its calls to another API. Wine and ReactOS are built differently: Wine
+translates Windows calls to Unix calls, and ReactOS is a separate kernel. Their architecture is not ours, so only material
+that does not carry an architecture is taken from them.
+
+Taken:
+
+- Pure logic that sits above the system-call boundary and defines Windows behaviour: string, path, time, bitmap, security
+  descriptor, environment and handle-table routines.
+- Windows data: API headers, structure layouts, status and error codes, code page and case tables.
+- Test expectations that record what Windows returns.
+
+Not taken, whichever project it comes from:
+
+- Wine's Unix side (`WINE_UNIX_CALL`, the split into PE and Unix libraries), the wineserver, Wine's loader, and anything that
+  calls the host operating system on behalf of a Windows function. Where a copied function had such a call, it is rewired to
+  the NT system service that does the job here (for example `NtQuerySystemTime`).
+- Wine's Windows version selection, its `wine_*` exports and registry-driven configuration.
+- ReactOS's kernel, HAL and boot structure. ReactOS is read to check what a kernel routine must do, and the routine is
+  written to fit the Linux-hosted executive.
+- Any D3D-to-OpenGL or D3D-to-Vulkan translation. Graphics here goes through the native display driver.
+
 ## Rules
 
 1. Each file that holds copied or closely derived code keeps the upstream copyright lines and licence text in its header,
