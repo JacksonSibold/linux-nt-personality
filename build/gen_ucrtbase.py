@@ -304,7 +304,7 @@ add("_unlink", I, [CS], "ucrt_unlink")
 add("_wunlink", I, [CW], "ucrt_wunlink")
 add("_sopen_s", I, [I + " *", CS, I, I, I], "ucrt_sopen_s")
 add("_wsopen_s", I, [I + " *", CW, I, I, I], "ucrt_wsopen_s")
-manual("_sopen", "_wsopen", "_pipe", "_access", "_waccess", "_access_s", "_stat64", "_stat64i32", "_stat32", "_fstat64", "_fstat64i32",
+manual("_wmktemp", "_waccess_s", "_umask_s", "_wstat32", "_fstat32", "_sopen", "_wsopen", "_pipe", "_access", "_waccess", "_access_s", "_stat64", "_stat64i32", "_stat32", "_fstat64", "_fstat64i32",
        "_wstat64", "_wstat64i32", "_getcwd", "_wgetcwd", "_chdir", "_wchdir", "_mkdir", "_wmkdir", "_rmdir", "_wrmdir", "_fullpath",
        "_wfullpath", "_makepath", "_splitpath", "_wmakepath", "_wsplitpath", "_findfirst64", "_findnext64", "_findclose",
        "_findfirst64i32", "_findnext64i32", "_wfindfirst64", "_wfindnext64", "_wfindfirst64i32", "_wfindnext64i32", "_chmod", "_wchmod",
