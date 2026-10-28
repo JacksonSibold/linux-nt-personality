@@ -285,6 +285,13 @@ static void test_ps_misc(void)
     CHECK_STATUS(IoCreateDeviceSecure(&drv, 8, NULL, FILE_DEVICE_UNKNOWN, 0, FALSE, NULL, NULL, &dev), STATUS_SUCCESS);
     CHECK(dev->DeviceExtension != NULL);
     CHECK(IoGetLowerDeviceObject(dev) == NULL);
+    PDEVICE_OBJECT upper;
+    CHECK_STATUS(IoCreateDevice(&drv, 0, NULL, FILE_DEVICE_UNKNOWN, 0, FALSE, &upper), STATUS_SUCCESS);
+    CHECK(IoAttachDeviceToDeviceStack(upper, dev) == dev);
+    CHECK(IoGetLowerDeviceObject(upper) == dev);
+    IoDetachDevice(dev);
+    CHECK(IoGetLowerDeviceObject(upper) == NULL);
+    IoDeleteDevice(upper);
     IoDeleteDevice(dev);
 
     PVOID log = IoAllocateErrorLogEntry(&drv, 0x40);

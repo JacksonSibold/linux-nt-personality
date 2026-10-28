@@ -14,6 +14,7 @@ DRVCALL PDEVICE_OBJECT IoAttachDeviceToDeviceStack(PDEVICE_OBJECT SourceDevice, 
     PDEVICE_OBJECT lower = TargetDevice;
     while (lower->AttachedDevice) lower = lower->AttachedDevice;
     lower->AttachedDevice = SourceDevice;
+    SourceDevice->DeviceObjectExtension->AttachedTo = lower;
     SourceDevice->StackSize = (CCHAR)(lower->StackSize + 1);
     dh_unlock();
     /* Real Windows returns the device the source was attached above, i.e. the
@@ -29,6 +30,7 @@ DRVCALL void IoDetachDevice(PDEVICE_OBJECT TargetDevice)
     if (top) {
         TargetDevice->AttachedDevice = top->AttachedDevice;
         top->AttachedDevice = NULL;
+        top->DeviceObjectExtension->AttachedTo = NULL;
     }
     dh_unlock();
 }
