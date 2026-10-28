@@ -54,3 +54,8 @@ RtlInterlockedPopEntrySList
 RtlInterlockedFlushSList
 RtlQueryDepthSList
 RtlFirstEntrySList
+
+# Structured exception handling (unwind.c, seh.c)
+RtlUnwind
+RtlRestoreContext
+__C_specific_handler

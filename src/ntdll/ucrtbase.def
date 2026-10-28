@@ -963,3 +963,4 @@ EXPORTS
     scalbnl=w_scalbn
     tgammal=w_tgamma
     truncl=w_trunc
+    __C_specific_handler = ntdll.__C_specific_handler

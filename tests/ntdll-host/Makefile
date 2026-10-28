@@ -110,7 +110,7 @@ CPPFLAGS := -I$(SRC) -I$(LOADER) -I$(W32K)
 # defined before the first system header, which minitest.h's stdio.h already is.
 CFLAGS   := -std=c11 -g $(OPT_LEVEL) -Wall -Wextra -Werror -D_GNU_SOURCE $(COV_FLAGS) $(SAN_FLAGS)
 
-TESTS    := test_ntstatus_to_dos test_advapi_pure test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure test_ldr_mapped_pure test_ldr_sched test_k32_module_pure test_k32_io_pure test_k32_file_pure test_k32_sync_pure test_k32_mm_pure test_k32_global_pure test_k32_thread_pure test_k32_find_pure test_k32_sys_pure test_k32_str_pure test_k32_env_pure test_w32k_window test_w32k_msg test_w32k_input test_w32k_sys test_w32k_gdi test_w32k_clip test_w32k_font test_w32k_region test_w32k_win test_w32k_rawinput test_user32_pure test_k32_w_pure test_k32_obj_pure test_k32_sysinfo_pure test_k32_err_pure test_k32_nls_pure
+TESTS    := test_ntstatus_to_dos test_advapi_pure test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure test_ldr_mapped_pure test_ldr_sched test_k32_module_pure test_k32_io_pure test_k32_file_pure test_k32_sync_pure test_k32_mm_pure test_k32_global_pure test_k32_thread_pure test_k32_find_pure test_k32_sys_pure test_k32_str_pure test_k32_env_pure test_w32k_window test_w32k_msg test_w32k_input test_w32k_sys test_w32k_gdi test_w32k_clip test_w32k_font test_w32k_region test_w32k_win test_w32k_rawinput test_user32_pure test_k32_w_pure test_k32_obj_pure test_k32_sysinfo_pure test_k32_err_pure test_k32_nls_pure test_seh
 TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 
 # test_pe_bounds is build-only on this host: Windows Application Control blocks
@@ -267,6 +267,16 @@ $(OUT)/test_except$(EXE_SUFFIX): $(OUT)/except.o $(OUT)/unwind.o $(OUT)/test_exc
 
 $(OUT)/test_except_pure$(EXE_SUFFIX): $(OUT)/except.o $(OUT)/unwind.o $(OUT)/test_except_pure.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -Wl,--allow-multiple-definition $^ -o $@
+
+# test_seh leaves C frames by a jump (an unwind), which AddressSanitizer would leave poisoned, so it and the three
+# ntdll files it exercises are built without the sanitizers.
+NOSAN_CFLAGS := $(filter-out -fsanitize% -fno-sanitize%,$(CFLAGS))
+$(OUT)/nosan_%.o: $(SRC)/%.c | $(OUT)
+	$(CC) $(NOSAN_CFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OUT)/nosan_test_seh.o: test_seh.c minitest.h | $(OUT)
+	$(CC) $(NOSAN_CFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OUT)/test_seh$(EXE_SUFFIX): $(OUT)/nosan_test_seh.o $(OUT)/nosan_unwind.o $(OUT)/nosan_except.o $(OUT)/nosan_seh.o
+	$(CC) $(NOSAN_CFLAGS) $(LDFLAGS) -Wl,--allow-multiple-definition $^ -o $@
 
 # Coverage links (libgcov) pull in a CRT _errno that clashes with ntdll_runtime.o;
 # the first definition (ours, listed first) wins, as for unwind and except above.

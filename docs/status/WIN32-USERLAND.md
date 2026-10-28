@@ -25,6 +25,20 @@ probes ([DIFFERENTIAL-RESULTS.md](DIFFERENTIAL-RESULTS.md)) are the first place 
 
 `api-ms-win-crt-*.dll` names resolve to `ucrtbase.dll` in the loader (`ldr_pure.h`).
 
+## Structured exception handling (ntdll)
+
+`unwind.c`, `except.c` and `seh.c` implement the x64 model: `RtlCaptureContext` and `RtlRaiseException` (assembly, capturing the
+caller's state), `RtlVirtualUnwind` (the establisher frame is the base of the fixed allocation, as frame handlers expect),
+`RtlDispatchException` (vectored handlers, then frame handlers called with the original context and a dispatcher context),
+`RtlUnwindEx` and `RtlUnwind` (second pass: termination handlers run, the target frame's handler is called with
+`EXCEPTION_TARGET_UNWIND`, control continues at the target with the return value in Rax through `RtlRestoreContext`), and
+`__C_specific_handler` (scope tables of `__try`/`__except`/`__finally`). msvcrt and ucrtbase forward it to ntdll.
+`tests/ntdll-host/test_seh.c` runs this on the host with hand-assembled functions that have real unwind data, scope tables
+and filters, and checks where control lands, which registers and stack it lands with, and the order of termination handlers.
+Not implemented: the C++ frame handlers (`__CxxFrameHandler3/4`), `STATUS_LONGJUMP` and `STATUS_UNWIND_CONSOLIDATE`
+handling in `RtlUnwindEx`, and nested-exception bookkeeping beyond a depth guard. Whether `KiUserExceptionDispatcher`
+reaches this code correctly on the booted kernel is not tested here.
+
 ## ucrtbase.dll
 
 The library is in `src/crt/` as headers (`ucrt_*.h`): strings, `ctype`, number conversion with exact `strtod` and shortest

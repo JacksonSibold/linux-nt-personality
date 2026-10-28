@@ -315,12 +315,7 @@ void exit(int code){
 int _exit(int c){ NtTerminateProcess((HANDLE)(intptr_t)-1, c); while(1){} return 0; }
 void _Exit(int c){ NtTerminateProcess((HANDLE)(intptr_t)-1, c); while(1){} }
 
-/* Exception handler */
-/* No scope table is searched here, so no handler matches. Return
- * ExceptionContinueSearch (1); 0 is ExceptionContinueExecution and would
- * resume at the faulting instruction (CRT-6). */
-int __C_specific_handler(void *a, void *b, void *c, void *d){ (void)a;(void)b;(void)c;(void)d; return 1; }
-void* __C_specific_handler_wrapper = __C_specific_handler;
+/* __C_specific_handler is forwarded to ntdll.dll (msvcrt.def); the scope-table handler lives in seh.c. */
 
 /* Startup helpers */
 void ms_load_cmdline(void);

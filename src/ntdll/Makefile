@@ -67,7 +67,7 @@ STUBS_S   := $(ROOT)/build/generated_stubs.S
 
 # Sources of the MinGW ntdll. Each file is guarded by __MINGW32__ where it
 # needs to be (ldr.c: real loader only in the non-MinGW build, stubs here).
-C_SRCS := ntdll_main.c ldr.c except.c unwind.c ntdll_runtime.c ntdll_heap.c ntdll_sync.c ntstatus_to_dos.c
+C_SRCS := ntdll_main.c ldr.c except.c unwind.c seh.c ntdll_runtime.c ntdll_heap.c ntdll_sync.c ntstatus_to_dos.c
 
 CPPFLAGS := -I$(SRC) -I$(ROOT)/src/loader -DPE_FREESTANDING
 CFLAGS   := -std=c11 -O2 -Wall -Wextra -ffreestanding -fno-builtin \

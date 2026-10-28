@@ -497,6 +497,7 @@ def main():
         if old in exported and new not in exported:
             defs.append("    %s=w_%s" % (new, old))
             exported.add(new)
+    defs.append("    __C_specific_handler = ntdll.__C_specific_handler")
     OUT_INC.write_text("\n".join(inc) + "\n")
     OUT_DEF.write_text("\n".join(defs) + "\n")
     (ROOT / "build/ucrtbase_unimplemented.txt").write_text("\n".join(unimplemented) + "\n")

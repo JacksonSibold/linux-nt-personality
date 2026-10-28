@@ -50,6 +50,8 @@ typedef struct _DISPATCHER_CONTEXT {
     PVOID LanguageHandler;
     PVOID HandlerData;
     PVOID HistoryTable;
+    ULONG ScopeIndex;  /* where __C_specific_handler resumes in its scope table */
+    ULONG Fill0;
 } DISPATCHER_CONTEXT, *PDISPATCHER_CONTEXT;
 
 /* KNONVOLATILE_CONTEXT_POINTERS - points to where nonvolatile registers were saved.
@@ -91,6 +93,17 @@ void RtlCaptureContext(PCONTEXT ContextRecord);
 void RtlRaiseException(PEXCEPTION_RECORD ExceptionRecord);
 void RtlUnwindEx(PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD ExceptionRecord,
                  PVOID ReturnValue, PCONTEXT ContextRecord, PVOID HistoryTable);
+void RtlUnwind(PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD ExceptionRecord, PVOID ReturnValue);
+void RtlRestoreContext(PCONTEXT ContextRecord, PEXCEPTION_RECORD ExceptionRecord);
+
+/* The mark RtlDispatchException puts in P6Home of the context it hands a frame handler as DispatcherContext->ContextRecord,
+ * so that RtlUnwindEx can tell it from an output buffer. */
+#define UW_MAGIC_K 0x9E3779B97F4A7C15ull
+#define UW_MAGIC_C 0x4E54505F53454821ull
+static inline ULONG64 uw_context_mark(const void *ctx)
+{
+    return (ULONG64)(uintptr_t)ctx * UW_MAGIC_K ^ UW_MAGIC_C;
+}
 
 /* Low-level helper for tests: unwind one frame given explicit FunctionEntry */
 int unwind_one_frame(PCONTEXT ctx, ULONG64 imageBase, IMAGE_RUNTIME_FUNCTION_ENTRY *entry,

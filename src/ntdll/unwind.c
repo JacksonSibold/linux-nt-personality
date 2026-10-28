@@ -22,8 +22,11 @@
 #undef DUMMYSTRUCTNAME
 #endif
 #include "unwind.h"
+#include "except.h"
 #include "unwind_pure.h"
 #include "nt_types.h"
+#include "ntstatus.h"
+#include <stddef.h>
 #include "../loader/pe_format.h"
 #include <string.h>
 #include <stdlib.h>
@@ -218,6 +221,27 @@ static int build_chain(unwind_module_t *mod, IMAGE_RUNTIME_FUNCTION_ENTRY *entry
     return 0;
 }
 
+/* The code offset of the SET_FPREG operation of an unwind info, or -1 when it has none. Steps over multi-slot codes. */
+static int uw_set_fpreg_offset(const UNWIND_INFO *info)
+{
+    unsigned i = 0;
+    while (i < info->CountOfCodes) {
+        unsigned op = info->UnwindCode[i].DUMMYSTRUCTNAME.UnwindOp;
+        unsigned oi = info->UnwindCode[i].DUMMYSTRUCTNAME.OpInfo;
+        if (op == UWOP_SET_FPREG)
+            return info->UnwindCode[i].DUMMYSTRUCTNAME.CodeOffset;
+        switch (op) {
+        case UWOP_ALLOC_LARGE: i += oi == 0 ? 2 : 3; break;
+        case UWOP_SAVE_NONVOL:
+        case UWOP_SAVE_XMM128: i += 2; break;
+        case UWOP_SAVE_NONVOL_FAR:
+        case UWOP_SAVE_XMM128_FAR: i += 3; break;
+        default: i += 1; break;
+        }
+    }
+    return -1;
+}
+
 /* Unwind one frame using chain.
  * Returns 0 on success.
  */
@@ -293,12 +317,34 @@ simple:
     /* Need frame register index if any info has FrameRegister !=0. Primary's frame reg is authoritative.
      * If chain, they must match primary's per spec.
      */
+    int fpInfoIdx = -1;
     for (int i = infoCount - 1; i >= 0; i--) {
         if (infos[i]->FrameRegister != 0) {
             useFrame = 1;
             frameReg = infos[i]->FrameRegister;
             frameOffsetScaled = infos[i]->FrameOffset;
+            fpInfoIdx = i;
             break;
+        }
+    }
+
+    /* The establisher frame is the base of the fixed stack allocation: the stack pointer once the prologue has run.
+     * With a frame register that is the register minus its scaled offset (read before any code restores the register);
+     * otherwise it is the stack pointer at the call. Frame handlers locate the function's locals from it. A PC still
+     * inside the prologue, before the frame register is set, falls back to the stack pointer. */
+    establisher = rsp;
+    if (useFrame && fpInfoIdx >= 0) {
+        ULONG64 begin = imageBase + entries[fpInfoIdx]->BeginAddress;
+        ULONG64 off = controlPc >= begin ? controlPc - begin : 0;
+        int established = !uwp_in_prolog(controlPc, begin, infos[fpInfoIdx]->SizeOfProlog);
+        if (!established) {
+            int sf = uw_set_fpreg_offset(infos[fpInfoIdx]);
+            established = sf >= 0 && (ULONG64)sf <= off;
+        }
+        if (established) {
+            ULONG64 *fpReg = ctx_gpr_ptr(ctx, frameReg);
+            if (fpReg)
+                establisher = uwp_fp_base(*fpReg, frameOffsetScaled);
         }
     }
 
@@ -534,15 +580,6 @@ simple:
         rsp += 8;
     }
     ctx->Rsp = rsp;
-    establisher = rsp; /* For simplicity, establisher is final RSP after unwind? Actually spec says establisher is base of fixed allocation.
-     * For non-FP, after unwind rsp points to caller stack which equals establisher+8? We'll set establisher = rsp -8? But tests will check caller RSP/RIP.
-     * Let's set establisher = rsp (caller rsp after pop) minus? Instead compute as rsp after unwind's alloc but before pop? Need to decide.
-     * We'll set establisher = ctx->Rsp -8? Not.
-     * Alternative: establisher = rsp -8? But spec says EstablisherFrame is base of fixed allocation for this function.
-     * For leaf-like pop, base is rsp before pop.
-     * We'll set establisher = rsp -8 for pop case, and correct for machframe.
-     * To keep simple, set establisher = rsp (caller rsp).
-     */
     if (establisherFrame) *establisherFrame = establisher;
     /* Also restore RSP via frame handling: already done */
     return 0;
@@ -620,93 +657,342 @@ PVOID RtlVirtualUnwind(ULONG HandlerType, ULONG64 ImageBase, ULONG64 ControlPc,
     return handler;
 }
 
-void RtlCaptureContext(PCONTEXT ContextRecord) {
-    if (!ContextRecord) return;
-    memset(ContextRecord, 0, sizeof(CONTEXT));
-    ContextRecord->ContextFlags = CONTEXT_ALL;
-    /* Use inline asm to capture GPRs */
-#if defined(__x86_64__) && defined(__GNUC__)
-    __asm__ volatile (
-        "movq %%rax, 0x78(%0)\n\t"
-        "movq %%rcx, 0x80(%0)\n\t"
-        "movq %%rdx, 0x88(%0)\n\t"
-        "movq %%rbx, 0x90(%0)\n\t"
-        "movq %%rsp, 0x98(%0)\n\t"
-        "movq %%rbp, 0xa0(%0)\n\t"
-        "movq %%rsi, 0xa8(%0)\n\t"
-        "movq %%rdi, 0xb0(%0)\n\t"
-        "movq %%r8,  0xb8(%0)\n\t"
-        "movq %%r9,  0xc0(%0)\n\t"
-        "movq %%r10, 0xc8(%0)\n\t"
-        "movq %%r11, 0xd0(%0)\n\t"
-        "movq %%r12, 0xd8(%0)\n\t"
-        "movq %%r13, 0xe0(%0)\n\t"
-        "movq %%r14, 0xe8(%0)\n\t"
-        "movq %%r15, 0xf0(%0)\n\t"
-        /* RIP = return address */
-        "leaq 0(%%rip), %%rax\n\t"
-        "movq %%rax, 0xf8(%0)\n\t"
-        /* Also capture XMM via fxsave? For simplicity capture via xsave if needed */
-        :
-        : "r" (ContextRecord)
-        : "rax", "memory"
-    );
-    /* Capture EFLAGS */
-    __asm__ volatile ("pushfq; popq 0x44(%0)" : : "r"(ContextRecord) : "memory");
-    ContextRecord->SegCs = 0x33;
-    ContextRecord->SegSs = 0x2b;
-    ContextRecord->MxCsr = 0x1f80;
-    /* Capture XMM via fxsave */
-    __asm__ volatile ("fxsave 0x100(%0)" : : "r"(ContextRecord) : "memory");
+/* ---- Capturing a context: RtlCaptureContext and RtlRaiseException --------------------------------------------------------- */
+
+/*
+ * RtlCaptureContext stores the registers of its caller as they were at the call: Rip is the return address, Rsp the stack
+ * pointer after the return, and every other register has its value at entry (the function uses none before storing them).
+ * It is written in assembly because the caller's state is exactly the state at entry. The first argument is in RCX on
+ * Windows and in RDI on the host's System V ABI.
+ *
+ * RtlRaiseException builds a context of its caller the same way, calls _NtRaiseException with it, and then continues
+ * the caller through the possibly edited context, as a handler's ExceptionContinueExecution requires.
+ *
+ * Offsets are those of CONTEXT (nt_types.h asserts the first ones; the x87/SSE area starts at 0x100 and Xmm0 at 0x1A0).
+ */
+#if defined(__MINGW32__)
+#define UW_A0 "%rcx"
+#define UW_A1 "%rdx"
+#define UW_A2 "%r8"
+#define UW_A2D "%r8d"
+#define UW_A1D "%edx"
+#define UW_ASM_FUNC(name) ".globl " #name "\n\t.def " #name "; .scl 2; .type 32; .endef\n" #name ":\n\t"
 #else
-    (void)ContextRecord;
+#define UW_A0 "%rdi"
+#define UW_A1 "%rsi"
+#define UW_A2 "%rdx"
+#define UW_A2D "%edx"
+#define UW_A1D "%esi"
+#define UW_ASM_FUNC(name) ".globl " #name "\n\t.type " #name ",@function\n" #name ":\n\t"
 #endif
+
+#define UW_CTX_FLAGS 0x30
+#define UW_CTX_MXCSR 0x34
+#define UW_CTX_RIP 0xF8
+#define UW_CTX_RSP 0x98
+_Static_assert(offsetof(CONTEXT, ContextFlags) == UW_CTX_FLAGS && offsetof(CONTEXT, MxCsr) == UW_CTX_MXCSR &&
+                   offsetof(CONTEXT, Rip) == UW_CTX_RIP && offsetof(CONTEXT, Rsp) == UW_CTX_RSP &&
+                   offsetof(CONTEXT, Rax) == 0x78 && offsetof(CONTEXT, R15) == 0xF0 && offsetof(CONTEXT, DUMMYUNIONNAME.FltSave.XmmRegisters) == 0x1A0 &&
+                   offsetof(CONTEXT, EFlags) == 0x44 && offsetof(CONTEXT, SegCs) == 0x38 && sizeof(CONTEXT) == 0x4D0,
+               "CONTEXT layout assumed by RtlCaptureContext");
+
+__asm__(".text\n\t"
+        UW_ASM_FUNC(RtlCaptureContext)
+        "movq %rax, 0x78(" UW_A0 ")\n\t"
+        "movq %rcx, 0x80(" UW_A0 ")\n\t"
+        "movq %rdx, 0x88(" UW_A0 ")\n\t"
+        "movq %rbx, 0x90(" UW_A0 ")\n\t"
+        "leaq 8(%rsp), %rax\n\t"
+        "movq %rax, 0x98(" UW_A0 ")\n\t"
+        "movq %rbp, 0xA0(" UW_A0 ")\n\t"
+        "movq %rsi, 0xA8(" UW_A0 ")\n\t"
+        "movq %rdi, 0xB0(" UW_A0 ")\n\t"
+        "movq %r8,  0xB8(" UW_A0 ")\n\t"
+        "movq %r9,  0xC0(" UW_A0 ")\n\t"
+        "movq %r10, 0xC8(" UW_A0 ")\n\t"
+        "movq %r11, 0xD0(" UW_A0 ")\n\t"
+        "movq %r12, 0xD8(" UW_A0 ")\n\t"
+        "movq %r13, 0xE0(" UW_A0 ")\n\t"
+        "movq %r14, 0xE8(" UW_A0 ")\n\t"
+        "movq %r15, 0xF0(" UW_A0 ")\n\t"
+        "movq (%rsp), %rax\n\t"
+        "movq %rax, 0xF8(" UW_A0 ")\n\t"
+        "pushfq\n\t"
+        "popq %rax\n\t"
+        "movl %eax, 0x44(" UW_A0 ")\n\t"
+        "stmxcsr 0x34(" UW_A0 ")\n\t"
+        "stmxcsr 0x118(" UW_A0 ")\n\t"
+        "fnstcw 0x100(" UW_A0 ")\n\t"
+        "movups %xmm0,  0x1A0(" UW_A0 ")\n\t"
+        "movups %xmm1,  0x1B0(" UW_A0 ")\n\t"
+        "movups %xmm2,  0x1C0(" UW_A0 ")\n\t"
+        "movups %xmm3,  0x1D0(" UW_A0 ")\n\t"
+        "movups %xmm4,  0x1E0(" UW_A0 ")\n\t"
+        "movups %xmm5,  0x1F0(" UW_A0 ")\n\t"
+        "movups %xmm6,  0x200(" UW_A0 ")\n\t"
+        "movups %xmm7,  0x210(" UW_A0 ")\n\t"
+        "movups %xmm8,  0x220(" UW_A0 ")\n\t"
+        "movups %xmm9,  0x230(" UW_A0 ")\n\t"
+        "movups %xmm10, 0x240(" UW_A0 ")\n\t"
+        "movups %xmm11, 0x250(" UW_A0 ")\n\t"
+        "movups %xmm12, 0x260(" UW_A0 ")\n\t"
+        "movups %xmm13, 0x270(" UW_A0 ")\n\t"
+        "movups %xmm14, 0x280(" UW_A0 ")\n\t"
+        "movups %xmm15, 0x290(" UW_A0 ")\n\t"
+        "movw %cs, 0x38(" UW_A0 ")\n\t"
+        "movw %ds, 0x3A(" UW_A0 ")\n\t"
+        "movw %es, 0x3C(" UW_A0 ")\n\t"
+        "movw %fs, 0x3E(" UW_A0 ")\n\t"
+        "movw %gs, 0x40(" UW_A0 ")\n\t"
+        "movw %ss, 0x42(" UW_A0 ")\n\t"
+        "movl $0x10000F, 0x30(" UW_A0 ")\n\t" /* CONTEXT_FULL | CONTEXT_SEGMENTS */
+        "ret\n\t");
+
+__asm__(".text\n\t"
+        UW_ASM_FUNC(RtlRaiseException)
+        "subq $0x4F8, %rsp\n\t"                   /* shadow space, a CONTEXT at 0x20, the record pointer at 0x4F0 */
+        "movq " UW_A0 ", 0x4F0(%rsp)\n\t"
+        "leaq 0x20(%rsp), " UW_A0 "\n\t"
+        "call RtlCaptureContext\n\t"
+        "leaq 0x500(%rsp), %rax\n\t"              /* the caller's stack pointer after the return */
+        "movq %rax, 0xB8(%rsp)\n\t"               /* 0x20 + Rsp */
+        "movq 0x4F8(%rsp), %rax\n\t"              /* its return address is the faulting address */
+        "movq %rax, 0x118(%rsp)\n\t"              /* 0x20 + Rip */
+        "movq 0x4F0(%rsp), " UW_A0 "\n\t"
+        "movq %rax, 0x10(" UW_A0 ")\n\t"          /* ExceptionRecord->ExceptionAddress */
+        "leaq 0x20(%rsp), " UW_A1 "\n\t"
+        "movl $1, " UW_A2D "\n\t"
+        "call _NtRaiseException\n\t"
+        "leaq 0x20(%rsp), " UW_A0 "\n\t"          /* resumed: continue the caller through the edited context */
+        "xorl " UW_A1D ", " UW_A1D "\n\t"
+        "call RtlRestoreContext\n\t"
+        "ud2\n\t");
+
+/* ---- Transferring control: RtlRestoreContext ---------------------------------------------------------------------------- */
+
+/* Loads every register of the context and continues at its Rip with its Rsp. The return frame is built on the current
+ * stack and left by IRETQ, which loads the instruction pointer, flags and stack pointer in one step; the registers are
+ * loaded first, the one that addresses the context last. The context may live below the target stack pointer; it is
+ * not read after the final instruction. Segment registers and flags are not taken blindly from a context built by hand:
+ * zero segments mean the user segments, and the flags keep only the arithmetic bits, DF and the always-set bit 1. */
+__attribute__((noreturn)) static void uw_resume(const CONTEXT *c)
+{
+    uint64_t cs = c->SegCs ? c->SegCs : 0x33;
+    uint64_t ss = c->SegSs ? c->SegSs : 0x2b;
+    uint64_t fl = (c->EFlags & 0xCD5u) | 0x202u;
+    uint64_t sp = c->Rsp, ip = c->Rip;
+    if ((c->ContextFlags & CONTEXT_FLOATING_POINT) == CONTEXT_FLOATING_POINT) {
+        const M128A *x = c->DUMMYUNIONNAME.FltSave.XmmRegisters;
+        __asm__ volatile("ldmxcsr %0" : : "m"(c->MxCsr));
+        __asm__ volatile("movups 0(%0), %%xmm0\n\tmovups 16(%0), %%xmm1\n\tmovups 32(%0), %%xmm2\n\tmovups 48(%0), %%xmm3\n\t"
+                         "movups 64(%0), %%xmm4\n\tmovups 80(%0), %%xmm5\n\tmovups 96(%0), %%xmm6\n\tmovups 112(%0), %%xmm7\n\t"
+                         "movups 128(%0), %%xmm8\n\tmovups 144(%0), %%xmm9\n\tmovups 160(%0), %%xmm10\n\tmovups 176(%0), %%xmm11\n\t"
+                         "movups 192(%0), %%xmm12\n\tmovups 208(%0), %%xmm13\n\tmovups 224(%0), %%xmm14\n\tmovups 240(%0), %%xmm15"
+                         : : "r"(x)
+                         : "memory", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10",
+                           "xmm11", "xmm12", "xmm13", "xmm14", "xmm15");
+    }
+    __asm__ volatile(
+        "pushq %[ss]\n\t"
+        "pushq %[sp]\n\t"
+        "pushq %[fl]\n\t"
+        "pushq %[cs]\n\t"
+        "pushq %[ip]\n\t"
+        "movq %c[rcx](%%rax), %%rcx\n\t"
+        "movq %c[rdx](%%rax), %%rdx\n\t"
+        "movq %c[rbx](%%rax), %%rbx\n\t"
+        "movq %c[rbp](%%rax), %%rbp\n\t"
+        "movq %c[rsi](%%rax), %%rsi\n\t"
+        "movq %c[rdi](%%rax), %%rdi\n\t"
+        "movq %c[r8](%%rax), %%r8\n\t"
+        "movq %c[r9](%%rax), %%r9\n\t"
+        "movq %c[r10](%%rax), %%r10\n\t"
+        "movq %c[r11](%%rax), %%r11\n\t"
+        "movq %c[r12](%%rax), %%r12\n\t"
+        "movq %c[r13](%%rax), %%r13\n\t"
+        "movq %c[r14](%%rax), %%r14\n\t"
+        "movq %c[r15](%%rax), %%r15\n\t"
+        "movq %c[rax](%%rax), %%rax\n\t"
+        "iretq"
+        :
+        : "a"(c), [ss] "r"(ss), [sp] "r"(sp), [fl] "r"(fl), [cs] "r"(cs), [ip] "r"(ip),
+          [rax] "i"(offsetof(CONTEXT, Rax)), [rcx] "i"(offsetof(CONTEXT, Rcx)), [rdx] "i"(offsetof(CONTEXT, Rdx)),
+          [rbx] "i"(offsetof(CONTEXT, Rbx)), [rbp] "i"(offsetof(CONTEXT, Rbp)), [rsi] "i"(offsetof(CONTEXT, Rsi)),
+          [rdi] "i"(offsetof(CONTEXT, Rdi)), [r8] "i"(offsetof(CONTEXT, R8)), [r9] "i"(offsetof(CONTEXT, R9)),
+          [r10] "i"(offsetof(CONTEXT, R10)), [r11] "i"(offsetof(CONTEXT, R11)), [r12] "i"(offsetof(CONTEXT, R12)),
+          [r13] "i"(offsetof(CONTEXT, R13)), [r14] "i"(offsetof(CONTEXT, R14)), [r15] "i"(offsetof(CONTEXT, R15))
+        : "memory");
+    __builtin_unreachable();
 }
 
-/* Minimal stubs for raise/unwind - rely on except dispatcher */
-void RtlRaiseException(PEXCEPTION_RECORD ExceptionRecord) {
-    /* In real ntdll this builds context and calls RtlDispatchException.
-     * For our library, forward to except.c dispatcher if available.
-     */
-    extern void _NtRaiseException(PEXCEPTION_RECORD, PCONTEXT, int);
-    CONTEXT ctx;
-    RtlCaptureContext(&ctx);
-    ctx.Rip = (ULONG64)__builtin_return_address(0);
-    _NtRaiseException(ExceptionRecord, &ctx, 1);
+void RtlRestoreContext(PCONTEXT ContextRecord, PEXCEPTION_RECORD ExceptionRecord)
+{
+    (void)ExceptionRecord;
+    uw_resume(ContextRecord);
 }
 
-void RtlUnwindEx(PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD ExceptionRecord,
-                 PVOID ReturnValue, PCONTEXT ContextRecord, PVOID HistoryTable) {
-    (void)HistoryTable;
-    (void)ReturnValue;
-    /* This should walk frames until TargetFrame/TargetIp, calling termination handlers.
-     * For now we implement simple unwind loop using RtlVirtualUnwind.
-     */
-    if (!ContextRecord) return;
-    CONTEXT ctx = *ContextRecord;
-    int maxFrames = 128;
-    for (int i = 0; i < maxFrames; i++) {
-        ULONG64 imgBase = 0;
-        IMAGE_RUNTIME_FUNCTION_ENTRY *entry = RtlLookupFunctionEntry(ctx.Rip, &imgBase, NULL);
-        ULONG64 establisher = 0;
-        PVOID handlerData = NULL;
-        PVOID handler = RtlVirtualUnwind(0, imgBase, ctx.Rip, entry, &ctx, &handlerData, &establisher, NULL);
-        (void)handler;
-        (void)handlerData;
-        if (ExceptionRecord) {
-            /* If this were unwind, we'd call handlers with UNWIND flags */
+/* ---- Unwinding to a target frame: RtlUnwindEx ------------------------------------------------------------------------------- */
+
+#define UW_MAX_FRAMES 4096
+
+/*
+ * RtlUnwindEx walks the stack from the caller of RtlUnwindEx up to TargetFrame, calling each frame's language handler with
+ * the unwind flags set so that termination handlers (__finally, destructors) run, then continues at TargetIp with
+ * ReturnValue in Rax. A frame is the target when its establisher frame equals TargetFrame; its handler is called with
+ * EXCEPTION_TARGET_UNWIND. With TargetFrame == NULL the unwind is an exit unwind and goes on to the end of the stack.
+ * When TargetIp is NULL the context stays at the call site in the target frame (the function continues after the
+ * call, as if the unwound callees had returned).
+ *
+ * ContextRecord is where the walk keeps its context, as on Windows. Its input matters in one case: a frame handler
+ * called by RtlDispatchException passes DispatcherContext->ContextRecord, the state of the frame being dispatched, and
+ * the unwind starts there (the dispatcher marks that context in P6Home, a home slot that is no machine state). For any
+ * other buffer the assembly entry captures the caller's registers into it before the C code runs, because compiled
+ * code has already used the callee-saved registers by then.
+ */
+
+/* P6Home of a context made by the dispatcher or by the entry stub: a value that depends on the context's address. */
+#define uw_magic uw_context_mark
+
+void RtlpUnwindEx(PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD ExceptionRecord, PVOID ReturnValue,
+                  PCONTEXT ContextRecord, PVOID HistoryTable);
+
+#if defined(__MINGW32__)
+#define UW_CTXREC "0x28(%rsp)"
+#else
+#define UW_CTXREC "%r8"
+#endif
+
+__asm__(".text\n\t"
+        UW_ASM_FUNC(RtlUnwindEx)
+        "movq " UW_CTXREC ", %rax\n\t"
+        "testq %rax, %rax\n\t"
+        "jz 2f\n\t"
+        "movq %rax, %r10\n\t"
+        "movabsq $0x9E3779B97F4A7C15, %r11\n\t"
+        "imulq %r11, %r10\n\t"
+        "movabsq $0x4E54505F53454821, %r11\n\t"
+        "xorq %r11, %r10\n\t"
+        "cmpq %r10, 0x28(%rax)\n\t"                /* already the dispatcher's context: use it as it is */
+        "je 2f\n\t"
+        "pushq " UW_A0 "\n\t"
+        "movq %rax, " UW_A0 "\n\t"
+        "call RtlCaptureContext\n\t"
+        "popq " UW_A0 "\n\t"
+        "movq " UW_CTXREC ", %rax\n\t"
+        "leaq 8(%rsp), %r10\n\t"                   /* the caller's stack pointer after the return */
+        "movq %r10, 0x98(%rax)\n\t"
+        "movq (%rsp), %r10\n\t"                    /* and its resume address */
+        "movq %r10, 0xF8(%rax)\n\t"
+        "movq %rax, %r10\n\t"
+        "movabsq $0x9E3779B97F4A7C15, %r11\n\t"
+        "imulq %r11, %r10\n\t"
+        "movabsq $0x4E54505F53454821, %r11\n\t"
+        "xorq %r11, %r10\n\t"
+        "movq %r10, 0x28(%rax)\n\t"                /* P6Home: the mark */
+        "movq $0, 0x20(%rax)\n\t"                  /* P5Home: no original context to start from */
+        "2:\n\t"
+        "jmp RtlpUnwindEx\n\t");
+
+void RtlpUnwindEx(PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD ExceptionRecord, PVOID ReturnValue,
+                  PCONTEXT ContextRecord, PVOID HistoryTable)
+{
+    EXCEPTION_RECORD local;
+    PEXCEPTION_RECORD rec = ExceptionRecord;
+    DWORD base_flags;
+
+    if (!ContextRecord || ContextRecord->P6Home != uw_magic(ContextRecord))
+        return; /* no context to start from: the entry stub fills one in whenever the caller supplies a buffer */
+    /* The walk advances the caller's buffer itself: it is both the handler's ContextRecord argument and
+     * DispatcherContext->ContextRecord, and shows the state of the frame being unwound. */
+    CONTEXT *const uc_p = ContextRecord;
+#define uc (*uc_p)
+    if (uc.P5Home) {
+        /* Called by a frame handler during dispatch: the walk covers every frame from the faulting instruction up to the
+         * target, not only those above the handler's own frame, so it starts from the context of the exception. */
+        const CONTEXT *original = (const CONTEXT *)(uintptr_t)uc.P5Home;
+        const ULONG64 mark = uc.P6Home;
+        uc = *original;
+        uc.P5Home = 0;
+        uc.P6Home = mark;
+    }
+    if (!rec) {
+        memset(&local, 0, sizeof local);
+        local.ExceptionCode = (DWORD)STATUS_UNWIND;
+        local.ExceptionAddress = (PVOID)(uintptr_t)uc.Rip;
+        rec = &local;
+    }
+    base_flags = EXCEPTION_UNWINDING | (TargetFrame ? 0 : EXCEPTION_EXIT_UNWIND);
+    rec->ExceptionFlags |= base_flags;
+
+    for (int frames = 0; frames < UW_MAX_FRAMES; ++frames) {
+        ULONG64 image = 0, establisher = 0;
+        PVOID hdata = NULL;
+        PVOID handler = NULL;
+        CONTEXT next = uc;
+        IMAGE_RUNTIME_FUNCTION_ENTRY *entry = RtlLookupFunctionEntry(uc.Rip, &image, HistoryTable);
+        if (entry) {
+            handler = RtlVirtualUnwind(UNW_FLAG_UHANDLER, image, uc.Rip, entry, &next, &hdata, &establisher, NULL);
+        } else { /* a leaf: the return address is on top of the stack */
+            next.Rip = *(ULONG64 *)(uintptr_t)uc.Rsp;
+            next.Rsp = uc.Rsp + 8;
+            establisher = uc.Rsp;
         }
-        if (establisher == (ULONG64)TargetFrame && (TargetIp == NULL || ctx.Rip == (ULONG64)TargetIp)) break;
-        if (TargetFrame == NULL && entry == NULL) break; /* leaf unwind */
-        if (ctx.Rsp == 0 || ctx.Rip == 0) break;
-        if (establisher == 0) { /* leaf check */
-            if (TargetFrame == NULL) break;
-        }
-        if (establisher == (ULONG64)TargetFrame) {
-            if (TargetIp) ctx.Rip = (ULONG64)TargetIp;
+        if (TargetFrame && establisher > (ULONG64)(uintptr_t)TargetFrame) /* walked past the target: a bad stack */
             break;
+        if (handler) {
+            DISPATCHER_CONTEXT dc;
+            EXCEPTION_DISPOSITION d;
+            memset(&dc, 0, sizeof dc);
+            dc.ControlPc = uc.Rip;
+            dc.ImageBase = image;
+            dc.FunctionEntry = entry;
+            dc.EstablisherFrame = establisher;
+            dc.TargetIp = (ULONG64)(uintptr_t)TargetIp;
+            dc.ContextRecord = uc_p;
+            dc.LanguageHandler = handler;
+            dc.HandlerData = hdata;
+            dc.HistoryTable = HistoryTable;
+            uc.P6Home = uw_magic(uc_p);
+            rec->ExceptionFlags = (rec->ExceptionFlags & ~EXCEPTION_TARGET_UNWIND) | base_flags |
+                                  (TargetFrame && establisher == (ULONG64)(uintptr_t)TargetFrame ? EXCEPTION_TARGET_UNWIND : 0);
+            d = ((PEXCEPTION_HANDLER)handler)(rec, (PVOID)(uintptr_t)establisher, uc_p, &dc);
+            if (d == ExceptionCollidedUnwind) {
+                /* a handler unwound across us; its context is where we go on from */
+                if (dc.ContextRecord != uc_p)
+                    uc = *dc.ContextRecord;
+                continue;
+            }
+        }
+        if (TargetFrame && establisher == (ULONG64)(uintptr_t)TargetFrame)
+            break; /* uc is the state in the target frame */
+        if (next.Rip == 0 || next.Rsp == 0 || next.Rsp <= uc.Rsp)
+            break; /* the end of the stack (an exit unwind), or a corrupt chain */
+        {
+            const ULONG64 mark = uc.P6Home;
+            uc = next;
+            uc.P6Home = mark;
         }
     }
-    *ContextRecord = ctx;
-    if (ExceptionRecord) ExceptionRecord->ExceptionFlags |= 0x2; /* UNWIND */
+    rec->ExceptionFlags &= ~EXCEPTION_TARGET_UNWIND;
+    if (TargetIp)
+        uc.Rip = (ULONG64)(uintptr_t)TargetIp;
+    uc.Rax = (ULONG64)(uintptr_t)ReturnValue;
+    uw_resume(uc_p);
+#undef uc
 }
+
+/* The older entry point: unwinds to TargetFrame and continues at TargetIp. */
+__asm__(".text\n\t"
+        UW_ASM_FUNC(RtlUnwind)
+        "subq $0x508, %rsp\n\t"                   /* a scratch CONTEXT at 0x30, the arguments' space below */
+        "leaq 0x30(%rsp), %rax\n\t"
+#if defined(__MINGW32__)
+        "movq %rax, 0x20(%rsp)\n\t"               /* the fifth argument */
+        "movq $0, 0x28(%rsp)\n\t"                 /* the sixth: no history table */
+#else
+        "movq %rax, %r8\n\t"
+        "xorl %r9d, %r9d\n\t"
+#endif
+        "call RtlUnwindEx\n\t"                    /* returns only if there is no frame to resume */
+        "addq $0x508, %rsp\n\t"
+        "ret\n\t");

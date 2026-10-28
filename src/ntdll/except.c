@@ -419,29 +419,31 @@ EXCEPTION_DISPOSITION RtlDispatchException(PEXCEPTION_RECORD ExceptionRecord, PC
         /* Vectored handler return EXCEPTION_CONTINUE_SEARCH (0) means continue */
     }
 
-    /* Frame-based dispatch: walk stack */
+    /* Frame-based dispatch: walk the stack from the faulting context, virtually unwinding one frame at a time. Each frame's
+     * language handler is called with the original context (what GetExceptionInformation() shows) and a dispatcher context
+     * whose ContextRecord is the state of the frame being dispatched. A handler that wants to run the second pass calls
+     * RtlUnwindEx itself (as __C_specific_handler does) and does not return. */
     CONTEXT ctx = *ContextRecord;
     int maxFrames = 128;
     for (int frame = 0; frame < maxFrames; frame++) {
         ULONG64 imgBase = 0;
         IMAGE_RUNTIME_FUNCTION_ENTRY *entry = RtlLookupFunctionEntry(ctx.Rip, &imgBase, NULL);
         if (!entry) {
-            /* Leaf: check if there is no handler, just unwind */
+            /* A leaf: pop the return address. */
             CONTEXT next = ctx;
             ULONG64 establisher = 0;
             RtlVirtualUnwind(0, imgBase, ctx.Rip, NULL, &next, NULL, &establisher, NULL);
-            /* No handler to call for leaf */
             if (exc_walk_ended(next.Rip, next.Rsp)) break;
             ctx = next;
             continue;
         }
-        /* Get handler via RtlVirtualUnwind without mutating? We need call RtlVirtualUnwind to get establisher and handler */
         CONTEXT tmp = ctx;
         ULONG64 establisher = 0;
         PVOID handlerData = NULL;
         PVOID handler = RtlVirtualUnwind(UNW_FLAG_EHANDLER, imgBase, ctx.Rip, entry, &tmp, &handlerData, &establisher, NULL);
         if (handler) {
             DISPATCHER_CONTEXT dc;
+            memset(&dc, 0, sizeof dc);
             dc.ControlPc = ctx.Rip;
             dc.ImageBase = imgBase;
             dc.FunctionEntry = entry;
@@ -451,29 +453,36 @@ EXCEPTION_DISPOSITION RtlDispatchException(PEXCEPTION_RECORD ExceptionRecord, PC
             dc.LanguageHandler = handler;
             dc.HandlerData = handlerData;
             dc.HistoryTable = NULL;
+            dc.ScopeIndex = 0;
+            ctx.P5Home = (ULONG64)(uintptr_t)ContextRecord; /* where RtlUnwindEx starts */
+            ctx.P6Home = uw_context_mark(&ctx);
             PEXCEPTION_HANDLER h = (PEXCEPTION_HANDLER)handler;
-            EXCEPTION_DISPOSITION disp = h(ExceptionRecord, (PVOID)establisher, &ctx, &dc);
+            EXCEPTION_DISPOSITION disp = h(ExceptionRecord, (PVOID)(uintptr_t)establisher, ContextRecord, &dc);
             if (exc_frame_resumes(disp)) {
-                *ContextRecord = ctx;
+                if (ExceptionRecord->ExceptionFlags & EXCEPTION_NONCONTINUABLE) {
+                    /* A handler may not resume an exception that cannot be continued. */
+                    EXCEPTION_RECORD nc;
+                    memset(&nc, 0, sizeof nc);
+                    nc.ExceptionCode = (DWORD)STATUS_NONCONTINUABLE_EXCEPTION;
+                    nc.ExceptionFlags = EXCEPTION_NONCONTINUABLE;
+                    nc.ExceptionRecord = ExceptionRecord;
+                    nc.ExceptionAddress = ExceptionRecord->ExceptionAddress;
+                    g_nested_depth--;
+                    t_in_dispatch = 0;
+                    return RtlDispatchException(&nc, ContextRecord);
+                }
                 run_continue_handlers(ExceptionRecord, ContextRecord);
                 g_nested_depth--;
                 t_in_dispatch = 0;
                 return ExceptionContinueExecution;
-            } else if (disp == ExceptionContinueSearch) {
-                /* fall through to unwind to next frame */
-            } else if (disp == ExceptionNestedException) {
-                /* collided? For now treat as search */
-            } else if (disp == ExceptionCollidedUnwind) {
-                /* collided unwind: spec says handler indicates collided unwind */
-                /* We would need to handle specially; for now unwind one frame */
             }
+            /* ExceptionContinueSearch, and the nested and collided dispositions: go on to the caller. */
         }
-        /* Unwind to caller */
+        /* Unwind to the caller. */
         ULONG64 nextEst = 0;
         PVOID hd = NULL;
         RtlVirtualUnwind(0, imgBase, ctx.Rip, entry, &ctx, &hd, &nextEst, NULL);
         if (exc_walk_ended(ctx.Rip, ctx.Rsp)) break;
-        /* Check TargetIp / establisher for RtlUnwindEx target? For dispatch we keep going */
     }
 
     /* Second pass for unwind if exception not handled? Actually two-pass: first is search, second is unwind calling termination handlers.
