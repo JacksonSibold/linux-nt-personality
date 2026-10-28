@@ -230,6 +230,9 @@ extern w32k_queue w32k_queues[W32K_MAX_THREADS];
 /* Setup (w32k_core.c, w32k_input.c, w32k_sys.c). */
 void w32k_core_reset(void);
 void w32k_input_init(void);
+void w32k_rawinput_reset(void);
+/* 1 when the raw input registration for the mouse (keyboard != 0: the keyboard) has RIDEV_NOLEGACY. */
+int w32k_raw_nolegacy(int keyboard);
 uint32_t w32k_dpi_for_rect(const w32k_rect *rc);
 
 /* Accessors (implemented in w32k_core.c). */

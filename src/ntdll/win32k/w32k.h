@@ -553,6 +553,63 @@ int w32k_get_cursor_pos(w32k_point *pt);
 int w32k_set_cursor_pos(int32_t x, int32_t y);
 size_t w32k_evdev_feed(const uint8_t *buf, size_t len);
 
+/* ---- Raw input (w32k_rawinput.c) ---------------------------------------------- */
+
+#define W32K_WM_INPUT 0x00FF
+#define W32K_RIM_INPUT 0
+#define W32K_RIM_INPUTSINK 1
+#define W32K_RIDEV_REMOVE 0x00000001u
+#define W32K_RIDEV_EXCLUDE 0x00000010u
+#define W32K_RIDEV_PAGEONLY 0x00000020u
+#define W32K_RIDEV_NOLEGACY 0x00000030u
+#define W32K_RIDEV_INPUTSINK 0x00000100u
+#define W32K_RIDEV_CAPTUREMOUSE 0x00000200u
+#define W32K_RIDEV_NOHOTKEYS 0x00000200u
+#define W32K_RIDEV_APPKEYS 0x00000400u
+#define W32K_RIDEV_DEVNOTIFY 0x00002000u
+
+/* Device handles of the model's one mouse and one keyboard. */
+#define W32K_RAW_MOUSE_DEVICE 0x10001u
+#define W32K_RAW_KEYBOARD_DEVICE 0x10002u
+#define W32K_RIM_TYPEMOUSE 0
+#define W32K_RIM_TYPEKEYBOARD 1
+
+/* RAWMOUSE button flags (usButtonFlags). */
+#define W32K_RI_MOUSE_LEFT_BUTTON_DOWN 0x0001u
+#define W32K_RI_MOUSE_LEFT_BUTTON_UP 0x0002u
+#define W32K_RI_MOUSE_RIGHT_BUTTON_DOWN 0x0004u
+#define W32K_RI_MOUSE_RIGHT_BUTTON_UP 0x0008u
+#define W32K_RI_MOUSE_MIDDLE_BUTTON_DOWN 0x0010u
+#define W32K_RI_MOUSE_MIDDLE_BUTTON_UP 0x0020u
+#define W32K_RI_MOUSE_WHEEL 0x0400u
+
+/* Layout of a RAWINPUT on x64: a 24-byte header, then a 24-byte RAWMOUSE or 16-byte RAWKEYBOARD. */
+#define W32K_RAWINPUT_HEADER_SIZE 24u
+#define W32K_RAWINPUT_MOUSE_SIZE 48u
+#define W32K_RAWINPUT_KEYBOARD_SIZE 40u
+
+typedef struct w32k_rid_dev {
+    uint16_t usage_page;
+    uint16_t usage;
+    uint32_t flags;
+    w32k_handle target;
+} w32k_rid_dev;
+
+/* RegisterRawInputDevices. Usage page 1 with usage 2 is the mouse and 6 the keyboard; other
+ * usages are accepted and never produce input. RIDEV_REMOVE needs a null target. Returns 1, or 0
+ * with the last error set (ERROR_INVALID_PARAMETER, ERROR_INVALID_WINDOW_HANDLE for a bad target,
+ * ERROR_NOT_ENOUGH_MEMORY when the table is full). A failed call changes nothing. */
+int w32k_register_raw_input(const w32k_rid_dev *devs, uint32_t n);
+/* GetRegisteredRawInputDevices: copies up to cap entries, returns the count registered. */
+uint32_t w32k_get_registered_raw_input(w32k_rid_dev *out, uint32_t cap);
+/* Raw events. The injection calls below post WM_INPUT to the registered window with an HRAWINPUT in
+ * lParam; the legacy inject functions call them too. dx and dy are unclamped relative motion. */
+void w32k_inject_raw_mouse(int32_t dx, int32_t dy, uint16_t button_flags, int16_t wheel);
+void w32k_inject_raw_key(uint16_t make_code, uint16_t vkey, int down, int extended);
+/* Looks up an HRAWINPUT. Returns a pointer to its bytes (valid until 256 later events) and sets
+ * *size, or NULL when the handle is not a live raw input. */
+const uint8_t *w32k_raw_input_bytes(w32k_handle hri, uint32_t *size);
+
 /* ---- Clipboard -------------------------------------------------------------- */
 
 int w32k_open_clipboard(w32k_handle hwnd);

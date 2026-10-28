@@ -60,3 +60,23 @@ keep only their ABI shims. Windows itself puts the services in `win32u.dll` unde
   `tools/linux-env/probes-initramfs.sh`. Build with `make -C src/ntdll all kernel32 msvcrt advapi32 win32u user32 gdi32`.
 - Verified: the DLLs link (`user32` imports kernel32, ntdll and win32u; `gdi32` imports win32u) and the host suites
   pass. Not verified: a guest boot of S12 with the new DLL layout.
+
+## Addendum: breadth added on the shared model (2026-10-28)
+
+`user32.dll` grew from 85 to 190 exports on top of `win32u.dll`, and the model gained raw input:
+
+- **Window state and tree** (`win32k/w32k_win.c`): show and enable state, `GetWindow` relations, a desktop pseudo window
+  (class `#32769`, never listed or destroyable), class values, z-order, `EnumWindows` and `EnumChildWindows` (snapshotted, so a
+  callback may destroy windows), hit test, update-region helpers, the cursor display counter and `GetMessageTime`/`GetMessagePos`.
+- **Model-free logic** (`user32_pure.h`, host-tested): RECT arithmetic, `AdjustWindowRectEx` (a Windows 10 caption window grows
+  8 on the sides and bottom and 31 on top), the Windows 10 system colours, case mapping for ASCII, Latin-1, Greek and Cyrillic,
+  and the US layout tables behind `MapVirtualKey`, `VkKeyScan`, `ToUnicode` and `GetKeyNameText`.
+- **Raw input** (`win32k/w32k_rawinput.c`): `RegisterRawInputDevices` for the mouse (1/2) and keyboard (1/6), `WM_INPUT` to the
+  registered window with RIM_INPUT or, with `RIDEV_INPUTSINK`, RIM_INPUTSINK, `RIDEV_NOLEGACY` suppressing the legacy messages,
+  and the x64 RAWINPUT byte layout (mouse 48 bytes, keyboard 40). Evdev relative motion reaches raw input unclamped, even at the
+  screen edge. `GetRawInputData`, `GetRawInputDeviceList` and `GetRawInputDeviceInfoW` forward to it.
+- **Honest stubs**: `MessageBoxW` shows nothing and returns the affirmative button; `LoadStringW` returns 0 with
+  `ERROR_RESOURCE_NAME_NOT_FOUND` until module resources can be read; window regions and layered attributes are accepted and have no effect.
+- **Limits**: one update region per window, no menus, no owner windows, no `SetParent`, the window model still runs on the loading
+  thread's queue unless the call binds the thread (the message functions do).
+

@@ -97,7 +97,7 @@ static void run_mouse_ll(uint32_t msg, int32_t x, int32_t y, w32k_handle desk, i
     *blocked = w32k_run_hooks(W32K_WH_MOUSE_LL, (int)msg, (uintptr_t)msg, (intptr_t)&info, desk);
 }
 
-void w32k_inject_mouse_move(int32_t x, int32_t y)
+static void mouse_move_impl(int32_t x, int32_t y, int raw)
 {
     w32k_station *s = main_station();
     w32k_desktop *d = s ? w32k_desktop_of(s->active_desktop) : NULL;
@@ -109,11 +109,18 @@ void w32k_inject_mouse_move(int32_t x, int32_t y)
     run_mouse_ll(W32K_WM_MOUSEMOVE, x, y, s->active_desktop, &blocked);
     if (blocked)
         return;
+    if (raw && (x != s->cursor_x || y != s->cursor_y))
+        w32k_inject_raw_mouse(x - s->cursor_x, y - s->cursor_y, 0, 0);
     s->cursor_x = x;
     s->cursor_y = y;
     target = mouse_target(d, x, y);
-    if (target)
+    if (target && !w32k_raw_nolegacy(0))
         post_mouse(target, W32K_WM_MOUSEMOVE, mouse_key_state(s), x, y, 0);
+}
+
+void w32k_inject_mouse_move(int32_t x, int32_t y)
+{
+    mouse_move_impl(x, y, 1);
 }
 
 void w32k_inject_mouse_button(uint32_t vk, int down, int32_t x, int32_t y)
@@ -155,8 +162,13 @@ void w32k_inject_mouse_button(uint32_t vk, int down, int32_t x, int32_t y)
     s->key_down[vk] = (uint8_t)(down != 0);
     if (down)
         s->key_pressed[vk] = 1;
+    {
+        /* RI_MOUSE_*_BUTTON_DOWN is 1, 4 or 0x10 for the left, right and middle buttons; UP is twice that. */
+        uint16_t rf = vk == W32K_VK_LBUTTON ? 1u : vk == W32K_VK_RBUTTON ? 4u : 0x10u;
+        w32k_inject_raw_mouse(0, 0, (uint16_t)(down ? rf : rf << 1), 0);
+    }
     target = mouse_target(d, x, y);
-    if (target)
+    if (target && !w32k_raw_nolegacy(0))
         post_mouse(target, msg, mouse_key_state(s), x, y, 0);
 }
 
@@ -173,8 +185,9 @@ void w32k_inject_wheel(int32_t delta, int32_t x, int32_t y)
     run_mouse_ll(W32K_WM_MOUSEWHEEL, x, y, s->active_desktop, &blocked);
     if (blocked)
         return;
+    w32k_inject_raw_mouse(0, 0, W32K_RI_MOUSE_WHEEL, (int16_t)delta);
     target = mouse_target(d, x, y);
-    if (!target)
+    if (!target || w32k_raw_nolegacy(0))
         return;
     wp = (uintptr_t)(((uint32_t)(uint16_t)(int16_t)delta << 16) | mouse_key_state(s));
     post_mouse(target, W32K_WM_MOUSEWHEEL, wp, x, y, 1);
@@ -213,6 +226,9 @@ void w32k_inject_key(uint32_t vk, uint32_t scan, int down)
     } else {
         s->key_down[vk] = 0;
     }
+    w32k_inject_raw_key((uint16_t)scan, (uint16_t)vk, down != 0, 0);
+    if (w32k_raw_nolegacy(1))
+        return;
     fq = NULL;
     if (d->foreground) {
         w32k_window *fw = w32k_window_checked(d->foreground);
@@ -319,7 +335,9 @@ size_t w32k_evdev_feed(const uint8_t *buf, size_t len)
             break;
         case W32K_EV_SYN:
             if (ev.code == W32K_SYN_REPORT && s && (evdev_rel_dx || evdev_rel_dy)) {
-                w32k_inject_mouse_move(s->cursor_x + evdev_rel_dx, s->cursor_y + evdev_rel_dy);
+                /* Raw input reports the motion as it came, even where the cursor is clamped. */
+                w32k_inject_raw_mouse(evdev_rel_dx, evdev_rel_dy, 0, 0);
+                mouse_move_impl(s->cursor_x + evdev_rel_dx, s->cursor_y + evdev_rel_dy, 0);
                 evdev_rel_dx = 0;
                 evdev_rel_dy = 0;
             }
@@ -338,6 +356,7 @@ void w32k_input_init(void)
     w32k_station *s = main_station();
     evdev_rel_dx = 0;
     evdev_rel_dy = 0;
+    w32k_rawinput_reset();
     if (s) {
         s->clip_pool = clip_pool_storage;
         s->clip_pool_used = 0;

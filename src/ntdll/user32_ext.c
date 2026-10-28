@@ -1161,6 +1161,194 @@ BOOL_T IsCharLowerW(uint16_t c)
     return u32p_wupper(c) != c;
 }
 
+/* ---- Raw input ---------------------------------------------------------------------------- */
+
+#define RID_HEADER 0x10000005u
+#define RID_INPUT 0x10000003u
+#define RIDI_PREPARSEDDATA 0x20000005u
+#define RIDI_DEVICENAME 0x20000007u
+#define RIDI_DEVICEINFO 0x2000000Bu
+#define ERROR_INSUFFICIENT_BUFFER_CODE 122
+
+/* RAWINPUTDEVICE has the layout of w32k_rid_dev: USHORT, USHORT, DWORD, HWND. */
+typedef char rawinputdevice_layout[(sizeof(w32k_rid_dev) == 16 && offsetof(w32k_rid_dev, flags) == 4 &&
+                                    offsetof(w32k_rid_dev, target) == 8) ? 1 : -1];
+
+BOOL_T RegisterRawInputDevices(const w32k_rid_dev *devs, uint32_t n, uint32_t cb)
+{
+    if (cb != sizeof(w32k_rid_dev)) {
+        w32k_set_last_error(W32K_ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    return w32k_register_raw_input(devs, n);
+}
+
+uint32_t GetRegisteredRawInputDevices(w32k_rid_dev *out, uint32_t *num, uint32_t cb)
+{
+    uint32_t have;
+    if (!num || cb != sizeof(w32k_rid_dev)) {
+        w32k_set_last_error(W32K_ERROR_INVALID_PARAMETER);
+        return (uint32_t)-1;
+    }
+    have = w32k_get_registered_raw_input(NULL, 0);
+    if (!out) {
+        *num = have;
+        return 0;
+    }
+    if (*num < have) {
+        *num = have;
+        w32k_set_last_error(ERROR_INSUFFICIENT_BUFFER_CODE);
+        return (uint32_t)-1;
+    }
+    w32k_get_registered_raw_input(out, have);
+    return have;
+}
+
+static void copy_bytes(void *dst, const void *src, size_t n)
+{
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s2 = (const uint8_t *)src;
+    while (n--)
+        *d++ = *s2++;
+}
+
+uint32_t GetRawInputData(uintptr_t hri, uint32_t cmd, void *data, uint32_t *size, uint32_t cb_header)
+{
+    uint32_t total = 0, want;
+    const uint8_t *b;
+    if (!size || cb_header != W32K_RAWINPUT_HEADER_SIZE || (cmd != RID_INPUT && cmd != RID_HEADER)) {
+        w32k_set_last_error(W32K_ERROR_INVALID_PARAMETER);
+        return (uint32_t)-1;
+    }
+    b = w32k_raw_input_bytes(hri, &total);
+    if (!b) {
+        w32k_set_last_error(W32K_ERROR_INVALID_HANDLE);
+        return (uint32_t)-1;
+    }
+    want = cmd == RID_INPUT ? total : W32K_RAWINPUT_HEADER_SIZE;
+    if (!data) {
+        *size = want;
+        return 0;
+    }
+    if (*size < want) {
+        *size = want;
+        w32k_set_last_error(ERROR_INSUFFICIENT_BUFFER_CODE);
+        return (uint32_t)-1;
+    }
+    copy_bytes(data, b, want);
+    return want;
+}
+
+uint32_t GetRawInputBuffer(void *data, uint32_t *size, uint32_t cb_header)
+{
+    (void)data;
+    (void)cb_header;
+    if (size)
+        *size = 0;
+    return 0; /* WM_INPUT is delivered through the queue; there is no buffered stream */
+}
+
+intptr_t DefRawInputProc(void *raw, int32_t n, uint32_t cb_header)
+{
+    (void)raw;
+    (void)n;
+    (void)cb_header;
+    return 0;
+}
+
+/* RAWINPUTDEVICELIST (16 bytes): HANDLE hDevice, DWORD dwType. */
+uint32_t GetRawInputDeviceList(void *list, uint32_t *num, uint32_t cb)
+{
+    if (!num || cb != 16) {
+        w32k_set_last_error(W32K_ERROR_INVALID_PARAMETER);
+        return (uint32_t)-1;
+    }
+    if (!list) {
+        *num = 2;
+        return 0;
+    }
+    if (*num < 2) {
+        *num = 2;
+        w32k_set_last_error(ERROR_INSUFFICIENT_BUFFER_CODE);
+        return (uint32_t)-1;
+    }
+    zero_bytes(list, 32);
+    put64(list, 0, W32K_RAW_MOUSE_DEVICE);
+    put32(list, 8, W32K_RIM_TYPEMOUSE);
+    put64(list, 16, W32K_RAW_KEYBOARD_DEVICE);
+    put32(list, 24, W32K_RIM_TYPEKEYBOARD);
+    return 2;
+}
+
+/* RID_DEVICE_INFO (32 bytes): cbSize, dwType, then a mouse or keyboard record. */
+int32_t GetRawInputDeviceInfoW(uintptr_t dev, uint32_t cmd, void *data, uint32_t *size)
+{
+    static const char mouse_name[] = "\\\\?\\HID#VID_0000&PID_0001#0&0&0000#{378de44c-56ef-11d1-bc8c-00a0c91405dd}";
+    static const char kbd_name[] = "\\\\?\\HID#VID_0000&PID_0002#0&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+    const char *name;
+    uint32_t n = 0;
+    int keyboard;
+    if (!size || (dev != W32K_RAW_MOUSE_DEVICE && dev != W32K_RAW_KEYBOARD_DEVICE)) {
+        w32k_set_last_error(W32K_ERROR_INVALID_HANDLE);
+        return -1;
+    }
+    keyboard = dev == W32K_RAW_KEYBOARD_DEVICE;
+    switch (cmd) {
+    case RIDI_DEVICENAME:
+        name = keyboard ? kbd_name : mouse_name;
+        while (name[n])
+            ++n;
+        ++n; /* the size counts characters, including the terminator */
+        if (!data) {
+            *size = n;
+            return 0;
+        }
+        if (*size < n) {
+            *size = n;
+            w32k_set_last_error(ERROR_INSUFFICIENT_BUFFER_CODE);
+            return -1;
+        }
+        put_wstr(data, 0, name, n);
+        return (int32_t)n;
+    case RIDI_DEVICEINFO:
+        if (!data) {
+            *size = 32;
+            return 0;
+        }
+        if (*size < 32) {
+            *size = 32;
+            w32k_set_last_error(ERROR_INSUFFICIENT_BUFFER_CODE);
+            return -1;
+        }
+        zero_bytes(data, 32);
+        put32(data, 0, 32);
+        put32(data, 4, keyboard ? W32K_RIM_TYPEKEYBOARD : W32K_RIM_TYPEMOUSE);
+        if (keyboard) { /* type 4 (enhanced), subtype 0, scan code set 1, 12 function keys, 3 LEDs, 101 keys */
+            put32(data, 8, 4);
+            put32(data, 12, 0);
+            put32(data, 16, 1);
+            put32(data, 20, 12);
+            put32(data, 24, 3);
+            put32(data, 28, 101);
+        } else { /* id, 5 buttons, 1000 Hz, no horizontal wheel */
+            put32(data, 8, 1);
+            put32(data, 12, 5);
+            put32(data, 16, 1000);
+            put32(data, 20, 0);
+        }
+        return 32;
+    case RIDI_PREPARSEDDATA:
+        if (!data) {
+            *size = 0;
+            return 0;
+        }
+        return 0;
+    default:
+        w32k_set_last_error(W32K_ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+}
+
 /* ---- Honest stubs ----------------------------------------------------------------------- */
 
 BOOL_T SetLayeredWindowAttributes(uintptr_t hwnd, uint32_t key, uint8_t alpha, uint32_t flags)

@@ -183,3 +183,10 @@ EXPORTS
     SetWindowRgn
     MessageBoxW
     LoadStringW
+    RegisterRawInputDevices
+    GetRegisteredRawInputDevices
+    GetRawInputData
+    GetRawInputBuffer
+    DefRawInputProc
+    GetRawInputDeviceList
+    GetRawInputDeviceInfoW

@@ -35,6 +35,7 @@
 #   test_w32k_sys         win32k model: clipboard, metrics, monitors, display settings, stations, cursors
 #   test_w32k_gdi         win32k model: DC, surfaces, blits, stock and selectable objects, arena
 #   test_w32k_win         window state and tree queries: show and enable state, GetWindow, desktop window, class names, enumeration
+#   test_w32k_rawinput    raw input: registration, WM_INPUT delivery, RAWINPUT layout, legacy suppression
 #   test_w32k_clip        clipboard text conversions (CF_TEXT, CF_UNICODETEXT, CF_OEMTEXT) and synthesis
 #
 # SANITIZE=auto (default) enables -fsanitize=address,undefined only when a
@@ -101,7 +102,7 @@ CPPFLAGS := -I$(SRC) -I$(LOADER) -I$(W32K)
 # defined before the first system header, which minitest.h's stdio.h already is.
 CFLAGS   := -std=c11 -g $(OPT_LEVEL) -Wall -Wextra -Werror -D_GNU_SOURCE $(COV_FLAGS) $(SAN_FLAGS)
 
-TESTS    := test_ntstatus_to_dos test_advapi_pure test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure test_ldr_mapped_pure test_ldr_sched test_k32_module_pure test_k32_io_pure test_k32_file_pure test_k32_sync_pure test_k32_mm_pure test_k32_global_pure test_k32_thread_pure test_k32_find_pure test_k32_sys_pure test_k32_str_pure test_k32_env_pure test_w32k_window test_w32k_msg test_w32k_input test_w32k_sys test_w32k_gdi test_w32k_clip test_w32k_font test_w32k_region test_w32k_win test_user32_pure
+TESTS    := test_ntstatus_to_dos test_advapi_pure test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure test_ldr_mapped_pure test_ldr_sched test_k32_module_pure test_k32_io_pure test_k32_file_pure test_k32_sync_pure test_k32_mm_pure test_k32_global_pure test_k32_thread_pure test_k32_find_pure test_k32_sys_pure test_k32_str_pure test_k32_env_pure test_w32k_window test_w32k_msg test_w32k_input test_w32k_sys test_w32k_gdi test_w32k_clip test_w32k_font test_w32k_region test_w32k_win test_w32k_rawinput test_user32_pure
 TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 
 # test_pe_bounds is build-only on this host: Windows Application Control blocks
@@ -245,7 +246,7 @@ $(OUT)/test_runtime$(EXE_SUFFIX): $(OUT)/ntdll_runtime.o $(OUT)/test_runtime.o
 $(OUT)/ntdll_runtime.o: EXTRA_CFLAGS := -fno-builtin -fno-tree-loop-distribute-patterns -Wno-error=attributes
 
 # win32k model (src/ntdll/win32k): one object per source, shared by the w32k tests.
-W32K_SRCS := w32k_core.c w32k_msg.c w32k_input.c w32k_sys.c w32k_gdi.c w32k_clip.c w32k_font.c w32k_region.c w32k_win.c
+W32K_SRCS := w32k_core.c w32k_msg.c w32k_input.c w32k_sys.c w32k_gdi.c w32k_clip.c w32k_font.c w32k_region.c w32k_win.c w32k_rawinput.c
 W32K_OBJS := $(addprefix $(OUT)/,$(W32K_SRCS:.c=.o))
 $(OUT)/w32k_%.o: $(W32K)/w32k_%.c $(W32K)/w32k.h $(W32K)/w32k_int.h $(W32K)/w32k_evdev.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
