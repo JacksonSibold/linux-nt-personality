@@ -95,11 +95,6 @@ EXPORTS
     SetEvent
     WaitForSingleObject
     WaitForMultipleObjects
-    InitializeCriticalSection
-    EnterCriticalSection
-    LeaveCriticalSection
-    TryEnterCriticalSection
-    DeleteCriticalSection
     Sleep
     GetTickCount
     TlsGetValue
@@ -194,3 +189,36 @@ EXPORTS
     HeapWalk
     HeapSetInformation
     HeapQueryInformation
+    InitializeCriticalSection=ntdll.RtlInitializeCriticalSection
+    EnterCriticalSection=ntdll.RtlEnterCriticalSection
+    LeaveCriticalSection=ntdll.RtlLeaveCriticalSection
+    TryEnterCriticalSection=ntdll.RtlTryEnterCriticalSection
+    DeleteCriticalSection=ntdll.RtlDeleteCriticalSection
+    SetCriticalSectionSpinCount=ntdll.RtlSetCriticalSectionSpinCount
+    InitializeSRWLock=ntdll.RtlInitializeSRWLock
+    AcquireSRWLockExclusive=ntdll.RtlAcquireSRWLockExclusive
+    AcquireSRWLockShared=ntdll.RtlAcquireSRWLockShared
+    TryAcquireSRWLockExclusive=ntdll.RtlTryAcquireSRWLockExclusive
+    TryAcquireSRWLockShared=ntdll.RtlTryAcquireSRWLockShared
+    ReleaseSRWLockExclusive=ntdll.RtlReleaseSRWLockExclusive
+    ReleaseSRWLockShared=ntdll.RtlReleaseSRWLockShared
+    InitializeConditionVariable=ntdll.RtlInitializeConditionVariable
+    WakeConditionVariable=ntdll.RtlWakeConditionVariable
+    WakeAllConditionVariable=ntdll.RtlWakeAllConditionVariable
+    InitOnceInitialize=ntdll.RtlRunOnceInitialize
+    WakeByAddressSingle=ntdll.RtlWakeAddressSingle
+    WakeByAddressAll=ntdll.RtlWakeAddressAll
+    InitializeSListHead=ntdll.RtlInitializeSListHead
+    InterlockedPushEntrySList=ntdll.RtlInterlockedPushEntrySList
+    InterlockedPushListSListEx=ntdll.RtlInterlockedPushListSListEx
+    InterlockedPopEntrySList=ntdll.RtlInterlockedPopEntrySList
+    InterlockedFlushSList=ntdll.RtlInterlockedFlushSList
+    QueryDepthSList=ntdll.RtlQueryDepthSList
+    InitializeCriticalSectionAndSpinCount
+    InitializeCriticalSectionEx
+    SleepConditionVariableCS
+    SleepConditionVariableSRW
+    InitOnceBeginInitialize
+    InitOnceComplete
+    InitOnceExecuteOnce
+    WaitOnAddress

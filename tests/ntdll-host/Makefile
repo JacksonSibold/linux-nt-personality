@@ -29,6 +29,7 @@
 #   test_user32_pure      RECT arithmetic, AdjustWindowRectEx, system colours, case mapping, US key tables (user32_pure.h)
 #   test_k32_time_pure    FILETIME and SYSTEMTIME conversion, time zone rules, date and time formats (k32_time_pure.h)
 #   test_rtl_heap_pure    the heap manager: alloc, free, coalescing, realloc, segments, validation, stress, threads (rtl_heap_pure.h)
+#   test_rtl_sync_pure    parking lot, SRW locks, condition variables, WaitOnAddress, InitOnce, SLists (rtl_sync_pure.h)
 #   test_k32_str_pure     UTF-8 and Windows-1252 conversions, buffer sizes, default character (k32_str_pure.h)
 #   test_k32_env_pure     environment block length, lookup, set/delete build, %NAME% expansion (k32_env_pure.h)
 #   test_w32k_window      win32k model: classes, window lifecycle, properties, create/destroy message order
@@ -181,6 +182,9 @@ $(OUT)/test_k32_time_pure$(EXE_SUFFIX): test_k32_time_pure.c minitest.h $(SRC)/k
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
 
 $(OUT)/test_rtl_heap_pure$(EXE_SUFFIX): test_rtl_heap_pure.c minitest.h $(SRC)/rtl_heap_pure.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS) -pthread
+
+$(OUT)/test_rtl_sync_pure$(EXE_SUFFIX): test_rtl_sync_pure.c minitest.h $(SRC)/rtl_sync_pure.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS) -pthread
 
 $(OUT)/test_k32_str_pure$(EXE_SUFFIX): test_k32_str_pure.c minitest.h $(SRC)/k32_str_pure.h $(SRC)/nt_types.h | $(OUT)
