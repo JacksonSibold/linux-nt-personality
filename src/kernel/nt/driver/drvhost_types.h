@@ -4,10 +4,13 @@
  * drvhost_ntos.h.  The structure layouts below follow the x64 WDK definitions
  * that drivers touch directly (DRIVER_OBJECT, DEVICE_OBJECT, IRP,
  * IO_STACK_LOCATION, FILE_OBJECT, KDPC, KEVENT, FAST_MUTEX).  The layouts were
- * written from the public WDK headers as remembered by the author and are pinned
- * by the _Static_asserts at the end of this file.  They have NOT been checked
- * against the WDK headers on this machine (none is installed), so treat a
- * vendor-driver run as the first real verification; see
+ * first written from the public WDK headers as remembered by the author. They are
+ * now checked mechanically: tests/kernel-drivers/layout compares the size and the
+ * field offsets of every structure listed in layout/layout_list.h with Wine's WDK
+ * headers (third_party/wine/include, which follow the Windows x64 definitions), and
+ * `make -C tests/kernel-drivers layout` fails on a difference. That check found and
+ * fixed KDPC, DEVICE_OBJECT, FILE_OBJECT, IRP and the IO_STACK_LOCATION parameter
+ * blocks. A vendor-driver run is still the first real verification of the rest; see
  * docs/status/DRIVERHOST-EXPORTS.md "Layout confidence".
  *
  * Every function a driver may call, and every function the host stores as a
@@ -336,12 +339,13 @@ struct _KDPC {
     UCHAR             Type;
     UCHAR             Importance;
     USHORT            Number;
-    SINGLE_LIST_ENTRY DpcListEntry;
-    PKDEFERRED_ROUTINE DeferredRoutine;
+    SINGLE_LIST_ENTRY DpcListEntry;    /* 0x08 */
+    ULONG_PTR         ProcessorHistory; /* 0x10 */
+    PKDEFERRED_ROUTINE DeferredRoutine; /* 0x18 */
     PVOID             DeferredContext;
     PVOID             SystemArgument1;
     PVOID             SystemArgument2;
-    ULONG_PTR        *DpcData;
+    PVOID             DpcData;
 };
 
 typedef struct _KTIMER {
@@ -418,6 +422,45 @@ struct _DRIVER_OBJECT {
     PDRIVER_DISPATCH MajorFunction[IRP_MJ_MAXIMUM_FUNCTION + 1]; /* 0x70 */
 };
 
+struct _WAIT_CONTEXT_BLOCK {
+    LIST_ENTRY      WaitQueueEntry_DeviceListEntry; /* KDEVICE_QUEUE_ENTRY: DeviceListEntry, SortKey, Inserted */
+    ULONG           WaitQueueEntry_SortKey;
+    BOOLEAN         WaitQueueEntry_Inserted;
+    PVOID           DeviceRoutine;
+    PVOID           DeviceContext;
+    ULONG           NumberOfMapRegisters;
+    PVOID           DeviceObject;
+    PVOID           CurrentIrp;
+    PKDPC           BufferChainingDpc;
+};
+typedef struct _WAIT_CONTEXT_BLOCK WAIT_CONTEXT_BLOCK;
+
+typedef struct _KDEVICE_QUEUE {
+    CSHORT          Type;
+    CSHORT          Size;
+    LIST_ENTRY      DeviceListHead;
+    KSPIN_LOCK      Lock;
+    BOOLEAN         Busy;
+} KDEVICE_QUEUE, *PKDEVICE_QUEUE;
+
+typedef struct _DEVOBJ_EXTENSION {
+    CSHORT          Type;              /* 0x00 */
+    USHORT          Size;              /* 0x02 */
+    PDEVICE_OBJECT  DeviceObject;      /* 0x08 */
+    ULONG           PowerFlags;        /* 0x10 */
+    PVOID           Dope;              /* 0x18 */
+    ULONG           ExtensionFlags;    /* 0x20 */
+    PVOID           DeviceNode;        /* 0x28 */
+    PDEVICE_OBJECT  AttachedTo;        /* 0x30 */
+    LONG            StartIoCount;      /* 0x38 */
+    LONG            StartIoKey;        /* 0x3C */
+    ULONG           StartIoFlags;      /* 0x40 */
+    PVPB            Vpb;               /* 0x48 */
+    PVOID           DependencyNode;    /* 0x50 */
+    PVOID           InterruptContext;  /* 0x58 */
+    LONG            VerifierContext;   /* 0x60 */
+} DEVOBJ_EXTENSION, *PDEVOBJ_EXTENSION;
+
 struct _DEVICE_OBJECT {
     CSHORT          Type;              /* 0x00 */
     USHORT          Size;              /* 0x02 */
@@ -433,11 +476,76 @@ struct _DEVICE_OBJECT {
     PVOID           DeviceExtension;   /* 0x40 */
     ULONG           DeviceType;        /* 0x48 */
     CCHAR           StackSize;         /* 0x4C */
-    UCHAR           Queue[0x28];       /* 0x50 (opaque here; IoStartPacket is not modelled) */
-    ULONG           AlignmentRequirement; /* 0x78 */
+    union {
+        LIST_ENTRY         ListEntry;
+        WAIT_CONTEXT_BLOCK Wcb;
+    } Queue;                           /* 0x50, 0x48 bytes */
+    ULONG           AlignmentRequirement; /* 0x98 */
+    KDEVICE_QUEUE   DeviceQueue;       /* 0xA0 */
+    KDPC            Dpc;               /* 0xC8 */
+    ULONG           ActiveThreadCount; /* 0x108 */
+    PVOID           SecurityDescriptor; /* 0x110 */
+    KEVENT          DeviceLock;        /* 0x118 */
+    USHORT          SectorSize;        /* 0x130 */
+    USHORT          Spare1;            /* 0x132 */
+    PDEVOBJ_EXTENSION DeviceObjectExtension; /* 0x138 */
+    PVOID           Reserved;          /* 0x140 */
 };
 
-struct _VPB { CSHORT Type; CSHORT Size; USHORT Flags; USHORT VolumeLabelLength; };
+struct _MDL {
+    struct _MDL *Next;                 /* 0x00 */
+    CSHORT      Size;                  /* 0x08 */
+    CSHORT      MdlFlags;              /* 0x0A */
+    PVOID       Process;               /* 0x10 */
+    PVOID       MappedSystemVa;        /* 0x18 */
+    PVOID       StartVa;               /* 0x20 */
+    ULONG       ByteCount;             /* 0x28 */
+    ULONG       ByteOffset;            /* 0x2C; the array of page frame numbers follows */
+};
+
+#define MDL_MAPPED_TO_SYSTEM_VA     0x0001
+#define MDL_PAGES_LOCKED            0x0002
+#define MDL_SOURCE_IS_NONPAGED_POOL 0x0004
+#define MDL_ALLOCATED_FIXED_SIZE    0x0008
+#define MDL_PARTIAL                 0x0010
+#define MDL_PARTIAL_HAS_BEEN_MAPPED 0x0020
+#define MDL_IO_PAGE_READ            0x0040
+#define MDL_WRITE_OPERATION         0x0080
+#define MDL_PARENT_MAPPED_SYSTEM_VA 0x0100
+#define MDL_FREE_EXTRA_PTES         0x0200
+#define MDL_DESCRIBES_AWE           0x0400
+#define MDL_IO_SPACE                0x0800
+#define MDL_NETWORK_HEADER          0x1000
+#define MDL_MAPPING_CAN_FAIL        0x2000
+#define MDL_ALLOCATED_MUST_SUCCEED  0x4000
+
+typedef ULONG_PTR PFN_NUMBER, *PPFN_NUMBER;
+#define PAGE_SIZE   4096ull
+#define PAGE_SHIFT  12
+#define BYTE_OFFSET(va)              ((ULONG)((ULONG_PTR)(va) & (PAGE_SIZE - 1)))
+#define PAGE_ALIGN(va)               ((PVOID)((ULONG_PTR)(va) & ~(PAGE_SIZE - 1)))
+#define ADDRESS_AND_SIZE_TO_SPAN_PAGES(va, size) \
+    ((ULONG)((((ULONG_PTR)(va) & (PAGE_SIZE - 1)) + (size) + (PAGE_SIZE - 1)) >> PAGE_SHIFT))
+#define MmGetMdlPfnArray(Mdl)        ((PPFN_NUMBER)((Mdl) + 1))
+#define MmGetMdlVirtualAddress(Mdl)  ((PVOID)((PCHAR)(Mdl)->StartVa + (Mdl)->ByteOffset))
+#define MmGetMdlByteCount(Mdl)       ((Mdl)->ByteCount)
+#define MmGetMdlByteOffset(Mdl)      ((Mdl)->ByteOffset)
+#define MmGetSystemAddressForMdlSafe(Mdl, Priority) \
+    (((Mdl)->MdlFlags & (MDL_MAPPED_TO_SYSTEM_VA | MDL_SOURCE_IS_NONPAGED_POOL)) \
+         ? (Mdl)->MappedSystemVa \
+         : MmMapLockedPagesSpecifyCache((Mdl), KernelMode, 1, NULL, 0, (Priority)))
+
+struct _VPB {
+    CSHORT          Type;
+    CSHORT          Size;
+    USHORT          Flags;
+    USHORT          VolumeLabelLength;
+    PDEVICE_OBJECT  DeviceObject;
+    PDEVICE_OBJECT  RealDevice;
+    ULONG           SerialNumber;
+    ULONG           ReferenceCount;
+    WCHAR           VolumeLabel[32];
+};
 
 struct _FILE_OBJECT {
     CSHORT          Type;              /* 0x00 */
@@ -460,6 +568,13 @@ struct _FILE_OBJECT {
     BOOLEAN         SharedDelete;      /* 0x4F */
     ULONG           Flags;             /* 0x50 */
     UNICODE_STRING  FileName;          /* 0x58 */
+    LARGE_INTEGER   CurrentByteOffset; /* 0x68 */
+    ULONG           Waiters;           /* 0x70 */
+    ULONG           Busy;              /* 0x74 */
+    PVOID           LastLock;          /* 0x78 */
+    KEVENT          Lock;              /* 0x80 */
+    KEVENT          Event;             /* 0x98 */
+    PVOID           CompletionContext; /* 0xB0 */
 };
 
 /* -------------------------------------------------------------------------- */
@@ -484,6 +599,7 @@ typedef struct _IRP_TAIL_OVERLAY {
         ULONG PacketType;
     };
     PFILE_OBJECT OriginalFileObject;
+    PVOID IrpExtension;
 } IRP_TAIL_OVERLAY;
 
 struct _IRP {
@@ -515,7 +631,7 @@ struct _IRP {
     PDRIVER_CANCEL CancelRoutine;      /* 0x68 */
     PVOID    UserBuffer;               /* 0x70 */
     union {
-        IRP_TAIL_OVERLAY Overlay;      /* 0x78; Tail.Overlay.CurrentStackLocation at 0xB8 */
+        IRP_TAIL_OVERLAY Overlay;      /* 0x78; Tail.Overlay.CurrentStackLocation at 0xB8; IrpExtension at 0xC8 */
         UCHAR  Apc[0x30];
         PVOID  CompletionKey;
     } Tail;
@@ -538,21 +654,21 @@ struct _IO_STACK_LOCATION {
         struct {                       /* IRP_MJ_CREATE */
             PVOID  SecurityContext;
             ULONG  Options;
-            USHORT FileAttributes;
+            _Alignas(8) USHORT FileAttributes;
             USHORT ShareAccess;
-            ULONG  EaLength;
+            _Alignas(8) ULONG  EaLength;
         } Create;
         struct {                       /* IRP_MJ_READ / IRP_MJ_WRITE */
             ULONG  Length;
-            ULONG  Key;
+            _Alignas(8) ULONG  Key;
             ULONG  Flags;
             LARGE_INTEGER ByteOffset;
         } Read, Write;
         struct {                       /* IRP_MJ_POWER */
             ULONG  SystemContext;
-            POWER_STATE_TYPE Type;
-            DEVICE_POWER_STATE State;
-            ULONG  ShutdownType;
+            _Alignas(8) POWER_STATE_TYPE Type;
+            _Alignas(8) DEVICE_POWER_STATE State;
+            _Alignas(8) ULONG  ShutdownType;
         } Power;
         struct {                       /* IRP_MJ_PNP QUERY_DEVICE_RELATIONS */
             DEVICE_RELATION_TYPE Type;
@@ -602,6 +718,128 @@ static inline void IoMarkIrpPending(PIRP Irp)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Mutexes, semaphores, resources, lookaside lists (drvhost_sync.c)           */
+/* -------------------------------------------------------------------------- */
+#define DISPATCHER_MUTANT_OBJECT        2
+#define DISPATCHER_SEMAPHORE_OBJECT     5
+#define DISPATCHER_GATE_OBJECT          7
+
+typedef struct _KMUTANT {
+    DISPATCHER_HEADER Header;          /* 0x00 */
+    LIST_ENTRY MutantListEntry;        /* 0x18 */
+    PVOID      OwnerThread;            /* 0x28 */
+    BOOLEAN    Abandoned;              /* 0x30 */
+    UCHAR      ApcDisable;             /* 0x31 */
+} KMUTANT, *PKMUTANT, KMUTEX, *PKMUTEX;
+
+typedef struct _KSEMAPHORE {
+    DISPATCHER_HEADER Header;
+    LONG       Limit;
+} KSEMAPHORE, *PKSEMAPHORE;
+
+typedef struct _KGUARDED_MUTEX {
+    LONG       Count;
+    PVOID      Owner;
+    ULONG      Contention;
+    KEVENT     Event;
+    union {
+        struct { SHORT KernelApcDisable; SHORT SpecialApcDisable; };
+        ULONG CombinedApcDisable;
+    };
+} KGUARDED_MUTEX, *PKGUARDED_MUTEX;
+
+typedef struct _KWAIT_BLOCK {
+    LIST_ENTRY WaitListEntry;
+    PVOID      Thread;
+    PVOID      Object;
+    struct _KWAIT_BLOCK *NextWaitBlock;
+    USHORT     WaitKey;
+    USHORT     WaitType;
+} KWAIT_BLOCK, *PKWAIT_BLOCK;
+
+typedef enum _WAIT_TYPE { WaitAll = 0, WaitAny = 1 } WAIT_TYPE;
+
+#define MAXIMUM_WAIT_OBJECTS     64
+#define THREAD_WAIT_OBJECTS      3
+#define STATUS_WAIT_0            ((NTSTATUS)0x00000000)
+#define STATUS_ABANDONED_WAIT_0  ((NTSTATUS)0x00000080)
+#define STATUS_SEMAPHORE_LIMIT_EXCEEDED ((NTSTATUS)0xC0000047)
+#define STATUS_MUTANT_NOT_OWNED  ((NTSTATUS)0xC0000046)
+#define STATUS_MUTANT_LIMIT_EXCEEDED ((NTSTATUS)0xC0000191)
+
+typedef ULONG_PTR ERESOURCE_THREAD, *PERESOURCE_THREAD;
+
+typedef struct _OWNER_ENTRY {
+    ERESOURCE_THREAD OwnerThread;
+    union {
+        struct {
+            ULONG IoPriorityBoosted : 1;
+            ULONG OwnerReferenced : 1;
+            ULONG IoQoSPriorityBoosted : 1;
+            ULONG OwnerCount : 29;
+        };
+        ULONG TableSize;
+    };
+} OWNER_ENTRY, *POWNER_ENTRY;
+
+#define ResourceNeverExclusive       0x0010
+#define ResourceReleaseByOtherThread 0x0020
+#define ResourceOwnedExclusive       0x0080
+
+typedef struct _ERESOURCE {
+    LIST_ENTRY SystemResourcesList;    /* 0x00 */
+    POWNER_ENTRY OwnerTable;           /* 0x10 */
+    SHORT      ActiveCount;            /* 0x18 */
+    USHORT     Flag;                   /* 0x1A */
+    PKSEMAPHORE SharedWaiters;         /* 0x20 */
+    PKEVENT    ExclusiveWaiters;       /* 0x28 */
+    OWNER_ENTRY OwnerEntry;            /* 0x30 */
+    ULONG      ActiveEntries;          /* 0x40 */
+    ULONG      ContentionCount;        /* 0x44 */
+    ULONG      NumberOfSharedWaiters;  /* 0x48 */
+    ULONG      NumberOfExclusiveWaiters; /* 0x4C */
+    PVOID      Reserved2;              /* 0x50 */
+    PVOID      Address;                /* 0x58 */
+    KSPIN_LOCK SpinLock;               /* 0x60 */
+} ERESOURCE, *PERESOURCE;
+
+/* Sequenced singly linked list. x64 layout: Alignment holds the depth in its low 16 bits (what the WDK's inline
+ * ExQueryDepthSList reads) and a sequence number above; Region holds the address of the first entry. */
+typedef struct _SLIST_ENTRY {
+    struct _SLIST_ENTRY *Next;
+} SLIST_ENTRY, *PSLIST_ENTRY;
+
+typedef struct _SLIST_HEADER {
+    _Alignas(16) ULONGLONG Alignment;
+    ULONGLONG  Region;
+} SLIST_HEADER, *PSLIST_HEADER;
+
+typedef PVOID (DRVCALL *PALLOCATE_FUNCTION)(POOL_TYPE PoolType, SIZE_T NumberOfBytes, ULONG Tag);
+typedef void  (DRVCALL *PFREE_FUNCTION)(PVOID Buffer);
+
+typedef struct _GENERAL_LOOKASIDE {
+    _Alignas(64) SLIST_HEADER ListHead; /* 0x00 */
+    USHORT     Depth;                  /* 0x10 */
+    USHORT     MaximumDepth;           /* 0x12 */
+    ULONG      TotalAllocates;         /* 0x14 */
+    union { ULONG AllocateMisses; ULONG AllocateHits; };  /* 0x18 */
+    ULONG      TotalFrees;             /* 0x1C */
+    union { ULONG FreeMisses; ULONG FreeHits; };          /* 0x20 */
+    POOL_TYPE  Type;                   /* 0x24 */
+    ULONG      Tag;                    /* 0x28 */
+    ULONG      Size;                   /* 0x2C */
+    union { PALLOCATE_FUNCTION Allocate; PVOID AllocateEx; }; /* 0x30 */
+    union { PFREE_FUNCTION Free; PVOID FreeEx; };             /* 0x38 */
+    LIST_ENTRY ListEntry;              /* 0x40 */
+    ULONG      LastTotalAllocates;     /* 0x50 */
+    union { ULONG LastAllocateMisses; ULONG LastAllocateHits; }; /* 0x54 */
+    ULONG      Future[2];              /* 0x58 */
+} GENERAL_LOOKASIDE, *PGENERAL_LOOKASIDE;
+
+typedef struct _NPAGED_LOOKASIDE_LIST { GENERAL_LOOKASIDE L; } NPAGED_LOOKASIDE_LIST, *PNPAGED_LOOKASIDE_LIST;
+typedef struct _PAGED_LOOKASIDE_LIST  { GENERAL_LOOKASIDE L; } PAGED_LOOKASIDE_LIST,  *PPAGED_LOOKASIDE_LIST;
+
+/* -------------------------------------------------------------------------- */
 /* Layout pins (see the file comment).  A failed assert means the layout here  */
 /* drifted from the x64 WDK definition this file was written against.         */
 /* -------------------------------------------------------------------------- */
@@ -628,7 +866,19 @@ _Static_assert(offsetof(IO_STACK_LOCATION, Parameters.DeviceIoControl.Type3Input
 _Static_assert(offsetof(FILE_OBJECT, FsContext) == 0x18, "FILE_OBJECT.FsContext");
 _Static_assert(offsetof(FILE_OBJECT, FileName) == 0x58, "FILE_OBJECT.FileName");
 _Static_assert(sizeof(KEVENT) == 0x18, "KEVENT size");
-_Static_assert(offsetof(KDPC, DeferredRoutine) == 0x10, "KDPC.DeferredRoutine");
-_Static_assert(offsetof(KDPC, SystemArgument2) == 0x28, "KDPC.SystemArgument2");
+_Static_assert(offsetof(KDPC, DeferredRoutine) == 0x18, "KDPC.DeferredRoutine");
+_Static_assert(offsetof(KDPC, SystemArgument2) == 0x30, "KDPC.SystemArgument2");
+_Static_assert(sizeof(KDPC) == 0x40, "KDPC size");
+_Static_assert(sizeof(DEVICE_OBJECT) == 0x148, "DEVICE_OBJECT size");
+_Static_assert(offsetof(DEVICE_OBJECT, DeviceLock) == 0x118, "DEVICE_OBJECT.DeviceLock");
+_Static_assert(sizeof(FILE_OBJECT) == 0xB8, "FILE_OBJECT size");
+_Static_assert(sizeof(IRP) == 0xD0, "IRP size");
+
+_Static_assert(sizeof(KMUTANT) == 0x38, "KMUTANT size");
+_Static_assert(sizeof(KSEMAPHORE) == 0x20, "KSEMAPHORE size");
+_Static_assert(sizeof(KGUARDED_MUTEX) == 0x38, "KGUARDED_MUTEX size");
+_Static_assert(sizeof(ERESOURCE) == 0x68, "ERESOURCE size");
+_Static_assert(sizeof(SLIST_HEADER) == 0x10, "SLIST_HEADER size");
+_Static_assert(sizeof(GENERAL_LOOKASIDE) == 0x80, "GENERAL_LOOKASIDE size");
 
 #endif /* DRVHOST_TYPES_H */

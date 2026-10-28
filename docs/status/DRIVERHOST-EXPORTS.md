@@ -12,19 +12,19 @@ DbgPrint names every unresolved import, so one attempt lists them all.
 ## Summary
 
 - Ranked names in the manifest: 342
-- Ranked and implemented: 92 (26.9%)
-- Ranked and missing: 250
-- Implemented exports in total: 102
-- Implemented but not in the ranking: 10
+- Ranked and implemented: 119 (34.8%)
+- Ranked and missing: 223
+- Implemented exports in total: 165
+- Implemented but not in the ranking: 46
 
 Per tier (1 = needed by almost every driver, 4 = niche):
 
 | Tier | Ranked | Implemented | Missing |
 |-----:|-------:|------------:|--------:|
 | 1 | 38 | 38 | 0 |
-| 2 | 141 | 53 | 88 |
-| 3 | 119 | 1 | 118 |
-| 4 | 44 | 0 | 44 |
+| 2 | 141 | 70 | 71 |
+| 3 | 119 | 6 | 113 |
+| 4 | 44 | 5 | 39 |
 
 ## Ranked surface
 
@@ -143,25 +143,25 @@ a driver corpus.
 | 107 | 2 | ntoskrnl.exe | `memcmp` | implemented | `drv_memcmp` |
 | 108 | 2 | ntoskrnl.exe | `strlen` | implemented | `drv_strlen` |
 | 109 | 2 | ntoskrnl.exe | `wcslen` | implemented | `drv_wcslen` |
-| 110 | 2 | ntoskrnl.exe | `KeInitializeMutex` | missing |  |
-| 111 | 2 | ntoskrnl.exe | `KeReleaseMutex` | missing |  |
-| 112 | 2 | ntoskrnl.exe | `KeInitializeSemaphore` | missing |  |
-| 113 | 2 | ntoskrnl.exe | `KeReleaseSemaphore` | missing |  |
-| 114 | 2 | ntoskrnl.exe | `KeWaitForMultipleObjects` | missing |  |
-| 115 | 2 | ntoskrnl.exe | `KeInitializeGuardedMutex` | missing |  |
-| 116 | 2 | ntoskrnl.exe | `KeAcquireGuardedMutex` | missing |  |
-| 117 | 2 | ntoskrnl.exe | `KeReleaseGuardedMutex` | missing |  |
-| 118 | 2 | ntoskrnl.exe | `KeEnterCriticalRegion` | missing |  |
-| 119 | 2 | ntoskrnl.exe | `KeLeaveCriticalRegion` | missing |  |
-| 120 | 2 | ntoskrnl.exe | `ExInitializeNPagedLookasideList` | missing |  |
-| 121 | 2 | ntoskrnl.exe | `ExDeleteNPagedLookasideList` | missing |  |
+| 110 | 2 | ntoskrnl.exe | `KeInitializeMutex` | implemented | `KeInitializeMutex` |
+| 111 | 2 | ntoskrnl.exe | `KeReleaseMutex` | implemented | `KeReleaseMutex` |
+| 112 | 2 | ntoskrnl.exe | `KeInitializeSemaphore` | implemented | `KeInitializeSemaphore` |
+| 113 | 2 | ntoskrnl.exe | `KeReleaseSemaphore` | implemented | `KeReleaseSemaphore` |
+| 114 | 2 | ntoskrnl.exe | `KeWaitForMultipleObjects` | implemented | `KeWaitForMultipleObjects` |
+| 115 | 2 | ntoskrnl.exe | `KeInitializeGuardedMutex` | implemented | `KeInitializeGuardedMutex` |
+| 116 | 2 | ntoskrnl.exe | `KeAcquireGuardedMutex` | implemented | `KeAcquireGuardedMutex` |
+| 117 | 2 | ntoskrnl.exe | `KeReleaseGuardedMutex` | implemented | `KeReleaseGuardedMutex` |
+| 118 | 2 | ntoskrnl.exe | `KeEnterCriticalRegion` | implemented | `KeEnterCriticalRegion` |
+| 119 | 2 | ntoskrnl.exe | `KeLeaveCriticalRegion` | implemented | `KeLeaveCriticalRegion` |
+| 120 | 2 | ntoskrnl.exe | `ExInitializeNPagedLookasideList` | implemented | `ExInitializeNPagedLookasideList` |
+| 121 | 2 | ntoskrnl.exe | `ExDeleteNPagedLookasideList` | implemented | `ExDeleteNPagedLookasideList` |
 | 122 | 2 | ntoskrnl.exe | `ExAllocateFromNPagedLookasideList` | missing |  |
 | 123 | 2 | ntoskrnl.exe | `ExFreeToNPagedLookasideList` | missing |  |
-| 124 | 2 | ntoskrnl.exe | `ExInitializeResourceLite` | missing |  |
-| 125 | 2 | ntoskrnl.exe | `ExAcquireResourceExclusiveLite` | missing |  |
-| 126 | 2 | ntoskrnl.exe | `ExAcquireResourceSharedLite` | missing |  |
-| 127 | 2 | ntoskrnl.exe | `ExReleaseResourceLite` | missing |  |
-| 128 | 2 | ntoskrnl.exe | `ExDeleteResourceLite` | missing |  |
+| 124 | 2 | ntoskrnl.exe | `ExInitializeResourceLite` | implemented | `ExInitializeResourceLite` |
+| 125 | 2 | ntoskrnl.exe | `ExAcquireResourceExclusiveLite` | implemented | `ExAcquireResourceExclusiveLite` |
+| 126 | 2 | ntoskrnl.exe | `ExAcquireResourceSharedLite` | implemented | `ExAcquireResourceSharedLite` |
+| 127 | 2 | ntoskrnl.exe | `ExReleaseResourceLite` | implemented | `ExReleaseResourceLite` |
+| 128 | 2 | ntoskrnl.exe | `ExDeleteResourceLite` | implemented | `ExDeleteResourceLite` |
 | 129 | 2 | ntoskrnl.exe | `IoStartPacket` | missing |  |
 | 130 | 2 | ntoskrnl.exe | `IoStartNextPacket` | missing |  |
 | 131 | 2 | ntoskrnl.exe | `IoAcquireCancelSpinLock` | missing |  |
@@ -231,13 +231,13 @@ a driver corpus.
 | 195 | 3 | ntoskrnl.exe | `KeSetSystemAffinityThread` | missing |  |
 | 196 | 3 | ntoskrnl.exe | `KeRevertToUserAffinityThread` | missing |  |
 | 197 | 3 | ntoskrnl.exe | `KeGetProcessorNumberFromIndex` | missing |  |
-| 198 | 3 | ntoskrnl.exe | `KeInitializeDeviceQueue` | missing |  |
-| 199 | 3 | ntoskrnl.exe | `KeInsertDeviceQueue` | missing |  |
-| 200 | 3 | ntoskrnl.exe | `KeRemoveDeviceQueue` | missing |  |
-| 201 | 3 | ntoskrnl.exe | `ExInitializePagedLookasideList` | missing |  |
+| 198 | 3 | ntoskrnl.exe | `KeInitializeDeviceQueue` | implemented | `KeInitializeDeviceQueue` |
+| 199 | 3 | ntoskrnl.exe | `KeInsertDeviceQueue` | implemented | `KeInsertDeviceQueue` |
+| 200 | 3 | ntoskrnl.exe | `KeRemoveDeviceQueue` | implemented | `KeRemoveDeviceQueue` |
+| 201 | 3 | ntoskrnl.exe | `ExInitializePagedLookasideList` | implemented | `ExInitializePagedLookasideList` |
 | 202 | 3 | ntoskrnl.exe | `ExAllocateFromPagedLookasideList` | missing |  |
 | 203 | 3 | ntoskrnl.exe | `ExFreeToPagedLookasideList` | missing |  |
-| 204 | 3 | ntoskrnl.exe | `ExDeletePagedLookasideList` | missing |  |
+| 204 | 3 | ntoskrnl.exe | `ExDeletePagedLookasideList` | implemented | `ExDeletePagedLookasideList` |
 | 205 | 3 | ntoskrnl.exe | `ExAllocatePoolWithQuotaTag` | missing |  |
 | 206 | 3 | ntoskrnl.exe | `ExAllocatePoolWithTagPriority` | missing |  |
 | 207 | 3 | ntoskrnl.exe | `ExQueueWorkItem` | missing |  |
@@ -363,11 +363,11 @@ a driver corpus.
 | 327 | 4 | ntoskrnl.exe | `ObReleaseObjectSecurity` | missing |  |
 | 328 | 4 | ntoskrnl.exe | `ExAcquireFastMutexUnsafe` | missing |  |
 | 329 | 4 | ntoskrnl.exe | `ExReleaseFastMutexUnsafe` | missing |  |
-| 330 | 4 | ntoskrnl.exe | `ExInterlockedInsertHeadList` | missing |  |
-| 331 | 4 | ntoskrnl.exe | `ExInterlockedInsertTailList` | missing |  |
-| 332 | 4 | ntoskrnl.exe | `ExInterlockedRemoveHeadList` | missing |  |
-| 333 | 4 | ntoskrnl.exe | `ExInterlockedPopEntryList` | missing |  |
-| 334 | 4 | ntoskrnl.exe | `ExInterlockedPushEntryList` | missing |  |
+| 330 | 4 | ntoskrnl.exe | `ExInterlockedInsertHeadList` | implemented | `ExInterlockedInsertHeadList` |
+| 331 | 4 | ntoskrnl.exe | `ExInterlockedInsertTailList` | implemented | `ExInterlockedInsertTailList` |
+| 332 | 4 | ntoskrnl.exe | `ExInterlockedRemoveHeadList` | implemented | `ExInterlockedRemoveHeadList` |
+| 333 | 4 | ntoskrnl.exe | `ExInterlockedPopEntryList` | implemented | `ExInterlockedPopEntryList` |
+| 334 | 4 | ntoskrnl.exe | `ExInterlockedPushEntryList` | implemented | `ExInterlockedPushEntryList` |
 | 335 | 4 | ntoskrnl.exe | `ExRegisterCallback` | missing |  |
 | 336 | 4 | ntoskrnl.exe | `ExUnregisterCallback` | missing |  |
 | 337 | 4 | ntoskrnl.exe | `ExNotifyCallback` | missing |  |
@@ -382,15 +382,51 @@ a driver corpus.
 | Module | Export | Host symbol |
 |--------|--------|-------------|
 | ntoskrnl.exe | `DbgBreakPoint` | `DbgBreakPoint` |
+| ntoskrnl.exe | `ExAcquireSharedStarveExclusive` | `ExAcquireSharedStarveExclusive` |
+| ntoskrnl.exe | `ExAcquireSharedWaitForExclusive` | `ExAcquireSharedWaitForExclusive` |
+| ntoskrnl.exe | `ExConvertExclusiveToSharedLite` | `ExConvertExclusiveToSharedLite` |
 | ntoskrnl.exe | `ExEventObjectType` | `ExEventObjectType` |
+| ntoskrnl.exe | `ExGetCurrentResourceThread` | `ExGetCurrentResourceThread` |
+| ntoskrnl.exe | `ExGetExclusiveWaiterCount` | `ExGetExclusiveWaiterCount` |
+| ntoskrnl.exe | `ExGetSharedWaiterCount` | `ExGetSharedWaiterCount` |
+| ntoskrnl.exe | `ExInterlockedFlushSList` | `ExInterlockedFlushSList` |
+| ntoskrnl.exe | `ExInterlockedPopEntrySList` | `ExInterlockedPopEntrySList` |
+| ntoskrnl.exe | `ExInterlockedPushEntrySList` | `ExInterlockedPushEntrySList` |
+| ntoskrnl.exe | `ExIsResourceAcquiredExclusiveLite` | `ExIsResourceAcquiredExclusiveLite` |
+| ntoskrnl.exe | `ExIsResourceAcquiredSharedLite` | `ExIsResourceAcquiredSharedLite` |
+| ntoskrnl.exe | `ExReinitializeResourceLite` | `ExReinitializeResourceLite` |
+| ntoskrnl.exe | `ExReleaseResourceForThreadLite` | `ExReleaseResourceForThreadLite` |
+| ntoskrnl.exe | `ExSetResourceOwnerPointer` | `ExSetResourceOwnerPointer` |
+| ntoskrnl.exe | `ExTryToAcquireResourceExclusiveLite` | `ExTryToAcquireResourceExclusiveLite` |
+| ntoskrnl.exe | `ExpInterlockedFlushSList` | `ExpInterlockedFlushSList` |
+| ntoskrnl.exe | `ExpInterlockedPopEntrySList` | `ExpInterlockedPopEntrySList` |
+| ntoskrnl.exe | `ExpInterlockedPushEntrySList` | `ExpInterlockedPushEntrySList` |
 | ntoskrnl.exe | `IoDeviceObjectType` | `IoDeviceObjectType` |
 | ntoskrnl.exe | `IoFileObjectType` | `IoFileObjectType` |
 | ntoskrnl.exe | `IoGetAttachedDevice` | `IoGetAttachedDevice` |
+| ntoskrnl.exe | `KeAcquireGuardedMutexUnsafe` | `KeAcquireGuardedMutexUnsafe` |
 | ntoskrnl.exe | `KeAcquireSpinLock` | `KeAcquireSpinLock` |
+| ntoskrnl.exe | `KeAreApcsDisabled` | `KeAreApcsDisabled` |
+| ntoskrnl.exe | `KeEnterGuardedRegion` | `KeEnterGuardedRegion` |
 | ntoskrnl.exe | `KeGetCurrentThread` | `KeGetCurrentThread` |
+| ntoskrnl.exe | `KeInsertByKeyDeviceQueue` | `KeInsertByKeyDeviceQueue` |
+| ntoskrnl.exe | `KeLeaveGuardedRegion` | `KeLeaveGuardedRegion` |
 | ntoskrnl.exe | `KeReadStateEvent` | `KeReadStateEvent` |
+| ntoskrnl.exe | `KeReadStateMutex` | `KeReadStateMutex` |
+| ntoskrnl.exe | `KeReadStateSemaphore` | `KeReadStateSemaphore` |
+| ntoskrnl.exe | `KeReleaseGuardedMutexUnsafe` | `KeReleaseGuardedMutexUnsafe` |
+| ntoskrnl.exe | `KeRemoveByKeyDeviceQueue` | `KeRemoveByKeyDeviceQueue` |
+| ntoskrnl.exe | `KeRemoveEntryDeviceQueue` | `KeRemoveEntryDeviceQueue` |
+| ntoskrnl.exe | `KeTryToAcquireGuardedMutex` | `KeTryToAcquireGuardedMutex` |
+| ntoskrnl.exe | `KeWaitForMutexObject` | `KeWaitForMutexObject` |
 | ntoskrnl.exe | `NtClose` | `NtClose` |
 | ntoskrnl.exe | `PsThreadType` | `PsThreadType` |
+| ntoskrnl.exe | `RtlFirstEntrySList` | `RtlFirstEntrySList` |
+| ntoskrnl.exe | `RtlInitializeSListHead` | `RtlInitializeSListHead` |
+| ntoskrnl.exe | `RtlInterlockedFlushSList` | `RtlInterlockedFlushSList` |
+| ntoskrnl.exe | `RtlInterlockedPopEntrySList` | `RtlInterlockedPopEntrySList` |
+| ntoskrnl.exe | `RtlInterlockedPushEntrySList` | `RtlInterlockedPushEntrySList` |
+| ntoskrnl.exe | `RtlQueryDepthSList` | `RtlQueryDepthSList` |
 
 ## Notes
 
@@ -408,11 +444,12 @@ a driver corpus.
 
 ## Layout confidence
 
-The x64 structure layouts that drivers touch directly (`DRIVER_OBJECT`,
-`DRIVER_EXTENSION`, `DEVICE_OBJECT`, `IRP`, `IO_STACK_LOCATION`, `FILE_OBJECT`,
-`KDPC`, `KEVENT`, `FAST_MUTEX`) were written from the public WDK definitions as
-remembered by the author. Offsets of the fields the host and the test driver use
-are pinned by `_Static_assert`s in `drvhost_types.h`, so an internal mistake fails
-the build. The WDK headers are not installed on this machine, so the layouts have
-not been checked against them. The first vendor-driver run is the real check.
+The x64 structure layouts that drivers touch directly (`DRIVER_OBJECT`, `DEVICE_OBJECT`, `IRP`,
+`IO_STACK_LOCATION`, `FILE_OBJECT`, `KDPC`, `KEVENT`, `FAST_MUTEX`, `KMUTANT`, `KSEMAPHORE`, `ERESOURCE`,
+the lookaside lists and more) were first written from memory. They are now compared field by field with the
+WDK definitions in Wine's headers (`third_party/wine/include`) by `make -C tests/kernel-drivers layout`;
+the list of measured fields is `tests/kernel-drivers/layout/layout_list.h`. That comparison found and
+fixed errors in `KDPC`, `DEVICE_OBJECT`, `FILE_OBJECT`, `IRP` and the `IO_STACK_LOCATION` parameter
+blocks. A structure that is not in the list has not been compared. The first vendor-driver run is the
+check of the rest.
 

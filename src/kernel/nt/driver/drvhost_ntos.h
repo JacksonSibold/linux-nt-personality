@@ -115,6 +115,84 @@ DRVCALL SIZE_T drv_wcslen(const WCHAR *S);
 DRVCALL BOOLEAN MmIsAddressValid(PVOID VirtualAddress);
 DRVCALL PVOID  MmGetSystemRoutineAddress(PUNICODE_STRING SystemRoutineName);
 
+/* -- Mutexes, semaphores, multi-object waits, guarded mutexes, resources,
+ *    SLISTs, lookaside lists (drvhost_sync.c) ---------------------------------- */
+DRVCALL void   KeInitializeMutex(PKMUTEX Mutex, ULONG Level);
+DRVCALL LONG   KeReadStateMutex(PKMUTEX Mutex);
+DRVCALL LONG   KeReleaseMutex(PKMUTEX Mutex, BOOLEAN Wait);
+DRVCALL void   KeInitializeSemaphore(PKSEMAPHORE Semaphore, LONG Count, LONG Limit);
+DRVCALL LONG   KeReadStateSemaphore(PKSEMAPHORE Semaphore);
+DRVCALL LONG   KeReleaseSemaphore(PKSEMAPHORE Semaphore, LONG Increment, LONG Adjustment, BOOLEAN Wait);
+DRVCALL NTSTATUS KeWaitForMultipleObjects(ULONG Count, PVOID Object[], WAIT_TYPE WaitType, ULONG WaitReason,
+                                          KPROCESSOR_MODE WaitMode, BOOLEAN Alertable, PLARGE_INTEGER Timeout,
+                                          PKWAIT_BLOCK WaitBlockArray);
+DRVCALL NTSTATUS KeWaitForMutexObject(PVOID Mutex, ULONG WaitReason, KPROCESSOR_MODE WaitMode,
+                                      BOOLEAN Alertable, PLARGE_INTEGER Timeout);
+DRVCALL void   KeEnterCriticalRegion(void);
+DRVCALL void   KeLeaveCriticalRegion(void);
+DRVCALL void   KeEnterGuardedRegion(void);
+DRVCALL void   KeLeaveGuardedRegion(void);
+DRVCALL BOOLEAN KeAreApcsDisabled(void);
+DRVCALL void   KeInitializeGuardedMutex(PKGUARDED_MUTEX Mutex);
+DRVCALL void   KeAcquireGuardedMutex(PKGUARDED_MUTEX Mutex);
+DRVCALL void   KeAcquireGuardedMutexUnsafe(PKGUARDED_MUTEX Mutex);
+DRVCALL BOOLEAN KeTryToAcquireGuardedMutex(PKGUARDED_MUTEX Mutex);
+DRVCALL void   KeReleaseGuardedMutex(PKGUARDED_MUTEX Mutex);
+DRVCALL void   KeReleaseGuardedMutexUnsafe(PKGUARDED_MUTEX Mutex);
+DRVCALL void   KeInitializeDeviceQueue(PKDEVICE_QUEUE Queue);
+DRVCALL BOOLEAN KeInsertDeviceQueue(PKDEVICE_QUEUE Queue, PKDEVICE_QUEUE_ENTRY Entry);
+DRVCALL BOOLEAN KeInsertByKeyDeviceQueue(PKDEVICE_QUEUE Queue, PKDEVICE_QUEUE_ENTRY Entry, ULONG SortKey);
+DRVCALL PKDEVICE_QUEUE_ENTRY KeRemoveDeviceQueue(PKDEVICE_QUEUE Queue);
+DRVCALL PKDEVICE_QUEUE_ENTRY KeRemoveByKeyDeviceQueue(PKDEVICE_QUEUE Queue, ULONG SortKey);
+DRVCALL BOOLEAN KeRemoveEntryDeviceQueue(PKDEVICE_QUEUE Queue, PKDEVICE_QUEUE_ENTRY Entry);
+
+DRVCALL NTSTATUS ExInitializeResourceLite(PERESOURCE Resource);
+DRVCALL NTSTATUS ExReinitializeResourceLite(PERESOURCE Resource);
+DRVCALL NTSTATUS ExDeleteResourceLite(PERESOURCE Resource);
+DRVCALL ERESOURCE_THREAD ExGetCurrentResourceThread(void);
+DRVCALL BOOLEAN ExAcquireResourceExclusiveLite(PERESOURCE Resource, BOOLEAN Wait);
+DRVCALL BOOLEAN ExTryToAcquireResourceExclusiveLite(PERESOURCE Resource);
+DRVCALL BOOLEAN ExAcquireResourceSharedLite(PERESOURCE Resource, BOOLEAN Wait);
+DRVCALL BOOLEAN ExAcquireSharedStarveExclusive(PERESOURCE Resource, BOOLEAN Wait);
+DRVCALL BOOLEAN ExAcquireSharedWaitForExclusive(PERESOURCE Resource, BOOLEAN Wait);
+DRVCALL void   ExReleaseResourceLite(PERESOURCE Resource);
+DRVCALL void   ExReleaseResourceForThreadLite(PERESOURCE Resource, ERESOURCE_THREAD ResourceThreadId);
+DRVCALL void   ExConvertExclusiveToSharedLite(PERESOURCE Resource);
+DRVCALL BOOLEAN ExIsResourceAcquiredExclusiveLite(PERESOURCE Resource);
+DRVCALL ULONG  ExIsResourceAcquiredSharedLite(PERESOURCE Resource);
+DRVCALL ULONG  ExGetExclusiveWaiterCount(PERESOURCE Resource);
+DRVCALL ULONG  ExGetSharedWaiterCount(PERESOURCE Resource);
+DRVCALL void   ExSetResourceOwnerPointer(PERESOURCE Resource, PVOID OwnerPointer);
+
+DRVCALL void   RtlInitializeSListHead(PSLIST_HEADER ListHead);
+DRVCALL PSLIST_ENTRY RtlFirstEntrySList(const SLIST_HEADER *ListHead);
+DRVCALL USHORT RtlQueryDepthSList(PSLIST_HEADER ListHead);
+DRVCALL PSLIST_ENTRY RtlInterlockedPushEntrySList(PSLIST_HEADER ListHead, PSLIST_ENTRY ListEntry);
+DRVCALL PSLIST_ENTRY RtlInterlockedPopEntrySList(PSLIST_HEADER ListHead);
+DRVCALL PSLIST_ENTRY RtlInterlockedFlushSList(PSLIST_HEADER ListHead);
+DRVCALL PSLIST_ENTRY ExpInterlockedPushEntrySList(PSLIST_HEADER ListHead, PSLIST_ENTRY ListEntry);
+DRVCALL PSLIST_ENTRY ExpInterlockedPopEntrySList(PSLIST_HEADER ListHead);
+DRVCALL PSLIST_ENTRY ExpInterlockedFlushSList(PSLIST_HEADER ListHead);
+DRVCALL PSLIST_ENTRY ExInterlockedPushEntrySList(PSLIST_HEADER ListHead, PSLIST_ENTRY ListEntry, PKSPIN_LOCK Lock);
+DRVCALL PSLIST_ENTRY ExInterlockedPopEntrySList(PSLIST_HEADER ListHead, PKSPIN_LOCK Lock);
+DRVCALL PSLIST_ENTRY ExInterlockedFlushSList(PSLIST_HEADER ListHead);
+DRVCALL PLIST_ENTRY ExInterlockedInsertHeadList(PLIST_ENTRY ListHead, PLIST_ENTRY ListEntry, PKSPIN_LOCK Lock);
+DRVCALL PLIST_ENTRY ExInterlockedInsertTailList(PLIST_ENTRY ListHead, PLIST_ENTRY ListEntry, PKSPIN_LOCK Lock);
+DRVCALL PLIST_ENTRY ExInterlockedRemoveHeadList(PLIST_ENTRY ListHead, PKSPIN_LOCK Lock);
+DRVCALL PSINGLE_LIST_ENTRY ExInterlockedPushEntryList(PSINGLE_LIST_ENTRY ListHead, PSINGLE_LIST_ENTRY ListEntry,
+                                                      PKSPIN_LOCK Lock);
+DRVCALL PSINGLE_LIST_ENTRY ExInterlockedPopEntryList(PSINGLE_LIST_ENTRY ListHead, PKSPIN_LOCK Lock);
+DRVCALL void   ExInitializeNPagedLookasideList(PNPAGED_LOOKASIDE_LIST Lookaside, PALLOCATE_FUNCTION Allocate,
+                                               PFREE_FUNCTION Free, ULONG Flags, SIZE_T Size, ULONG Tag, USHORT Depth);
+DRVCALL void   ExDeleteNPagedLookasideList(PNPAGED_LOOKASIDE_LIST Lookaside);
+DRVCALL void   ExInitializePagedLookasideList(PPAGED_LOOKASIDE_LIST Lookaside, PALLOCATE_FUNCTION Allocate,
+                                              PFREE_FUNCTION Free, ULONG Flags, SIZE_T Size, ULONG Tag, USHORT Depth);
+DRVCALL void   ExDeletePagedLookasideList(PPAGED_LOOKASIDE_LIST Lookaside);
+
+/* -- Mm (declared for the MDL macros of drvhost_types.h) ------------------- */
+DRVCALL PVOID  MmMapLockedPagesSpecifyCache(PMDL Mdl, KPROCESSOR_MODE AccessMode, ULONG CacheType,
+                                            PVOID RequestedAddress, ULONG BugCheckOnFailure, ULONG Priority);
+
 /* -- I/O manager (drvhost_io.c) ------------------------------------------- */
 DRVCALL NTSTATUS IoCreateDevice(PDRIVER_OBJECT DriverObject, ULONG DeviceExtensionSize,
                                 PUNICODE_STRING DeviceName, ULONG DeviceType,

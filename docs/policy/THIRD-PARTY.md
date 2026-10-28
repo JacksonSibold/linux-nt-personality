@@ -47,3 +47,4 @@ visible. It is a factual record and not legal advice. It does not change any lic
 | `src/ntdll/rtl/rtl.c` | `dlls/ntdll/rtl.c` | Wine | Generic and AVL tables, red-black tree, random numbers, CRC-32, LZNT1 | the three `RtlInitializeNtUserPfn` functions removed; `crc32` from `compat/zlib.h` |
 | `src/ntdll/rtl/image.c` | `dlls/ntdll/loader.c` (five functions) | Wine | `RtlImageNtHeader`, `RtlImageDirectoryEntryToData`, `RtlImageRvaToSection`, `RtlImageRvaToVa`, `RtlAddressInSectionTable` | extracted unchanged |
 | `tests/rtl-host/wine/{env,path,rtl}.c` | `dlls/ntdll/tests/{env,path,rtl}.c` | Wine | Wine's unit tests | the parts that need a file system, the loader or threads are disabled (`ntpers:`) |
+| `tests/kernel-drivers/layout/` | `include/ddk/wdm.h` and the Windows headers vendored in `third_party/wine/include` | Wine | The layout oracle measures WDK structures with Wine's headers; no code is copied | none |
