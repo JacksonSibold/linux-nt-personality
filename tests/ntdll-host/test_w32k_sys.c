@@ -132,6 +132,13 @@ static void test_system_metrics_primary_and_virtual(void)
     MT_EXPECT_EQ(w32k_get_system_metrics(W32K_SM_CXVIRTUALSCREEN), 1920);
     MT_EXPECT_EQ(w32k_get_system_metrics(W32K_SM_CYCAPTION), 23);
     MT_EXPECT_EQ(w32k_get_system_metrics(12345), 0);
+    /* Frame metrics: a Windows 10 sizing frame is 4 + 4 padded, a dialog frame 3. */
+    MT_EXPECT_EQ(w32k_get_system_metrics(W32K_SM_CXSIZEFRAME), 4);
+    MT_EXPECT_EQ(w32k_get_system_metrics(W32K_SM_CXPADDEDBORDER), 4);
+    MT_EXPECT_EQ(w32k_get_system_metrics(W32K_SM_CXFIXEDFRAME), 3);
+    MT_EXPECT_EQ(w32k_get_system_metrics(W32K_SM_CXEDGE), 2);
+    MT_EXPECT_EQ(w32k_get_system_metrics(W32K_SM_CYSMCAPTION), 22);
+    MT_EXPECT_EQ(w32k_get_system_metrics(W32K_SM_CXMAXTRACK), 1920 + 16);
     /* A second monitor to the right widens the virtual screen only. */
     rc.left = 1920;
     rc.top = 0;

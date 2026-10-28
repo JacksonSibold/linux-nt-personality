@@ -247,6 +247,29 @@ static void run_getmessage_hooks(w32k_queue *q, const w32k_msg *m, int removed)
     w32k_run_hooks(W32K_WH_GETMESSAGE, removed ? 1 : 0, (uintptr_t)m->message, (intptr_t)m, q->desktop);
 }
 
+/* GetMessageTime and GetMessagePos report the message the thread last retrieved. A message
+ * with no point of its own gets the cursor position. */
+static void note_last_message(w32k_queue *q, const w32k_msg *m)
+{
+    q->msg_time = m->time;
+    q->msg_pt = m->pt;
+    if (m->pt.x == 0 && m->pt.y == 0)
+        w32k_get_cursor_pos(&q->msg_pt);
+}
+
+uint32_t w32k_get_message_time(void)
+{
+    w32k_queue *q = w32k_cur_queue();
+    return q ? q->msg_time : 0;
+}
+
+w32k_point w32k_get_message_pos(void)
+{
+    w32k_queue *q = w32k_cur_queue();
+    w32k_point z = {0, 0};
+    return q ? q->msg_pt : z;
+}
+
 int w32k_get_message(w32k_msg *msg, w32k_handle hwnd, uint32_t min, uint32_t max)
 {
     w32k_queue *q = w32k_cur_queue();
@@ -257,6 +280,7 @@ int w32k_get_message(w32k_msg *msg, w32k_handle hwnd, uint32_t min, uint32_t max
     if (!next_message(q, msg, hwnd, min, max, 1))
         return W32K_WOULD_BLOCK;
     run_getmessage_hooks(q, msg, 1);
+    note_last_message(q, msg);
     if (msg->message == W32K_WM_QUIT)
         return 0;
     return 1;
@@ -272,8 +296,10 @@ int w32k_peek_message(w32k_msg *msg, w32k_handle hwnd, uint32_t min, uint32_t ma
     }
     if (!next_message(q, msg, hwnd, min, max, remove))
         return 0;
-    if (remove)
+    if (remove) {
         run_getmessage_hooks(q, msg, 1);
+        note_last_message(q, msg);
+    }
     return 1;
 }
 

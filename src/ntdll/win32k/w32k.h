@@ -214,6 +214,31 @@ enum w32k_type {
 #define W32K_SM_CXFULLSCREEN 16
 #define W32K_SM_CYFULLSCREEN 17
 #define W32K_SM_MOUSEPRESENT 19
+#define W32K_SM_CXFIXEDFRAME 7
+#define W32K_SM_CYFIXEDFRAME 8
+#define W32K_SM_CXHTHUMB 10
+#define W32K_SM_CYVTHUMB 9
+#define W32K_SM_CXMIN 28
+#define W32K_SM_CYMIN 29
+#define W32K_SM_CXSIZE 30
+#define W32K_SM_CYSIZE 31
+#define W32K_SM_CXSIZEFRAME 32
+#define W32K_SM_CYSIZEFRAME 33
+#define W32K_SM_CXMINTRACK 34
+#define W32K_SM_CYMINTRACK 35
+#define W32K_SM_CXEDGE 45
+#define W32K_SM_CYEDGE 46
+#define W32K_SM_CXSMICON 49
+#define W32K_SM_CYSMICON 50
+#define W32K_SM_CYSMCAPTION 51
+#define W32K_SM_CXMAXTRACK 59
+#define W32K_SM_CYMAXTRACK 60
+#define W32K_SM_NETWORK 63
+#define W32K_SM_CXMENUCHECK 71
+#define W32K_SM_CYMENUCHECK 72
+#define W32K_SM_CXFOCUSBORDER 83
+#define W32K_SM_CYFOCUSBORDER 84
+#define W32K_SM_CXPADDEDBORDER 92
 #define W32K_SM_CXDOUBLECLK 36
 #define W32K_SM_CYDOUBLECLK 37
 #define W32K_SM_CMOUSEBUTTONS 43
@@ -409,6 +434,77 @@ w32k_handle w32k_begin_paint(w32k_handle hwnd, w32k_paintstruct *ps);
 int w32k_end_paint(w32k_handle hwnd, const w32k_paintstruct *ps);
 intptr_t w32k_def_window_proc(w32k_handle hwnd, uint32_t msg, uintptr_t wp, intptr_t lp);
 
+/* ---- Window state and tree queries (w32k_win.c) ------------------------------ */
+
+#define W32K_WM_ENABLE 0x000A
+#define W32K_GW_HWNDFIRST 0
+#define W32K_GW_HWNDLAST 1
+#define W32K_GW_HWNDNEXT 2
+#define W32K_GW_HWNDPREV 3
+#define W32K_GW_OWNER 4
+#define W32K_GW_CHILD 5
+
+/* EnumWindows callback: return 0 to stop. */
+typedef int (*w32k_enumwndproc)(w32k_handle hwnd, intptr_t lparam);
+
+/* The show state of a window: W32K_SW_SHOWNORMAL, W32K_SW_SHOWMINIMIZED or W32K_SW_SHOWMAXIMIZED.
+ * Returns -1 for a bad handle. */
+int w32k_get_window_state(w32k_handle hwnd);
+/* EnableWindow: toggles WS_DISABLED and sends WM_ENABLE on a change. Returns 1 when the window
+ * was disabled before, 0 when it was enabled, -1 for a bad handle. */
+int w32k_enable_window(w32k_handle hwnd, int enable);
+/* 1 when the window exists and is not disabled. */
+int w32k_is_window_enabled(w32k_handle hwnd);
+/* GetWindow: a W32K_GW_* relation among the siblings or children, or 0 when there is none. */
+w32k_handle w32k_get_window_rel(w32k_handle hwnd, uint32_t cmd);
+/* The desktop's pseudo window (class "#32769"): the whole primary monitor, visible, never in a
+ * window list. Created on first use. */
+w32k_handle w32k_get_desktop_window(void);
+/* Copies the class name of a window; returns its length without the terminator, 0 on error. */
+int w32k_get_class_name(w32k_handle hwnd, uint16_t *buf, int max);
+/* ValidateRect: the model keeps one update region per window (the client area), so this clears
+ * it. Returns 1, or 0 for a bad handle. */
+int w32k_validate_rect(w32k_handle hwnd);
+/* UpdateWindow: when the window has an update region, sends WM_PAINT to its procedure now and
+ * clears the region. Returns 1, or 0 for a bad handle. */
+int w32k_update_window(w32k_handle hwnd);
+/* GetUpdateRect: 1 and the client rectangle when an update region is pending, else 0 and an
+ * empty rectangle. */
+int w32k_get_update_rect(w32k_handle hwnd, w32k_rect *rc);
+/* EnumWindows (parent 0, the top-level windows of the thread's desktop, topmost first) and
+ * EnumChildWindows (descendants of parent, depth first). The list is snapshotted first, so the
+ * callback may destroy windows. Returns 1 when the walk completed, 0 when the callback stopped it. */
+int w32k_enum_windows(w32k_handle parent, w32k_enumwndproc proc, intptr_t lparam);
+/* GetWindowThreadProcessId needs the owning thread: w32k_get_window_thread. Class values of a
+ * window's class (GetClassLongPtr). index is a W32K_GCL_ or W32K_GCW_ value; returns 1 and the value, or 0
+ * with the last error set for an unsupported index. */
+#define W32K_GCL_MENUNAME (-8)
+#define W32K_GCL_HBRBACKGROUND (-10)
+#define W32K_GCL_HCURSOR (-12)
+#define W32K_GCL_HICON (-14)
+#define W32K_GCL_HMODULE (-16)
+#define W32K_GCL_CBWNDEXTRA (-18)
+#define W32K_GCL_CBCLSEXTRA (-20)
+#define W32K_GCL_WNDPROC (-24)
+#define W32K_GCL_STYLE (-26)
+#define W32K_GCW_ATOM (-32)
+int w32k_get_class_long(w32k_handle hwnd, int index, intptr_t *out);
+/* SetClassLongPtr for the writable values (style, background, cursor, icon, module, procedure).
+ * Windows already created keep their own procedure. Returns 1 and the old value, or 0. */
+int w32k_set_class_long(w32k_handle hwnd, int index, intptr_t value, intptr_t *old);
+/* Z-order among siblings: to the top (bottom == 0) or the bottom. */
+int w32k_set_zorder(w32k_handle hwnd, int bottom);
+/* The deepest visible window at a screen point, or 0. */
+w32k_handle w32k_window_from_point(int32_t x, int32_t y);
+/* Time and point of the message the thread retrieved last (GetMessageTime, GetMessagePos). */
+uint32_t w32k_get_message_time(void);
+w32k_point w32k_get_message_pos(void);
+
+/* ShowCursor: the display counter, starting at 0 (a mouse is present). Returns the new count. */
+int32_t w32k_show_cursor(int show);
+/* The cursor display counter without changing it. */
+int32_t w32k_get_cursor_count(void);
+
 /* ---- Messages, queues, timers, focus, capture, activation, hooks ----------- */
 
 int w32k_post_message(w32k_handle hwnd, uint32_t msg, uintptr_t wp, intptr_t lp);
@@ -476,6 +572,15 @@ int32_t w32k_get_system_metrics(int index);
 int w32k_system_parameters_info(uint32_t action, uint32_t ui_param, void *pv);
 int w32k_enum_display_monitors(w32k_monitorenumproc proc, intptr_t lparam);
 w32k_handle w32k_monitor_from_window(w32k_handle hwnd);
+#define W32K_MONITOR_DEFAULTTONULL 0
+#define W32K_MONITOR_DEFAULTTOPRIMARY 1
+#define W32K_MONITOR_DEFAULTTONEAREST 2
+/* The monitor containing a point, or the one the MONITOR_DEFAULTTO flag names (NULL, primary, nearest). */
+w32k_handle w32k_monitor_from_point(int32_t x, int32_t y, uint32_t flags);
+/* The monitor with the largest overlap with rc, else as for a point at the centre of rc. */
+w32k_handle w32k_monitor_from_rect(const w32k_rect *rc, uint32_t flags);
+/* Monitor and work-area rectangles and the primary flag; each out pointer may be NULL. */
+int w32k_get_monitor_info(w32k_handle hmon, w32k_rect *mon, w32k_rect *work, int *primary);
 int w32k_set_monitor(uint32_t index, const w32k_rect *rc, uint32_t dpi, int primary);
 int w32k_enum_display_settings(uint32_t index, w32k_devmode *out);
 int w32k_change_display_settings(const w32k_devmode *mode, uint32_t flags);

@@ -94,6 +94,7 @@ typedef struct w32k_desktop {
     w32k_handle top_head;      /* top-level windows, topmost first (next_sibling) */
     w32k_handle foreground;
     w32k_handle capture;
+    w32k_handle desktop_window; /* the pseudo window GetDesktopWindow returns; not in top_head */
     uint32_t window_count;
 } w32k_desktop;
 

@@ -138,6 +138,32 @@ int32_t w32k_get_system_metrics(int index)
     case W32K_SM_CXDOUBLECLK: return 4;
     case W32K_SM_CYDOUBLECLK: return 4;
     case W32K_SM_CMOUSEBUTTONS: return 3;
+    /* Frame, caption-button and tracking metrics of the Windows 10 theme at 96 dpi. */
+    case W32K_SM_CXFIXEDFRAME: return 3;    /* SM_CXDLGFRAME */
+    case W32K_SM_CYFIXEDFRAME: return 3;
+    case W32K_SM_CXHTHUMB: return 17;
+    case W32K_SM_CYVTHUMB: return 17;
+    case W32K_SM_CXMIN: return 136;
+    case W32K_SM_CYMIN: return 39;
+    case W32K_SM_CXSIZE: return 36;
+    case W32K_SM_CYSIZE: return 22;
+    case W32K_SM_CXSIZEFRAME: return 4;     /* SM_CXFRAME */
+    case W32K_SM_CYSIZEFRAME: return 4;
+    case W32K_SM_CXMINTRACK: return 136;
+    case W32K_SM_CYMINTRACK: return 39;
+    case W32K_SM_CXEDGE: return 2;
+    case W32K_SM_CYEDGE: return 2;
+    case W32K_SM_CXSMICON: return 16;
+    case W32K_SM_CYSMICON: return 16;
+    case W32K_SM_CYSMCAPTION: return 22;
+    case W32K_SM_CXMAXTRACK: return pw + 16;
+    case W32K_SM_CYMAXTRACK: return ph + 16;
+    case W32K_SM_NETWORK: return 3;         /* a network is present and active */
+    case W32K_SM_CXMENUCHECK: return 15;
+    case W32K_SM_CYMENUCHECK: return 15;
+    case W32K_SM_CXFOCUSBORDER: return 1;
+    case W32K_SM_CYFOCUSBORDER: return 1;
+    case W32K_SM_CXPADDEDBORDER: return 4;
     case W32K_SM_XVIRTUALSCREEN: return vx0;
     case W32K_SM_YVIRTUALSCREEN: return vy0;
     case W32K_SM_CXVIRTUALSCREEN: return vx1 - vx0;
@@ -244,6 +270,104 @@ w32k_handle w32k_monitor_from_window(w32k_handle hwnd)
     if (!w)
         return 0;
     return monitor_index_for_rect(&w->rect) + 1u;
+}
+
+int w32k_get_monitor_info(w32k_handle hmon, w32k_rect *mon, w32k_rect *work, int *primary)
+{
+    const w32k_monitor *m;
+    if (hmon < 1 || hmon > W32K_MAX_MONITORS || !w32k_g.monitors[hmon - 1].active) {
+        w32k_set_error(W32K_ERROR_INVALID_HANDLE);
+        return 0;
+    }
+    m = &w32k_g.monitors[hmon - 1];
+    if (mon)
+        *mon = m->rc;
+    if (work)
+        *work = m->rc; /* no taskbar: the work area is the whole monitor */
+    if (primary)
+        *primary = m->primary;
+    return 1;
+}
+
+/* The monitor nearest to a point, by squared distance to its rectangle. */
+static uint32_t nearest_monitor(int32_t x, int32_t y)
+{
+    uint32_t best = 0;
+    int64_t best_d = -1;
+    for (uint32_t i = 0; i < W32K_MAX_MONITORS; ++i) {
+        const w32k_monitor *m = &w32k_g.monitors[i];
+        int64_t dx = 0, dy = 0, d;
+        if (!m->active)
+            continue;
+        if (x < m->rc.left)
+            dx = m->rc.left - x;
+        else if (x >= m->rc.right)
+            dx = x - m->rc.right + 1;
+        if (y < m->rc.top)
+            dy = m->rc.top - y;
+        else if (y >= m->rc.bottom)
+            dy = y - m->rc.bottom + 1;
+        d = dx * dx + dy * dy;
+        if (best_d < 0 || d < best_d) {
+            best_d = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+static w32k_handle monitor_default(uint32_t flags, int32_t x, int32_t y)
+{
+    if (flags == W32K_MONITOR_DEFAULTTONEAREST)
+        return nearest_monitor(x, y) + 1u;
+    if (flags == W32K_MONITOR_DEFAULTTOPRIMARY) {
+        for (uint32_t i = 0; i < W32K_MAX_MONITORS; ++i) {
+            if (w32k_g.monitors[i].active && w32k_g.monitors[i].primary)
+                return i + 1u;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+w32k_handle w32k_monitor_from_point(int32_t x, int32_t y, uint32_t flags)
+{
+    for (uint32_t i = 0; i < W32K_MAX_MONITORS; ++i) {
+        const w32k_monitor *m = &w32k_g.monitors[i];
+        if (m->active && w32k_rect_contains(&m->rc, x, y))
+            return i + 1u;
+    }
+    return monitor_default(flags, x, y);
+}
+
+/* The monitor with the largest overlap with rc; with no overlap, the flags decide. */
+w32k_handle w32k_monitor_from_rect(const w32k_rect *rc, uint32_t flags)
+{
+    int64_t best_area = 0;
+    w32k_handle best = 0;
+    if (!rc)
+        return 0;
+    for (uint32_t i = 0; i < W32K_MAX_MONITORS; ++i) {
+        const w32k_monitor *m = &w32k_g.monitors[i];
+        int32_t l, t, r, b;
+        int64_t a;
+        if (!m->active)
+            continue;
+        l = rc->left > m->rc.left ? rc->left : m->rc.left;
+        t = rc->top > m->rc.top ? rc->top : m->rc.top;
+        r = rc->right < m->rc.right ? rc->right : m->rc.right;
+        b = rc->bottom < m->rc.bottom ? rc->bottom : m->rc.bottom;
+        if (r <= l || b <= t)
+            continue;
+        a = (int64_t)(r - l) * (b - t);
+        if (a > best_area) {
+            best_area = a;
+            best = i + 1u;
+        }
+    }
+    if (best)
+        return best;
+    return monitor_default(flags, (rc->left + rc->right) / 2, (rc->top + rc->bottom) / 2);
 }
 
 uint32_t w32k_dpi_for_rect(const w32k_rect *rc)

@@ -891,6 +891,11 @@ int w32k_destroy_window(w32k_handle hwnd)
         w32k_set_error(W32K_ERROR_INVALID_WINDOW_HANDLE);
         return 0;
     }
+    if (!w->cls) {
+        /* The desktop window belongs to the desktop and cannot be destroyed. */
+        w32k_set_error(W32K_ERROR_ACCESS_DENIED);
+        return 0;
+    }
     owner_tid = w->tid;
     if (!w->parent && q->active == hwnd) {
         /* Activate the next visible top-level window of the same thread. */

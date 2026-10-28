@@ -153,9 +153,11 @@ int32_t GetWindowTextW(uintptr_t hwnd, uint16_t *buf, int32_t max)
     return w32k_get_window_text(hwnd, buf, max);
 }
 
+uintptr_t FindWindowExW(uintptr_t parent, uintptr_t after, const uint16_t *cls, const uint16_t *name);
+
 uintptr_t FindWindowW(const uint16_t *cls, const uint16_t *name)
 {
-    return w32k_find_window((uintptr_t)cls, name);
+    return FindWindowExW(0, 0, cls, name);
 }
 
 uint32_t GetDpiForWindow(uintptr_t hwnd)
@@ -295,6 +297,18 @@ static void sync_clock(void)
     int64_t t = 0;
     if (NtQuerySystemTime(&t) >= 0)
         w32k_set_now((uint32_t)((uint64_t)t / 10000u));
+}
+
+/* For user32_ext.c: the model clock after a sync with the NT clock, and the calling thread's id. */
+uint32_t w32k_shim_now(void)
+{
+    sync_clock();
+    return w32k_now();
+}
+
+uint32_t w32k_shim_tid(void)
+{
+    return os_tid();
 }
 
 /* Waits on ev until it is signalled, the earliest timer is due, or limit_ms passes
