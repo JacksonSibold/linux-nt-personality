@@ -38,11 +38,12 @@ with open(out_def, 'w') as out:
     out.write(f"    _DllMainCRTStartup\n")
     out.write(f"    DllMainCRTStartup\n")
 
-# Further exports, one per line in ntdll_exports.txt next to the syscall table. A line is `name` or
-# `name=target` (an alias of another export); text after # is a comment.
-extra_file = def_file.parent / "ntdll_exports.txt"
-if extra_file.exists():
-    seen = set()
+# Further exports, one per line in ntdll_exports.txt and in rtl/rtl_exports.txt (the Rtl library ported from Wine). A line is
+# `name` or `name=target` (an alias of another export); text after # is a comment.
+seen = set()
+for extra_file in (def_file.parent / "ntdll_exports.txt", def_file.parent / "rtl" / "rtl_exports.txt"):
+    if not extra_file.exists():
+        continue
     with open(out_def, "a") as out:
         for raw in extra_file.read_text().splitlines():
             line = raw.split("#", 1)[0].strip()

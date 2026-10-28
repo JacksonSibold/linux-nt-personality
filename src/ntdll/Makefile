@@ -81,18 +81,35 @@ LOADER_PE := $(ROOT)/src/loader/pe_parse.c
 
 OBJS := $(addprefix $(OUT)/,$(C_SRCS:.c=.o)) $(OUT)/generated_stubs.o $(OUT)/pe_parse.o
 
+# The Rtl library ported from Wine (rtl/, docs/status/RTL-PORT.md). It is built against Wine's own Windows and C library
+# headers (third_party/wine/include, with -nostdinc so that no MinGW header gets in), as Wine builds its ntdll.
+RTL_SRCS := rtlstr wcstring string printf large_int rtlbitmap time nls misc error
+RTL_OBJS := $(addprefix $(OUT)/rtl_,$(addsuffix .o,$(RTL_SRCS)))
+RTL_WINE := $(ROOT)/third_party/wine/include
+RTL_FLAGS := -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-implicit-fallthrough \
+             -Wno-missing-field-initializers -ffreestanding -fno-builtin -fno-tree-loop-distribute-patterns \
+             -fno-stack-protector -nostdinc -isystem $(RTL_WINE)/msvcrt -I$(SRC)/rtl/compat -I$(SRC)/rtl -I$(RTL_WINE) \
+             -D__WINESRC__ -D_NTSYSTEM_ -D_ACRTIMP= -DWINBASEAPI= -D_NO_CRT_STDIO_INLINE -D_MSVCR_VER=120
+OBJS += $(RTL_OBJS)
+
+$(OUT)/rtl_%.o: $(SRC)/rtl/%.c | $(OUT)
+	$(CC) $(RTL_FLAGS) -c $< -o $@
+
 .PHONY: all check clean
 
 all: $(OUT)/ntdll.dll
 
-$(OUT)/ntdll.def: $(DEF_GEN) $(SYSCALLS) $(SRC)/ntdll_exports.txt | $(OUT)
+$(OUT):
+	mkdir -p $@
+
+$(OUT)/ntdll.def: $(DEF_GEN) $(SYSCALLS) $(SRC)/ntdll_exports.txt $(SRC)/rtl/rtl_exports.txt | $(OUT)
 	$(PYTHON) "$(DEF_GEN)" "$(SYSCALLS)" "$@"
 
 $(OUT)/%.o: $(SRC)/%.c | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
 # ntdll's own malloc calls RtlAllocateHeap in this module; the other DLLs import it (see ntdll_runtime.c).
-$(OUT)/ntdll_runtime.o: CPPFLAGS += -DNTDLL_BUILD
+$(OUT)/ntdll_runtime.o: CPPFLAGS += -DNTDLL_BUILD -DNTDLL_RTL_PORT
 
 $(OUT)/pe_parse.o: $(LOADER_PE) | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
