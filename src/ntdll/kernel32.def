@@ -487,3 +487,23 @@ EXPORTS
     WriteProfileStringA
     WriteProfileSectionW
     WriteProfileSectionA
+    FindResourceW
+    FindResourceA
+    FindResourceExW
+    FindResourceExA
+    LoadResource
+    LockResource
+    SizeofResource
+    FreeResource
+    EnumResourceTypesW
+    EnumResourceTypesA
+    EnumResourceTypesExW
+    EnumResourceTypesExA
+    EnumResourceNamesW
+    EnumResourceNamesA
+    EnumResourceNamesExW
+    EnumResourceNamesExA
+    EnumResourceLanguagesW
+    EnumResourceLanguagesA
+    EnumResourceLanguagesExW
+    EnumResourceLanguagesExA
