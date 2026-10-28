@@ -170,7 +170,7 @@ ucrtbase: $(OUT)/ucrtbase.dll
 $(OUT)/libucrtbase_imp.a: ucrtbase.def
 	x86_64-w64-mingw32-dlltool -d $< -l $@ -D ucrtbase.dll
 
-VCR_HDRS := vcr_eh_pure.h vcr_rtti_pure.h vcr_typeinfo_pure.h
+VCR_HDRS := vcr_eh_pure.h vcr_eh4_pure.h vcr_rtti_pure.h vcr_typeinfo_pure.h
 
 $(OUT)/vcruntime140.o: vcruntime140.c $(VCR_HDRS) | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
@@ -181,8 +181,18 @@ $(OUT)/vcruntime140_exc.o: vcruntime140_exc.c $(VCR_HDRS) | $(OUT)
 $(OUT)/vcruntime140.dll: $(OUT)/vcruntime140.o $(OUT)/vcruntime140_exc.o $(OUT)/k32_runtime.o vcruntime140.def $(OUT)/libkernel32_imp.a $(OUT)/libntdll_imp.a $(OUT)/libucrtbase_imp.a
 	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/vcruntime140.o $(OUT)/vcruntime140_exc.o $(OUT)/k32_runtime.o vcruntime140.def -L$(OUT) -lkernel32_imp -lntdll_imp -lucrtbase_imp -lgcc
 
+# vcruntime140_1.dll: __CxxFrameHandler4 lives in vcruntime140.dll here; this DLL only forwards to it.
+$(OUT)/vcruntime140_1.o: vcruntime140_1.c | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(OUT)/libvcruntime140_imp.a: vcruntime140.def
+	x86_64-w64-mingw32-dlltool -d $< -l $@ -D vcruntime140.dll
+
+$(OUT)/vcruntime140_1.dll: $(OUT)/vcruntime140_1.o vcruntime140_1.def
+	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/vcruntime140_1.o vcruntime140_1.def -lgcc
+
 .PHONY: vcruntime140
-vcruntime140: $(OUT)/vcruntime140.dll
+vcruntime140: $(OUT)/vcruntime140.dll $(OUT)/vcruntime140_1.dll
 # advapi32.dll: the registry subset the differential probes import (advapi32.def),
 # on the NT registry services in ntdll.dll. Uses the same runtime helpers as kernel32.
 $(OUT)/advapi32.o: advapi32.c advapi_pure.h | $(OUT)

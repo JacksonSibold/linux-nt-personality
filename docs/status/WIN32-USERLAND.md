@@ -86,10 +86,13 @@ non-cryptographic generator.
 
 ## vcruntime140.dll
 
-The logic is in three headers that the host tests compile natively against hand-built tables: `vcr_rtti_pure.h` (RTTI and
+The logic is in four headers that the host tests compile natively against hand-built tables: `vcr_rtti_pure.h` (RTTI and
 `dynamic_cast` over single, multiple and virtual inheritance), `vcr_typeinfo_pure.h` (`type_info` compare, hash and
-name decoding) and `vcr_eh_pure.h` (state from address, cleanup chains, try/catch selection, funclet detection, the copy into
-the catch parameter). The DLL files apply them to a real stack and are only built and link-checked: nothing in them has run
+name decoding), `vcr_eh_pure.h` (the fixed-size tables of `__CxxFrameHandler3`: state from address, cleanup chains, try/catch
+selection, funclet detection, the copy into the catch parameter) and `vcr_eh4_pure.h` (the compressed tables of
+`__CxxFrameHandler4`: variable-length numbers, split state maps, the cleanup chain, try and catch records). The host tests
+build their tables with an encoder written from the same reading of the format, so they show the decoder is self-consistent,
+not that it matches what the compiler emits. The DLL files apply them to a real stack and are only built and link-checked: nothing in them has run
 against code built by the Microsoft compiler.
 
 How a catch runs: the frame handler finds the catch block in the first pass, moves the thrown object to the heap, builds the
@@ -97,8 +100,8 @@ catch parameter and unwinds to the catching frame with `vcr_catch_entry` as the 
 the catching frame, runs the catch funclet and jumps to the address it returns. A bare `throw;` raises the exception of the
 innermost running catch again.
 
-Not done: `__CxxFrameHandler4` (the compressed tables of newer compilers, which live in `vcruntime140_1.dll`), the SEH
-translator, WinRT exceptions, `msvcp140.dll`. A thrown object is moved with a byte copy, so a type that points into itself
+`__CxxFrameHandler4` is implemented in `vcruntime140.dll`; `vcruntime140_1.dll`, where the Microsoft runtime keeps it, forwards
+its one export there. Not done: the SEH translator, WinRT exceptions, `__NLG_Dispatch2`, `msvcp140.dll`. A thrown object is moved with a byte copy, so a type that points into itself
 does not survive a throw.
 
 ## Host test suites

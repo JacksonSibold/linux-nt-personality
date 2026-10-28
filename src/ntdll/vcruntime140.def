@@ -21,6 +21,7 @@ EXPORTS
     __vcrt_InitializeCriticalSectionEx = kernel32.InitializeCriticalSectionEx
     _CxxThrowException
     __CxxFrameHandler3
+    __CxxFrameHandler4
     __DestructExceptionObject
     __AdjustPointer
     __current_exception

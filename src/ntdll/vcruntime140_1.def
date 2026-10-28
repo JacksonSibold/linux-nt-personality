@@ -1,0 +1,3 @@
+LIBRARY vcruntime140_1
+EXPORTS
+    __CxxFrameHandler4 = vcruntime140.__CxxFrameHandler4

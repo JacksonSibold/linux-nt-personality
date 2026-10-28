@@ -22,6 +22,7 @@
 #include "nt_types.h"
 #include "ntstatus.h"
 #include "unwind.h"
+#include "vcr_eh4_pure.h"
 #include "vcr_eh_pure.h"
 #include "vcr_typeinfo_pure.h"
 
@@ -77,8 +78,11 @@ typedef struct vcr_exc {
     ULONG64 handler;
     ULONG64 orig_frame;
     int32_t start_level;
-    const vcr_funcinfo *descr;
+    int32_t search_state; /* FH4: the state the next frame searches from if the exception leaves the catch */
+    const vcr_funcinfo *descr; /* FH3 only */
+    ULONG64 ret_addr[2];       /* FH4: where to continue, when the table says */
     vcr_obj *obj;
+    int is_fh4;
 } vcr_exc;
 
 typedef struct {
@@ -87,6 +91,7 @@ typedef struct {
     int processing_throw;
     PVOID current_exception; /* EXCEPTION_RECORD * of the innermost active catch */
     PVOID current_context;
+    int32_t trylevel4; /* FH4: the state the next frame handler starts from, or -2 for "from the address" */
 } vcr_tls;
 
 static DWORD g_vcr_tls_slot = 0xFFFFFFFFu;
@@ -108,6 +113,7 @@ static vcr_tls *vcr_tls_get(void)
         t = (vcr_tls *)vcr_alloc(sizeof *t);
         if (!t)
             terminate();
+        t->trylevel4 = -2;
         TlsSetValue(g_vcr_tls_slot, t);
     }
     return t;
@@ -286,9 +292,19 @@ void *vcr_catch_run(void)
 
     t->active = e->next;
     t->current_exception = t->active ? &t->active->rec : NULL;
-    help = (int32_t *)(uintptr_t)(e->orig_frame + (int64_t)e->descr->unwind_help);
-    help[0] = -2;
-    help[1] = -1;
+    if (e->descr) {
+        help = (int32_t *)(uintptr_t)(e->orig_frame + (int64_t)e->descr->unwind_help);
+        help[0] = -2;
+        help[1] = -1;
+    }
+    t->trylevel4 = -2;
+    if (e->ret_addr[1]) { /* two continuations: the funclet returns which */
+        if ((uintptr_t)resume > 1)
+            terminate();
+        resume = (void *)(uintptr_t)e->ret_addr[(uintptr_t)resume];
+    } else if (e->ret_addr[0]) {
+        resume = (void *)(uintptr_t)e->ret_addr[0];
+    }
     vcr_obj_release(e->obj);
     vcr_free(e);
     return resume;
@@ -303,12 +319,19 @@ EXCEPTION_DISPOSITION vcr_catch_frame_handler(PEXCEPTION_RECORD rec, PVOID frame
     (void)frame;
     (void)ctx;
     (void)dispatch;
-    if (!(rec->ExceptionFlags & (EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND)))
+    if (!(rec->ExceptionFlags & (EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND))) {
+        /* an exception going out of the catch funclet: the frame that catches it next searches from the catch's own level */
+        t = vcr_tls_get();
+        if (t->active && t->active->is_fh4)
+            t->trylevel4 = t->active->search_state;
         return ExceptionContinueSearch;
+    }
     t = vcr_tls_get();
     e = t->active;
     if (!e)
         return ExceptionContinueSearch;
+    if (e->is_fh4)
+        t->trylevel4 = e->start_level; /* the catching frame unwinds from where its catch began */
     t->active = e->next;
     t->current_exception = t->active ? &t->active->rec : NULL;
     if (e->obj && rec->ExceptionCode == VCR_CXX_EXCEPTION && rec->NumberParameters >= 2 &&
@@ -321,8 +344,16 @@ EXCEPTION_DISPOSITION vcr_catch_frame_handler(PEXCEPTION_RECORD rec, PVOID frame
     return ExceptionContinueSearch;
 }
 
+/* What a catch search found, whichever table format it came from. */
+typedef struct {
+    const vcr_catchable *catchable; /* NULL for catch (...) on an exception that is not a C++ throw */
+    uint32_t flags, type_info, handler;
+    int32_t offset, start_level, catch_level;
+    uint32_t ret_addr[2];
+} vcr_hit;
+
 static void vcr_start_catch(PEXCEPTION_RECORD rec, ULONG64 frame, const DISPATCHER_CONTEXT *dc, const vcr_funcinfo *descr,
-                            const vcr_catch_match *m, const char *exc_base, ULONG64 orig_frame)
+                            const vcr_hit *m, const char *exc_base, ULONG64 orig_frame)
 {
     const char *base = (const char *)(uintptr_t)dc->ImageBase;
     vcr_tls *t = vcr_tls_get();
@@ -351,14 +382,20 @@ static void vcr_start_catch(PEXCEPTION_RECORD rec, ULONG64 frame, const DISPATCH
         e->obj = held;
         object = held->data;
         e->rec.ExceptionInformation[1] = (ULONG_PTR)object;
-        if (m->catchblock->type_info && m->catchblock->offset)
-            vcr_eh_copy_catch_object(exc_base, object, (void *)(uintptr_t)(orig_frame + (int64_t)m->catchblock->offset),
-                                     m->catchblock->flags, m->catchable, vcr_copy_ctor_cb, (void *)exc_base);
+        if (m->type_info && m->offset)
+            vcr_eh_copy_catch_object(exc_base, object, (void *)(uintptr_t)(orig_frame + (int64_t)m->offset), m->flags, m->catchable,
+                                     vcr_copy_ctor_cb, (void *)exc_base);
     }
-    e->handler = (ULONG64)(uintptr_t)(base + m->catchblock->handler);
+    e->handler = (ULONG64)(uintptr_t)(base + m->handler);
     e->orig_frame = orig_frame;
-    e->start_level = m->tryblock->start_level;
+    e->start_level = m->start_level;
+    e->search_state = m->catch_level;
     e->descr = descr;
+    e->is_fh4 = descr == NULL;
+    if (m->ret_addr[0])
+        e->ret_addr[0] = (ULONG64)(uintptr_t)(base + m->ret_addr[0]);
+    if (m->ret_addr[1])
+        e->ret_addr[1] = (ULONG64)(uintptr_t)(base + m->ret_addr[1]);
     e->next = t->pending;
     t->pending = e;
 
@@ -392,8 +429,18 @@ static void vcr_find_catch_block(PEXCEPTION_RECORD rec, ULONG64 frame, const DIS
     } else {
         trylevel = help[1];
     }
-    if (vcr_eh_find_catch(exc_base, base, descr, trylevel, in_catch, ti, &m))
-        vcr_start_catch(rec, frame, dc, descr, &m, exc_base, orig_frame);
+    if (vcr_eh_find_catch(exc_base, base, descr, trylevel, in_catch, ti, &m)) {
+        vcr_hit hit;
+        memset(&hit, 0, sizeof hit);
+        hit.catchable = m.catchable;
+        hit.flags = m.catchblock->flags;
+        hit.type_info = m.catchblock->type_info;
+        hit.handler = m.catchblock->handler;
+        hit.offset = m.catchblock->offset;
+        hit.start_level = m.tryblock->start_level;
+        hit.catch_level = m.tryblock->catch_level;
+        vcr_start_catch(rec, frame, dc, descr, &hit, exc_base, orig_frame);
+    }
     if (t->processing_throw > 0)
         --t->processing_throw;
 }
@@ -456,6 +503,127 @@ EXCEPTION_DISPOSITION __cdecl __CxxFrameHandler3(PEXCEPTION_RECORD rec, PVOID fr
     const char *base = (const char *)(uintptr_t)dc->ImageBase;
     (void)ctx;
     return vcr_frame_handler(rec, (ULONG64)(uintptr_t)frame, dc, (const vcr_funcinfo *)(base + *(const uint32_t *)dc->HandlerData));
+}
+
+/* ---- FH4: the compressed tables --------------------------------------------------------------------------------------------- */
+
+typedef struct {
+    const char *base;
+    ULONG64 frame;
+} vcr_unwind4_ctx;
+
+static void vcr_run_unwind4(void *ctx, const vcr_ui4 *ui)
+{
+    const vcr_unwind4_ctx *c = (const vcr_unwind4_ctx *)ctx;
+    void *obj = (void *)(uintptr_t)(c->frame + ui->object);
+    if (ui->type == VCR4_UNWIND_DTOR_PTR)
+        obj = *(void **)obj;
+    ((void(__cdecl *)(void *, ULONG64))(uintptr_t)(c->base + ui->handler))(obj, c->frame);
+}
+
+static void vcr_local_unwind4(ULONG64 frame, const DISPATCHER_CONTEXT *dc, const vcr_fd4 *d, int32_t trylevel, int32_t last_level)
+{
+    const char *base = (const char *)(uintptr_t)dc->ImageBase;
+    vcr_unwind4_ctx c;
+    c.base = base;
+    c.frame = frame;
+    if (trylevel == -2)
+        trylevel = vcr_fd4_ip_state(d, dc->FunctionEntry->BeginAddress, (uint32_t)(dc->ControlPc - dc->ImageBase));
+    if (vcr_fd4_local_unwind(d, trylevel, last_level, vcr_run_unwind4, &c) != 0)
+        terminate();
+}
+
+static void vcr_find_catch_block4(PEXCEPTION_RECORD rec, ULONG64 frame, const DISPATCHER_CONTEXT *dc, const vcr_fd4 *d,
+                                  const vcr_throwinfo *ti, ULONG64 orig_frame, int32_t trylevel)
+{
+    const char *base = (const char *)(uintptr_t)dc->ImageBase;
+    const char *exc_base = ti ? (const char *)(uintptr_t)(rec->NumberParameters == 4 ? rec->ExceptionInformation[3] : dc->ImageBase) : base;
+    const uint32_t func_rva = dc->FunctionEntry->BeginAddress;
+    vcr_tls *t = vcr_tls_get();
+    const uint8_t *tb = d->tryblock_map;
+    uint32_t i, j;
+
+    ++t->processing_throw;
+    if (trylevel == -2)
+        trylevel = vcr_fd4_ip_state(d, func_rva, (uint32_t)(dc->ControlPc - dc->ImageBase));
+    for (i = 0; i < d->tryblock_count; ++i) {
+        vcr_tb4 blk;
+        const uint8_t *cb;
+        vcr_tb4_read(base, &tb, &blk);
+        if (trylevel < blk.start_level || trylevel > blk.end_level)
+            continue;
+        cb = blk.catchblocks;
+        for (j = 0; j < blk.catch_count; ++j) {
+            vcr_cb4 c;
+            vcr_hit hit;
+            const vcr_catchable *ct = NULL;
+            if (!vcr_cb4_read(&cb, func_rva, &c))
+                terminate();
+            if (ti) {
+                ct = vcr_find_catchable(exc_base, c.type_info ? (const vcr_typedesc *)(base + c.type_info) : NULL, c.flags, ti);
+                if (!ct)
+                    continue;
+            } else if (c.type_info) {
+                continue; /* not a C++ exception: only catch (...) takes it */
+            }
+            memset(&hit, 0, sizeof hit);
+            hit.catchable = ct;
+            hit.flags = c.flags;
+            hit.type_info = c.type_info;
+            hit.handler = c.handler;
+            hit.offset = c.offset;
+            hit.start_level = blk.start_level;
+            hit.catch_level = blk.catch_level;
+            hit.ret_addr[0] = c.ret_addr[0];
+            hit.ret_addr[1] = c.ret_addr[1];
+            vcr_start_catch(rec, frame, dc, NULL, &hit, exc_base, orig_frame);
+        }
+    }
+    if (t->processing_throw > 0)
+        --t->processing_throw;
+}
+
+EXCEPTION_DISPOSITION __cdecl __CxxFrameHandler4(PEXCEPTION_RECORD rec, PVOID frame_ptr, PCONTEXT ctx, PVOID dispatch)
+{
+    const DISPATCHER_CONTEXT *dc = (const DISPATCHER_CONTEXT *)dispatch;
+    const char *base = (const char *)(uintptr_t)dc->ImageBase;
+    const ULONG64 frame = (ULONG64)(uintptr_t)frame_ptr;
+    const int catch_unwind = dc->TargetIp == (ULONG64)(uintptr_t)vcr_catch_entry;
+    vcr_tls *t = vcr_tls_get();
+    int32_t trylevel = t->trylevel4;
+    ULONG64 orig_frame = frame;
+    vcr_fd4 d;
+    (void)ctx;
+
+    t->trylevel4 = -2;
+    if (!vcr_fd4_parse(base, (const uint8_t *)(base + *(const uint32_t *)dc->HandlerData), dc->FunctionEntry->BeginAddress, &d))
+        return ExceptionContinueSearch;
+    if ((d.header & VCR4_EHS) && rec->ExceptionCode != VCR_CXX_EXCEPTION && !catch_unwind && rec->ExceptionCode != VCR_STATUS_LONGJUMP)
+        return ExceptionContinueSearch;
+    if (d.header & VCR4_IS_CATCH)
+        orig_frame = *(const ULONG64 *)(uintptr_t)(frame + d.frame);
+
+    if (rec->ExceptionFlags & (EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND)) {
+        int32_t last_level = -1;
+        if ((rec->ExceptionFlags & EXCEPTION_TARGET_UNWIND) && catch_unwind && t->pending)
+            last_level = t->pending->start_level;
+        else if ((rec->ExceptionFlags & EXCEPTION_TARGET_UNWIND) && rec->ExceptionCode == VCR_STATUS_LONGJUMP)
+            last_level = vcr_fd4_ip_state(&d, dc->FunctionEntry->BeginAddress, (uint32_t)(dc->TargetIp - dc->ImageBase));
+        vcr_local_unwind4(orig_frame, dc, &d, trylevel, last_level);
+        return ExceptionContinueSearch;
+    }
+    if (d.tryblock_map) {
+        const vcr_throwinfo *ti = NULL;
+        if (rec->ExceptionCode == VCR_CXX_EXCEPTION) {
+            ULONG_PTR magic0 = rec->ExceptionInformation[0];
+            if (magic0 >= VCR_EH_MAGIC_VC6 && magic0 <= VCR_EH_MAGIC_VC8)
+                ti = (const vcr_throwinfo *)rec->ExceptionInformation[2];
+        }
+        vcr_find_catch_block4(rec, frame, dc, &d, ti, orig_frame, trylevel);
+    }
+    if (!(d.header & VCR4_IS_CATCH) && rec->ExceptionCode == VCR_CXX_EXCEPTION && (d.header & VCR4_NO_EXCEPT))
+        terminate();
+    return ExceptionContinueSearch;
 }
 
 /* Runs the destructor of a thrown object that is not held by a catch. */
