@@ -421,3 +421,43 @@ EXPORTS
     GetNumberFormatEx
     GetCurrencyFormatW
     GetCurrencyFormatEx
+    EncodePointer
+    DecodePointer
+    EncodeSystemPointer
+    DecodeSystemPointer
+    VerSetConditionMask
+    VerifyVersionInfoW
+    GetLogicalProcessorInformation
+    GetLogicalProcessorInformationEx
+    GetMaximumProcessorGroupCount
+    GetNumaHighestNodeNumber
+    GetNumaNodeProcessorMask
+    GetNumaNodeProcessorMaskEx
+    GetNumaProcessorNode
+    GetNumaProcessorNodeEx
+    GetCurrentProcessorNumberEx
+    GetThreadGroupAffinity
+    SetThreadGroupAffinity
+    GetProcessGroupAffinity
+    GetThreadIdealProcessorEx
+    SetThreadIdealProcessorEx
+    GetSystemPowerStatus
+    SetThreadExecutionState
+    GetProductInfo
+    GetFirmwareType
+    SetHandleInformation
+    SetPriorityClass
+    GetCurrentPackageId
+    GetCurrentPackageFullName
+    GetCurrentPackageFamilyName
+    GetCurrentApplicationUserModelId
+    RtlCaptureContext = ntdll.RtlCaptureContext
+    RtlLookupFunctionEntry = ntdll.RtlLookupFunctionEntry
+    RtlRaiseException = ntdll.RtlRaiseException
+    RtlUnwind = ntdll.RtlUnwind
+    RtlUnwindEx = ntdll.RtlUnwindEx
+    RtlVirtualUnwind = ntdll.RtlVirtualUnwind
+    RtlRestoreContext = ntdll.RtlRestoreContext
+    RtlAddFunctionTable = ntdll.RtlAddFunctionTable
+    RtlDeleteFunctionTable = ntdll.RtlDeleteFunctionTable
+    __C_specific_handler = ntdll.__C_specific_handler
