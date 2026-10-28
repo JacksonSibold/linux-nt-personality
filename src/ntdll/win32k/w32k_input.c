@@ -10,10 +10,14 @@
  */
 #include "w32k_int.h"
 #include "w32k_evdev.h"
+#include "w32k_clip.h"
 
 static int32_t evdev_rel_dx;
 static int32_t evdev_rel_dy;
 static uint8_t clip_pool_storage[W32K_CLIP_POOL];
+/* Scratch for synthesised formats (w32k_clip.c). Valid until the next synthesis call. */
+static uint8_t clip_synth_text[W32K_CLIP_POOL];
+static uint16_t clip_synth_wide[W32K_CLIP_POOL];
 
 static w32k_station *main_station(void)
 {
@@ -434,6 +438,59 @@ int w32k_set_clipboard_data(uint32_t format, const void *data, size_t size)
     return 1;
 }
 
+static uint32_t clip_synth_source(w32k_station *s, uint32_t format);
+
+/* Converts the stored source format into the scratch buffers. Returns the synthesised
+ * data, or NULL when the source is missing or too large. */
+static const void *clip_synthesize(w32k_station *s, uint32_t format, size_t *size)
+{
+    uint32_t src_fmt = clip_synth_source(s, format);
+    int src_idx = -1;
+    size_t wrote;
+    const uint8_t *src;
+    size_t sz;
+    if (!src_fmt)
+        return NULL;
+    for (int i = 0; i < W32K_CLIP_FORMATS; ++i) {
+        if (s->clip_entries[i].used && s->clip_entries[i].format == src_fmt) {
+            src_idx = i;
+            break;
+        }
+    }
+    if (src_idx < 0)
+        return NULL;
+    src = s->clip_pool + s->clip_entries[src_idx].offset;
+    sz = s->clip_entries[src_idx].size;
+    if (src_fmt == W32K_CF_UNICODETEXT) {
+        /* UTF-16 source to CF_TEXT or CF_OEMTEXT bytes. The pool is not aligned for
+         * 16-bit reads, so the units are copied out first. */
+        size_t units = sz / 2u;
+        size_t i;
+        if (units > sizeof(clip_synth_wide) / sizeof(clip_synth_wide[0]))
+            units = sizeof(clip_synth_wide) / sizeof(clip_synth_wide[0]);
+        for (i = 0; i < units; ++i)
+            clip_synth_wide[i] = (uint16_t)(src[2 * i] | ((uint16_t)src[2 * i + 1] << 8));
+        wrote = w32k_clip_wide_to_text(clip_synth_wide, units, clip_synth_text, sizeof(clip_synth_text),
+                                       format == W32K_CF_OEMTEXT);
+        if (!wrote) {
+            w32k_set_error(W32K_ERROR_NOT_ENOUGH_MEMORY);
+            return NULL;
+        }
+        if (size)
+            *size = wrote;
+        return clip_synth_text;
+    }
+    /* CF_TEXT or CF_OEMTEXT source to UTF-16. */
+    wrote = w32k_clip_text_to_wide(src, sz, clip_synth_wide, sizeof(clip_synth_wide) / sizeof(clip_synth_wide[0]));
+    if (!wrote) {
+        w32k_set_error(W32K_ERROR_NOT_ENOUGH_MEMORY);
+        return NULL;
+    }
+    if (size)
+        *size = wrote * 2u;
+    return clip_synth_wide;
+}
+
 const void *w32k_get_clipboard_data(uint32_t format, size_t *size)
 {
     w32k_station *s = clip_station();
@@ -448,7 +505,32 @@ const void *w32k_get_clipboard_data(uint32_t format, size_t *size)
             return s->clip_pool + s->clip_entries[i].offset;
         }
     }
-    return NULL;
+    return clip_synthesize(s, format, size);
+}
+
+static int clip_has(w32k_station *s, uint32_t format)
+{
+    for (int i = 0; i < W32K_CLIP_FORMATS; ++i) {
+        if (s->clip_entries[i].used && s->clip_entries[i].format == format)
+            return 1;
+    }
+    return 0;
+}
+
+/* The format a synthesised one is converted from, or 0. CF_TEXT and CF_OEMTEXT come
+ * from CF_UNICODETEXT; CF_UNICODETEXT comes from CF_TEXT, or from CF_OEMTEXT when there
+ * is no CF_TEXT. */
+static uint32_t clip_synth_source(w32k_station *s, uint32_t format)
+{
+    if (format == W32K_CF_TEXT || format == W32K_CF_OEMTEXT)
+        return clip_has(s, W32K_CF_UNICODETEXT) ? W32K_CF_UNICODETEXT : 0;
+    if (format == W32K_CF_UNICODETEXT) {
+        if (clip_has(s, W32K_CF_TEXT))
+            return W32K_CF_TEXT;
+        if (clip_has(s, W32K_CF_OEMTEXT))
+            return W32K_CF_OEMTEXT;
+    }
+    return 0;
 }
 
 int w32k_is_clipboard_format_available(uint32_t format)
@@ -456,11 +538,7 @@ int w32k_is_clipboard_format_available(uint32_t format)
     w32k_station *s = clip_station();
     if (!s)
         return 0;
-    for (int i = 0; i < W32K_CLIP_FORMATS; ++i) {
-        if (s->clip_entries[i].used && s->clip_entries[i].format == format)
-            return 1;
-    }
-    return 0;
+    return clip_has(s, format) || clip_synth_source(s, format) != 0;
 }
 
 int w32k_count_clipboard_formats(void)

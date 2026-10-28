@@ -32,6 +32,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "w32k_font.h"
+
 /* Pointer-sized so a window procedure receives HWND in full, as on x64. Handle
  * values stay below 2^32 (see the encoding above). */
 typedef uintptr_t w32k_handle;
@@ -54,6 +56,8 @@ enum w32k_type {
     W32K_T_BRUSH = 10,
     W32K_T_PEN = 11,
     W32K_T_FONT = 12,
+    W32K_T_REGION = 13,
+    W32K_T_PALETTE = 14,
 };
 
 /* GetMessage return values. */
@@ -492,6 +496,8 @@ w32k_handle w32k_create_dib_section(int32_t w, int32_t h, uint32_t bpp, void **b
 w32k_handle w32k_create_solid_brush(uint32_t color);
 w32k_handle w32k_create_pen(uint32_t style, int32_t width, uint32_t color);
 w32k_handle w32k_create_font(int32_t height);
+w32k_handle w32k_create_font_indirect(const w32k_logfont *lf);
+int w32k_get_text_metrics(w32k_handle dc, w32k_tm *tm);
 w32k_handle w32k_select_object(w32k_handle dc, w32k_handle obj);
 int w32k_delete_object(w32k_handle obj);
 uint32_t w32k_get_object_type(w32k_handle obj);
@@ -514,6 +520,38 @@ int w32k_set_bk_mode(w32k_handle dc, int mode);
 int w32k_get_device_caps(w32k_handle dc, int index);
 /* Direct access to a bitmap's pixels (32bpp, top-down, BGRA little-endian). */
 uint32_t *w32k_bitmap_bits(w32k_handle bitmap, int32_t *w, int32_t *h);
+/* ---- Regions (w32k_region.c) ------------------------------------------------- */
+
+#define W32K_OBJ_REGION 4
+#define W32K_NULLREGION 1
+#define W32K_SIMPLEREGION 2
+#define W32K_COMPLEXREGION 3
+#define W32K_RGN_AND 1
+#define W32K_RGN_OR 2
+#define W32K_RGN_XOR 3
+#define W32K_RGN_DIFF 4
+#define W32K_RGN_COPY 5
+
+w32k_handle w32k_create_rect_rgn(int32_t l, int32_t t, int32_t r, int32_t b);
+w32k_handle w32k_create_rect_rgn_indirect(const w32k_rect *rc);
+w32k_handle w32k_create_elliptic_rgn(int32_t l, int32_t t, int32_t r, int32_t b);
+w32k_handle w32k_create_round_rect_rgn(int32_t l, int32_t t, int32_t r, int32_t b, int32_t ew, int32_t eh);
+w32k_handle w32k_create_polygon_rgn(const w32k_point *pts, int n, int fill_winding);
+int w32k_set_rect_rgn(w32k_handle rgn, int32_t l, int32_t t, int32_t r, int32_t b);
+int w32k_combine_rgn(w32k_handle dst, w32k_handle a, w32k_handle b, int mode);
+int w32k_get_rgn_box(w32k_handle rgn, w32k_rect *out);
+int w32k_pt_in_region(w32k_handle rgn, int32_t x, int32_t y);
+int w32k_rect_in_region(w32k_handle rgn, const w32k_rect *rc);
+int w32k_equal_rgn(w32k_handle a, w32k_handle b);
+int w32k_offset_rgn(w32k_handle rgn, int32_t dx, int32_t dy);
+int w32k_delete_region(w32k_handle rgn);
+/* DC clip: SelectClipRgn copies rgn (rgn 0 clears the clip). GetClipRgn returns 1 when a
+ * clip is set, 0 when none, and copies it into rgn. GetClipBox returns the region type of
+ * the clip's bounds. All coordinates are device coordinates. */
+int w32k_select_clip_rgn(w32k_handle dc, w32k_handle rgn);
+int w32k_get_clip_rgn(w32k_handle dc, w32k_handle rgn);
+int w32k_get_clip_box(w32k_handle dc, w32k_rect *out);
+
 /* The screen surface (fixed 1920x1080 framebuffer). Window DCs draw into it. */
 w32k_handle w32k_framebuffer(void);
 

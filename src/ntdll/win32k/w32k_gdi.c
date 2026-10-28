@@ -7,10 +7,11 @@
  * draw into it with the window's client origin and clip. Pixel memory comes
  * from a fixed arena (first fit, coalescing), so the code needs no libc.
  *
- * TextOut is a placeholder: each non-space character fills one 8x16 cell in the
- * text colour. There is no font rasteriser in this model.
+ * Text is drawn by the stroke font engine (w32k_font.c): TextOut writes glyph coverage
+ * into the surface, in the text colour, over the font's cell and an opaque background.
  */
 #include "w32k_int.h"
+#include "w32k_font.h"
 
 #define GDI_ARENA_BYTES (24u * 1024u * 1024u)
 #define GDI_FB_W 1920
@@ -44,6 +45,7 @@ typedef struct w32k_dc {
     w32k_handle brush, pen, font;
     int32_t org_x, org_y;
     w32k_rect clip;
+    w32k_handle clip_rgn;      /* private copy of the SelectClipRgn region, or 0 */
     uint32_t text_color;
     uint32_t bk_color;
     int bk_mode;
@@ -64,7 +66,7 @@ typedef struct w32k_pen {
 
 typedef struct w32k_font {
     w32k_hdr hdr;
-    int32_t height;
+    w32k_fontspec spec;
 } w32k_font;
 
 static uint64_t gdi_arena[GDI_ARENA_BYTES / 8u];
@@ -226,6 +228,15 @@ static int in_clip(const w32k_dc *dc, int32_t x, int32_t y)
     return x >= dc->clip.left && x < dc->clip.right && y >= dc->clip.top && y < dc->clip.bottom;
 }
 
+/* A device pixel may be drawn: inside the clip rectangle and, when a clip region is
+ * selected, inside that region. */
+static int dc_pix_ok(const w32k_dc *dc, int32_t x, int32_t y)
+{
+    if (!in_clip(dc, x, y))
+        return 0;
+    return dc->clip_rgn == 0 || w32k_region_contains(dc->clip_rgn, x, y);
+}
+
 static void put_pixel(w32k_bitmap *s, int32_t x, int32_t y, uint32_t pix)
 {
     s->bits[(size_t)y * (size_t)s->w + (size_t)x] = pix;
@@ -309,6 +320,7 @@ void w32k_gdi_init(void)
     pool_font.type = W32K_T_FONT;
 
     arena_reset();
+    w32k_region_init();
     framebuffer_h = new_bitmap(GDI_FB_W, GDI_FB_H, 0);
 
     {
@@ -341,7 +353,7 @@ void w32k_gdi_init(void)
         }
         {
             w32k_font *f = (w32k_font *)w32k_pool_alloc(&pool_font, &h);
-            f->height = GDI_CELL_H;
+            w32k_font_system_spec(&f->spec);
             w32k_g.stock_objects[9] = h; /* SYSTEM_FONT */
         }
     }
@@ -405,6 +417,7 @@ w32k_handle w32k_get_dc(w32k_handle hwnd)
     dc->brush = w32k_g.stock_objects[0];
     dc->pen = w32k_g.stock_objects[7];
     dc->font = w32k_g.stock_objects[9];
+    dc->clip_rgn = 0;
     if (hwnd) {
         w32k_rect cr;
         w32k_window *w = w32k_window_checked(hwnd);
@@ -431,6 +444,8 @@ int w32k_release_dc(w32k_handle hwnd, w32k_handle dch)
     (void)hwnd;
     if (!dc || dc->memory)
         return 0;
+    if (dc->clip_rgn)
+        w32k_delete_region(dc->clip_rgn);
     w32k_pool_free(&pool_dc, dc);
     return 1;
 }
@@ -479,6 +494,8 @@ int w32k_delete_dc(w32k_handle dch)
         arena_free(def->bits);
         w32k_pool_free(&pool_bmp, def);
     }
+    if (dc->clip_rgn)
+        w32k_delete_region(dc->clip_rgn);
     w32k_pool_free(&pool_dc, dc);
     return 1;
 }
@@ -539,13 +556,26 @@ w32k_handle w32k_create_pen(uint32_t style, int32_t width, uint32_t color)
 
 w32k_handle w32k_create_font(int32_t height)
 {
+    w32k_logfont lf;
+    w32k_zero(&lf, sizeof(lf));
+    lf.height = height;
+    return w32k_create_font_indirect(&lf);
+}
+
+w32k_handle w32k_create_font_indirect(const w32k_logfont *lf)
+{
     w32k_handle h;
-    w32k_font *f = (w32k_font *)w32k_pool_alloc(&pool_font, &h);
+    w32k_font *f;
+    if (!lf) {
+        w32k_set_error(W32K_ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    f = (w32k_font *)w32k_pool_alloc(&pool_font, &h);
     if (!f) {
         w32k_set_error(W32K_ERROR_NOT_ENOUGH_MEMORY);
         return 0;
     }
-    f->height = height < 0 ? -height : height;
+    w32k_font_spec_from_logfont(lf, &f->spec);
     return h;
 }
 
@@ -628,6 +658,8 @@ w32k_handle w32k_select_object(w32k_handle dch, w32k_handle obj)
 int w32k_delete_object(w32k_handle obj)
 {
     w32k_bitmap *b;
+    if (w32k_region_is(obj))
+        return w32k_delete_region(obj);
     for (int i = 0; i < 6; ++i) {
         if (w32k_g.stock_objects[i] == obj)
             return 1; /* stock objects are never deleted */
@@ -668,6 +700,8 @@ int w32k_delete_object(w32k_handle obj)
 
 uint32_t w32k_get_object_type(w32k_handle obj)
 {
+    if (w32k_region_is(obj))
+        return W32K_OBJ_REGION;
     if (brush_of(obj))
         return W32K_OBJ_BRUSH;
     if (pen_of(obj))
@@ -732,7 +766,8 @@ int w32k_fill_rect(w32k_handle dch, const w32k_rect *rc, w32k_handle brush)
         return 1;
     for (y = cl.top; y < cl.bottom; ++y)
         for (x = cl.left; x < cl.right; ++x)
-            put_pixel(s, x, y, pix);
+            if (dc_pix_ok(dc, x, y))
+                put_pixel(s, x, y, pix);
     return 1;
 }
 
@@ -748,7 +783,7 @@ uint32_t w32k_set_pixel(w32k_handle dch, int32_t x, int32_t y, uint32_t color)
         return W32K_CLR_INVALID;
     dx = x + dc->org_x;
     dy = y + dc->org_y;
-    if (!in_clip(dc, dx, dy))
+    if (!dc_pix_ok(dc, dx, dy))
         return W32K_CLR_INVALID;
     put_pixel(s, dx, dy, colorref_to_pixel(color));
     return color & 0x00FFFFFFu;
@@ -766,7 +801,7 @@ uint32_t w32k_get_pixel(w32k_handle dch, int32_t x, int32_t y)
         return W32K_CLR_INVALID;
     dx = x + dc->org_x;
     dy = y + dc->org_y;
-    if (!in_clip(dc, dx, dy))
+    if (!dc_pix_ok(dc, dx, dy))
         return W32K_CLR_INVALID;
     return pixel_to_colorref(get_pixel_raw(s, dx, dy));
 }
@@ -829,7 +864,10 @@ int w32k_bitblt(w32k_handle dsth, int32_t x, int32_t y, int32_t w, int32_t h, w3
             int32_t i2 = px - dr.left;
             int32_t j2 = py - dr.top;
             uint32_t s = tmp ? tmp[(size_t)j2 * (size_t)w + (size_t)i2] : 0;
-            uint32_t d = get_pixel_raw(ds, px, py);
+            uint32_t d;
+            if (!dc_pix_ok(dst, px, py))
+                continue;
+            d = get_pixel_raw(ds, px, py);
             put_pixel(ds, px, py, rop_apply(rop, s, d, brush_pix));
         }
     }
@@ -873,6 +911,8 @@ int w32k_stretchblt(w32k_handle dsth, int32_t x, int32_t y, int32_t w, int32_t h
             int32_t spx = sx + src->org_x + (int32_t)(((int64_t)ox * sw) / w);
             int32_t spy = sy + src->org_y + (int32_t)(((int64_t)oy * sh) / h);
             uint32_t s = 0, d;
+            if (!dc_pix_ok(dst, px, py))
+                continue;
             if (spx >= 0 && spy >= 0 && spx < ss->w && spy < ss->h)
                 s = get_pixel_raw(ss, spx, spy);
             d = get_pixel_raw(ds, px, py);
@@ -882,11 +922,35 @@ int w32k_stretchblt(w32k_handle dsth, int32_t x, int32_t y, int32_t w, int32_t h
     return 1;
 }
 
+/* ---- Text ------------------------------------------------------------------------ */
+
+/* Coverage of one glyph at a time. The model is single-threaded per DC, and the glyph is
+ * copied into the surface before the next character is rasterised. */
+static uint8_t text_cov[W32K_FONT_MAX_H * W32K_FONT_MAX_CELL_W];
+
+/* The font spec of a DC's selected font. A DC without a font (never the case in practice)
+ * gets the system font. */
+static const w32k_fontspec *dc_font_spec(const w32k_dc *dc, w32k_fontspec *fallback)
+{
+    w32k_font *f = font_of(dc->font);
+    if (f)
+        return &f->spec;
+    w32k_font_system_spec(fallback);
+    return fallback;
+}
+
+/* TextOut with TA_TOP | TA_LEFT: (x, y) is the top-left of the first cell. Each character
+ * advances the pen by its glyph advance. An opaque background fills each cell (advance by
+ * height); a transparent one leaves the uncovered pixels alone. */
 int w32k_text_out(w32k_handle dch, int32_t x, int32_t y, const uint16_t *s, int len)
 {
     w32k_dc *dc = dc_of(dch);
     w32k_bitmap *surf;
+    w32k_fontspec fb;
+    const w32k_fontspec *spec;
     uint32_t fg, bg;
+    int32_t pen = 0;
+    int32_t cy;
     if (!dc || (!s && len > 0) || len < 0) {
         w32k_set_error(W32K_ERROR_INVALID_PARAMETER);
         return 0;
@@ -894,46 +958,64 @@ int w32k_text_out(w32k_handle dch, int32_t x, int32_t y, const uint16_t *s, int 
     surf = dc_surface(dc);
     if (!surf)
         return 0;
+    spec = dc_font_spec(dc, &fb);
     fg = colorref_to_pixel(dc->text_color);
     bg = colorref_to_pixel(dc->bk_color);
+    cy = y + dc->org_y;
     for (int i = 0; i < len; ++i) {
-        w32k_rect cell;
-        int32_t cx = x + dc->org_x + i * GDI_CELL_W;
-        int32_t cy = y + dc->org_y;
+        int32_t adv = w32k_font_glyph(spec, s[i], text_cov, W32K_FONT_MAX_CELL_W);
+        int32_t cx = x + dc->org_x + pen;
+        w32k_rect cell, cl;
+        if (adv <= 0)
+            return 0;
         cell.left = cx;
         cell.top = cy;
-        cell.right = cx + GDI_CELL_W;
-        cell.bottom = cy + GDI_CELL_H;
-        if (dc->bk_mode == W32K_OPAQUE) {
-            w32k_rect cl;
-            if (w32k_rect_intersect(&cl, &cell, &dc->clip)) {
-                for (int32_t py = cl.top; py < cl.bottom; ++py)
-                    for (int32_t px = cl.left; px < cl.right; ++px)
-                        put_pixel(surf, px, py, bg);
-            }
-        }
-        if (s[i] != ' ') {
-            w32k_rect cl;
-            if (w32k_rect_intersect(&cl, &cell, &dc->clip)) {
-                for (int32_t py = cl.top; py < cl.bottom; ++py)
-                    for (int32_t px = cl.left; px < cl.right; ++px)
-                        put_pixel(surf, px, py, fg);
+        cell.right = cx + adv;
+        cell.bottom = cy + spec->height;
+        pen += adv;
+        if (!w32k_rect_intersect(&cl, &cell, &dc->clip))
+            continue;
+        for (int32_t py = cl.top; py < cl.bottom; ++py) {
+            for (int32_t px = cl.left; px < cl.right; ++px) {
+                uint8_t c = text_cov[(size_t)(py - cy) * W32K_FONT_MAX_CELL_W + (size_t)(px - cx)];
+                if (!dc_pix_ok(dc, px, py))
+                    continue;
+                if (c)
+                    put_pixel(surf, px, py, fg);
+                else if (dc->bk_mode == W32K_OPAQUE)
+                    put_pixel(surf, px, py, bg);
             }
         }
     }
     return 1;
 }
 
+/* Extent of a string in the DC's font: the sum of the glyph advances, by the font height. */
 int w32k_get_text_extent(w32k_handle dch, const uint16_t *s, int len, w32k_size *sz)
 {
-    (void)dch;
-    (void)s;
-    if (!sz || len < 0) {
+    w32k_dc *dc = dc_of(dch);
+    w32k_fontspec fb;
+    const w32k_fontspec *spec;
+    if (!dc || !sz || (!s && len > 0) || len < 0) {
         w32k_set_error(W32K_ERROR_INVALID_PARAMETER);
         return 0;
     }
-    sz->cx = len * GDI_CELL_W;
-    sz->cy = GDI_CELL_H;
+    spec = dc_font_spec(dc, &fb);
+    sz->cx = w32k_font_text_width(spec, s, len);
+    sz->cy = spec->height;
+    return 1;
+}
+
+/* Metrics of the DC's font. */
+int w32k_get_text_metrics(w32k_handle dch, w32k_tm *tm)
+{
+    w32k_dc *dc = dc_of(dch);
+    w32k_fontspec fb;
+    if (!dc || !tm) {
+        w32k_set_error(W32K_ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    w32k_font_metrics(dc_font_spec(dc, &fb), tm);
     return 1;
 }
 
@@ -998,4 +1080,76 @@ int w32k_get_device_caps(w32k_handle dch, int index)
     case W32K_LOGPIXELSY: return 96;
     default: return 0;
     }
+}
+
+/* ---- DC clip region ------------------------------------------------------------------ */
+
+/* SelectClipRgn. The DC keeps a private copy, so the caller may delete rgn afterwards. A
+ * zero rgn clears the clip and returns SIMPLEREGION (the whole surface is visible). A
+ * failure returns 0 (ERROR). */
+int w32k_select_clip_rgn(w32k_handle dch, w32k_handle rgn)
+{
+    w32k_dc *dc = dc_of(dch);
+    w32k_handle copy = 0;
+    w32k_rect bounds;
+    int type;
+    if (!dc) {
+        w32k_set_error(W32K_ERROR_INVALID_HANDLE);
+        return 0;
+    }
+    if (rgn) {
+        if (!w32k_region_is(rgn)) {
+            w32k_set_error(W32K_ERROR_INVALID_HANDLE);
+            return 0;
+        }
+        copy = w32k_region_dup(rgn);
+        if (!copy)
+            return 0;
+    }
+    if (dc->clip_rgn)
+        w32k_delete_region(dc->clip_rgn);
+    dc->clip_rgn = copy;
+    if (!copy)
+        return W32K_SIMPLEREGION;
+    type = w32k_get_rgn_box(copy, &bounds);
+    return type == W32K_NULLREGION ? W32K_NULLREGION : type;
+}
+
+/* GetClipRgn: 1 with the clip copied into rgn, 0 when no clip is set. */
+int w32k_get_clip_rgn(w32k_handle dch, w32k_handle rgn)
+{
+    w32k_dc *dc = dc_of(dch);
+    if (!dc || !rgn || !w32k_region_is(rgn)) {
+        w32k_set_error(W32K_ERROR_INVALID_HANDLE);
+        return -1;
+    }
+    if (!dc->clip_rgn)
+        return 0;
+    return w32k_region_copy_into(rgn, dc->clip_rgn) ? 1 : -1;
+}
+
+/* GetClipBox: the bounds of the clip (its region, intersected with the clip rectangle)
+ * in device coordinates. Returns NULLREGION for an empty clip, SIMPLEREGION otherwise. */
+int w32k_get_clip_box(w32k_handle dch, w32k_rect *out)
+{
+    w32k_dc *dc = dc_of(dch);
+    w32k_rect box, cut;
+    if (!dc || !out) {
+        w32k_set_error(W32K_ERROR_INVALID_HANDLE);
+        return 0;
+    }
+    if (dc->clip_rgn) {
+        if (!w32k_get_rgn_box(dc->clip_rgn, &box)) {
+            out->left = out->top = out->right = out->bottom = 0;
+            return W32K_NULLREGION;
+        }
+    } else {
+        box = dc->clip;
+    }
+    if (!w32k_rect_intersect(&cut, &box, &dc->clip)) {
+        out->left = out->top = out->right = out->bottom = 0;
+        return W32K_NULLREGION;
+    }
+    *out = cut;
+    return W32K_SIMPLEREGION;
 }

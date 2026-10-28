@@ -22,6 +22,7 @@
 #   test_k32_io_pure      std handles, ReadFile/WriteFile status, console mode and text (k32_io_pure.h)
 #   test_k32_sync_pure    WaitForMultipleObjects args and results, critical-section counts, GetTickCount (k32_sync_pure.h)
 #   test_k32_mm_pure      CreateFileMapping flags, MapViewOfFile access and offsets (k32_mm_pure.h)
+#   test_k32_global_pure  GlobalAlloc/LocalAlloc handle table: locks, realloc, discard, stale handles (k32_global_pure.h)
 #   test_k32_thread_pure  CreateThread flags, exit codes, suspend results (k32_thread_pure.h)
 #   test_k32_find_pure    FindFirstFile wildcards, temp path and temp names, environment match (k32_find_pure.h)
 #   test_k32_sys_pure     thread and process priority, handle flags, PE binary type (k32_sys_pure.h)
@@ -32,6 +33,7 @@
 #   test_w32k_input       win32k model: keyboard and mouse routing, async state, evdev decoding
 #   test_w32k_sys         win32k model: clipboard, metrics, monitors, display settings, stations, cursors
 #   test_w32k_gdi         win32k model: DC, surfaces, blits, stock and selectable objects, arena
+#   test_w32k_clip        clipboard text conversions (CF_TEXT, CF_UNICODETEXT, CF_OEMTEXT) and synthesis
 #
 # SANITIZE=auto (default) enables -fsanitize=address,undefined only when a
 # probe program both links and runs with it. The MSYS2 UCRT64 gcc on the
@@ -97,7 +99,7 @@ CPPFLAGS := -I$(SRC) -I$(LOADER) -I$(W32K)
 # defined before the first system header, which minitest.h's stdio.h already is.
 CFLAGS   := -std=c11 -g $(OPT_LEVEL) -Wall -Wextra -Werror -D_GNU_SOURCE $(COV_FLAGS) $(SAN_FLAGS)
 
-TESTS    := test_ntstatus_to_dos test_advapi_pure test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure test_ldr_mapped_pure test_ldr_sched test_k32_module_pure test_k32_io_pure test_k32_file_pure test_k32_sync_pure test_k32_mm_pure test_k32_thread_pure test_k32_find_pure test_k32_sys_pure test_k32_str_pure test_k32_env_pure test_w32k_window test_w32k_msg test_w32k_input test_w32k_sys test_w32k_gdi
+TESTS    := test_ntstatus_to_dos test_advapi_pure test_unwind test_unwind_pure test_except test_except_pure test_runtime test_win32_policy test_msvcrt_policy test_pe_bounds test_ldr_pure test_ldr_mapped_pure test_ldr_sched test_k32_module_pure test_k32_io_pure test_k32_file_pure test_k32_sync_pure test_k32_mm_pure test_k32_global_pure test_k32_thread_pure test_k32_find_pure test_k32_sys_pure test_k32_str_pure test_k32_env_pure test_w32k_window test_w32k_msg test_w32k_input test_w32k_sys test_w32k_gdi test_w32k_clip test_w32k_font test_w32k_region
 TEST_BINS := $(addprefix $(OUT)/,$(addsuffix $(EXE_SUFFIX),$(TESTS)))
 
 # test_pe_bounds is build-only on this host: Windows Application Control blocks
@@ -190,6 +192,10 @@ $(OUT)/test_k32_thread_pure$(EXE_SUFFIX): test_k32_thread_pure.c minitest.h $(SR
 $(OUT)/test_k32_mm_pure$(EXE_SUFFIX): test_k32_mm_pure.c minitest.h $(SRC)/k32_mm_pure.h $(SRC)/nt_types.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
 
+# Header-only Global*/Local* handle table (src/ntdll/k32_global_pure.h, used by kernel32_global.c).
+$(OUT)/test_k32_global_pure$(EXE_SUFFIX): test_k32_global_pure.c minitest.h $(SRC)/k32_global_pure.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
+
 # Header-only advapi32 registry mapping (src/ntdll/advapi_pure.h, used by advapi32.c).
 $(OUT)/test_advapi_pure$(EXE_SUFFIX): test_advapi_pure.c minitest.h $(SRC)/advapi_pure.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ $(LDFLAGS)
@@ -234,7 +240,7 @@ $(OUT)/test_runtime$(EXE_SUFFIX): $(OUT)/ntdll_runtime.o $(OUT)/test_runtime.o
 $(OUT)/ntdll_runtime.o: EXTRA_CFLAGS := -fno-builtin -fno-tree-loop-distribute-patterns -Wno-error=attributes
 
 # win32k model (src/ntdll/win32k): one object per source, shared by the w32k tests.
-W32K_SRCS := w32k_core.c w32k_msg.c w32k_input.c w32k_sys.c w32k_gdi.c
+W32K_SRCS := w32k_core.c w32k_msg.c w32k_input.c w32k_sys.c w32k_gdi.c w32k_clip.c w32k_font.c w32k_region.c
 W32K_OBJS := $(addprefix $(OUT)/,$(W32K_SRCS:.c=.o))
 $(OUT)/w32k_%.o: $(W32K)/w32k_%.c $(W32K)/w32k.h $(W32K)/w32k_int.h $(W32K)/w32k_evdev.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@

@@ -49,6 +49,24 @@ EXPORTS
     SetLastError
     VirtualAlloc
     VirtualFree
+    GlobalAlloc
+    GlobalFree
+    GlobalLock
+    GlobalUnlock
+    GlobalSize
+    GlobalFlags
+    GlobalHandle
+    GlobalReAlloc
+    GlobalDiscard
+    LocalAlloc
+    LocalFree
+    LocalLock
+    LocalUnlock
+    LocalSize
+    LocalFlags
+    LocalHandle
+    LocalReAlloc
+    LocalDiscard
     VirtualProtect
     GetProcAddress
     LoadLibraryW

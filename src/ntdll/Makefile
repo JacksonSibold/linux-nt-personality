@@ -108,7 +108,7 @@ check: $(OUT)/ntdll.dll $(OUT)/ntdll.def
 
 # kernel32.dll (S3 of the console milestone): kernel32.c with the runtime helpers
 # (memcpy, strlen, ...) that ntdll.dll does not export, importing ntdll.dll.
-K32_OBJS := $(OUT)/kernel32.o $(OUT)/kernel32_mm.o $(OUT)/kernel32_thread.o $(OUT)/kernel32_fs.o $(OUT)/kernel32_misc.o $(OUT)/kernel32_sys.o $(OUT)/kernel32_str.o $(OUT)/kernel32_env.o $(OUT)/k32_runtime.o
+K32_OBJS := $(OUT)/kernel32.o $(OUT)/kernel32_mm.o $(OUT)/kernel32_thread.o $(OUT)/kernel32_fs.o $(OUT)/kernel32_misc.o $(OUT)/kernel32_sys.o $(OUT)/kernel32_str.o $(OUT)/kernel32_env.o $(OUT)/kernel32_global.o $(OUT)/k32_runtime.o
 
 $(OUT)/k32_runtime.o: ntdll_runtime.c | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
@@ -145,7 +145,7 @@ $(OUT)/user32.o: user32.c | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 # win32k model (src/ntdll/win32k): the service layer behind user32 and gdi32. One object per
 # source; the shims (user32_win32k.c, gdi32_win32k.c) convert the Win32 ABI to the model.
-W32K_CORE_OBJS := $(addprefix $(OUT)/,w32k_core.o w32k_msg.o w32k_input.o w32k_sys.o w32k_gdi.o)
+W32K_CORE_OBJS := $(addprefix $(OUT)/,w32k_core.o w32k_msg.o w32k_input.o w32k_sys.o w32k_gdi.o w32k_clip.o w32k_font.o w32k_region.o)
 $(OUT)/w32k_%.o: win32k/w32k_%.c win32k/w32k.h win32k/w32k_int.h win32k/w32k_evdev.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OUT)/user32_win32k.o: user32_win32k.c win32k/w32k.h | $(OUT)

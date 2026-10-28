@@ -239,12 +239,25 @@ static void test_stretchblt_nearest(void)
 
 /* ---- Text --------------------------------------------------------------------- */
 
-static void test_text_placeholder_cells(void)
+/* Counts pixels equal to colour c in the box [x0,x1) x [y0,y1) of a 32-wide surface. */
+static int count_colour(const uint32_t *p, int x0, int x1, int y0, int y1, uint32_t c)
+{
+    int n = 0;
+    for (int y = y0; y < y1; ++y)
+        for (int x = x0; x < x1; ++x)
+            n += p[y * 32 + x] == c;
+    return n;
+}
+
+/* The stroke font draws real glyphs: 'A' has a red apex on the cap line and leaves most
+ * of its 8x16 cell on the opaque background. */
+static void test_text_glyph_cells(void)
 {
     void *bits;
     w32k_handle dc;
     uint32_t *p;
     w32k_size sz;
+    int red;
     static const uint16_t text[] = {'A', ' ', 'B'};
     w32k_init();
     dc = mem_dc(32, 16, &bits, NULL);
@@ -252,17 +265,60 @@ static void test_text_placeholder_cells(void)
     MT_EXPECT(w32k_set_text_color(dc, 0x000000FFu) == 0);
     MT_EXPECT(w32k_set_bk_color(dc, 0x00FFFFFFu) == 0xFFFFFFu);
     MT_EXPECT(w32k_text_out(dc, 0, 0, text, 3));
-    /* 'A' fills the first cell with the text colour (XRGB red). */
-    MT_EXPECT_EQ(p[0], 0x00FF0000u);
-    /* The space keeps the opaque background. */
-    MT_EXPECT_EQ(p[8], 0x00FFFFFFu);
-    /* 'B' starts at column 16. */
-    MT_EXPECT_EQ(p[16], 0x00FF0000u);
+    /* 'A' apex: the design apex sits on the cap line at the centre column. */
+    red = count_colour(p, 0, 8, 0, 16, 0x00FF0000u);
+    MT_EXPECT(red > 0);
+    MT_EXPECT(red < 8 * 16 / 2);
+    MT_EXPECT_EQ(p[3], 0x00FF0000u);
+    /* Uncovered pixels in the cell keep the opaque background. */
+    MT_EXPECT_EQ(p[0], 0x00FFFFFFu);
+    /* The space keeps the opaque background across its whole cell. */
+    MT_EXPECT_EQ(count_colour(p, 8, 16, 0, 16, 0x00FFFFFFu), 8 * 16);
+    /* 'B' starts at column 16 and draws its stem there. */
+    MT_EXPECT(count_colour(p, 16, 24, 0, 16, 0x00FF0000u) > 0);
     MT_EXPECT(w32k_get_text_extent(dc, text, 3, &sz));
     MT_EXPECT_EQ(sz.cx, 24);
     MT_EXPECT_EQ(sz.cy, 16);
     MT_EXPECT(w32k_set_bk_mode(dc, W32K_TRANSPARENT) == W32K_OPAQUE);
     MT_EXPECT(!w32k_set_bk_mode(dc, 9));
+    MT_EXPECT(w32k_delete_dc(dc));
+}
+
+/* A transparent background leaves the uncovered pixels as they were. */
+static void test_text_transparent_keeps_pixels(void)
+{
+    void *bits;
+    w32k_handle dc;
+    uint32_t *p;
+    static const uint16_t text[] = {'A'};
+    w32k_init();
+    dc = mem_dc(32, 16, &bits, NULL);
+    p = (uint32_t *)bits;
+    for (int i = 0; i < 32 * 16; ++i)
+        p[i] = 0x00123456u;
+    MT_EXPECT(w32k_set_text_color(dc, 0x000000FFu) == 0);
+    MT_EXPECT(w32k_set_bk_mode(dc, W32K_TRANSPARENT) == W32K_OPAQUE);
+    MT_EXPECT(w32k_text_out(dc, 0, 0, text, 1));
+    MT_EXPECT_EQ(p[0], 0x00123456u);
+    MT_EXPECT_EQ(count_colour(p, 0, 8, 0, 16, 0x00123456u) < 8 * 16, 1);
+    MT_EXPECT_EQ(count_colour(p, 0, 8, 0, 16, 0x00FF0000u) > 0, 1);
+    MT_EXPECT(w32k_delete_dc(dc));
+}
+
+/* A text origin offsets the first cell: columns before the origin keep the background. */
+static void test_text_clipped_to_dc(void)
+{
+    void *bits;
+    w32k_handle dc;
+    uint32_t *p;
+    static const uint16_t text[] = {'M'};
+    w32k_init();
+    dc = mem_dc(32, 16, &bits, NULL);
+    p = (uint32_t *)bits;
+    MT_EXPECT(w32k_set_text_color(dc, 0x000000FFu) == 0);
+    MT_EXPECT(w32k_text_out(dc, 4, 0, text, 1));
+    /* 'M' starts at column 4, so columns 0..3 keep the cleared background. */
+    MT_EXPECT_EQ(count_colour(p, 0, 4, 0, 16, 0x00FF0000u), 0);
     MT_EXPECT(w32k_delete_dc(dc));
 }
 
@@ -376,7 +432,9 @@ int main(void)
         {"bitblt_rops", test_bitblt_rops},
         {"bitblt_overlap_clip", test_bitblt_overlap_and_clip},
         {"stretchblt_nearest", test_stretchblt_nearest},
-        {"text_placeholder_cells", test_text_placeholder_cells},
+        {"text_glyph_cells", test_text_glyph_cells},
+        {"text_transparent_keeps_pixels", test_text_transparent_keeps_pixels},
+        {"text_origin_offsets_cell", test_text_clipped_to_dc},
         {"select_delete_rules", test_select_and_delete_rules},
         {"pen_font_objects", test_pen_and_font_objects},
         {"arena_reuse_after_free", test_arena_reuse_after_free},

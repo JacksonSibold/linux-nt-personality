@@ -261,6 +261,16 @@ void w32k_broadcast_displaychange(void);
 
 /* GDI setup and framebuffer (w32k_gdi.c). */
 void w32k_gdi_init(void);
+
+/* Regions (w32k_region.c). Internal: the model and its tests use these. */
+void w32k_region_init(void);
+int w32k_region_is(w32k_handle h);
+int w32k_region_contains(w32k_handle h, int32_t x, int32_t y);
+w32k_handle w32k_region_dup(w32k_handle src);
+int w32k_region_copy_into(w32k_handle dst, w32k_handle src);
+uint32_t w32k_region_rect_count(w32k_handle h);
+int w32k_region_rect_at(w32k_handle h, uint32_t i, w32k_rect *out);
+uint32_t w32k_region_count_live(void);
 void w32k_gdi_reset(void);
 w32k_handle w32k_framebuffer(void);
 
