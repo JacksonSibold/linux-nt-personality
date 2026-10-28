@@ -6,6 +6,15 @@
 #include "winerror.h"
 #include "minwinbase.h"
 
+#ifndef WAIT_OBJECT_0
+#define WAIT_OBJECT_0 0
+#define INFINITE 0xffffffff
+#endif
+
+#ifndef MAXINTATOM
+#define MAXINTATOM 0xc000
+#endif
+
 #ifndef INVALID_HANDLE_VALUE
 #define INVALID_HANDLE_VALUE ((HANDLE)(LONG_PTR)-1)
 #endif
@@ -40,6 +49,17 @@ BOOL WINAPI HeapFree(HANDLE, DWORD, LPVOID);
 int WINAPI MultiByteToWideChar(UINT, DWORD, LPCSTR, int, LPWSTR, int);
 int WINAPI WideCharToMultiByte(UINT, DWORD, LPCWSTR, int, LPSTR, int, LPCSTR, BOOL *);
 int WINAPI lstrcmpW(LPCWSTR, LPCWSTR);
+SIZE_T WINAPI HeapSize(HANDLE, DWORD, LPCVOID);
+LPVOID WINAPI HeapReAlloc(HANDLE, DWORD, LPVOID, SIZE_T);
+DWORD WINAPI GetEnvironmentVariableA(LPCSTR, LPSTR, DWORD);
+BOOL WINAPI SetEnvironmentVariableA(LPCSTR, LPCSTR);
+DWORD WINAPI GetCurrentDirectoryA(DWORD, LPSTR);
+DWORD WINAPI GetCurrentDirectoryW(DWORD, LPWSTR);
+BOOL WINAPI SetCurrentDirectoryA(LPCSTR);
+BOOL WINAPI SetCurrentDirectoryW(LPCWSTR);
+HANDLE WINAPI GetCurrentProcess(void);
+BOOL WINAPI InitializeAcl(PACL, DWORD, DWORD);
+BOOL WINAPI ConvertSidToStringSidW(PSID, LPWSTR *);
 int WINAPI lstrlenW(LPCWSTR);
 int WINAPI lstrlenA(LPCSTR);
 int WINAPI lstrcmpiW(LPCWSTR, LPCWSTR);

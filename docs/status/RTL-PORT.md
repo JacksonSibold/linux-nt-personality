@@ -31,18 +31,25 @@ make -C tests/rtl-host test        # needs gcc; uses AddressSanitizer and UBSan 
 
 ## What is in
 
-| Source | Functions | Host test (Wine's) | Result |
+| Source | Functions | Host test | Result |
 |---|---|---|---|
-| `rtlstr.c` | `RtlInit*String`, copy, compare, equal, prefix, append, upcase, find, `Rtl*ToInteger`, `Rtl*ToUnicodeString`, `RtlIsTextUnicode`, `RtlFormatMessage`, `RtlIpv4/6AddressToString` and back, GUID text | `rtlstr.c` | 2,178,624 checks, 0 failures, 3 known divergences |
-| `string.c`, `wcstring.c`, `printf.c` | the C library names ntdll.dll exports (`str*`, `wcs*`, `_itoa`, `is*`, `sprintf`, ...) | `string.c` | 1,973,158 checks, 0 failures |
-| `large_int.c` | `RtlLargeInteger*`, `RtlExtended*`, 64-bit shifts and division | `large_int.c` | 612 checks, 0 failures |
-| `rtlbitmap.c` | `RtlInitializeBitMap`, set, clear, find, run searches | `rtlbitmap.c` | 378 checks, 0 failures |
-| `time.c` | `RtlTimeToTimeFields`, `RtlTimeFieldsToTime`, seconds-since conversions | `time.c` (the conversion part) | 10,564 checks, 0 failures |
+| `rtlstr.c` | `RtlInit*String`, copy, compare, equal, prefix, append, upcase, find, `Rtl*ToInteger`, `Rtl*ToUnicodeString`, `RtlIsTextUnicode`, `RtlFormatMessage`, `RtlIpv4/6AddressToString` and back, GUID text | Wine `rtlstr.c` | 2,178,624 checks, 0 failures, 3 known divergences |
+| `string.c`, `wcstring.c`, `printf.c` | the C library names ntdll.dll exports (`str*`, `wcs*`, `_itoa`, `is*`, `sprintf`, ...) | Wine `string.c` | 1,973,158 checks, 0 failures |
+| `large_int.c` | `RtlLargeInteger*`, `RtlExtended*`, 64-bit shifts and division | Wine `large_int.c` | 612 checks, 0 failures |
+| `rtlbitmap.c` | `RtlInitializeBitMap`, set, clear, find, run searches | Wine `rtlbitmap.c` | 378 checks, 0 failures |
+| `time.c` | `RtlTimeToTimeFields`, `RtlTimeFieldsToTime`, seconds-since conversions | Wine `time.c` (the conversion part) | 10,564 checks, 0 failures |
 | `nls.c` | `RtlMultiByteToUnicodeN`, `RtlUnicodeToMultiByteN`, OEM and UTF-8 forms, `RtlUpcaseUnicodeChar`, `RtlCompareUnicodeStrings`, `RtlHashUnicodeString`, `towlower`, `towupper` | covered by `rtlstr.c` and `string.c` | passes |
-| `misc.c` | `qsort`, `bsearch`, `_lfind`, `Etw*` and `WinSqm*` stubs | `string.c` | passes |
+| `misc.c` | `qsort`, `bsearch`, `_lfind`, `Etw*` and `WinSqm*` stubs | covered by `string.c` | passes |
+| `path.c` | `RtlDosPathNameToNtPathName_U`, `RtlGetFullPathName_U`, `RtlDetermineDosPathNameType_U`, `RtlIsDosDeviceName_U`, `RtlIsNameLegalDOS8Dot3`, `RtlSetCurrentDirectory_U`, `RtlDoesFileExists_U` | Wine `path.c` (without the two tests that need a file system) | 928 checks, 0 failures |
+| `env.c` | `RtlCreateEnvironment`, `RtlSetEnvironmentVariable`, `RtlQueryEnvironmentVariable(_U)`, `RtlExpandEnvironmentStrings(_U)`, `RtlCreateProcessParametersEx`, `RtlNormalizeProcessParams` | Wine `env.c` | 607 checks, 0 failures |
+| `rtl.c` | generic tables (splay and AVL), red-black trees, `RtlUniform`, `RtlRandomEx`, CRC-32, LZNT1 compression, pointer encoding, handle tables, IPv4 and IPv6 text, access checks | Wine `rtl.c` (subset) | 599,612 checks, 0 failures, 48 known divergences |
+| `sec.c`, `sha.c` | SIDs, ACLs, security descriptors, `RtlDeriveCapabilitySidsFromName`; SHA-1 and SHA-256 (written here, Wine uses SymCrypt) | Wine `rtl.c`; `own/sha.c` | passes; 16 checks against NIST vectors |
+| `atom.c`, `handletable.c`, `version.c`, `crypt.c`, `image.c`, `reg.c`, `error.c` | atom tables, handle tables, `RtlVerifyVersionInfo`, `RtlGetNtVersionNumbers` (identity from `os_identity.h`), MD4/MD5/SHA-1 primitives, `RtlImageNtHeader` and `RtlImageDirectoryEntryToData`, `RtlOpenCurrentUser` and the registry helpers, last-error accessors | partly by `rtl.c` | linked into ntdll.dll; no dedicated host test |
 
 ## What is not
 
+- Wine's `__TRY ... __EXCEPT_PAGE_FAULT` guards around user pointers (in `sec.c`, `rtl.c`, `image.c`) run the guarded block without a handler (`compat/wine/exception.h`). An invalid pointer faults instead of returning `STATUS_ACCESS_VIOLATION`. This goes away when `seh.c` can carry the frames.
+- The tests of `rtl.c` that exercise the loader, heaps, timers, critical sections and debug output are not run on the host; Wine's atom test needs kernel32 and is left out.
 - The rest of `time.c`'s tests (time zone, timer resolution, shared user data) and the bad-pointer checks test system calls and
   the shared user data page. They are disabled on the host and belong in the VM run.
 - Double-byte code pages (932, 936, 949, 950) are not in `nls_tables.h` yet. Single-byte pages 437 to 874, 1250 to 1258 and
@@ -58,7 +65,7 @@ its ntdll. `ntdll_runtime.c` leaves out the string functions that Wine's `string
 
 `src/ntdll/rtl/rtl_exports.txt` lists the exports: `build/gen_rtl_exports.py` reads Wine's `ntdll.spec` and the objects and
 writes every spec entry whose symbol the objects define (aliases such as `sprintf=NTDLL_sprintf` included), and
-`build/gen_ntdll_def.py` adds the file to the module definition. `ntdll.dll` exports 749 names, up from 427.
+`build/gen_ntdll_def.py` adds the file to the module definition. `ntdll.dll` exports 941 names, up from 427.
 
 None of this code has run in a Windows process here. The DLL is checked at link time only (`--no-undefined`, export list
 against the sources, `make -C src/ntdll check`); the logic is the code that the host tests run.

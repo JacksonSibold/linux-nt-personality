@@ -29,6 +29,8 @@ for fn in files:
         if name.startswith(("Rtl", "Etw")):
             continue
         sig = " ".join(m.group("sig").split())
+        if re.match(r"(static|extern)\b", sig):
+            continue
         sig = re.sub(r"\bDECLSPEC_HOTPATCH\b\s*", "", sig)
         defs.setdefault(name, sig)
 

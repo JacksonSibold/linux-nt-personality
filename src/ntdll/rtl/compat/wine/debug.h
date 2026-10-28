@@ -23,6 +23,7 @@
 #define ERR(...) do { } while (0)
 #define ERR_(ch) ERR
 #define FIXME(...) do { } while (0)
+#define MESSAGE(...) do { } while (0)
 #define FIXME_(ch) FIXME
 #define TRACE_ON(ch) 0
 #define WARN_ON(ch) 0

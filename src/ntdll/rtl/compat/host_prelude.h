@@ -52,6 +52,11 @@ typedef ULONG __msvcrt_ulong;
 int WINAPIV NTDLL_sprintf(char *str, const char *format, ...);
 #endif
 
+/* MSVC spells these without the underscore; swprintf is the counted form (Wine's headers pick the old two-argument one). */
+#define wcsicmp _wcsicmp
+#define wcsnicmp _wcsnicmp
+#define swprintf _snwprintf
+
 /* printf.c names this one NTDLL_ to stay clear of the compiler's own declaration; ntdll.def exports it as sprintf. */
 #define sprintf NTDLL_sprintf
 
@@ -64,6 +69,8 @@ int WINAPIV NTDLL_sprintf(char *str, const char *format, ...);
 #ifdef WINE_UNIX_LIB
 /* winternl.h leaves these out where there is no Microsoft va_list. */
 NTSTATUS WINAPI RtlFormatMessage(LPCWSTR, ULONG, BOOLEAN, BOOLEAN, BOOLEAN, va_list *, LPWSTR, ULONG, ULONG *);
+NTSTATUS WINAPI vDbgPrintEx(ULONG, ULONG, LPCSTR, va_list);
+NTSTATUS WINAPI vDbgPrintExWithPrefix(LPCSTR, ULONG, ULONG, LPCSTR, va_list);
 NTSTATUS WINAPI RtlFormatMessageEx(LPCWSTR, ULONG, BOOLEAN, BOOLEAN, BOOLEAN, va_list *, LPWSTR, ULONG, ULONG *, ULONG);
 #endif
 

@@ -83,7 +83,7 @@ OBJS := $(addprefix $(OUT)/,$(C_SRCS:.c=.o)) $(OUT)/generated_stubs.o $(OUT)/pe_
 
 # The Rtl library ported from Wine (rtl/, docs/status/RTL-PORT.md). It is built against Wine's own Windows and C library
 # headers (third_party/wine/include, with -nostdinc so that no MinGW header gets in), as Wine builds its ntdll.
-RTL_SRCS := rtlstr wcstring string printf large_int rtlbitmap time nls misc error
+RTL_SRCS := rtlstr wcstring string printf large_int rtlbitmap time nls misc error path env atom handletable version crypt sec sha ntdll_data rtl image reg
 RTL_OBJS := $(addprefix $(OUT)/rtl_,$(addsuffix .o,$(RTL_SRCS)))
 RTL_WINE := $(ROOT)/third_party/wine/include
 RTL_FLAGS := -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-implicit-fallthrough \
