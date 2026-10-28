@@ -347,5 +347,7 @@ typedef int (*ucrt_cmp_s_fn)(void *, const void *, const void *);
 
 #include "ucrtbase_gen.inc"
 #include "ucrtbase_heap.inc"
+#include "ucrtbase_stdio.inc"
+#include "ucrtbase_start.inc"
 
 #endif /* __MINGW32__ */

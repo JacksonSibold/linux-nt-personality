@@ -366,7 +366,6 @@ add("_onexit", "ucrt_onexit_fn", ["ucrt_onexit_fn"], "ucrt_onexit")
 add("exit", None, [I], "ucrt_exit")
 add("_exit", None, [I], "ucrt_exit_now")
 add("_Exit", None, [I], "ucrt_exit_now")
-add("quick_exit", None, [I], "ucrt_exit")
 add("abort", None, [], "ucrt_abort")
 add("_cexit", None, [], "ucrt_cexit")
 add("_c_exit", None, [], "ucrt_cexit")
@@ -378,7 +377,7 @@ add("_set_abort_behavior", U, [U, U], "ucrt_set_abort_behavior")
 add("_set_invalid_parameter_handler", "ucrt_invalid_param_fn", ["ucrt_invalid_param_fn"], "ucrt_set_invalid_parameter_handler")
 add("_set_purecall_handler", "ucrt_purecall_fn", ["ucrt_purecall_fn"], "ucrt_set_purecall_handler")
 add("_purecall", None, [], "ucrt_purecall")
-manual("_get_invalid_parameter_handler", "_set_thread_local_invalid_parameter_handler", "_get_thread_local_invalid_parameter_handler",
+manual("quick_exit", "_get_invalid_parameter_handler", "_set_thread_local_invalid_parameter_handler", "_get_thread_local_invalid_parameter_handler",
        "_invalid_parameter", "_invalid_parameter_noinfo", "_invalid_parameter_noinfo_noreturn", "_invoke_watson", "_get_purecall_handler",
        "_crt_atexit", "_crt_at_quick_exit", "_register_onexit_function", "_register_thread_local_exe_atexit_callback",
        "_initialize_onexit_table", "_execute_onexit_table", "at_quick_exit", "__p___argc", "__p___argv", "__p___wargv", "__p__acmdln",

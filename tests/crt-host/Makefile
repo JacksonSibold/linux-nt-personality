@@ -13,7 +13,7 @@ SAN_FLAGS ?= -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-fr
 CFLAGS   := -std=c11 -g -O1 -Wall -Wextra -Werror -D_GNU_SOURCE $(SAN_FLAGS) -I$(SRC) -I$(NTHOST)
 LDLIBS   := -lm
 
-TESTS := test_string test_ctype test_dtoa test_conv test_strtod test_printf test_stdlib test_math test_math2 test_io test_stdio test_scanf test_time test_locale test_runtime
+TESTS := test_string test_ctype test_dtoa test_conv test_strtod test_printf test_stdlib test_math test_math2 test_io test_stdio test_scanf test_time test_locale test_runtime test_ucrtbase_stdio
 
 .PHONY: all test clean
 all: test
@@ -25,7 +25,7 @@ test: $(addprefix $(OUT)/,$(TESTS))
 $(OUT):
 	mkdir -p $(OUT)
 
-$(OUT)/%: %.c $(wildcard $(SRC)/*.h) $(NTHOST)/minitest.h | $(OUT)
+$(OUT)/%: %.c $(wildcard $(SRC)/*.h) $(wildcard ../../src/ntdll/ucrtbase*.inc) $(NTHOST)/minitest.h | $(OUT)
 	$(CC) $(CFLAGS) $< -o $@ $(LDLIBS)
 
 clean:

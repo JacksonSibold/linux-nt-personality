@@ -352,9 +352,40 @@ static void initterm_tables(void)
     MT_EXPECT_EQ(term_n, 0);
 }
 
+
+static void wide_command_line_matches_narrow(void)
+{
+    static const char *cmds[] = {"prog a b", "\"C:\\Program Files\\x.exe\" \"a b\" c\\\" d", "p \"\"\"q r\"\"\" s", "p a\\\\\\\"b c", "p", "  ", "p  \t a\t"};
+    for (size_t k = 0; k < sizeof cmds / sizeof cmds[0]; ++k) {
+        ucrt_wchar wcmd[128], wbuf[256], *wargv[32];
+        char nbuf[256], *nargv[32];
+        size_t nc = 0, wc = 0, i;
+        for (i = 0; cmds[k][i]; ++i)
+            wcmd[i] = (unsigned char)cmds[k][i];
+        wcmd[i] = 0;
+        int na = ucrt_parse_cmdline(cmds[k], nargv, nbuf, &nc);
+        int wa = ucrt_parse_cmdline_w(wcmd, wargv, wbuf, &wc);
+        MT_EXPECT_EQ(wa, na);
+        MT_EXPECT_EQ((long)wc, (long)nc);
+        for (int a = 0; a < na && a < wa; ++a) {
+            size_t j = 0;
+            while (nargv[a][j] && wargv[a][j] == (unsigned char)nargv[a][j])
+                ++j;
+            MT_EXPECT(!nargv[a][j] && !wargv[a][j]);
+        }
+    }
+    {
+        ucrt_wchar w[] = {'a', ' ', 0x4E2D, 0x6587, ' ', '"', 0xD83D, 0xDE00, ' ', 'x', '"', 0}, buf[32], *av[8];
+        size_t c = 0;
+        MT_EXPECT_EQ(ucrt_parse_cmdline_w(w, av, buf, &c), 3);
+        MT_EXPECT(av[1][0] == 0x4E2D && av[1][1] == 0x6587 && av[1][2] == 0);
+        MT_EXPECT(av[2][0] == 0xD83D && av[2][1] == 0xDE00 && av[2][2] == ' ' && av[2][3] == 'x');
+    }
+}
+
 static const mt_case_t cases[] = {
     MT_CASE(command_line_rules), MT_CASE(environment_basics), MT_CASE(environment_changes), MT_CASE(exit_runs_handlers_in_reverse),
-    MT_CASE(exit_flushes_streams), MT_CASE(signals_and_abort), MT_CASE(invalid_parameter_dispatch), MT_CASE(initterm_tables),
+    MT_CASE(exit_flushes_streams), MT_CASE(signals_and_abort), MT_CASE(invalid_parameter_dispatch), MT_CASE(initterm_tables), MT_CASE(wide_command_line_matches_narrow),
 };
 
 int main(void)

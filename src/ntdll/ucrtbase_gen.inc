@@ -370,7 +370,6 @@ ucrt_onexit_fn w__onexit(ucrt_onexit_fn a0) { return ucrt_onexit(a0); }
 void w_exit(int a0) { ucrt_exit(a0); }
 void w__exit(int a0) { ucrt_exit_now(a0); }
 void w__Exit(int a0) { ucrt_exit_now(a0); }
-void w_quick_exit(int a0) { ucrt_exit(a0); }
 void w_abort(void) { ucrt_abort(); }
 void w__cexit(void) { ucrt_cexit(); }
 void w__c_exit(void) { ucrt_cexit(); }

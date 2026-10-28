@@ -95,6 +95,77 @@ static inline int ucrt_parse_cmdline(const char *cmd, char **argv, char *buf, si
     return argc;
 }
 
+/* The same rules over a UTF-16 command line (GetCommandLineW), for __wgetmainargs. */
+static inline int ucrt_parse_cmdline_w(const ucrt_wchar *cmd, ucrt_wchar **argv, ucrt_wchar *buf, size_t *chars)
+{
+    static const ucrt_wchar empty_[1] = {0};
+    int argc = 0;
+    size_t n = 0;
+    const ucrt_wchar *p = cmd;
+#define UCRT_EMIT(ch) do { ucrt_wchar emit_c_ = (ucrt_wchar)(ch); if (buf) buf[n] = emit_c_; ++n; } while (0)
+    if (!cmd)
+        cmd = p = empty_;
+    /* the program name */
+    if (argv)
+        argv[argc] = buf ? buf + n : NULL;
+    ++argc;
+    if (*p == '"') {
+        ++p;
+        while (*p && *p != '"')
+            UCRT_EMIT(*p++);
+        if (*p == '"')
+            ++p;
+    } else {
+        while (*p && *p != ' ' && *p != '\t')
+            UCRT_EMIT(*p++);
+    }
+    UCRT_EMIT(0);
+    for (;;) {
+        int inq = 0;
+        while (*p == ' ' || *p == '\t')
+            ++p;
+        if (!*p)
+            break;
+        if (argv)
+            argv[argc] = buf ? buf + n : NULL;
+        ++argc;
+        for (;;) {
+            int bs = 0;
+            while (*p == '\\') {
+                ++bs;
+                ++p;
+            }
+            if (*p == '"') {
+                for (int i = 0; i < bs / 2; ++i)
+                    UCRT_EMIT('\\');
+                if (bs & 1) {
+                    UCRT_EMIT('"');
+                    ++p;
+                } else if (inq && p[1] == '"') {
+                    UCRT_EMIT('"');
+                    p += 2;
+                } else {
+                    inq = !inq;
+                    ++p;
+                }
+                continue;
+            }
+            for (int i = 0; i < bs; ++i)
+                UCRT_EMIT('\\');
+            if (!*p || (!inq && (*p == ' ' || *p == '\t')))
+                break;
+            UCRT_EMIT(*p++);
+        }
+        UCRT_EMIT(0);
+    }
+    if (argv)
+        argv[argc] = NULL;
+    if (chars)
+        *chars = n;
+#undef UCRT_EMIT
+    return argc;
+}
+
 /* ---- Environment ----------------------------------------------------------------------------------------- */
 
 typedef struct ucrt_env_state {
