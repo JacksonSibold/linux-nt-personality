@@ -218,6 +218,11 @@ static void utf8_validation_matches_glibc(void)
                 MT_FAIL("bytes %02x %02x %02x %02x (n=%zu): glibc %zd, here %zd", s[0], s[1], s[2], s[3], n, (ssize_t)gr, (ssize_t)ur);
                 break;
             }
+        } else if (gw > 0x10FFFF) { /* glibc accepts code points no Unicode encoding allows; the Microsoft runtime does not */
+            if (ur != (size_t)-1) {
+                MT_FAIL("bytes %02x %02x %02x %02x accepted beyond U+10FFFF", s[0], s[1], s[2], s[3]);
+                break;
+            }
         } else {
             wchar_t expect_hi = gw >= 0x10000 ? (wchar_t)(0xD800 + ((gw - 0x10000) >> 10)) : gw;
             if (ur != gr || uw != (ucrt_wchar)expect_hi) {
