@@ -19,7 +19,8 @@ probes ([DIFFERENTIAL-RESULTS.md](DIFFERENTIAL-RESULTS.md)) are the first place 
 |---|---|---|---|
 | `ntdll.dll` | `ntdll*.c`, `ldr*.c`, `rtl_*` | `ntdll.def` | Syscall stubs, loader, heap, Rtl pieces. |
 | `kernel32.dll` | `kernel32*.c` (22 files) | `kernel32.def` | Files, memory, threads, sync objects, wide-character file functions, system information, message formatting, NLS (en-US only), private-profile (INI) files, PE resources, fibers, logical-processor topology, console screen-buffer state, the thread pool, timer queues and registered waits. Pure logic in `k32_*_pure.h`. |
-| `kernelbase.dll`, `advapi32.dll`, `user32.dll`, `win32u.dll`, `gdi32.dll` | `kernelbase.c`, `advapi32.c`, `user32*.c`, `win32u.c`, `gdi32_win32k.c` | `*.def` | Subsets. user32 and gdi32 are far from complete. |
+| `kernelbase.dll`, `user32.dll`, `win32u.dll`, `gdi32.dll` | `kernelbase.c`, `user32*.c`, `win32u.c`, `gdi32_win32k.c` | `*.def` | Subsets. user32 and gdi32 are far from complete. |
+| `advapi32.dll` | `advapi32.c`, `advapi32_reg.c` | `advapi32.def` | The registry API, wide and ANSI (open, create, query, set, delete, enumerate, `RegGetValue`, `RegDeleteTree`, the old forms); the rest of advapi32 (tokens, security descriptors, services, crypto, event tracing) is not there yet. |
 | `msvcrt.dll` | `msvcrt.c` | `msvcrt.def` | The older minimal CRT (77 lines of exports). |
 | `ucrtbase.dll` | `ucrtbase.c` and `ucrtbase_*.inc` | `ucrtbase.def` (generated) | The Universal C Runtime; see below. |
 | `vcruntime140.dll` | `vcruntime140.c`, `vcruntime140_exc.c` | `vcruntime140.def` | C++ exceptions for code built with the Microsoft compiler (`_CxxThrowException`, `__CxxFrameHandler3`), RTTI (`__RTDynamicCast`, `__RTtypeid`, `type_info`), `std::exception` and the other standard exception classes, forwarders for `memcpy` and friends. See below. |
@@ -111,6 +112,14 @@ does not survive a throw.
 `.inc` files (`ucrtbase_stdio`, `ucrtbase_misc`, `ucrtbase_fp`, `ucrtbase_path`). Most compare against glibc; where Windows
 differs from glibc on purpose (32-bit `long`, wrapping overflow in `scanf`, `(null)`, two-digit exponents), the test says so
 and checks the Windows value instead. `make -C tests/ntdll-host test` covers the pure headers of the other DLLs.
+
+### advapi32 registry
+
+`advapi32_reg.c` is also compiled into `tests/kernel-host/advapi_reg_test.c`, which runs it against the kernel's registry
+module (`src/kernel/nt/registry.c`) with host stand-ins for the few kernel32 calls: so lifecycle, value sizes and `ERROR_MORE_DATA`,
+string termination, `RegGetValue` type filtering and expansion, enumeration, `RegQueryInfoKey`, tree deletion, the ANSI forms and
+the predefined keys are checked against the real NT registry code. The code page is taken as Latin-1 in that test. Not done:
+key change notification, key security, hive load and save (these return `ERROR_CALL_NOT_IMPLEMENTED`), the WOW64 views.
 
 ### kernel32 additions
 

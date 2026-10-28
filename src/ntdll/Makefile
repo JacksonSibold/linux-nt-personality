@@ -197,8 +197,10 @@ vcruntime140: $(OUT)/vcruntime140.dll $(OUT)/vcruntime140_1.dll
 # on the NT registry services in ntdll.dll. Uses the same runtime helpers as kernel32.
 $(OUT)/advapi32.o: advapi32.c advapi_pure.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
-$(OUT)/advapi32.dll: $(OUT)/advapi32.o $(OUT)/k32_runtime.o advapi32.def $(OUT)/libntdll_imp.a
-	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/advapi32.o $(OUT)/k32_runtime.o advapi32.def -L$(OUT) -lntdll_imp -lgcc
+$(OUT)/advapi32_reg.o: advapi32_reg.c adv_reg_pure.h | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OUT)/advapi32.dll: $(OUT)/advapi32.o $(OUT)/advapi32_reg.o $(OUT)/k32_runtime.o advapi32.def $(OUT)/libntdll_imp.a $(OUT)/libkernel32_imp.a
+	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/advapi32.o $(OUT)/advapi32_reg.o $(OUT)/k32_runtime.o advapi32.def -L$(OUT) -lntdll_imp -lkernel32_imp -lgcc
 .PHONY: advapi32
 advapi32: $(OUT)/advapi32.dll
 # user32.dll: the wsprintf subset (user32.def) the probes import. user32.c is self-contained
