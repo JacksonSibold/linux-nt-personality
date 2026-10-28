@@ -1,0 +1,80 @@
+# Win32 userland: what exists and how far it is verified
+
+Status date: 2026-10-28. This page covers the freestanding Windows DLLs under `src/ntdll/` and the C runtime under `src/crt/`.
+It does not cover the kernel (see [KERNEL-BOOT.md](KERNEL-BOOT.md) and [KERNEL-GAPS.md](KERNEL-GAPS.md)).
+
+## What "verified" means here
+
+None of these DLLs has been loaded or run by the code in this repository's CI. They are cross-built with MinGW and
+checked at link time (`--no-undefined`, with the export lists compared to the sources). The logic is verified in a different
+way: it is written as headers that also compile natively, and those headers have host tests with AddressSanitizer and
+UBSan, many of them differential against glibc. A bug in the thin layer that calls kernel32 or the kernel (a wrong
+structure offset, a wrong calling convention, a missing syscall) would not be found by any of this. The VM differential
+probes ([DIFFERENTIAL-RESULTS.md](DIFFERENTIAL-RESULTS.md)) are the first place such bugs show up, and
+`ucrtbase.dll` has not been through them.
+
+## DLLs
+
+| DLL | Source | Exports | Notes |
+|---|---|---|---|
+| `ntdll.dll` | `ntdll*.c`, `ldr*.c`, `rtl_*` | `ntdll.def` | Syscall stubs, loader, heap, Rtl pieces. |
+| `kernel32.dll` | `kernel32*.c` (16 files) | `kernel32.def` | Files, memory, threads, sync objects, wide-character file functions, system information, message formatting, NLS (en-US only). Pure logic in `k32_*_pure.h`. |
+| `kernelbase.dll`, `advapi32.dll`, `user32.dll`, `win32u.dll`, `gdi32.dll` | `kernelbase.c`, `advapi32.c`, `user32*.c`, `win32u.c`, `gdi32_win32k.c` | `*.def` | Subsets. user32 and gdi32 are far from complete. |
+| `msvcrt.dll` | `msvcrt.c` | `msvcrt.def` | The older minimal CRT (77 lines of exports). |
+| `ucrtbase.dll` | `ucrtbase.c` and `ucrtbase_*.inc` | `ucrtbase.def` (generated) | The Universal C Runtime; see below. |
+
+`api-ms-win-crt-*.dll` names resolve to `ucrtbase.dll` in the loader (`ldr_pure.h`).
+
+## ucrtbase.dll
+
+The library is in `src/crt/` as headers (`ucrt_*.h`): strings, `ctype`, number conversion with exact `strtod` and shortest
+`printf` output, `printf` and `scanf` engines for narrow and UTF-16 text, `stdio` with the 48-byte `FILE` and text-mode
+rules, low-level file descriptors, `math` (x87 extended-precision evaluation with a precision-control guard so results
+match a Windows process that runs at 53-bit precision), time with the Windows time-zone model, locale and multibyte
+conversion, command-line splitting, environment, exit and `atexit`. It reaches the system through small tables
+(`ucrt_os`, `ucrt_time_ops`, `ucrt_proc_ops`) so the same code runs on POSIX in the tests.
+
+`ucrtbase.c` supplies the kernel32 backends, per-thread `errno`, the heap, and the DLL entry point. The `.inc` files hold the
+wrappers whose Windows signature differs from the library function:
+
+| File | Contents |
+|---|---|
+| `ucrtbase_gen.inc`, `ucrtbase.def` | Written by `build/gen_ucrtbase.py` from its tables: one-to-one wrappers, `_l` locale variants, aliases (POSIX names, long double names). |
+| `ucrtbase_heap.inc` | `malloc` family, aligned allocators, new handler hooks. |
+| `ucrtbase_stdio.inc` | `__stdio_common_v*printf/scanf` with the options word, and the classic `printf` family. |
+| `ucrtbase_start.inc` | `argc`/`argv`, `environ`, `atexit` tables, `_beginthreadex`, `rand_s`, error accessors. |
+| `ucrtbase_misc.inc` | Strings with state, ctype tables, `_itoa` family, `_ecvt`/`_fcvt`/`_gcvt`, multibyte, `localtime` buffers. |
+| `ucrtbase_fp.inc` | `_controlfp_s` and `fenv` on MXCSR, `_fpclass`, `_dclass`. |
+| `ucrtbase_fs.inc`, `ucrtbase_path_t.inc` | `_stat64` and variants, `_findfirst64`, current directory, `_fullpath`, `_splitpath`, temp names. |
+| `ucrtbase_extra.inc`, `ucrtbase_more.inc` | Word I/O, `_sopen`, file times, collation, 32-bit time variants, `setjmp`/`longjmp`, and more. |
+
+To add an export: write `w_<name>` in an `.inc` file and either list the name in a `manual(...)` call in the generator or put
+it in a `/* UCT_EXPORTS name ... */` comment next to the definition, then run `python3 build/gen_ucrtbase.py`.
+
+The export list was compared with the real `ucrtbase.dll` (the names in MinGW's `libucrtbase.a`). Present: the functions
+the C and POSIX-style interfaces use, the `__stdio_common_*` entry points, startup and exit support, and the `*l` long double
+names (as aliases of the double functions, because `long double` is `double` in the Microsoft ABI). Absent:
+
+- Complex arithmetic (`cexp`, `cabs` on `_Dcomplex` and the rest), Bessel functions, `remquo`, and most single-precision
+  functions beyond the common ones.
+- Child processes: `system`, `_spawn*`, `_exec*`, `_popen`, `_pipe` (kernel32 has no `CreateProcess` or `CreatePipe` yet).
+- Multibyte-character-set functions (`_mbs*`, `_mbc*`), `wctype`/`wctrans`, `_cgets`/`_cputs` and the wide console functions.
+- Data exports (`__sys_errlist`, `__initenv`, `_environ`-style variables); programs get the values through the accessor functions.
+- The `_o_*` forwarders of the API-set DLLs.
+- `vcruntime140.dll` and `msvcp140.dll`: C++ exception handling and the C++ library. `__C_specific_handler` and the
+  frame handlers are not implemented.
+
+Known simplifications: narrow paths are widened byte by byte (Latin-1), so the process code page is not applied;
+`_getch` reads standard input without console modes; `_gcvt` follows the Microsoft form but is covered by few tests;
+`longjmp` does not run unwind handlers; collation is the "C" locale's; `rand_s` uses RDRAND when the CPU has it and otherwise a
+non-cryptographic generator.
+
+## Host test suites
+
+`make -C tests/crt-host test` builds each test with ASan and UBSan and runs it: strings, ctype, `dtoa`, conversions,
+`strtod`, `printf`, `stdlib`, two math suites, low-level I/O, `stdio`, `scanf`, time, locale, runtime, and four suites for the
+`.inc` files (`ucrtbase_stdio`, `ucrtbase_misc`, `ucrtbase_fp`, `ucrtbase_path`). Most compare against glibc; where Windows
+differs from glibc on purpose (32-bit `long`, wrapping overflow in `scanf`, `(null)`, two-digit exponents), the test says so
+and checks the Windows value instead. `make -C tests/ntdll-host test` covers the pure headers of the other DLLs.
+
+`tools/run_all_checks.sh` runs both.

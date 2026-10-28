@@ -14,6 +14,8 @@
 #   8. syntax                tests/syntax/check.sh
 #   9. host                  make -C tests/host test
 #  10. fuzz                  make -C tests/fuzz smoke
+#  10a. ntdll-host           make -C tests/ntdll-host test (the pure headers of the Windows userland)
+#  10b. crt-host             make -C tests/crt-host test (the C runtime of ucrtbase.dll)
 #  11. kernel-host           make -C tests/kernel-host check
 #
 # Python: $PYTHON when set and working, otherwise the WinPython path below,
@@ -125,9 +127,13 @@ fi
 if command -v make >/dev/null 2>&1 && command -v gcc >/dev/null 2>&1; then
     run_section host make -C tests/host test
     run_section fuzz make -C tests/fuzz smoke
+    run_section ntdll_host make -C tests/ntdll-host test
+    run_section crt_host make -C tests/crt-host test
 else
     skip host "make or gcc not on PATH"
     skip fuzz "make or gcc not on PATH"
+    skip ntdll_host "make or gcc not on PATH"
+    skip crt_host "make or gcc not on PATH"
 fi
 
 # kernel-host: one result row per module, parsed from the "NAME rc=N" lines.

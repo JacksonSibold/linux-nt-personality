@@ -52,7 +52,8 @@ python tools/update_doc_counts.py --check
 suites, in this order: unit tests, `check_repo.py`, `check_doc_links.py`,
 `update_doc_counts.py --check`,
 `provenance_scan.py --check`, `vm/lint.sh`, `tests/syntax/check.sh`,
-`make -C tests/host test`, `make -C tests/fuzz smoke`, and `make -C tests/kernel-host check`. It ends with a
+`make -C tests/host test`, `make -C tests/fuzz smoke`, `make -C tests/ntdll-host test`, `make -C tests/crt-host test` and
+`make -C tests/kernel-host check`. It ends with a
 PASS / FAIL / KNOWN-FAIL / SKIP matrix.
 
 - Python is taken from `$PYTHON` if set and working, then from the WinPython
@@ -123,6 +124,19 @@ make -C src/ntdll check    # also compares the DLL's exports with the .def
   "Cannot create temporary file", pass `TMP=<dir>` on the command line.
 - The loader's MinGW build still links stubs (`LDR-1`, see
   `docs/decisions/0029-loader-mingw-build-selection.md`).
+
+## The Windows userland DLLs (MinGW, build only) and their host tests
+
+```
+make -C src/ntdll kernel32 msvcrt ucrtbase   # out/kernel32.dll, out/msvcrt.dll, out/ucrtbase.dll
+make -C tests/ntdll-host test                # the pure headers of ntdll, kernel32 and friends, on the host
+make -C tests/crt-host test                  # the C runtime of ucrtbase.dll, on the host (ASan and UBSan)
+python3 build/gen_ucrtbase.py                # regenerate ucrtbase.def and ucrtbase_gen.inc after changing the export tables
+```
+
+The logic of these DLLs is written as plain headers that compile on Linux, so it runs under the host tests with
+sanitizers; the DLLs themselves are thin layers over them and are only built and link-checked here. What that does and does
+not establish is in [status/WIN32-USERLAND.md](status/WIN32-USERLAND.md).
 
 ## Paths and environment
 
