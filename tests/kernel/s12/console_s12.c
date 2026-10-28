@@ -15,6 +15,8 @@
  *    WM_TIMER (the kernel wait path, not a -1 / 1460 failure)
  *  - a 4x4 32 bpp DIB section: SetPixel writes one colour, GetPixel reads it back,
  *    and the section's bits contain that colour exactly once
+ *  - a DC from user32's GetDC is a valid DC to gdi32 (GetDeviceCaps, CreateCompatibleDC):
+ *    user32 and gdi32 share one win32k model through win32u.dll
  */
 
 typedef void *HANDLE;
@@ -95,6 +97,8 @@ __declspec(dllimport) HANDLE BeginPaint(HANDLE hwnd, PAINTSTRUCT_S12 *ps);
 __declspec(dllimport) BOOL EndPaint(HANDLE hwnd, const PAINTSTRUCT_S12 *ps);
 __declspec(dllimport) UINT_PTR SetTimer(HANDLE hwnd, UINT_PTR id, UINT elapse, void *proc);
 __declspec(dllimport) BOOL KillTimer(HANDLE hwnd, UINT_PTR id);
+__declspec(dllimport) HANDLE GetDC(HANDLE hwnd);
+__declspec(dllimport) int ReleaseDC(HANDLE hwnd, HANDLE dc);
 
 __declspec(dllimport) HANDLE CreateCompatibleDC(HANDLE dc);
 __declspec(dllimport) BOOL DeleteDC(HANDLE dc);
@@ -104,11 +108,14 @@ __declspec(dllimport) HANDLE SelectObject(HANDLE dc, HANDLE obj);
 __declspec(dllimport) BOOL DeleteObject(HANDLE obj);
 __declspec(dllimport) UINT SetPixel(HANDLE dc, int x, int y, UINT color);
 __declspec(dllimport) UINT GetPixel(HANDLE dc, int x, int y);
+__declspec(dllimport) int GetDeviceCaps(HANDLE dc, int index);
 
 #define STD_OUTPUT_HANDLE ((DWORD)-11)
 #define WS_VISIBLE 0x10000000u
 #define DIB_RGB_COLORS 0u
 #define WAIT_FAILED_S12 ((int)-1)
+#define HORZRES 8
+#define VERTRES 10
 
 #define WM_CREATE 0x0001u
 #define WM_DESTROY 0x0002u
@@ -277,6 +284,20 @@ static int main_s12(void)
     check(matches == 1, "DIB bits hold the colour exactly once");
     if (dc)
         DeleteDC(dc);
+
+    /* A DC taken through user32 must be usable through gdi32. */
+    {
+        HANDLE sdc = GetDC(0);
+        HANDLE mem;
+        check(sdc != 0, "GetDC(NULL) returns the screen DC");
+        check(sdc && GetDeviceCaps(sdc, HORZRES) == 1920 && GetDeviceCaps(sdc, VERTRES) == 1080,
+              "gdi32 GetDeviceCaps accepts the user32 DC");
+        mem = sdc ? CreateCompatibleDC(sdc) : 0;
+        check(mem != 0, "gdi32 CreateCompatibleDC accepts the user32 DC");
+        if (mem)
+            DeleteDC(mem);
+        check(sdc && ReleaseDC(0, sdc) == 1, "user32 ReleaseDC releases it");
+    }
 
     PostQuitMessage(0);
     check(GetMessageW(&msg, 0, 0, 0) == 0, "quit message ends the loop");
