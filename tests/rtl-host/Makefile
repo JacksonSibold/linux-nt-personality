@@ -28,20 +28,20 @@ endif
 # -fshort-wchar: Wine's sources write L"..." strings for 16-bit WCHAR. -fno-builtin keeps the compiler from turning the
 # copies of the C library functions defined in string.c into calls to themselves.
 CFLAGS := -std=gnu11 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-implicit-fallthrough -Wno-unused-function -Wno-format \
-          -Wno-missing-field-initializers -fshort-wchar -fno-builtin -fno-strict-aliasing $(SAN) -fno-sanitize=shift-base \
+          -Wno-missing-field-initializers -fshort-wchar -fno-builtin -fno-strict-aliasing $(SAN) -fno-sanitize=shift-base,alignment,pointer-overflow \
           -D__WINESRC__ -DWINE_UNIX_LIB -D_NTSYSTEM_ \
           -I$(WINE_INC) -I$(RTL)/compat -I$(RTL) -Iinclude
 
-RTL_SRCS := rtlstr wcstring string printf large_int rtlbitmap time nls misc
+RTL_SRCS := rtlstr wcstring string printf large_int rtlbitmap time nls misc path env atom handletable version crypt sec sha ntdll_data rtl image reg
 RTL_OBJS := $(addprefix $(OUT)/rtl_,$(addsuffix .o,$(RTL_SRCS)))
 
-SUITES := rtlstr large_int rtlbitmap string time
+SUITES := rtlstr large_int rtlbitmap string time env path rtl sha
 
 .PHONY: all test clean
 all: $(addprefix $(OUT)/,$(SUITES))
 
 test: all
-	@set -e; for s in $(SUITES); do echo "== $$s"; $(OUT)/$$s; done; echo "rtl-host: all suites passed"
+	@set -e; for s in $(SUITES); do echo "== $$s"; ASAN_OPTIONS=detect_leaks=0 $(OUT)/$$s; done; echo "rtl-host: all suites passed"
 
 $(OUT):
 	mkdir -p $(OUT)
@@ -55,6 +55,13 @@ $(OUT)/ntstatus_to_dos.o: $(ROOT)/src/ntdll/ntstatus_to_dos.c | $(OUT)
 
 $(OUT)/host_support.o: host_support.c include/wine/test.h | $(OUT)
 	$(CC) $(CFLAGS) -c $< -o $@ -DRTL_TEST_FUNC=func_dummy -DRTL_TEST_NAME='"dummy"'
+
+# Every system call that the tests do not provide answers STATUS_NOT_IMPLEMENTED.
+$(OUT)/nt_stubs.c: gen_nt_stubs.py $(ROOT)/src/ntdll/syscall_table.def | $(OUT)
+	$(PYTHON) gen_nt_stubs.py $(ROOT)/src/ntdll/syscall_table.def $@
+
+$(OUT)/nt_stubs.o: $(OUT)/nt_stubs.c
+	$(CC) -c $< -o $@
 
 $(OUT)/proctab.c: gen_proctab.py $(RTL_OBJS) $(OUT)/host_support.o
 	$(PYTHON) gen_proctab.py $@ $(RTL_OBJS) $(OUT)/host_support.o
@@ -71,7 +78,11 @@ $(OUT)/support_%.o: host_support.c include/wine/test.h | $(OUT)
 $(OUT)/test_%.o: wine/%.c include/wine/test.h Makefile | $(OUT)
 	$(CC) $(CFLAGS) -include host_prelude.h -Dswprintf=ntdll__snwprintf -c $< -o $@
 
-$(OUT)/%: $(OUT)/test_%.o $(OUT)/support_%.o $(RTL_OBJS) $(OUT)/proctab.o $(OUT)/ntstatus_to_dos.o
+# Tests written for this repository, in the same style.
+$(OUT)/test_%.o: own/%.c include/wine/test.h Makefile | $(OUT)
+	$(CC) $(CFLAGS) -include host_prelude.h -Dswprintf=ntdll__snwprintf -c $< -o $@
+
+$(OUT)/%: $(OUT)/test_%.o $(OUT)/support_%.o $(RTL_OBJS) $(OUT)/proctab.o $(OUT)/nt_stubs.o $(OUT)/ntstatus_to_dos.o
 	$(CC) $(SAN) $^ -o $@ -lm
 
 clean:

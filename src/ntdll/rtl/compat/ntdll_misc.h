@@ -13,7 +13,9 @@
 #include "windef.h"
 #include "winnt.h"
 #include "winternl.h"
+#include "ddk/ntddk.h"
 #include "ddk/wdm.h"
+#include "ddk/ntifs.h"
 #include "winbase.h"
 #include "wine/debug.h"
 
@@ -26,6 +28,20 @@
 #define user_shared_data ((KUSER_SHARED_DATA *)0x7ffe0000)
 
 #include "host_prelude.h"
+
+#define MAX_NT_PATH_LENGTH 277
+
+NTSTATUS WINAPI RtlUpcaseUnicodeString(UNICODE_STRING *, const UNICODE_STRING *, BOOLEAN);
+
+#define GetCurrentProcess() NtCurrentProcess()
+#define GetCurrentThread() NtCurrentThread()
+#define GetCurrentThreadEffectiveToken() ((HANDLE)(LONG_PTR)-6)
+
+/* The machine type of this ntdll. */
+static const USHORT current_machine = IMAGE_FILE_MACHINE_AMD64;
+
+/* Defined in ntdll_data.c: the Windows directory, as Wine's loader.c defines it. */
+extern const WCHAR windows_dir[];
 
 /* A NULL heap handle means the process heap in ntdll_heap.c, and in the host test support code. */
 #define GetProcessHeap() ((HANDLE)NULL)

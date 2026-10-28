@@ -14,33 +14,140 @@
 #include <time.h>
 #include <stdint.h>
 #include <sys/mman.h>
+#include <malloc.h>
 
 #include "windef.h"
 #include "winnt.h"
 #include "winternl.h"
 #include "ntstatus.h"
+#include "winioctl.h"
+#include "../../src/ntdll/os_identity.h"
 #include "wine/test.h"
 #include "winnls.h"
 
 /* ---- Process heap -------------------------------------------------------------------------------------------- */
 
+/* Each block carries its requested size in a 16-byte header, which is what HeapSize reports. */
+struct host_block { SIZE_T size; SIZE_T pad; };
+
 void *WINAPI RtlAllocateHeap(HANDLE heap, ULONG flags, SIZE_T size)
 {
+    struct host_block *b;
     (void)heap;
-    return (flags & HEAP_ZERO_MEMORY) ? calloc(1, size ? size : 1) : malloc(size ? size : 1);
+    b = malloc(sizeof(*b) + (size ? size : 1));
+    if (!b) return NULL;
+    b->size = size;
+    if (flags & HEAP_ZERO_MEMORY) memset(b + 1, 0, size);
+    return b + 1;
 }
 
 BOOLEAN WINAPI RtlFreeHeap(HANDLE heap, ULONG flags, void *ptr)
 {
     (void)heap; (void)flags;
-    free(ptr);
+    if (ptr) free((struct host_block *)ptr - 1);
     return TRUE;
 }
 
 PVOID WINAPI RtlReAllocateHeap(HANDLE heap, ULONG flags, PVOID ptr, SIZE_T size)
 {
+    struct host_block *b;
+    (void)heap;
+    if (!ptr) return RtlAllocateHeap(heap, flags, size);
+    b = realloc((struct host_block *)ptr - 1, sizeof(*b) + (size ? size : 1));
+    if (!b) return NULL;
+    if ((flags & HEAP_ZERO_MEMORY) && size > b->size) memset((char *)(b + 1) + b->size, 0, size - b->size);
+    b->size = size;
+    return b + 1;
+}
+
+SIZE_T WINAPI RtlSizeHeap(HANDLE heap, ULONG flags, const void *ptr)
+{
     (void)heap; (void)flags;
-    return realloc(ptr, size ? size : 1);
+    return ((const struct host_block *)ptr - 1)->size;
+}
+
+/* ---- A TEB and a PEB: the environment functions and the last error are kept there ----------------------------------- */
+
+static RTL_USER_PROCESS_PARAMETERS *host_params_ptr; /* on the heap: the tests ask for its size */
+static PEB host_peb;
+static TEB host_teb;
+static RTL_CRITICAL_SECTION host_peb_lock;
+extern char **environ;
+
+TEB *WINAPI NtCurrentTeb(void)
+{
+    if (!host_teb.Peb) {
+        static const WCHAR image[] = L"C:\\test.exe", dir[] = L"C:\\";
+        RTL_USER_PROCESS_PARAMETERS *params;
+        UNICODE_STRING *strs[7];
+        WCHAR *env, *pos;
+        unsigned int i;
+
+        host_peb.FastPebLock = &host_peb_lock;
+        host_teb.Peb = &host_peb;
+        host_teb.Tib.Self = &host_teb.Tib;
+
+        /* The initial parameters of a process, as the loader builds them: the strings follow the structure one after the
+         * other without alignment, and the environment and the current directory are separate blocks. */
+        params = RtlAllocateHeap(NULL, HEAP_ZERO_MEMORY, sizeof(*params) + (2 * (lstrlenW(image) + 1) + 5) * sizeof(WCHAR));
+        strs[0] = &params->DllPath;
+        strs[1] = &params->ImagePathName;
+        strs[2] = &params->CommandLine;
+        strs[3] = &params->WindowTitle;
+        strs[4] = &params->Desktop;
+        strs[5] = &params->ShellInfo;
+        strs[6] = &params->RuntimeInfo;
+        pos = (WCHAR *)(params + 1);
+        for (i = 0; i < 7; i++)
+        {
+            const WCHAR *src = (i == 1 || i == 2) ? image : L"";
+            unsigned int len = lstrlenW(src) * sizeof(WCHAR);
+            strs[i]->Length = len;
+            strs[i]->MaximumLength = len + sizeof(WCHAR);
+            strs[i]->Buffer = pos;
+            memcpy(pos, src, len + sizeof(WCHAR));
+            pos += len / sizeof(WCHAR) + 1;
+        }
+        params->Size = (char *)pos - (char *)params;
+        params->AllocationSize = params->Size;
+        params->Flags = PROCESS_PARAMS_FLAG_NORMALIZED;
+        params->CurrentDirectory.DosPath.Buffer = calloc(MAX_PATH, sizeof(WCHAR));
+        params->CurrentDirectory.DosPath.MaximumLength = MAX_PATH * sizeof(WCHAR);
+        memcpy(params->CurrentDirectory.DosPath.Buffer, dir, sizeof(dir));
+        params->CurrentDirectory.DosPath.Length = sizeof(dir) - sizeof(WCHAR);
+        RtlCreateEnvironment(FALSE, &env);
+        params->Environment = env;
+        params->EnvironmentSize = RtlSizeHeap(NULL, 0, env);
+        host_params_ptr = params;
+        host_peb.ProcessParameters = params;
+    }
+    return &host_teb;
+}
+
+/* ---- Heap, critical sections and virtual memory behind the Rtl functions ------------------------------------------- */
+
+
+/* The host tests are single threaded: a critical section only counts. */
+NTSTATUS WINAPI RtlInitializeCriticalSection(RTL_CRITICAL_SECTION *crit) { memset(crit, 0, sizeof(*crit)); crit->LockCount = -1; return STATUS_SUCCESS; }
+NTSTATUS WINAPI RtlDeleteCriticalSection(RTL_CRITICAL_SECTION *crit) { memset(crit, 0, sizeof(*crit)); return STATUS_SUCCESS; }
+NTSTATUS WINAPI RtlEnterCriticalSection(RTL_CRITICAL_SECTION *crit) { crit->RecursionCount++; return STATUS_SUCCESS; }
+NTSTATUS WINAPI RtlLeaveCriticalSection(RTL_CRITICAL_SECTION *crit) { crit->RecursionCount--; return STATUS_SUCCESS; }
+
+NTSTATUS WINAPI NtAllocateVirtualMemory(HANDLE process, PVOID *ret, ULONG_PTR zero_bits, SIZE_T *size_ptr, ULONG type, ULONG protect)
+{
+    void *p;
+    (void)process; (void)zero_bits; (void)type; (void)protect;
+    p = mmap(NULL, *size_ptr, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) return STATUS_NO_MEMORY;
+    *ret = p;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS WINAPI NtFreeVirtualMemory(HANDLE process, PVOID *addr, SIZE_T *size_ptr, ULONG type)
+{
+    (void)process; (void)type;
+    munmap(*addr, *size_ptr ? *size_ptr : 4096);
+    return STATUS_SUCCESS;
 }
 
 /* ---- System calls the sources reach ------------------------------------------------------------------------------ */
@@ -108,6 +215,51 @@ NTSTATUS WINAPI NtSetTimerResolution(ULONG res, BOOLEAN set, ULONG *current_res)
     *current_res = timer_res;
     return STATUS_SUCCESS;
 }
+
+/* A tiny NT namespace: the directories below exist, nothing else does. Enough for the path functions that check that a
+ * directory is there (RtlSetCurrentDirectory_U, RtlDoesFileExists_U). */
+static const WCHAR *const fake_dirs[] = { L"\\??\\C:", L"\\??\\C:\\windows", L"\\??\\C:\\windows\\system32", L"\\??\\C:\\temp" };
+
+static int fake_dir_index(const UNICODE_STRING *name)
+{
+    unsigned int i, len = name->Length / sizeof(WCHAR);
+    while (len && name->Buffer[len - 1] == '\\') len--;
+    for (i = 0; i < sizeof(fake_dirs) / sizeof(fake_dirs[0]); i++)
+    {
+        UNICODE_STRING dir;
+        RtlInitUnicodeString(&dir, fake_dirs[i]);
+        if (dir.Length / sizeof(WCHAR) == len && !RtlCompareUnicodeStrings(dir.Buffer, len, name->Buffer, len, TRUE)) return i;
+    }
+    return -1;
+}
+
+NTSTATUS WINAPI NtOpenFile(PHANDLE handle, ACCESS_MASK access, OBJECT_ATTRIBUTES *attr, IO_STATUS_BLOCK *io, ULONG share, ULONG options)
+{
+    int i = fake_dir_index(attr->ObjectName);
+    (void)access; (void)io; (void)share; (void)options;
+    if (i < 0) return STATUS_OBJECT_NAME_NOT_FOUND;
+    *handle = (HANDLE)(uintptr_t)(i + 1);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS WINAPI NtQueryAttributesFile(const OBJECT_ATTRIBUTES *attr, FILE_BASIC_INFORMATION *info)
+{
+    if (fake_dir_index(attr->ObjectName) < 0) return STATUS_OBJECT_NAME_NOT_FOUND;
+    memset(info, 0, sizeof(*info));
+    info->FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS WINAPI NtQueryVolumeInformationFile(HANDLE handle, IO_STATUS_BLOCK *io, void *buffer, ULONG len, FS_INFORMATION_CLASS cls)
+{
+    (void)handle; (void)len; (void)cls;
+    memset(buffer, 0, sizeof(FILE_FS_DEVICE_INFORMATION));
+    ((FILE_FS_DEVICE_INFORMATION *)buffer)->DeviceType = FILE_DEVICE_DISK;
+    io->Information = sizeof(FILE_FS_DEVICE_INFORMATION);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS WINAPI NtClose(HANDLE handle) { (void)handle; return STATUS_SUCCESS; }
 
 NTSTATUS WINAPI NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS cls, void *info, ULONG len, ULONG *retlen)
 {
@@ -196,6 +348,124 @@ LPWSTR WINAPI lstrcpyW(LPWSTR dst, LPCWSTR src)
     return dst;
 }
 
+SIZE_T WINAPI HeapSize(HANDLE heap, DWORD flags, LPCVOID ptr) { return RtlSizeHeap(heap, flags, ptr); }
+LPVOID WINAPI HeapReAlloc(HANDLE heap, DWORD flags, LPVOID ptr, SIZE_T size) { return RtlReAllocateHeap(heap, flags, ptr, size); }
+
+/* Win32 environment calls over the Rtl ones, with the ANSI page, as kernel32 does them. */
+DWORD WINAPI GetEnvironmentVariableA(LPCSTR name, LPSTR buf, DWORD size)
+{
+    WCHAR wname[256], wvalue[4096];
+    UNICODE_STRING nameU, valueU;
+    NTSTATUS status;
+    DWORD len;
+
+    MultiByteToWideChar(CP_ACP, 0, name, -1, wname, 256);
+    RtlInitUnicodeString(&nameU, wname);
+    valueU.Buffer = wvalue;
+    valueU.Length = 0;
+    valueU.MaximumLength = sizeof(wvalue);
+    status = RtlQueryEnvironmentVariable_U(NULL, &nameU, &valueU);
+    if (status == STATUS_VARIABLE_NOT_FOUND) { last_error = 203; return 0; }
+    if (status) { last_error = RtlNtStatusToDosError(status); return 0; }
+    len = WideCharToMultiByte(CP_ACP, 0, wvalue, valueU.Length / sizeof(WCHAR), NULL, 0, NULL, NULL);
+    if (len + 1 > size) return len + 1;
+    WideCharToMultiByte(CP_ACP, 0, wvalue, valueU.Length / sizeof(WCHAR), buf, size, NULL, NULL);
+    buf[len] = 0;
+    return len;
+}
+
+BOOL WINAPI SetEnvironmentVariableA(LPCSTR name, LPCSTR value)
+{
+    WCHAR wname[256], wvalue[4096];
+    UNICODE_STRING nameU, valueU;
+    NTSTATUS status;
+
+    MultiByteToWideChar(CP_ACP, 0, name, -1, wname, 256);
+    RtlInitUnicodeString(&nameU, wname);
+    if (value)
+    {
+        MultiByteToWideChar(CP_ACP, 0, value, -1, wvalue, 4096);
+        RtlInitUnicodeString(&valueU, wvalue);
+        status = RtlSetEnvironmentVariable(NULL, &nameU, &valueU);
+    }
+    else status = RtlSetEnvironmentVariable(NULL, &nameU, NULL);
+    if (status) { last_error = RtlNtStatusToDosError(status); return FALSE; }
+    return TRUE;
+}
+
+
+/* The current directory is the one in the process parameters. */
+DWORD WINAPI GetCurrentDirectoryW(DWORD size, LPWSTR buf)
+{
+    return RtlGetCurrentDirectory_U(size * sizeof(WCHAR), buf) / sizeof(WCHAR);
+}
+
+DWORD WINAPI GetCurrentDirectoryA(DWORD size, LPSTR buf)
+{
+    WCHAR wbuf[MAX_PATH];
+    DWORD len = GetCurrentDirectoryW(MAX_PATH, wbuf);
+    if (len + 1 > size) return len + 1;
+    return WideCharToMultiByte(CP_ACP, 0, wbuf, len + 1, buf, size, NULL, NULL) - 1;
+}
+
+BOOL WINAPI SetCurrentDirectoryW(LPCWSTR dir)
+{
+    UNICODE_STRING us;
+    NTSTATUS status;
+    RtlInitUnicodeString(&us, dir);
+    status = RtlSetCurrentDirectory_U(&us);
+    if (status) { last_error = RtlNtStatusToDosError(status); return FALSE; }
+    return TRUE;
+}
+
+BOOL WINAPI SetCurrentDirectoryA(LPCSTR dir)
+{
+    WCHAR wdir[MAX_PATH];
+    MultiByteToWideChar(CP_ACP, 0, dir, -1, wdir, MAX_PATH);
+    return SetCurrentDirectoryW(wdir);
+}
+
+HANDLE WINAPI GetCurrentProcess(void) { return (HANDLE)(LONG_PTR)-1; }
+void WINAPI RtlRaiseException(EXCEPTION_RECORD *rec) { (void)rec; abort(); }
+BOOL WINAPI InitializeAcl(PACL acl, DWORD size, DWORD revision)
+{
+    NTSTATUS status = RtlCreateAcl(acl, size, revision);
+    if (status) { last_error = RtlNtStatusToDosError(status); return FALSE; }
+    return TRUE;
+}
+
+BOOL WINAPI ConvertSidToStringSidW(PSID sid, LPWSTR *str)
+{
+    UNICODE_STRING us;
+    NTSTATUS status;
+    WCHAR *buf;
+
+    us.Buffer = NULL; us.Length = us.MaximumLength = 0;
+    status = RtlConvertSidToUnicodeString(&us, sid, TRUE);
+    if (status) { last_error = RtlNtStatusToDosError(status); return FALSE; }
+    buf = RtlAllocateHeap(NULL, 0, us.Length + sizeof(WCHAR));
+    memcpy(buf, us.Buffer, us.Length);
+    buf[us.Length / sizeof(WCHAR)] = 0;
+    RtlFreeUnicodeString(&us);
+    *str = buf;
+    return TRUE;
+}
+
+/* ntdll_main.c has the real RtlGetVersion (os_identity.h); the host build does not compile that file. */
+NTSTATUS WINAPI RtlGetVersion(RTL_OSVERSIONINFOEXW *info)
+{
+    info->dwMajorVersion = NT_OS_MAJOR_VERSION;
+    info->dwMinorVersion = NT_OS_MINOR_VERSION;
+    info->dwBuildNumber = NT_OS_BUILD_NUMBER;
+    info->dwPlatformId = NT_OS_PLATFORM_ID;
+    memset(info->szCSDVersion, 0, sizeof(info->szCSDVersion));
+    if (info->dwOSVersionInfoSize == sizeof(RTL_OSVERSIONINFOEXW)) {
+        info->wServicePackMajor = info->wServicePackMinor = info->wSuiteMask = 0;
+        info->wProductType = NT_OS_PRODUCT_TYPE;
+    }
+    return STATUS_SUCCESS;
+}
+
 /* ---- Debug string helpers: quoted strings in a ring of buffers, as Wine prints them ------------------------------ */
 
 static char *dbg_buf(size_t n)
@@ -262,9 +532,13 @@ HMODULE WINAPI GetModuleHandleA(LPCSTR name)
     return NULL;
 }
 
+/* The other system DLLs the tests look at load, but export nothing: the tests skip what they cannot find. */
+static char other_module;
+
 HMODULE WINAPI LoadLibraryA(LPCSTR name)
 {
-    return GetModuleHandleA(name);
+    HMODULE ntdll = GetModuleHandleA(name);
+    return ntdll ? ntdll : (HMODULE)&other_module;
 }
 
 FARPROC WINAPI GetProcAddress(HMODULE module, LPCSTR name)
@@ -413,6 +687,7 @@ extern void RTL_TEST_FUNC(void);
 int main(void)
 {
     const char *d = getenv("WINETEST_DEBUG");
+    setvbuf(stdout, NULL, _IOLBF, 0);
     if (d) winetest_debug = atoi(d);
     RTL_TEST_FUNC();
     printf("%s: %ld successes, %ld failures, %ld skipped, %ld todo\n", RTL_TEST_NAME, winetest_successes,

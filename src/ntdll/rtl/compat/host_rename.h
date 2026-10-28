@@ -143,8 +143,6 @@
 #define bsearch ntdll_bsearch
 #undef bsearch_s
 #define bsearch_s ntdll_bsearch_s
-#undef compare_wrapper
-#define compare_wrapper ntdll_compare_wrapper
 #undef isalnum
 #define isalnum ntdll_isalnum
 #undef isalpha
@@ -385,7 +383,6 @@ int __cdecl atoi( const char *nptr );
 __msvcrt_long __cdecl atol( const char *nptr );
 void * __cdecl bsearch( const void *key, const void *base, size_t nmemb, size_t size, int (__cdecl *compar)(const void *, const void *) );
 void * __cdecl bsearch_s( const void *key, const void *base, size_t nmemb, size_t size, int (__cdecl *compare)(void *, const void *, const void *), void *ctx );
-static int __cdecl compare_wrapper(void *ctx, const void *e1, const void *e2);
 int __cdecl isalnum( int c );
 int __cdecl isalpha( int c );
 int __cdecl iscntrl( int c );
