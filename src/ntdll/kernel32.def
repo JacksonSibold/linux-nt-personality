@@ -154,3 +154,33 @@ EXPORTS
     DllMain
     _DllMainCRTStartup
     DllMainCRTStartup
+    CreateEventW
+    CreateMutexW
+    CreateSemaphoreW
+    GetCurrentThreadId
+    GetTempFileNameW
+    GetTempPathW
+    SleepEx
+    TlsAlloc
+    TlsFree
+    TlsSetValue
+    UnhandledExceptionFilter
+    GetSystemTimeAsFileTime
+    GetSystemTimePreciseAsFileTime
+    GetSystemTime
+    GetLocalTime
+    FileTimeToSystemTime
+    SystemTimeToFileTime
+    FileTimeToLocalFileTime
+    LocalFileTimeToFileTime
+    CompareFileTime
+    SystemTimeToTzSpecificLocalTime
+    TzSpecificLocalTimeToSystemTime
+    GetTimeZoneInformation
+    GetDynamicTimeZoneInformation
+    GetSystemTimeAdjustment
+    GetTickCount64
+    GetDateFormatW
+    GetTimeFormatW
+    GetDateFormatEx
+    GetTimeFormatEx
