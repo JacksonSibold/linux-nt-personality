@@ -286,7 +286,55 @@ static void nan_payload(void)
     MT_EXPECT(ucrt_isnan(ucrt_nan(NULL)));
 }
 
+/* A Windows process starts with the x87 precision control at 53 bits; the guarded entry points must give the same
+ * answers anyway, and restore the control word. */
+static void guarded_under_double_precision(void)
+{
+    unsigned short saved, narrow = 0x27F, after;
+    __asm__ volatile("fnstcw %0" : "=m"(saved));
+    __asm__ volatile("fldcw %0" : : "m"(narrow));
+    /* the test is only meaningful if the narrow precision really does hurt the unguarded code */
+    {
+        int differ = 0;
+        for (int i = 0; i < 20000; ++i) {
+            double x = (rnd_unit() - 0.5) * 40, narrow_r, wide_r;
+            __asm__ volatile("fldcw %0" : : "m"(narrow));
+            narrow_r = ucrt_exp(x);
+            __asm__ volatile("fldcw %0" : : "m"(saved));
+            wide_r = ucrt_exp(x);
+            differ += !same_bits(narrow_r, wide_r);
+        }
+        __asm__ volatile("fldcw %0" : : "m"(narrow));
+        MT_EXPECT(differ > 100);
+    }
+    /* compare each guarded function (run under 0x27F) with the plain one run under the default word */
+    for (int i = 0; i < 20000; ++i) {
+        double x = (rnd_unit() - 0.5) * 40, y = (rnd_unit() - 0.5) * 8, ax = x < 0 ? -x : x, g[12], r[12];
+        __asm__ volatile("fldcw %0" : : "m"(narrow));
+        g[0] = ucrt_exp_g(x); g[1] = ucrt_log_g(ax + 1e-3); g[2] = ucrt_sin_g(x); g[3] = ucrt_cos_g(x); g[4] = ucrt_tan_g(x);
+        g[5] = ucrt_atan_g(x); g[6] = ucrt_pow_g(ax + 0.01, y); g[7] = ucrt_sinh_g(y); g[8] = ucrt_atan2_g(x, y); g[9] = ucrt_tgamma_g(ax / 3 + 0.1);
+        g[10] = ucrt_erf_g(y); g[11] = ucrt_hypot_g(x, y);
+        __asm__ volatile("fldcw %0" : : "m"(saved));
+        r[0] = ucrt_exp(x); r[1] = ucrt_log(ax + 1e-3); r[2] = ucrt_sin(x); r[3] = ucrt_cos(x); r[4] = ucrt_tan(x);
+        r[5] = ucrt_atan(x); r[6] = ucrt_pow(ax + 0.01, y); r[7] = ucrt_sinh(y); r[8] = ucrt_atan2(x, y); r[9] = ucrt_tgamma(ax / 3 + 0.1);
+        r[10] = ucrt_erf(y); r[11] = ucrt_hypot(x, y);
+        for (int k = 0; k < 12; ++k)
+            if (!same_bits(g[k], r[k])) {
+                __asm__ volatile("fldcw %0" : : "m"(saved));
+                MT_FAIL("guarded function %d differs for %a %a: %a vs %a", k, x, y, g[k], r[k]);
+                return;
+            }
+    }
+    /* the guard leaves the control word as it found it */
+    __asm__ volatile("fldcw %0" : : "m"(narrow));
+    (void)ucrt_sin_g(1.0);
+    __asm__ volatile("fnstcw %0" : "=m"(after));
+    __asm__ volatile("fldcw %0" : : "m"(saved));
+    MT_EXPECT_EQ(after, narrow);
+}
+
 static const mt_case_t cases[] = {
+    MT_CASE(guarded_under_double_precision),
     MT_CASE(fma_random), MT_CASE(fma_specials), MT_CASE(min_max_dim), MT_CASE(integer_conversions),
     MT_CASE(erf_functions), MT_CASE(gamma_functions), MT_CASE(float_versions), MT_CASE(nan_payload),
 };

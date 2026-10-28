@@ -424,4 +424,38 @@ static inline float ucrt_modff(float x, float *ip)
     return (float)f;
 }
 
+/* ---- Guarded entry points --------------------------------------------------------------------------- */
+
+/* The transcendental functions compute in the x87 extended format, which needs the control word's precision field
+ * set to 64 bits. A Windows process normally starts with it at 53 bits, which would silently cost the extra
+ * precision, so the exported functions set it for the call and restore it afterwards (and force round to nearest). */
+static inline unsigned ucrt_x87_enter(void)
+{
+    unsigned short cw, ncw;
+    __asm__ volatile("fnstcw %0" : "=m"(cw));
+    ncw = (unsigned short)((cw & ~0xC00) | 0x300);
+    if (ncw != cw)
+        __asm__ volatile("fldcw %0" : : "m"(ncw));
+    return cw;
+}
+
+static inline void ucrt_x87_leave(unsigned cw)
+{
+    unsigned short c = (unsigned short)cw;
+    __asm__ volatile("fldcw %0" : : "m"(c));
+}
+
+#define UCRT_GUARD1(name) \
+    static inline double ucrt_##name##_g(double x) { unsigned c = ucrt_x87_enter(); double r = ucrt_##name(x); ucrt_x87_leave(c); return r; } \
+    static inline float ucrt_##name##f_g(float x) { unsigned c = ucrt_x87_enter(); float r = ucrt_##name##f(x); ucrt_x87_leave(c); return r; }
+#define UCRT_GUARD2(name) \
+    static inline double ucrt_##name##_g(double x, double y) { unsigned c = ucrt_x87_enter(); double r = ucrt_##name(x, y); ucrt_x87_leave(c); return r; } \
+    static inline float ucrt_##name##f_g(float x, float y) { unsigned c = ucrt_x87_enter(); float r = ucrt_##name##f(x, y); ucrt_x87_leave(c); return r; }
+
+UCRT_GUARD1(exp) UCRT_GUARD1(exp2) UCRT_GUARD1(expm1) UCRT_GUARD1(log) UCRT_GUARD1(log2) UCRT_GUARD1(log10) UCRT_GUARD1(log1p)
+UCRT_GUARD1(sinh) UCRT_GUARD1(cosh) UCRT_GUARD1(tanh) UCRT_GUARD1(asinh) UCRT_GUARD1(acosh) UCRT_GUARD1(atanh)
+UCRT_GUARD1(sin) UCRT_GUARD1(cos) UCRT_GUARD1(tan) UCRT_GUARD1(asin) UCRT_GUARD1(acos) UCRT_GUARD1(atan)
+UCRT_GUARD1(cbrt) UCRT_GUARD1(erf) UCRT_GUARD1(erfc) UCRT_GUARD1(tgamma) UCRT_GUARD1(lgamma)
+UCRT_GUARD2(pow) UCRT_GUARD2(atan2) UCRT_GUARD2(hypot)
+
 #endif /* UCRT_MATH2_H */
