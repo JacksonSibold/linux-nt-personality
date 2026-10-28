@@ -222,3 +222,42 @@ EXPORTS
     InitOnceComplete
     InitOnceExecuteOnce
     WaitOnAddress
+    FindFirstFileW
+    FindFirstFileExW
+    FindFirstFileExA
+    FindNextFileW
+    GetFullPathNameW
+    GetFullPathNameA
+    GetLongPathNameW
+    GetLongPathNameA
+    GetShortPathNameW
+    GetShortPathNameA
+    GetCurrentDirectoryW
+    GetCurrentDirectoryA
+    SetCurrentDirectoryW
+    SetCurrentDirectoryA
+    GetFileAttributesExW
+    GetFileAttributesExA
+    SetFileAttributesW
+    SetFileAttributesA
+    SetFileTime
+    GetFileInformationByHandleEx
+    SetFileInformationByHandle
+    MoveFileW
+    MoveFileA
+    MoveFileExW
+    MoveFileExA
+    CopyFileW
+    CopyFileA
+    CopyFileExW
+    GetLogicalDrives
+    GetLogicalDriveStringsW
+    GetLogicalDriveStringsA
+    GetDriveTypeW
+    GetDriveTypeA
+    GetDiskFreeSpaceExW
+    GetDiskFreeSpaceExA
+    GetDiskFreeSpaceW
+    GetDiskFreeSpaceA
+    GetVolumeInformationW
+    GetVolumePathNameW

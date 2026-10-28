@@ -227,6 +227,37 @@ static WCHAR g_k32_dos[K32_PATH_CAP];
 static WCHAR g_k32_nt[K32_PATH_CAP + 8u];
 static WCHAR g_k32_wide[K32_PATH_CAP];
 
+/* The path buffers above are shared by every thread, so the functions that use them run under one reentrant lock
+ * (owned by a thread id, spinning with a yield). The A variants take it before they widen into g_k32_wide. */
+static volatile ULONG_PTR g_k32_path_owner;
+static volatile LONG g_k32_path_depth;
+__declspec(dllimport) extern NTSTATUS NtYieldExecution(void);
+
+static void k32_path_lock(void)
+{
+    ULONG_PTR me = (ULONG_PTR)NtCurrentTebMingw()->ClientId.UniqueThread;
+    if (g_k32_path_owner == me) {
+        ++g_k32_path_depth;
+        return;
+    }
+    while (!__sync_bool_compare_and_swap(&g_k32_path_owner, 0, me))
+        NtYieldExecution();
+    g_k32_path_depth = 1;
+}
+
+static void k32_path_unlock(void)
+{
+    if (--g_k32_path_depth == 0)
+        __sync_lock_release(&g_k32_path_owner);
+}
+
+/* The exported W entry points, defined further down, are called by the A implementations. */
+HANDLE WINAPI CreateFileW(const WCHAR *name, DWORD access, DWORD share, void *sa, DWORD disp, DWORD flags, HANDLE templ);
+BOOL WINAPI DeleteFileW(const WCHAR *name);
+BOOL WINAPI CreateDirectoryW(const WCHAR *path, void *sa);
+BOOL WINAPI RemoveDirectoryW(const WCHAR *path);
+DWORD WINAPI GetFileAttributesW(const WCHAR *name);
+
 __declspec(dllimport) extern NTSTATUS NtQueryAttributesFile(POBJECT_ATTRIBUTES, PVOID);
 __declspec(dllimport) extern NTSTATUS NtFlushBuffersFile(HANDLE, PIO_STATUS_BLOCK);
 
@@ -286,7 +317,7 @@ static DWORD k32_widen_name(const char *name)
     return 0;
 }
 
-HANDLE WINAPI CreateFileW(const WCHAR *name, DWORD access, DWORD share, void *sa, DWORD disp, DWORD flags, HANDLE templ)
+static HANDLE k32_impl_CreateFileW(const WCHAR *name, DWORD access, DWORD share, void *sa, DWORD disp, DWORD flags, HANDLE templ)
 {
     (void)sa; (void)templ;
     if (!name) { SetLastError(K32_ERROR_INVALID_PARAMETER); return K32_INVALID_HANDLE_VALUE; }
@@ -761,7 +792,7 @@ static NTSTATUS k32_open_close(UNICODE_STRING *us, ULONG access, ULONG disp, ULO
     return NtClose(h);
 }
 
-HANDLE WINAPI CreateFileA(const char *name, DWORD access, DWORD share, void *sa, DWORD disp, DWORD flags, HANDLE templ)
+static HANDLE k32_impl_CreateFileA(const char *name, DWORD access, DWORD share, void *sa, DWORD disp, DWORD flags, HANDLE templ)
 {
     DWORD err = k32_widen_name(name);
     if (err) { SetLastError(err); return K32_INVALID_HANDLE_VALUE; }
@@ -770,7 +801,7 @@ HANDLE WINAPI CreateFileA(const char *name, DWORD access, DWORD share, void *sa,
 
 /* DeleteFile opens the file with DELETE and FILE_DELETE_ON_CLOSE. A directory
  * is refused (STATUS_FILE_IS_A_DIRECTORY, ERROR_ACCESS_DENIED). */
-BOOL WINAPI DeleteFileW(const WCHAR *name)
+static BOOL k32_impl_DeleteFileW(const WCHAR *name)
 {
     if (!name) { SetLastError(K32_ERROR_INVALID_PARAMETER); return 0; }
     UNICODE_STRING us;
@@ -784,14 +815,14 @@ BOOL WINAPI DeleteFileW(const WCHAR *name)
     return 1;
 }
 
-BOOL WINAPI DeleteFileA(const char *name)
+static BOOL k32_impl_DeleteFileA(const char *name)
 {
     DWORD err = k32_widen_name(name);
     if (err) { SetLastError(err); return 0; }
     return DeleteFileW(g_k32_wide);
 }
 
-BOOL WINAPI CreateDirectoryW(const WCHAR *path, void *sa)
+static BOOL k32_impl_CreateDirectoryW(const WCHAR *path, void *sa)
 {
     (void)sa;
     if (!path) { SetLastError(K32_ERROR_INVALID_PARAMETER); return 0; }
@@ -808,7 +839,7 @@ BOOL WINAPI CreateDirectoryW(const WCHAR *path, void *sa)
     return 1;
 }
 
-BOOL WINAPI CreateDirectoryA(const char *path, void *sa)
+static BOOL k32_impl_CreateDirectoryA(const char *path, void *sa)
 {
     DWORD err = k32_widen_name(path);
     if (err) { SetLastError(err); return 0; }
@@ -817,7 +848,7 @@ BOOL WINAPI CreateDirectoryA(const char *path, void *sa)
 
 /* RemoveDirectory opens the directory with DELETE and FILE_DELETE_ON_CLOSE. A
  * non-empty directory fails with STATUS_DIRECTORY_NOT_EMPTY. */
-BOOL WINAPI RemoveDirectoryW(const WCHAR *path)
+static BOOL k32_impl_RemoveDirectoryW(const WCHAR *path)
 {
     if (!path) { SetLastError(K32_ERROR_INVALID_PARAMETER); return 0; }
     UNICODE_STRING us;
@@ -831,7 +862,7 @@ BOOL WINAPI RemoveDirectoryW(const WCHAR *path)
     return 1;
 }
 
-BOOL WINAPI RemoveDirectoryA(const char *path)
+static BOOL k32_impl_RemoveDirectoryA(const char *path)
 {
     DWORD err = k32_widen_name(path);
     if (err) { SetLastError(err); return 0; }
@@ -847,7 +878,7 @@ typedef struct {
     ULONG FileAttributes;
 } K32_FILE_BASIC_INFORMATION;
 
-DWORD WINAPI GetFileAttributesW(const WCHAR *name)
+static DWORD k32_impl_GetFileAttributesW(const WCHAR *name)
 {
     if (!name) { SetLastError(K32_ERROR_INVALID_PARAMETER); return K32_INVALID_FILE_ATTRIBUTES; }
     UNICODE_STRING us;
@@ -863,11 +894,84 @@ DWORD WINAPI GetFileAttributesW(const WCHAR *name)
     return k32_attributes_from_nt(bi.FileAttributes);
 }
 
-DWORD WINAPI GetFileAttributesA(const char *name)
+static DWORD k32_impl_GetFileAttributesA(const char *name)
 {
     DWORD err = k32_widen_name(name);
     if (err) { SetLastError(err); return K32_INVALID_FILE_ATTRIBUTES; }
     return GetFileAttributesW(g_k32_wide);
+}
+
+
+/* Exported entry points: the implementations above under the path lock. */
+HANDLE WINAPI CreateFileW(const WCHAR *name, DWORD access, DWORD share, void *sa, DWORD disp, DWORD flags, HANDLE templ)
+{
+    k32_path_lock();
+    HANDLE r = k32_impl_CreateFileW(name, access, share, sa, disp, flags, templ);
+    k32_path_unlock();
+    return r;
+}
+HANDLE WINAPI CreateFileA(const char *name, DWORD access, DWORD share, void *sa, DWORD disp, DWORD flags, HANDLE templ)
+{
+    k32_path_lock();
+    HANDLE r = k32_impl_CreateFileA(name, access, share, sa, disp, flags, templ);
+    k32_path_unlock();
+    return r;
+}
+BOOL WINAPI DeleteFileW(const WCHAR *name)
+{
+    k32_path_lock();
+    BOOL r = k32_impl_DeleteFileW(name);
+    k32_path_unlock();
+    return r;
+}
+BOOL WINAPI DeleteFileA(const char *name)
+{
+    k32_path_lock();
+    BOOL r = k32_impl_DeleteFileA(name);
+    k32_path_unlock();
+    return r;
+}
+BOOL WINAPI CreateDirectoryW(const WCHAR *path, void *sa)
+{
+    k32_path_lock();
+    BOOL r = k32_impl_CreateDirectoryW(path, sa);
+    k32_path_unlock();
+    return r;
+}
+BOOL WINAPI CreateDirectoryA(const char *path, void *sa)
+{
+    k32_path_lock();
+    BOOL r = k32_impl_CreateDirectoryA(path, sa);
+    k32_path_unlock();
+    return r;
+}
+BOOL WINAPI RemoveDirectoryW(const WCHAR *path)
+{
+    k32_path_lock();
+    BOOL r = k32_impl_RemoveDirectoryW(path);
+    k32_path_unlock();
+    return r;
+}
+BOOL WINAPI RemoveDirectoryA(const char *path)
+{
+    k32_path_lock();
+    BOOL r = k32_impl_RemoveDirectoryA(path);
+    k32_path_unlock();
+    return r;
+}
+DWORD WINAPI GetFileAttributesW(const WCHAR *name)
+{
+    k32_path_lock();
+    DWORD r = k32_impl_GetFileAttributesW(name);
+    k32_path_unlock();
+    return r;
+}
+DWORD WINAPI GetFileAttributesA(const char *name)
+{
+    k32_path_lock();
+    DWORD r = k32_impl_GetFileAttributesA(name);
+    k32_path_unlock();
+    return r;
 }
 
 /* Temp path: GetTempPathA and GetTempFileNameA are in kernel32_fs.c (K32-F1).
