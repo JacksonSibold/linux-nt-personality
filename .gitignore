@@ -23,3 +23,4 @@ tests/fuzz/out/
 tests/crt-host/out/
 build/ucrtbase_unimplemented.txt
 tests/rtl-host/out/
+tests/kernel-drivers/build/

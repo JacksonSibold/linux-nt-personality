@@ -115,6 +115,23 @@ DRVCALL SIZE_T drv_wcslen(const WCHAR *S);
 DRVCALL BOOLEAN MmIsAddressValid(PVOID VirtualAddress);
 DRVCALL PVOID  MmGetSystemRoutineAddress(PUNICODE_STRING SystemRoutineName);
 
+/* -- MDLs and memory mapping (drvhost_mm.c) ----------------------------------- */
+DRVCALL PMDL   IoAllocateMdl(PVOID VirtualAddress, ULONG Length, BOOLEAN SecondaryBuffer, BOOLEAN ChargeQuota, PIRP Irp);
+DRVCALL void   IoFreeMdl(PMDL Mdl);
+DRVCALL void   MmBuildMdlForNonPagedPool(PMDL Mdl);
+DRVCALL void   MmProbeAndLockPages(PMDL Mdl, KPROCESSOR_MODE AccessMode, ULONG Operation);
+DRVCALL void   MmUnlockPages(PMDL Mdl);
+DRVCALL PVOID  MmMapLockedPagesSpecifyCache(PMDL Mdl, KPROCESSOR_MODE AccessMode, ULONG CacheType,
+                                            PVOID RequestedAddress, ULONG BugCheckOnFailure, ULONG Priority);
+DRVCALL PVOID  MmMapLockedPages(PMDL Mdl, KPROCESSOR_MODE AccessMode);
+DRVCALL void   MmUnmapLockedPages(PVOID BaseAddress, PMDL Mdl);
+DRVCALL PVOID  MmAllocateContiguousMemory(SIZE_T NumberOfBytes, ULONGLONG HighestAcceptableAddress);
+DRVCALL PVOID  MmAllocateContiguousMemorySpecifyCache(SIZE_T NumberOfBytes, ULONGLONG LowestAcceptableAddress,
+                                                      ULONGLONG HighestAcceptableAddress,
+                                                      ULONGLONG BoundaryAddressMultiple, ULONG CacheType);
+DRVCALL void   MmFreeContiguousMemory(PVOID BaseAddress);
+DRVCALL ULONGLONG MmGetPhysicalAddress(PVOID BaseAddress);
+
 /* -- Mutexes, semaphores, multi-object waits, guarded mutexes, resources,
  *    SLISTs, lookaside lists (drvhost_sync.c) ---------------------------------- */
 DRVCALL void   KeInitializeMutex(PKMUTEX Mutex, ULONG Level);

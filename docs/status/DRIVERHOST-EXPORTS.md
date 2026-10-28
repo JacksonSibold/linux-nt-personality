@@ -12,17 +12,17 @@ DbgPrint names every unresolved import, so one attempt lists them all.
 ## Summary
 
 - Ranked names in the manifest: 342
-- Ranked and implemented: 119 (34.8%)
-- Ranked and missing: 223
-- Implemented exports in total: 165
-- Implemented but not in the ranking: 46
+- Ranked and implemented: 126 (36.8%)
+- Ranked and missing: 216
+- Implemented exports in total: 177
+- Implemented but not in the ranking: 51
 
 Per tier (1 = needed by almost every driver, 4 = niche):
 
 | Tier | Ranked | Implemented | Missing |
 |-----:|-------:|------------:|--------:|
 | 1 | 38 | 38 | 0 |
-| 2 | 141 | 70 | 71 |
+| 2 | 141 | 77 | 64 |
 | 3 | 119 | 6 | 113 |
 | 4 | 44 | 5 | 39 |
 
@@ -127,13 +127,13 @@ a driver corpus.
 | 91 | 2 | ntoskrnl.exe | `ExAllocatePool` | implemented | `ExAllocatePool` |
 | 92 | 2 | ntoskrnl.exe | `MmGetSystemRoutineAddress` | implemented | `MmGetSystemRoutineAddress` |
 | 93 | 2 | ntoskrnl.exe | `MmIsAddressValid` | implemented | `MmIsAddressValid` |
-| 94 | 2 | ntoskrnl.exe | `MmMapLockedPagesSpecifyCache` | missing |  |
-| 95 | 2 | ntoskrnl.exe | `MmUnmapLockedPages` | missing |  |
-| 96 | 2 | ntoskrnl.exe | `MmProbeAndLockPages` | missing |  |
-| 97 | 2 | ntoskrnl.exe | `MmUnlockPages` | missing |  |
-| 98 | 2 | ntoskrnl.exe | `IoAllocateMdl` | missing |  |
-| 99 | 2 | ntoskrnl.exe | `IoFreeMdl` | missing |  |
-| 100 | 2 | ntoskrnl.exe | `MmBuildMdlForNonPagedPool` | missing |  |
+| 94 | 2 | ntoskrnl.exe | `MmMapLockedPagesSpecifyCache` | implemented | `MmMapLockedPagesSpecifyCache` |
+| 95 | 2 | ntoskrnl.exe | `MmUnmapLockedPages` | implemented | `MmUnmapLockedPages` |
+| 96 | 2 | ntoskrnl.exe | `MmProbeAndLockPages` | implemented | `MmProbeAndLockPages` |
+| 97 | 2 | ntoskrnl.exe | `MmUnlockPages` | implemented | `MmUnlockPages` |
+| 98 | 2 | ntoskrnl.exe | `IoAllocateMdl` | implemented | `IoAllocateMdl` |
+| 99 | 2 | ntoskrnl.exe | `IoFreeMdl` | implemented | `IoFreeMdl` |
+| 100 | 2 | ntoskrnl.exe | `MmBuildMdlForNonPagedPool` | implemented | `MmBuildMdlForNonPagedPool` |
 | 101 | 2 | ntoskrnl.exe | `RtlUnicodeStringToAnsiString` | implemented | `RtlUnicodeStringToAnsiString` |
 | 102 | 2 | ntoskrnl.exe | `RtlAnsiStringToUnicodeString` | implemented | `RtlAnsiStringToUnicodeString` |
 | 103 | 2 | ntoskrnl.exe | `RtlInitAnsiString` | implemented | `RtlInitAnsiString` |
@@ -419,6 +419,11 @@ a driver corpus.
 | ntoskrnl.exe | `KeRemoveEntryDeviceQueue` | `KeRemoveEntryDeviceQueue` |
 | ntoskrnl.exe | `KeTryToAcquireGuardedMutex` | `KeTryToAcquireGuardedMutex` |
 | ntoskrnl.exe | `KeWaitForMutexObject` | `KeWaitForMutexObject` |
+| ntoskrnl.exe | `MmAllocateContiguousMemory` | `MmAllocateContiguousMemory` |
+| ntoskrnl.exe | `MmAllocateContiguousMemorySpecifyCache` | `MmAllocateContiguousMemorySpecifyCache` |
+| ntoskrnl.exe | `MmFreeContiguousMemory` | `MmFreeContiguousMemory` |
+| ntoskrnl.exe | `MmGetPhysicalAddress` | `MmGetPhysicalAddress` |
+| ntoskrnl.exe | `MmMapLockedPages` | `MmMapLockedPages` |
 | ntoskrnl.exe | `NtClose` | `NtClose` |
 | ntoskrnl.exe | `PsThreadType` | `PsThreadType` |
 | ntoskrnl.exe | `RtlFirstEntrySList` | `RtlFirstEntrySList` |
