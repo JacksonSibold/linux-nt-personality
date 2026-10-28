@@ -20,18 +20,38 @@ typedef struct ucrt_state {
     unsigned int rand_seed;
     int printf_exp_digits;                   /* minimum exponent digits in %e: 2 (UCRT) or 3 (the old msvcrt) */
     int printf_count_output;                 /* %n is honoured only after _set_printf_count_output(1) */
+    int printf_iso_wide;                     /* wide printf: %s is narrow and %S wide (ISO), not the Microsoft reverse */
 } ucrt_state;
 
-static ucrt_state g_ucrt_state = {0, 0, 0, 0, 0, 0, 1, 2, 0};
+static ucrt_state g_ucrt_state = {0, 0, 0, 0, 0, 0, 1, 2, 0, 0};
+
+/* The DLL points these at its per-thread slots; without them errno and _doserrno are the process-wide fields above. */
+static int *(*g_ucrt_errno_slot)(void);
+static unsigned long *(*g_ucrt_doserrno_slot)(void);
+
+static inline int *ucrt_errno_ptr(void)
+{
+    return g_ucrt_errno_slot ? g_ucrt_errno_slot() : &g_ucrt_state.errno_value;
+}
+
+static inline unsigned long *ucrt_doserrno_ptr(void)
+{
+    return g_ucrt_doserrno_slot ? g_ucrt_doserrno_slot() : &g_ucrt_state.doserrno_value;
+}
 
 static inline void ucrt_set_errno(int e)
 {
-    g_ucrt_state.errno_value = e;
+    *ucrt_errno_ptr() = e;
 }
 
 static inline int ucrt_get_errno(void)
 {
-    return g_ucrt_state.errno_value;
+    return *ucrt_errno_ptr();
+}
+
+static inline void ucrt_set_doserrno(unsigned long e)
+{
+    *ucrt_doserrno_ptr() = e;
 }
 
 /* The C runtime's invalid parameter path: sets errno to e (EINVAL for a bad argument, ERANGE for a buffer

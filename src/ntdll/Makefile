@@ -134,6 +134,19 @@ $(OUT)/msvcrt.dll: $(OUT)/msvcrt.o msvcrt.def $(OUT)/libkernel32_imp.a $(OUT)/li
 
 .PHONY: msvcrt
 msvcrt: $(OUT)/msvcrt.dll
+
+# ucrtbase.dll: the Universal C Runtime. src/crt holds the library as headers (host-tested in tests/crt-host);
+# ucrtbase.c puts it on kernel32. ucrtbase.def and ucrtbase_gen.inc come from build/gen_ucrtbase.py.
+CRT_HDRS := $(wildcard $(ROOT)/src/crt/*.h) $(wildcard ucrtbase*.inc)
+
+$(OUT)/ucrtbase.o: ucrtbase.c $(CRT_HDRS) | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -I$(ROOT)/src/crt -Wno-unused-function -Wno-array-bounds -c $< -o $@
+
+$(OUT)/ucrtbase.dll: $(OUT)/ucrtbase.o $(OUT)/k32_runtime.o ucrtbase.def $(OUT)/libkernel32_imp.a $(OUT)/libntdll_imp.a
+	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/ucrtbase.o $(OUT)/k32_runtime.o ucrtbase.def -L$(OUT) -lkernel32_imp -lntdll_imp -lgcc
+
+.PHONY: ucrtbase
+ucrtbase: $(OUT)/ucrtbase.dll
 # advapi32.dll: the registry subset the differential probes import (advapi32.def),
 # on the NT registry services in ntdll.dll. Uses the same runtime helpers as kernel32.
 $(OUT)/advapi32.o: advapi32.c advapi_pure.h | $(OUT)

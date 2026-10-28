@@ -310,7 +310,7 @@ static inline int ucrt_read(int fd, void *buffer, unsigned count)
     f = ucrt_fd_get(fd);
     if (!f) {
         ucrt_set_errno(UCRT_EBADF);
-        g_ucrt_state.doserrno_value = 0;
+        ucrt_set_doserrno(0);
         ucrt_io_unlock();
         return -1;
     }
@@ -350,7 +350,7 @@ static inline int ucrt_read(int fd, void *buffer, unsigned count)
             }
             if (err == UCRT_ERROR_ACCESS_DENIED) {
                 ucrt_set_errno(UCRT_EBADF);
-                g_ucrt_state.doserrno_value = err;
+                ucrt_set_doserrno(err);
             } else {
                 ucrt_dosmaperr(err);
             }
@@ -428,7 +428,7 @@ static inline int ucrt_write(int fd, const void *buffer, unsigned count)
     f = ucrt_fd_get(fd);
     if (!f) {
         ucrt_set_errno(UCRT_EBADF);
-        g_ucrt_state.doserrno_value = 0;
+        ucrt_set_doserrno(0);
         ucrt_io_unlock();
         return -1;
     }
@@ -454,7 +454,7 @@ static inline int ucrt_write(int fd, const void *buffer, unsigned count)
         }
         if (wrote < count) {
             ucrt_set_errno(UCRT_ENOSPC);
-            g_ucrt_state.doserrno_value = 0;
+            ucrt_set_doserrno(0);
             ucrt_io_unlock();
             return -1;
         }

@@ -514,7 +514,7 @@ static inline int UCRT_FN(vformat)(ucrt_pf_sink *sk, const UCRT_CT *fmt, va_list
             } else if (size == UCRT_SZ_H) {
                 arg_wide = 0;
             } else if (UCRT_WIDE) {
-                arg_wide = (c == 's' || c == 'c');
+                arg_wide = g_ucrt_state.printf_iso_wide ? (c == 'S' || c == 'C') : (c == 's' || c == 'c');
             } else {
                 arg_wide = (c == 'S' || c == 'C');
             }

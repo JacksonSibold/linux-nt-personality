@@ -142,7 +142,7 @@ static inline int ucrt_dosmaperr_code(unsigned e)
 /* Sets errno and _doserrno from a Win32 error. */
 static inline void ucrt_dosmaperr(unsigned e)
 {
-    g_ucrt_state.doserrno_value = e;
+    ucrt_set_doserrno(e);
     ucrt_set_errno(ucrt_dosmaperr_code(e));
 }
 
