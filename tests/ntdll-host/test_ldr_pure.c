@@ -227,7 +227,59 @@ static void synthetic_iat_detects_unbound_slot(void)
     MT_EXPECT(ldr_iat_slot_is_raw_rva(IMG_SIZE, IMG_SIZE) == 0);
 }
 
+static int apiset_is(const char *name, const char *want)
+{
+    char out[64];
+    memset(out, 'x', sizeof(out));
+    if (!ldr_apiset_host(name, out, sizeof(out)))
+        return want == NULL;
+    return want && strcmp(out, want) == 0;
+}
+
+/* API set names resolve by family prefix, with or without .dll and in any case. */
+static void apiset_families(void)
+{
+    MT_EXPECT(apiset_is("api-ms-win-crt-stdio-l1-1-0.dll", "ucrtbase.dll"));
+    MT_EXPECT(apiset_is("API-MS-WIN-CRT-RUNTIME-L1-1-0.DLL", "ucrtbase.dll"));
+    MT_EXPECT(apiset_is("api-ms-win-crt-math-l1-1-0", "ucrtbase.dll"));
+    MT_EXPECT(apiset_is("api-ms-win-core-synch-l1-2-0.dll", "kernel32.dll"));
+    MT_EXPECT(apiset_is("api-ms-win-core-heap-l1-1-0.dll", "kernel32.dll"));
+    MT_EXPECT(apiset_is("api-ms-win-core-processthreads-l1-1-2.dll", "kernel32.dll"));
+    MT_EXPECT(apiset_is("api-ms-win-core-rtlsupport-l1-2-0.dll", "ntdll.dll"));
+    MT_EXPECT(apiset_is("api-ms-win-core-registry-l1-1-0.dll", "advapi32.dll"));
+    MT_EXPECT(apiset_is("api-ms-win-security-base-l1-1-0.dll", "advapi32.dll"));
+    MT_EXPECT(apiset_is("api-ms-win-eventing-provider-l1-1-0.dll", "advapi32.dll"));
+    MT_EXPECT(apiset_is("ext-ms-win-ntuser-window-l1-1-0.dll", "user32.dll"));
+    MT_EXPECT(apiset_is("ext-ms-win-gdi-dc-l1-1-0.dll", "gdi32.dll"));
+    MT_EXPECT(apiset_is("api-ms-win-gdi-dpiinfo-l1-1-0.dll", "gdi32.dll"));
+}
+
+/* Names that are not API sets are left to the normal search, including near misses. */
+static void apiset_non_sets(void)
+{
+    MT_EXPECT(apiset_is("kernel32.dll", NULL));
+    MT_EXPECT(apiset_is("ucrtbase.dll", NULL));
+    MT_EXPECT(apiset_is("api-ms-win-crt", NULL));        /* the prefix needs its trailing dash */
+    MT_EXPECT(apiset_is("api-ms-win-core", NULL));
+    MT_EXPECT(apiset_is("xapi-ms-win-core-synch-l1-1-0.dll", NULL));
+    MT_EXPECT(apiset_is("api-ms-win-unknown-l1-1-0.dll", NULL));
+    MT_EXPECT(apiset_is("", NULL));
+}
+
+static void apiset_buffer_rules(void)
+{
+    char tiny[8], exact[13];
+    MT_EXPECT(!ldr_apiset_host("api-ms-win-crt-stdio-l1-1-0.dll", tiny, sizeof(tiny))); /* "ucrtbase.dll" needs 13 */
+    MT_EXPECT(ldr_apiset_host("api-ms-win-crt-stdio-l1-1-0.dll", exact, sizeof(exact)));
+    MT_EXPECT(strcmp(exact, "ucrtbase.dll") == 0);
+    MT_EXPECT(!ldr_apiset_host(NULL, exact, sizeof(exact)));
+    MT_EXPECT(!ldr_apiset_host("api-ms-win-crt-x", NULL, 4));
+}
+
 static const mt_case_t cases[] = {
+    { "apiset_families", apiset_families },
+    { "apiset_non_sets", apiset_non_sets },
+    { "apiset_buffer_rules", apiset_buffer_rules },
     { "unbound_import_status_codes", unbound_import_status_codes },
     { "synthetic_iat_detects_unbound_slot", synthetic_iat_detects_unbound_slot },
     { "iat_base_is_rva_with_ilt_fallback", iat_base_is_rva_with_ilt_fallback },

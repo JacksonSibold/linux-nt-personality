@@ -271,4 +271,58 @@ static inline int ldr_tls_cb_entry(const unsigned char *image, unsigned long lon
     return value != 0;
 }
 
+
+/* API set resolution. A binary built against the Windows 10 SDK imports most of its functions from
+ * virtual DLLs named api-ms-win-*-l1-N-N (or ext-ms-win-*) that a real system maps to the host DLL. The
+ * personality has no API set schema file, so the host is chosen by the family prefix: the C runtime sets go
+ * to ucrtbase.dll, the Rtl set to ntdll.dll, registry, security, eventing and service sets to advapi32.dll,
+ * the window and GDI sets to user32.dll and gdi32.dll, and every other core set to kernel32.dll, which
+ * holds (or forwards to ntdll) what the kernelbase side of Windows would. Returns 1 and writes the host's
+ * file name to out when name, with or without ".dll", is such a set; 0 otherwise (out is left alone). */
+static inline int ldr_apiset_host(const char *name, char *out, size_t cap)
+{
+    static const struct { const char *prefix; const char *host; } rules[] = {
+        {"api-ms-win-crt-", "ucrtbase.dll"},
+        {"api-ms-win-core-rtlsupport-", "ntdll.dll"},
+        {"api-ms-win-core-registry-", "advapi32.dll"},
+        {"api-ms-win-security-", "advapi32.dll"},
+        {"api-ms-win-eventing-", "advapi32.dll"},
+        {"api-ms-win-service-", "advapi32.dll"},
+        {"api-ms-win-core-", "kernel32.dll"},
+        {"api-ms-win-ntuser-", "user32.dll"},
+        {"api-ms-win-gdi-", "gdi32.dll"},
+        {"ext-ms-win-ntuser-", "user32.dll"},
+        {"ext-ms-win-gdi-", "gdi32.dll"},
+        {"ext-ms-win-kernel32-", "kernel32.dll"},
+        {"ext-ms-win-advapi32-", "advapi32.dll"},
+    };
+    if (!name || !out)
+        return 0;
+    for (size_t r = 0; r < sizeof(rules) / sizeof(rules[0]); ++r) {
+        const char *pre = rules[r].prefix;
+        size_t i = 0;
+        for (; pre[i]; ++i) {
+            char c = name[i];
+            if (c >= 'A' && c <= 'Z')
+                c = (char)(c - 'A' + 'a');
+            if (c != pre[i])
+                break;
+        }
+        if (pre[i])
+            continue; /* not this family */
+        {
+            size_t n = 0;
+            const char *host = rules[r].host;
+            while (host[n])
+                ++n;
+            if (n + 1 > cap)
+                return 0;
+            for (size_t k = 0; k <= n; ++k)
+                out[k] = host[k];
+            return 1;
+        }
+    }
+    return 0;
+}
+
 #endif /* NTDLL_LDR_PURE_H */

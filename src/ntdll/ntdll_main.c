@@ -729,6 +729,9 @@ static void ldr_bind_imports(unsigned char *mod, int depth)
         if (!orig_first && !time_stamp && !forwarder && !name_rva && !first_thunk) break;
         if (!name_rva || !first_thunk) continue;
         const char *dep_name = (const char *)(mod + name_rva);
+        char apiset_host[32];
+        /* A virtual API set DLL (api-ms-win-*) is bound to the DLL that holds its functions. */
+        if (ldr_apiset_host(dep_name, apiset_host, sizeof(apiset_host))) dep_name = apiset_host;
         void *dep = find_loaded(dep_name);
         if (!dep && is_already_loaded_ntdll(dep_name)) dep = get_ntdll_base();
         int fresh = 0;
@@ -824,6 +827,8 @@ void NTAPI LdrInitializeThunk(void) {
             if (!orig_first && !time_stamp && !forwarder && !name_rva && !first_thunk) break;
             if (!name_rva || !first_thunk) continue;
             const char *dll_name = (const char*)(base + name_rva);
+            char apiset_host[32];
+            if (ldr_apiset_host(dll_name, apiset_host, sizeof(apiset_host))) dll_name = apiset_host;
             dbg_print("Ldr: import dll_name=");
             dbg_print(dll_name);
             dbg_print("\n");
