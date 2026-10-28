@@ -501,9 +501,6 @@ wcstok_s
 wcstol
 wcstombs
 wcstoul
-wine_get_build_id
-wine_get_host_version
-wine_get_version
 WinSqmEndSession
 WinSqmIncrementDWORD
 WinSqmIsOptedIn

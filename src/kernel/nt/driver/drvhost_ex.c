@@ -333,7 +333,7 @@ DRVCALL LONG KeReadStateEvent(PKEVENT Event)
 /* Converts a KeWait/KeDelay timeout into a monotonic deadline.  Returns 0 for
  * "no timeout" (infinite), 1 with *deadline set for a deadline, and 2 for an
  * instant poll (timeout already expired or zero). */
-static int timeout_to_deadline(const LARGE_INTEGER *t, uint64_t *deadline)
+int dh_timeout_to_deadline(const LARGE_INTEGER *t, uint64_t *deadline)
 {
     if (!t) return 0;
     uint64_t now = dh_now_ns();
@@ -350,10 +350,35 @@ static int timeout_to_deadline(const LARGE_INTEGER *t, uint64_t *deadline)
     *deadline = now + (abs100 - sys_now) * 100ull;
     return 1;
 }
+#define timeout_to_deadline dh_timeout_to_deadline
 
-static int dispatcher_is_sync(const DISPATCHER_HEADER *h)
+int dh_dispatcher_acquire_locked(DISPATCHER_HEADER *h, dh_thread_t *self)
 {
-    return h->Type == DISPATCHER_EVENT_SYNCHRONIZATION || h->Type == DISPATCHER_TIMER_SYNCHRONIZATION;
+    switch (h->Type) {
+    case DISPATCHER_MUTANT_OBJECT: {
+        PKMUTANT m = (PKMUTANT)h;
+        if (m->OwnerThread == (PVOID)self) {
+            if (h->SignalState == -2147483647 - 1) dh_bugcheck(STATUS_MUTANT_LIMIT_EXCEEDED, (ULONG_PTR)m, 0, 0, 0);
+            h->SignalState--;                 /* recursive acquisition */
+            return 1;
+        }
+        if (h->SignalState != 1) return 0;
+        h->SignalState = 0;
+        m->OwnerThread = self;
+        return 1;
+    }
+    case DISPATCHER_SEMAPHORE_OBJECT:
+        if (h->SignalState <= 0) return 0;
+        h->SignalState--;
+        return 1;
+    case DISPATCHER_EVENT_SYNCHRONIZATION:
+    case DISPATCHER_TIMER_SYNCHRONIZATION:
+        if (h->SignalState <= 0) return 0;
+        h->SignalState = 0;
+        return 1;
+    default:                                 /* notification objects, threads, gates */
+        return h->SignalState > 0;
+    }
 }
 
 DRVCALL NTSTATUS KeWaitForSingleObject(PVOID Object, ULONG WaitReason, KPROCESSOR_MODE WaitMode,
@@ -367,17 +392,17 @@ DRVCALL NTSTATUS KeWaitForSingleObject(PVOID Object, ULONG WaitReason, KPROCESSO
     if (mode != 2 && dh_irql >= IRQL_DISPATCH)
         dh_bugcheck(DH_BUGCHECK_IRQL, 9, dh_irql, 0, 0);
 
+    dh_thread_t *self = dh_current_thread();
     dh_lock();
     for (;;) {
-        if (h->SignalState > 0) {
-            if (dispatcher_is_sync(h)) h->SignalState = 0;
+        if (dh_dispatcher_acquire_locked(h, self)) {
             dh_unlock();
             return STATUS_SUCCESS;
         }
         if (mode == 2) { dh_unlock(); return STATUS_TIMEOUT; }
         if (mode == 0) { dh_wait(); continue; }
         if (dh_timedwait_until(deadline)) {
-            if (h->SignalState > 0) continue;
+            if (dh_dispatcher_acquire_locked(h, self)) { dh_unlock(); return STATUS_SUCCESS; }
             dh_unlock();
             return STATUS_TIMEOUT;
         }

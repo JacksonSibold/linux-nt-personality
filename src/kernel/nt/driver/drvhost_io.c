@@ -98,6 +98,13 @@ DRVCALL NTSTATUS IoCreateDevice(PDRIVER_OBJECT DriverObject, ULONG DeviceExtensi
     d->dev.DeviceType = DeviceType;
     d->dev.StackSize = 1;
     d->dev.DeviceExtension = (DeviceExtensionSize != 0) ? (char *)d + hdr : NULL;
+    d->dev.DeviceObjectExtension = &d->ext;
+    d->ext.Type = 13;                                  /* IO_TYPE_DEVICE_OBJECT_EXTENSION */
+    d->ext.Size = (USHORT)sizeof(DEVOBJ_EXTENSION);
+    d->ext.DeviceObject = &d->dev;
+    d->dev.Queue.ListEntry.Flink = d->dev.Queue.ListEntry.Blink = &d->dev.Queue.ListEntry;
+    KeInitializeDeviceQueue(&d->dev.DeviceQueue);
+    KeInitializeEvent(&d->dev.DeviceLock, SynchronizationEvent, TRUE);
 
     dh_lock();
     d->dev.NextDevice = DriverObject->DeviceObject;

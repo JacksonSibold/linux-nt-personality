@@ -58,6 +58,8 @@ typedef struct dh_thread {
     PKSTART_ROUTINE start;
     PVOID     start_ctx;
     int       owned_by_pool;   /* created by PsCreateSystemThread */
+    int       crit_region;     /* KeEnterCriticalRegion nesting */
+    int       guarded_region;  /* KeEnterGuardedRegion nesting */
     struct dh_thread *next;
 } dh_thread_t;
 
@@ -81,6 +83,14 @@ extern __thread dh_thread_t *dh_tls_thread;
 /* Bugcheck: records the code and aborts.  Drivers reach it through KeBugCheckEx
  * and through the host's own IRQL and lock-order checks. */
 void dh_bugcheck(ULONG code, ULONG_PTR p1, ULONG_PTR p2, ULONG_PTR p3, ULONG_PTR p4) __attribute__((noreturn));
+
+/* Dispatcher objects (drvhost_ex.c). Both are called with the monitor held except the deadline conversion.
+ * dh_dispatcher_acquire_locked takes the signal state of a dispatcher object for `self`: it resets a synchronization
+ * event or timer, counts a semaphore down and makes `self` the owner of a mutant (or deepens its recursion), and returns
+ * 1; it returns 0 when the object is not signalled for `self`. A notification object stays signalled. */
+int dh_dispatcher_acquire_locked(DISPATCHER_HEADER *h, dh_thread_t *self);
+/* Converts a KeWait timeout into a monotonic deadline: 0 no timeout (wait forever), 1 *deadline is set, 2 poll. */
+int dh_timeout_to_deadline(const LARGE_INTEGER *timeout, uint64_t *deadline);
 
 /* -------------------------------------------------------------------------- */
 /* Pool bookkeeping (drvhost_ex.c)                                            */
@@ -114,6 +124,7 @@ void dh_dpc_enqueue_locked(PKDPC dpc, PVOID a1, PVOID a2);
  * can reach its bookkeeping from the driver's pointer. */
 typedef struct dh_device {
     DEVICE_OBJECT dev;               /* must stay first */
+    DEVOBJ_EXTENSION ext;            /* dev.DeviceObjectExtension points here */
     char   name[128];                /* \Device\NAME, or empty */
     int    name_registered;
     PDEVICE_OBJECT pdo_of_fdo;       /* unused when 0 */

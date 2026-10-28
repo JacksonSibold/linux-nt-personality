@@ -1,0 +1,3 @@
+LIBRARY hal.dll
+EXPORTS
+HalDisplayString
