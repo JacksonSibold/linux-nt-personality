@@ -72,14 +72,7 @@ void WINAPI LeaveCriticalSection(void *);
 
 /* ---- Per-thread state: errno, _doserrno and the static buffers of the time functions ---------------------------- */
 
-typedef struct uct_thread {
-    int err;
-    unsigned long dos;
-    ucrt_tm tm;
-    char timebuf[32];
-    ucrt_wchar wtimebuf[32];
-    char *strerror_buf;
-} uct_thread;
+#include "ucrtbase_thread.h"
 
 static DWORD g_uct_tls = TLS_OUT_OF_INDEXES;
 static uct_thread g_uct_main; /* before the slot exists, and when allocating a thread's record fails */
@@ -349,5 +342,6 @@ typedef int (*ucrt_cmp_s_fn)(void *, const void *, const void *);
 #include "ucrtbase_heap.inc"
 #include "ucrtbase_stdio.inc"
 #include "ucrtbase_start.inc"
+#include "ucrtbase_misc.inc"
 
 #endif /* __MINGW32__ */

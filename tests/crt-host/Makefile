@@ -13,7 +13,7 @@ SAN_FLAGS ?= -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-fr
 CFLAGS   := -std=c11 -g -O1 -Wall -Wextra -Werror -D_GNU_SOURCE $(SAN_FLAGS) -I$(SRC) -I$(NTHOST)
 LDLIBS   := -lm
 
-TESTS := test_string test_ctype test_dtoa test_conv test_strtod test_printf test_stdlib test_math test_math2 test_io test_stdio test_scanf test_time test_locale test_runtime test_ucrtbase_stdio
+TESTS := test_string test_ctype test_dtoa test_conv test_strtod test_printf test_stdlib test_math test_math2 test_io test_stdio test_scanf test_time test_locale test_runtime test_ucrtbase_stdio test_ucrtbase_misc
 
 .PHONY: all test clean
 all: test

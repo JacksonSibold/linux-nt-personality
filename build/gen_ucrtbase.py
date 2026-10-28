@@ -431,6 +431,8 @@ def main():
             continue
         for m in re.finditer(r"^[A-Za-z_][^;(){}\n]*\bw_(\w+)\s*\(", f.read_text(), re.M):
             implemented.add(m.group(1))
+        for m in re.finditer(r"^UCT_VARIADIC\(\w+,\s*w_(\w+)", f.read_text(), re.M):
+            implemented.add(m.group(1))
     add_locale_variants()
     seen = {}
     unimplemented = []
