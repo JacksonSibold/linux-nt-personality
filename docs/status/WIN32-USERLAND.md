@@ -18,7 +18,7 @@ probes ([DIFFERENTIAL-RESULTS.md](DIFFERENTIAL-RESULTS.md)) are the first place 
 | DLL | Source | Exports | Notes |
 |---|---|---|---|
 | `ntdll.dll` | `ntdll*.c`, `ldr*.c`, `rtl_*` | `ntdll.def` | Syscall stubs, loader, heap, Rtl pieces. |
-| `kernel32.dll` | `kernel32*.c` (16 files) | `kernel32.def` | Files, memory, threads, sync objects, wide-character file functions, system information, message formatting, NLS (en-US only). Pure logic in `k32_*_pure.h`. |
+| `kernel32.dll` | `kernel32*.c` (21 files) | `kernel32.def` | Files, memory, threads, sync objects, wide-character file functions, system information, message formatting, NLS (en-US only), private-profile (INI) files, PE resources, fibers, logical-processor topology, the thread pool, timer queues and registered waits. Pure logic in `k32_*_pure.h`. |
 | `kernelbase.dll`, `advapi32.dll`, `user32.dll`, `win32u.dll`, `gdi32.dll` | `kernelbase.c`, `advapi32.c`, `user32*.c`, `win32u.c`, `gdi32_win32k.c` | `*.def` | Subsets. user32 and gdi32 are far from complete. |
 | `msvcrt.dll` | `msvcrt.c` | `msvcrt.def` | The older minimal CRT (77 lines of exports). |
 | `ucrtbase.dll` | `ucrtbase.c` and `ucrtbase_*.inc` | `ucrtbase.def` (generated) | The Universal C Runtime; see below. |
@@ -90,5 +90,20 @@ non-cryptographic generator.
 `.inc` files (`ucrtbase_stdio`, `ucrtbase_misc`, `ucrtbase_fp`, `ucrtbase_path`). Most compare against glibc; where Windows
 differs from glibc on purpose (32-bit `long`, wrapping overflow in `scanf`, `(null)`, two-digit exponents), the test says so
 and checks the Windows value instead. `make -C tests/ntdll-host test` covers the pure headers of the other DLLs.
+
+### kernel32 additions
+
+Each of these has its logic in a `k32_*_pure.h` header that a host test compiles natively, plus a thin DLL file.
+
+| Area | Host test | What the host test does not cover |
+|---|---|---|
+| Private-profile (INI) functions | `test_k32_ini_pure` | The file reads and writes in `kernel32_ini.c`. |
+| PE resources (`FindResource*`, `LoadResource`, `EnumResourceNames*`) | `test_k32_res_pure` | Handing out module images from the loader. |
+| Fibers | `test_k32_fiber_pure` (real stack switches) | TEB updates with a real TEB. |
+| Logical-processor information | `test_k32_y_pure` | Real topology (the records describe one package, one core per CPU). |
+| Thread pool, timer queues, `RegisterWaitForSingleObject` | `test_k32_tp_pure` (engine on pthreads) | `kernel32_tp.c`, which supplies the engine's operations from kernel32 and is only built and export-checked. |
+
+Not implemented in the thread pool: cleanup groups do not track `TrySubmitThreadpoolCallback` items, a closed private pool is
+not freed, and `SetThreadpoolStackInformation` is accepted and ignored.
 
 `tools/run_all_checks.sh` runs both.
