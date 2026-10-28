@@ -18,9 +18,11 @@ typedef struct ucrt_state {
     char *strtok_ctx;
     ucrt_wchar *wcstok_ctx;
     unsigned int rand_seed;
+    int printf_exp_digits;                   /* minimum exponent digits in %e: 2 (UCRT) or 3 (the old msvcrt) */
+    int printf_count_output;                 /* %n is honoured only after _set_printf_count_output(1) */
 } ucrt_state;
 
-static ucrt_state g_ucrt_state;
+static ucrt_state g_ucrt_state = {0, 0, 0, 0, 0, 0, 1, 2, 0};
 
 static inline void ucrt_set_errno(int e)
 {
