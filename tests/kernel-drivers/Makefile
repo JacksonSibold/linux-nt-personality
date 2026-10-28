@@ -24,7 +24,7 @@ WARN   := -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
 CFLAGS := -std=gnu11 -g -O1 $(WARN) -I$(DRV) -I$(LOADER) -I$(NTDLL) -I.
 LDLIBS := -lpthread
 
-HOST_SRCS := drvhost_plat drvhost_ex drvhost_sync drvhost_io drvhost_pnp drvhost_rtl drvhost_fmt \
+HOST_SRCS := drvhost_plat drvhost_ex drvhost_sync drvhost_mm drvhost_io drvhost_pnp drvhost_rtl drvhost_fmt \
              drvhost_pe drvhost_svc drvhost_nt drvhost_exports
 HOST_OBJS := $(addprefix $(BUILD)/,$(addsuffix .o,$(HOST_SRCS))) $(BUILD)/pe_parse.o
 
@@ -57,7 +57,7 @@ layout: $(BUILD)/layout_wine $(BUILD)/layout_host
 	diff -u $(BUILD)/layout_wine.txt $(BUILD)/layout_host.txt
 	@echo "layout: $$(wc -l < $(BUILD)/layout_wine.txt) measurements match the WDK definitions"
 
-all: $(BUILD)/driver_unit_test $(BUILD)/driver_sync_test $(BUILD)/driver_host_test \
+all: $(BUILD)/driver_unit_test $(BUILD)/driver_sync_test $(BUILD)/driver_mm_test $(BUILD)/driver_host_test \
      $(SYSROOT)/drivers/hello_drv.sys $(SYSROOT)/drivers/bad_import.sys
 
 $(BUILD):
@@ -85,6 +85,12 @@ $(BUILD)/driver_sync_test.o: driver_sync_test.c dh_test.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/driver_sync_test: $(BUILD)/driver_sync_test.o $(HOST_OBJS)
+	$(CC) -o $@ $^ $(LDLIBS)
+
+$(BUILD)/driver_mm_test.o: driver_mm_test.c dh_test.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/driver_mm_test: $(BUILD)/driver_mm_test.o $(HOST_OBJS)
 	$(CC) -o $@ $^ $(LDLIBS)
 
 $(BUILD)/reg_boot.o: reg_boot.c | $(BUILD)
@@ -133,6 +139,7 @@ $(SYSROOT)/drivers/bad_import.sys: $(BUILD)/bad_import.o $(BUILD)/libbadimp.a | 
 check: all layout
 	$(BUILD)/driver_unit_test
 	$(BUILD)/driver_sync_test
+	$(BUILD)/driver_mm_test
 	$(BUILD)/driver_host_test $(SYSROOT)
 
 surface:
