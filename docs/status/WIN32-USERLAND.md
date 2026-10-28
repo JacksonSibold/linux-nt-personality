@@ -22,6 +22,7 @@ probes ([DIFFERENTIAL-RESULTS.md](DIFFERENTIAL-RESULTS.md)) are the first place 
 | `kernelbase.dll`, `advapi32.dll`, `user32.dll`, `win32u.dll`, `gdi32.dll` | `kernelbase.c`, `advapi32.c`, `user32*.c`, `win32u.c`, `gdi32_win32k.c` | `*.def` | Subsets. user32 and gdi32 are far from complete. |
 | `msvcrt.dll` | `msvcrt.c` | `msvcrt.def` | The older minimal CRT (77 lines of exports). |
 | `ucrtbase.dll` | `ucrtbase.c` and `ucrtbase_*.inc` | `ucrtbase.def` (generated) | The Universal C Runtime; see below. |
+| `vcruntime140.dll` | `vcruntime140.c`, `vcruntime140_exc.c` | `vcruntime140.def` | C++ exceptions for code built with the Microsoft compiler (`_CxxThrowException`, `__CxxFrameHandler3`), RTTI (`__RTDynamicCast`, `__RTtypeid`, `type_info`), `std::exception` and the other standard exception classes, forwarders for `memcpy` and friends. See below. |
 
 `api-ms-win-crt-*.dll` names resolve to `ucrtbase.dll` in the loader (`ldr_pure.h`).
 
@@ -82,6 +83,23 @@ Known simplifications: narrow paths are widened byte by byte (Latin-1), so the p
 `_getch` reads standard input without console modes; `_gcvt` follows the Microsoft form but is covered by few tests;
 `longjmp` does not run unwind handlers; collation is the "C" locale's; `rand_s` uses RDRAND when the CPU has it and otherwise a
 non-cryptographic generator.
+
+## vcruntime140.dll
+
+The logic is in three headers that the host tests compile natively against hand-built tables: `vcr_rtti_pure.h` (RTTI and
+`dynamic_cast` over single, multiple and virtual inheritance), `vcr_typeinfo_pure.h` (`type_info` compare, hash and
+name decoding) and `vcr_eh_pure.h` (state from address, cleanup chains, try/catch selection, funclet detection, the copy into
+the catch parameter). The DLL files apply them to a real stack and are only built and link-checked: nothing in them has run
+against code built by the Microsoft compiler.
+
+How a catch runs: the frame handler finds the catch block in the first pass, moves the thrown object to the heap, builds the
+catch parameter and unwinds to the catching frame with `vcr_catch_entry` as the target; that routine looks like a call from
+the catching frame, runs the catch funclet and jumps to the address it returns. A bare `throw;` raises the exception of the
+innermost running catch again.
+
+Not done: `__CxxFrameHandler4` (the compressed tables of newer compilers, which live in `vcruntime140_1.dll`), the SEH
+translator, WinRT exceptions, `msvcp140.dll`. A thrown object is moved with a byte copy, so a type that points into itself
+does not survive a throw.
 
 ## Host test suites
 

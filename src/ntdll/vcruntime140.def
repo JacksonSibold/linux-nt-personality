@@ -1,0 +1,90 @@
+LIBRARY vcruntime140
+EXPORTS
+    __C_specific_handler = ntdll.__C_specific_handler
+    memcpy = ucrtbase.memcpy
+    memmove = ucrtbase.memmove
+    memset = ucrtbase.memset
+    memcmp = ucrtbase.memcmp
+    memchr = ucrtbase.memchr
+    strchr = ucrtbase.strchr
+    strrchr = ucrtbase.strrchr
+    strstr = ucrtbase.strstr
+    wcschr = ucrtbase.wcschr
+    wcsrchr = ucrtbase.wcsrchr
+    wcsstr = ucrtbase.wcsstr
+    longjmp = ucrtbase.longjmp
+    _setjmp = ucrtbase._setjmp
+    _purecall = ucrtbase._purecall
+    __vcrt_GetModuleHandleW = kernel32.GetModuleHandleW
+    __vcrt_GetModuleFileNameW = kernel32.GetModuleFileNameW
+    __vcrt_LoadLibraryExW = kernel32.LoadLibraryExW
+    __vcrt_InitializeCriticalSectionEx = kernel32.InitializeCriticalSectionEx
+    _CxxThrowException
+    __CxxFrameHandler3
+    __DestructExceptionObject
+    __AdjustPointer
+    __current_exception
+    __current_exception_context
+    __processing_throw
+    __RTtypeid
+    __RTCastToVoid
+    __RTDynamicCast
+    __std_type_info_compare
+    __std_type_info_hash
+    __std_type_info_name
+    __std_type_info_destroy_list
+    __std_exception_copy
+    __std_exception_destroy
+    __std_terminate
+    _local_unwind
+    __telemetry_main_invoke_trigger
+    __telemetry_main_return_trigger
+    __security_init_cookie
+    __report_gsfailure
+    __unDName
+    __unDNameEx
+    ??0exception@std@@QEAA@AEBV01@@Z = vcr_exception_ctor_copy
+    ??0exception@std@@QEAA@XZ = vcr_exception_ctor_default
+    ??0exception@std@@QEAA@AEBQEBD@Z = vcr_exception_ctor_cstr_ref
+    ??0exception@std@@QEAA@AEBQEBDH@Z = vcr_exception_ctor_cstr_ref_nocopy
+    ?what@exception@std@@UEBAPEBDXZ = vcr_exception_what
+    ??1exception@std@@UEAA@XZ = vcr_exception_dtor
+    ??4exception@std@@QEAAAEAV01@AEBV01@@Z = vcr_exception_assign
+    ??_7exception@std@@6B@ = vcr_vftable_exception DATA
+    ??0bad_cast@std@@QEAA@AEBV01@@Z = vcr_bad_cast_ctor_copy
+    ??0bad_cast@std@@QEAA@PEBD@Z = vcr_bad_cast_ctor_cstr
+    ??1bad_cast@std@@UEAA@XZ = vcr_bad_cast_dtor
+    ??4bad_cast@std@@QEAAAEAV01@AEBV01@@Z = vcr_bad_cast_assign
+    ??_7bad_cast@std@@6B@ = vcr_vftable_bad_cast DATA
+    ??0bad_typeid@std@@QEAA@AEBV01@@Z = vcr_bad_typeid_ctor_copy
+    ??0bad_typeid@std@@QEAA@PEBD@Z = vcr_bad_typeid_ctor_cstr
+    ??1bad_typeid@std@@UEAA@XZ = vcr_bad_typeid_dtor
+    ??4bad_typeid@std@@QEAAAEAV01@AEBV01@@Z = vcr_bad_typeid_assign
+    ??_7bad_typeid@std@@6B@ = vcr_vftable_bad_typeid DATA
+    ??0__non_rtti_object@std@@QEAA@AEBV01@@Z = vcr_non_rtti_ctor_copy
+    ??0__non_rtti_object@std@@QEAA@PEBD@Z = vcr_non_rtti_ctor_cstr
+    ??1__non_rtti_object@std@@UEAA@XZ = vcr_non_rtti_dtor
+    ??4__non_rtti_object@std@@QEAAAEAV01@AEBV01@@Z = vcr_non_rtti_assign
+    ??_7__non_rtti_object@std@@6B@ = vcr_vftable_non_rtti DATA
+    ??0bad_exception@std@@QEAA@AEBV01@@Z = vcr_bad_exception_ctor_copy
+    ??0bad_exception@std@@QEAA@PEBD@Z = vcr_bad_exception_ctor_cstr
+    ??1bad_exception@std@@UEAA@XZ = vcr_bad_exception_dtor
+    ??4bad_exception@std@@QEAAAEAV01@AEBV01@@Z = vcr_bad_exception_assign
+    ??_7bad_exception@std@@6B@ = vcr_vftable_bad_exception DATA
+    ??0bad_alloc@std@@QEAA@AEBV01@@Z = vcr_bad_alloc_ctor_copy
+    ??0bad_alloc@std@@AEAA@PEBD@Z = vcr_bad_alloc_ctor_cstr
+    ??1bad_alloc@std@@UEAA@XZ = vcr_bad_alloc_dtor
+    ??4bad_alloc@std@@QEAAAEAV01@AEBV01@@Z = vcr_bad_alloc_assign
+    ??_7bad_alloc@std@@6B@ = vcr_vftable_bad_alloc DATA
+    ??0bad_array_new_length@std@@QEAA@AEBV01@@Z = vcr_bad_array_ctor_copy
+    ??0bad_array_new_length@std@@QEAA@XZ = vcr_bad_array_ctor_default
+    ??1bad_array_new_length@std@@UEAA@XZ = vcr_bad_array_dtor
+    ??4bad_array_new_length@std@@QEAAAEAV01@AEBV01@@Z = vcr_bad_array_assign
+    ??_7bad_array_new_length@std@@6B@ = vcr_vftable_bad_array DATA
+    ??1type_info@@UEAA@XZ = vcr_type_info_dtor
+    ??8type_info@@QEBA_NAEBV0@@Z = vcr_type_info_eq
+    ??9type_info@@QEBA_NAEBV0@@Z = vcr_type_info_ne
+    ?before@type_info@@QEBA_NAEBV1@@Z = vcr_type_info_before
+    ?name@type_info@@QEBAPEBDPEAU__type_info_node@@@Z = vcr_type_info_name
+    ?raw_name@type_info@@QEBAPEBDXZ = vcr_type_info_raw_name
+    ??_7type_info@@6B@ = vcr_vftable_type_info DATA

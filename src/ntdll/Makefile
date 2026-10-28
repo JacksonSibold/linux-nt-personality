@@ -164,6 +164,25 @@ $(OUT)/ucrtbase.dll: $(OUT)/ucrtbase.o $(OUT)/k32_runtime.o ucrtbase.def $(OUT)/
 
 .PHONY: ucrtbase
 ucrtbase: $(OUT)/ucrtbase.dll
+
+# vcruntime140.dll: C++ exceptions, run-time type information and the standard exception classes for code built with the
+# Microsoft compiler. The table logic is in vcr_*_pure.h (host-tested); the DLL is only built and link-checked.
+$(OUT)/libucrtbase_imp.a: ucrtbase.def
+	x86_64-w64-mingw32-dlltool -d $< -l $@ -D ucrtbase.dll
+
+VCR_HDRS := vcr_eh_pure.h vcr_rtti_pure.h vcr_typeinfo_pure.h
+
+$(OUT)/vcruntime140.o: vcruntime140.c $(VCR_HDRS) | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(OUT)/vcruntime140_exc.o: vcruntime140_exc.c $(VCR_HDRS) | $(OUT)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(OUT)/vcruntime140.dll: $(OUT)/vcruntime140.o $(OUT)/vcruntime140_exc.o $(OUT)/k32_runtime.o vcruntime140.def $(OUT)/libkernel32_imp.a $(OUT)/libntdll_imp.a $(OUT)/libucrtbase_imp.a
+	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/vcruntime140.o $(OUT)/vcruntime140_exc.o $(OUT)/k32_runtime.o vcruntime140.def -L$(OUT) -lkernel32_imp -lntdll_imp -lucrtbase_imp -lgcc
+
+.PHONY: vcruntime140
+vcruntime140: $(OUT)/vcruntime140.dll
 # advapi32.dll: the registry subset the differential probes import (advapi32.def),
 # on the NT registry services in ntdll.dll. Uses the same runtime helpers as kernel32.
 $(OUT)/advapi32.o: advapi32.c advapi_pure.h | $(OUT)
