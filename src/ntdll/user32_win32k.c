@@ -6,10 +6,8 @@
  * (PAINTSTRUCT, DEVMODEW, WNDCLASSEXW). MSG and POINT/RECT have the same layout
  * as the model's, so they are passed through.
  *
- * Not exported here, because the model has no equivalent yet: SetClipboardData
- * and GetClipboardData (they need global memory handles), the CreateFontW family
- * (the model has font handles but not the LOGFONT path), and the message-box
- * and window-class menu APIs. GetMessageW, WaitMessage and MsgWaitForMultipleObjects
+ * SetClipboardData and GetClipboardData copy through kernel32 global handles (see the
+ * clipboard section). Not exported yet: the message-box and menu APIs. GetMessageW, WaitMessage and MsgWaitForMultipleObjects
  * block on the calling thread's NT event; see the blocking-retrieval note above
  * GetMessageW and docs/decisions/0076-win32k-hosting.md.
  */
@@ -610,21 +608,129 @@ BOOL_T SystemParametersInfoW(uint32_t action, uint32_t ui_param, void *pv, uint3
     return w32k_system_parameters_info(action, ui_param, pv) != 0;
 }
 
-/* ---- Clipboard (no global memory: SetClipboardData is not exported) ---------- */
-
 BOOL_T OpenClipboard(uintptr_t hwnd)
 {
     return w32k_open_clipboard(hwnd) != 0;
 }
 
+/* ---- Clipboard data through global memory (kernel32 Global* handles) ------------- */
+
+#define W32K_GMEM_MOVEABLE 0x0002u
+__declspec(dllimport) extern uintptr_t GlobalAlloc(uint32_t flags, size_t bytes);
+__declspec(dllimport) extern void *GlobalLock(uintptr_t mem);
+__declspec(dllimport) extern BOOL_T GlobalUnlock(uintptr_t mem);
+__declspec(dllimport) extern uintptr_t GlobalFree(uintptr_t mem);
+__declspec(dllimport) extern size_t GlobalSize(uintptr_t mem);
+
+/* GetClipboardData returns a handle the clipboard owns: the caller must not free it. The
+ * handle stays valid until the clipboard is emptied or closed, so it is kept here per
+ * format and freed then. */
+#define W32K_CLIP_CACHE 32
+static struct {
+    uint32_t fmt;
+    uintptr_t h;
+} clip_cache[W32K_CLIP_CACHE];
+
+static void clip_cache_drop_all(void)
+{
+    for (int i = 0; i < W32K_CLIP_CACHE; ++i) {
+        if (clip_cache[i].h)
+            GlobalFree(clip_cache[i].h);
+        clip_cache[i].h = 0;
+        clip_cache[i].fmt = 0;
+    }
+}
+
+/* Stores h for fmt, replacing (and freeing) an earlier handle for the same format. */
+static void clip_cache_put(uint32_t fmt, uintptr_t h)
+{
+    int slot = -1;
+    for (int i = 0; i < W32K_CLIP_CACHE; ++i) {
+        if (clip_cache[i].h && clip_cache[i].fmt == fmt) {
+            GlobalFree(clip_cache[i].h);
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        for (int i = 0; i < W32K_CLIP_CACHE; ++i) {
+            if (!clip_cache[i].h) {
+                slot = i;
+                break;
+            }
+        }
+    }
+    if (slot < 0) {
+        /* Full: drop the older entries rather than leak. */
+        clip_cache_drop_all();
+        slot = 0;
+    }
+    clip_cache[slot].fmt = fmt;
+    clip_cache[slot].h = h;
+}
+
 BOOL_T CloseClipboard(void)
 {
-    return w32k_close_clipboard() != 0;
+    BOOL_T ok = w32k_close_clipboard() != 0;
+    clip_cache_drop_all();
+    return ok;
 }
 
 BOOL_T EmptyClipboard(void)
 {
-    return w32k_empty_clipboard() != 0;
+    BOOL_T ok = w32k_empty_clipboard() != 0;
+    clip_cache_drop_all();
+    return ok;
+}
+
+/* Copies a global block into the clipboard. On success the clipboard takes the bytes and the
+ * block is freed (ownership passes to the clipboard, as in Win32). Delayed rendering (NULL
+ * handle) is not supported and fails with ERROR_CALL_NOT_IMPLEMENTED. */
+uintptr_t SetClipboardData(uint32_t fmt, uintptr_t mem)
+{
+    size_t n;
+    void *p;
+    BOOL_T ok;
+    if (!mem) {
+        w32k_set_last_error(W32K_ERROR_CALL_NOT_IMPLEMENTED);
+        return 0;
+    }
+    n = GlobalSize(mem);
+    p = GlobalLock(mem);
+    if (!p) {
+        w32k_set_last_error(W32K_ERROR_INVALID_HANDLE);
+        return 0;
+    }
+    ok = w32k_set_clipboard_data(fmt, p, n) != 0;
+    GlobalUnlock(mem);
+    if (!ok)
+        return 0;
+    GlobalFree(mem);
+    return mem;
+}
+
+/* Returns a clipboard-owned global block with a copy of the format's data, or 0. */
+uintptr_t GetClipboardData(uint32_t fmt)
+{
+    size_t n = 0;
+    const uint8_t *src = (const uint8_t *)w32k_get_clipboard_data(fmt, &n);
+    uintptr_t h;
+    uint8_t *dst;
+    if (!src)
+        return 0;
+    h = GlobalAlloc(W32K_GMEM_MOVEABLE, n);
+    if (!h)
+        return 0;
+    dst = (uint8_t *)GlobalLock(h);
+    if (!dst) {
+        GlobalFree(h);
+        return 0;
+    }
+    for (size_t i = 0; i < n; ++i)
+        dst[i] = src[i];
+    GlobalUnlock(h);
+    clip_cache_put(fmt, h);
+    return h;
 }
 
 BOOL_T IsClipboardFormatAvailable(uint32_t format)

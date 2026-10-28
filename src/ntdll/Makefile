@@ -152,8 +152,8 @@ $(OUT)/user32_win32k.o: user32_win32k.c win32k/w32k.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OUT)/gdi32_win32k.o: gdi32_win32k.c win32k/w32k.h | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
-$(OUT)/user32.dll: $(OUT)/user32.o $(OUT)/user32_win32k.o $(W32K_CORE_OBJS) user32.def $(OUT)/libntdll_imp.a
-	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/user32.o $(OUT)/user32_win32k.o $(W32K_CORE_OBJS) user32.def -L$(OUT) -lntdll_imp -lgcc
+$(OUT)/user32.dll: $(OUT)/user32.o $(OUT)/user32_win32k.o $(W32K_CORE_OBJS) user32.def $(OUT)/libntdll_imp.a $(OUT)/libkernel32_imp.a
+	$(CC) -nostdlib -shared -fno-use-linker-plugin -Wl,-e,DllMainCRTStartup -Wl,--no-undefined -o $@ $(OUT)/user32.o $(OUT)/user32_win32k.o $(W32K_CORE_OBJS) user32.def -L$(OUT) -lkernel32_imp -lntdll_imp -lgcc
 .PHONY: user32
 user32: $(OUT)/user32.dll
 

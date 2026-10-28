@@ -24,3 +24,21 @@ EXPORTS
     GetBkColor
     SetBkMode
     GetDeviceCaps
+    CreateFontW
+    CreateFontIndirectW
+    GetTextMetricsW
+    CreateRectRgn
+    CreateRectRgnIndirect
+    CreateEllipticRgn
+    CreateRoundRectRgn
+    CreatePolygonRgn
+    SetRectRgn
+    CombineRgn
+    GetRgnBox
+    PtInRegion
+    RectInRegion
+    EqualRgn
+    OffsetRgn
+    SelectClipRgn
+    GetClipRgn
+    GetClipBox

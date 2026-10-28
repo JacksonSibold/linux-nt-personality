@@ -73,6 +73,8 @@ EXPORTS
     EnumClipboardFormats
     RegisterClipboardFormatW
     GetClipboardOwner
+    SetClipboardData
+    GetClipboardData
     EnumDisplayMonitors
     MonitorFromWindow
     EnumDisplaySettingsW
