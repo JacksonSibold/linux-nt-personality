@@ -514,7 +514,7 @@ struct nt_file_object {
 
 	/* IOCP association. */
 	struct nt_iocp *iocp;
-	ULONG iocp_key;
+	ULONG_PTR iocp_key;
 
 	/* For synchronous I/O, the current file position. */
 	loff_t current_byte_offset;

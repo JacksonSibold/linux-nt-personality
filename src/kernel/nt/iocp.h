@@ -14,6 +14,9 @@
 #include <linux/wait.h>
 #endif
 
+/* A pointer to a pointer-sized integer; C11 allows the repeated typedef where a Windows header has one. */
+typedef ULONG_PTR *PULONG_PTR;
+
 #ifndef IO_COMPLETION_ALL_ACCESS
 #define IO_COMPLETION_ALL_ACCESS 0x001F0003
 #endif
@@ -32,7 +35,7 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 
 struct nt_iocp_packet {
-	ULONG key;
+	ULONG_PTR key;
 	void *overlapped;
 	NTSTATUS status;
 	ULONG_PTR information;
@@ -75,21 +78,21 @@ NTSTATUS nt_svc_NtCreateIoCompletion(PHANDLE CompletionPortHandle,
 				     ULONG NumberOfConcurrentThreads);
 
 NTSTATUS nt_svc_NtSetIoCompletion(HANDLE IoCompletionHandle,
-				  ULONG CompletionKey,
+				  ULONG_PTR CompletionKey,
 				  PVOID CompletionValue,
 				  NTSTATUS CompletionStatus,
 				  ULONG_PTR CompletionInformation);
 
 NTSTATUS nt_svc_NtSetIoCompletionEx(HANDLE IoCompletionHandle,
 				    PVOID Reserved1,
-				    ULONG CompletionKey,
+				    ULONG_PTR CompletionKey,
 				    PVOID CompletionValue,
 				    NTSTATUS CompletionStatus,
 				    ULONG_PTR CompletionInformation);
 
 NTSTATUS nt_svc_NtRemoveIoCompletion(HANDLE IoCompletionHandle,
-				     PULONG CompletionKey,
-				     PULONG CompletionValue,
+				     PULONG_PTR CompletionKey,
+				     PVOID *CompletionValue,
 				     PIO_STATUS_BLOCK IoStatusBlock,
 				     PLARGE_INTEGER Timeout);
 
@@ -139,7 +142,7 @@ NTSTATUS nt_svc_NtAlertThreadByThreadId(HANDLE ThreadId);
 void ntio_iocp_get(struct nt_iocp *iocp);
 void ntio_iocp_put(struct nt_iocp *iocp);
 void ntio_iocp_disassociate(struct nt_iocp **iocpp);
-NTSTATUS ntio_iocp_post(struct nt_iocp *iocp, ULONG key, void *overlapped,
+NTSTATUS ntio_iocp_post(struct nt_iocp *iocp, ULONG_PTR key, void *overlapped,
 			NTSTATUS status, ULONG_PTR information);
 
 /* Per-task APC list (userspace shim: single current task). */

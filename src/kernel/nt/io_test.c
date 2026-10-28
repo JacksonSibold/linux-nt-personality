@@ -964,12 +964,13 @@ TEST(iocp_ordering)
 	}
 
 	for (i = 0; i < 5; i++) {
-		ULONG key, value;
+		ULONG_PTR key;
+	PVOID value;
 		st = nt_svc_NtRemoveIoCompletion(iocp, &key, &value, &iosb,
 						 &timeout);
 		ASSERT_STATUS(st, STATUS_SUCCESS);
 		ASSERT(key == i * 10);
-		ASSERT(value == 100U + i);
+		ASSERT((ULONG_PTR)value == 100U + i);
 		ASSERT(iosb.Information == i);
 	}
 
@@ -997,14 +998,16 @@ TEST(iocp_concurrency)
 
 	/* Remove two -> active == 2 (concurrency limit). */
 	for (i = 0; i < 2; i++) {
-		ULONG key, value;
+		ULONG_PTR key;
+	PVOID value;
 		st = nt_svc_NtRemoveIoCompletion(iocp, &key, &value, &iosb, &zero);
 		ASSERT_STATUS(st, STATUS_SUCCESS);
 	}
 
 	/* Third remove with zero timeout must time out because limit reached. */
 	{
-		ULONG key, value;
+		ULONG_PTR key;
+	PVOID value;
 		st = nt_svc_NtRemoveIoCompletion(iocp, &key, &value, &iosb, &zero);
 		ASSERT_STATUS(st, STATUS_TIMEOUT);
 	}
@@ -1017,7 +1020,8 @@ TEST(iocp_timeout)
 {
 	HANDLE iocp;
 	NTSTATUS st;
-	ULONG key, value;
+	ULONG_PTR key;
+	PVOID value;
 	IO_STATUS_BLOCK iosb;
 	LARGE_INTEGER timeout;
 
@@ -1041,7 +1045,8 @@ TEST(iocp_completion_on_cancel)
 	IO_STATUS_BLOCK iosb;
 	OBJECT_ATTRIBUTES oa;
 	LARGE_INTEGER alloc = { 0 };
-	ULONG key, value;
+	ULONG_PTR key;
+	PVOID value;
 	LARGE_INTEGER timeout;
 	NTSTATUS st;
 
@@ -1086,6 +1091,61 @@ TEST(iocp_completion_on_cancel)
 		      STATUS_SUCCESS);
 	ASSERT(key == 0x55);
 	ASSERT(iosb.DUMMYUNIONNAME.Status == STATUS_CANCELLED);
+
+	nt_svc_NtClose(file);
+	nt_svc_NtClose(iocp);
+	PASS();
+}
+
+TEST(iocp_file_association_keeps_64_bit_values)
+{
+	HANDLE iocp, file;
+	IO_STATUS_BLOCK iosb;
+	OBJECT_ATTRIBUTES oa;
+	LARGE_INTEGER alloc = { 0 }, timeout;
+	ULONG_PTR key = 0;
+	PVOID value = NULL;
+	NTSTATUS st;
+	char buf[16];
+	struct {
+		HANDLE Port;
+		PVOID Key;
+	} ci;
+	/* values that need all 64 bits */
+	const ULONG_PTR big_key = (ULONG_PTR)0x1122334455667788ULL;
+	PVOID big_ov = (PVOID)(ULONG_PTR)0x00007F12345678A0ULL;
+
+	reset_state();
+	ASSERT_STATUS(nt_svc_NtCreateIoCompletion(&iocp, IO_COMPLETION_ALL_ACCESS, NULL, 0), STATUS_SUCCESS);
+	create_file_at("iocp_assoc.txt");
+	oa = make_obj_attr("iocp_assoc.txt");
+	ASSERT_STATUS(nt_svc_NtCreateFile(&file, FILE_GENERIC_READ, &oa, &iosb, &alloc, 0, FILE_SHARE_READ, FILE_OPEN,
+					  FILE_NON_DIRECTORY_FILE, NULL, 0),
+		      STATUS_SUCCESS);
+
+	ci.Port = iocp;
+	ci.Key = (PVOID)big_key;
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(file, &iosb, &ci, sizeof(ci), FileCompletionInformation), STATUS_SUCCESS);
+	/* a file can be associated once */
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(file, &iosb, &ci, sizeof(ci), FileCompletionInformation),
+		      STATUS_INVALID_PARAMETER);
+	ASSERT_STATUS(nt_svc_NtSetInformationFile(file, &iosb, &ci, 4, FileCompletionInformation), STATUS_INFO_LENGTH_MISMATCH);
+
+	/* a read posts a packet carrying the caller's OVERLAPPED pointer */
+	st = nt_svc_NtReadFile(file, NULL, NULL, big_ov, &iosb, buf, sizeof(buf), &alloc, NULL); /* an asynchronous handle needs an offset */
+	ASSERT(NT_SUCCESS(st) || st == STATUS_END_OF_FILE); /* the test file is empty */
+	timeout.QuadPart = 0;
+	ASSERT_STATUS(nt_svc_NtRemoveIoCompletion(iocp, &key, &value, &iosb, &timeout), STATUS_SUCCESS);
+	ASSERT(key == big_key);
+	ASSERT(value == big_ov);
+	ASSERT(iosb.DUMMYUNIONNAME.Status == st);
+
+	/* a user-posted packet keeps 64-bit key and value too */
+	ASSERT_STATUS(nt_svc_NtSetIoCompletion(iocp, big_key, big_ov, STATUS_SUCCESS, 77), STATUS_SUCCESS);
+	key = 0;
+	value = NULL;
+	ASSERT_STATUS(nt_svc_NtRemoveIoCompletion(iocp, &key, &value, &iosb, &timeout), STATUS_SUCCESS);
+	ASSERT(key == big_key && value == big_ov && iosb.Information == 77);
 
 	nt_svc_NtClose(file);
 	nt_svc_NtClose(iocp);
@@ -2620,7 +2680,8 @@ TEST(iocp_query_depth)
 	HANDLE iocp = NULL;
 	LONG depth = -1;
 	ULONG retlen = 0;
-	ULONG key = 0, value_dummy = 0;
+	ULONG_PTR key = 0;
+	PVOID value_dummy = NULL;
 	IO_STATUS_BLOCK iosb;
 	LARGE_INTEGER zero;
 	NTSTATUS st;
@@ -2808,6 +2869,7 @@ int main(void)
 	RUN(iocp_concurrency);
 	RUN(iocp_timeout);
 	RUN(iocp_completion_on_cancel);
+	RUN(iocp_file_association_keeps_64_bit_values);
 	RUN(delete_on_close);
 	RUN(query_set_info);
 	RUN(query_attributes_file);

@@ -79,7 +79,7 @@ static struct nt_iocp *ntio_iocp_alloc(ULONG concurrency)
 	return iocp;
 }
 
-NTSTATUS ntio_iocp_post(struct nt_iocp *iocp, ULONG key, void *overlapped,
+NTSTATUS ntio_iocp_post(struct nt_iocp *iocp, ULONG_PTR key, void *overlapped,
 			NTSTATUS status, ULONG_PTR information)
 {
 	struct nt_iocp_packet *pkt;
@@ -203,7 +203,7 @@ NTSTATUS nt_svc_NtOpenIoCompletion(PHANDLE CompletionPortHandle,
 }
 
 NTSTATUS nt_svc_NtSetIoCompletion(HANDLE IoCompletionHandle,
-				  ULONG CompletionKey,
+				  ULONG_PTR CompletionKey,
 				  PVOID CompletionValue,
 				  NTSTATUS CompletionStatus,
 				  ULONG_PTR CompletionInformation)
@@ -223,7 +223,7 @@ NTSTATUS nt_svc_NtSetIoCompletion(HANDLE IoCompletionHandle,
 
 NTSTATUS nt_svc_NtSetIoCompletionEx(HANDLE IoCompletionHandle,
 				    PVOID Reserved1,
-				    ULONG CompletionKey,
+				    ULONG_PTR CompletionKey,
 				    PVOID CompletionValue,
 				    NTSTATUS CompletionStatus,
 				    ULONG_PTR CompletionInformation)
@@ -239,8 +239,8 @@ NTSTATUS nt_svc_NtSetIoCompletionEx(HANDLE IoCompletionHandle,
  * Single-packet removal.  Timeout in 100ns intervals; negative means infinite.
  */
 NTSTATUS nt_svc_NtRemoveIoCompletion(HANDLE IoCompletionHandle,
-				     PULONG CompletionKey,
-				     PULONG CompletionValue,
+				     PULONG_PTR CompletionKey,
+				     PVOID *CompletionValue,
 				     PIO_STATUS_BLOCK IoStatusBlock,
 				     PLARGE_INTEGER Timeout)
 {
@@ -331,7 +331,7 @@ NTSTATUS nt_svc_NtRemoveIoCompletion(HANDLE IoCompletionHandle,
 
 	if (pkt) {
 		*CompletionKey = pkt->key;
-		*CompletionValue = (ULONG_PTR)pkt->overlapped;
+		*CompletionValue = pkt->overlapped;
 		IoStatusBlock->DUMMYUNIONNAME.Status = pkt->status;
 		IoStatusBlock->Information = pkt->information;
 		kfree(pkt);
@@ -349,8 +349,8 @@ out:
  * No pthread primitives are used in kernel context.
  */
 NTSTATUS nt_svc_NtRemoveIoCompletion(HANDLE IoCompletionHandle,
-				     PULONG CompletionKey,
-				     PULONG CompletionValue,
+				     PULONG_PTR CompletionKey,
+				     PVOID *CompletionValue,
 				     PIO_STATUS_BLOCK IoStatusBlock,
 				     PLARGE_INTEGER Timeout)
 {
@@ -415,7 +415,7 @@ NTSTATUS nt_svc_NtRemoveIoCompletion(HANDLE IoCompletionHandle,
 	}
 
 	*CompletionKey = pkt->key;
-	*CompletionValue = (ULONG_PTR)pkt->overlapped;
+	*CompletionValue = pkt->overlapped;
 	IoStatusBlock->DUMMYUNIONNAME.Status = pkt->status;
 	IoStatusBlock->Information = pkt->information;
 	kfree(pkt);
@@ -545,7 +545,7 @@ out:
 }
 #else /* __KERNEL__ */
 typedef struct _FILE_IO_COMPLETION_INFORMATION {
-	ULONG Key;
+	ULONG_PTR Key;
 	PVOID CompletionValue;
 	NTSTATUS Status;
 	ULONG_PTR Information;

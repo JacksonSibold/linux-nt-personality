@@ -2363,11 +2363,34 @@ static NTSTATUS ntio_do_write(struct nt_file_object *file, PVOID __user Buffer,
 	return STATUS_SUCCESS;
 }
 
-static void ntio_complete_to_iocp(struct nt_file_object *file,
+/* Queues a completion packet on the file's port: the key given at association, the caller's ApcContext (the OVERLAPPED
+ * of a Win32 call) as the value. */
+static void ntio_complete_to_iocp(struct nt_file_object *file, PVOID apc_context,
 				  NTSTATUS status, ULONG_PTR info)
 {
 	if (file->iocp)
-		ntio_iocp_post(file->iocp, file->iocp_key, NULL, status, info);
+		ntio_iocp_post(file->iocp, file->iocp_key, apc_context, status, info);
+}
+
+/* FileCompletionInformation: associates the file with an I/O completion port under a key. A file can be associated once. */
+static NTSTATUS ntio_set_completion(struct nt_file_object *file, PVOID buf, ULONG len)
+{
+	struct {
+		HANDLE Port;
+		PVOID Key;
+	} *ci = buf;
+	struct nt_iocp *iocp;
+
+	if (len < sizeof(*ci))
+		return STATUS_INFO_LENGTH_MISMATCH;
+	if (file->iocp)
+		return STATUS_INVALID_PARAMETER;
+	iocp = ntio_handle_lookup(ci->Port, 0);
+	if (!iocp)
+		return STATUS_INVALID_HANDLE;
+	file->iocp = iocp; /* the reference the lookup took now belongs to the file */
+	file->iocp_key = (ULONG_PTR)ci->Key;
+	return STATUS_SUCCESS;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2517,8 +2540,9 @@ NTSTATUS nt_svc_NtReadFile(HANDLE FileHandle, HANDLE Event,
 		*IoStatusBlock = kiosb;
 	}
 #endif
-	if (NT_SUCCESS(status))
-		ntio_complete_to_iocp(file, status, info);
+	/* a read that hits the end of the file is a completed request too, and posts its packet */
+	if (NT_SUCCESS(status) || status == STATUS_END_OF_FILE)
+		ntio_complete_to_iocp(file, ApcContext, status, info);
 
 	ntio_file_put(file);
 	return status;
@@ -2586,8 +2610,9 @@ NTSTATUS nt_svc_NtWriteFile(HANDLE FileHandle, HANDLE Event,
 		*IoStatusBlock = kiosb;
 	}
 #endif
-	if (NT_SUCCESS(status))
-		ntio_complete_to_iocp(file, status, info);
+	/* a read that hits the end of the file is a completed request too, and posts its packet */
+	if (NT_SUCCESS(status) || status == STATUS_END_OF_FILE)
+		ntio_complete_to_iocp(file, ApcContext, status, info);
 
 	ntio_file_put(file);
 	return status;
@@ -3506,6 +3531,9 @@ NTSTATUS nt_svc_NtSetInformationFile(HANDLE FileHandle,
 	case FileDispositionInformationEx:
 		status = ntio_set_disposition_ex(file, kbuf, Length);
 		break;
+	case FileCompletionInformation:
+		status = ntio_set_completion(file, kbuf, Length);
+		break;
 	default:
 		status = STATUS_INVALID_INFO_CLASS;
 		break;
@@ -3543,6 +3571,9 @@ NTSTATUS nt_svc_NtSetInformationFile(HANDLE FileHandle,
 		break;
 	case FileDispositionInformationEx:
 		status = ntio_set_disposition_ex(file, FileInformation, Length);
+		break;
+	case FileCompletionInformation:
+		status = ntio_set_completion(file, FileInformation, Length);
 		break;
 	default:
 		status = STATUS_INVALID_INFO_CLASS;
