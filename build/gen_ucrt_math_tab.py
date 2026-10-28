@@ -29,6 +29,55 @@ def pi_fixed(bits):
     return pi >> 32  # pi * 2^bits
 
 
+def zeta_table():
+    """zeta(k) for k = 2..40 (and zeta(k) - 1), computed with Euler-Maclaurin summation in decimal arithmetic,
+    for the Taylor series of lgamma around 1 and 2."""
+    from decimal import Decimal, getcontext
+    from fractions import Fraction
+    getcontext().prec = 80
+    # Bernoulli numbers B_0 .. B_30 as Fractions
+    B = [Fraction(0)] * 31
+    B[0] = Fraction(1)
+    from math import comb
+    for m in range(1, 31):
+        B[m] = -sum(comb(m + 1, j) * B[j] for j in range(m)) / (m + 1)
+    N = 60
+
+    def zeta(k):
+        total = Decimal(0)
+        for n in range(1, N):
+            total += Decimal(1) / (Decimal(n) ** k)
+        Nd = Decimal(N)
+        total += Nd ** (1 - k) / (k - 1) + (Nd ** -k) / 2
+        fact = Fraction(1)
+        for j in range(1, 14):
+            # B_{2j}/(2j)! * k (k+1) ... (k+2j-2) * N^{-k-2j+1}
+            fact = Fraction(1)
+            for i in range(2 * j):
+                fact /= (i + 1)
+            rising = Fraction(1)
+            for i in range(2 * j - 1):
+                rising *= (k + i)
+            coeff = B[2 * j] * fact * rising
+            total += Decimal(coeff.numerator) / Decimal(coeff.denominator) * Nd ** (-k - 2 * j + 1)
+        return total
+
+    lines = []
+    lines.append("")
+    lines.append("/* zeta(k) - 1 for k = 2..41, for the Taylor series of lgamma about 1 and 2. */")
+    lines.append("#define UCRT_ZETA_COUNT 40")
+    lines.append("static const long double ucrt_zeta_m1[UCRT_ZETA_COUNT] = {")
+    vals = []
+    for k in range(2, 42):
+        z = zeta(k) - 1
+        vals.append(format(z, ".28e") + "L")
+    for i in range(0, len(vals), 2):
+        lines.append("    " + ", ".join(vals[i:i + 2]) + ",")
+    lines.append("};")
+    lines.append("#define UCRT_EULER_GAMMA_L 0.577215664901532860606512090082402431042L")
+    return lines
+
+
 def main():
     pi = pi_fixed(PREC)
     # 2/pi * 2^N, with N bits after the point
@@ -98,6 +147,8 @@ def main():
     if (lo >> (lbl - 65)) & 1:
         top64 += 1
     out.append("#define UCRT_LN2_LO_L 0x%xp%dL" % (top64, (lbl - 64) - PREC))
+    out.append("")
+    out.extend(zeta_table())
     out.append("")
     out.append("#endif /* UCRT_MATH_TAB_H */")
     sys.stdout.write("\n".join(out) + "\n")
