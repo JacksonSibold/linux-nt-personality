@@ -607,6 +607,7 @@ int w__wrmdir(const ucrt_wchar *p)
         return wide(w);                                                                                                 \
     }
 
+/* UCT_EXPORTS _chdir _mkdir _rmdir */
 UCT_NARROW_PATH_CALL(w__chdir, w__wchdir)
 UCT_NARROW_PATH_CALL(w__mkdir, w__wmkdir)
 UCT_NARROW_PATH_CALL(w__rmdir, w__wrmdir)
@@ -674,6 +675,8 @@ ucrt_wchar *w__wfullpath(ucrt_wchar *abs, const ucrt_wchar *rel, size_t max)
 }
 
 /* ---- _splitpath and _makepath -------------------------------------------------------------------------------------------------------- */
+
+/* UCT_EXPORTS _splitpath _splitpath_s _makepath _makepath_s _wsplitpath _wsplitpath_s _wmakepath _wmakepath_s */
 
 #define UCT_T char
 #define UCT_P w__
@@ -914,6 +917,25 @@ ucrt_wchar *w__wmktemp(ucrt_wchar *t)
         return NULL;
     }
     return t;
+}
+
+/* UCT_EXPORTS _wmktemp_s */
+int w__wmktemp_s(ucrt_wchar *t, size_t size)
+{
+    size_t len;
+    int e;
+    if (!t || !size)
+        return ucrt_invalid(UCRT_EINVAL);
+    for (len = 0; len < size && t[len]; ++len)
+        ;
+    if (len == size)
+        return ucrt_invalid(UCRT_EINVAL);
+    e = uct_mktemp_wide(t, len);
+    if (e) {
+        t[0] = 0;
+        return ucrt_invalid(e);
+    }
+    return 0;
 }
 
 /* tmpnam: names in the root of the current drive, "\s<digits>.<digit>", that do not exist. */

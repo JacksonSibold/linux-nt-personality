@@ -345,5 +345,7 @@ typedef int (*ucrt_cmp_s_fn)(void *, const void *, const void *);
 #include "ucrtbase_misc.inc"
 #include "ucrtbase_fp.inc"
 #include "ucrtbase_fs.inc"
+#include "ucrtbase_extra.inc"
+#include "ucrtbase_more.inc"
 
 #endif /* __MINGW32__ */

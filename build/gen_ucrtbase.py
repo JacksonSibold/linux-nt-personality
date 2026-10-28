@@ -113,8 +113,8 @@ for n in ["alnum", "alpha", "blank", "cntrl", "digit", "graph", "lower", "print"
 add("towupper", W, [W], "ucrt_towupper")
 add("towlower", W, [W], "ucrt_towlower")
 manual("_isctype", "iswctype", "_iswctype", "__pctype_func", "__pwctype_func", "___mb_cur_max_func", "___lc_codepage_func",
-       "___lc_locale_name_func", "__p___mb_cur_max", "_isleadbyte", "___lc_handle_func", "_get_current_locale", "_create_locale",
-       "_free_locale", "__acrt_locale_get_ctype_array_value")
+       "_isleadbyte", "_get_current_locale", "_create_locale",
+       "_free_locale")
 
 # ---- conversions ----------------------------------------------------------------------------------------------------------
 add("atoi", I, [CS], "ucrt_atoi")
@@ -275,7 +275,7 @@ manual("__stdio_common_vfprintf", "__stdio_common_vfprintf_s", "__stdio_common_v
        "vfwprintf", "vswprintf", "_vsnwprintf", "sscanf", "fscanf", "scanf", "swscanf", "fwscanf", "wscanf", "sprintf_s", "printf_s",
        "fprintf_s", "sscanf_s", "perror", "_set_printf_count_output", "_get_printf_count_output", "_lock_file", "_unlock_file",
        "_fgetwchar", "_fputwchar", "_getw", "_putw", "tmpfile", "tmpnam", "_tempnam", "_wtempnam", "_vscprintf", "_scprintf", "_vscwprintf",
-       "_scwprintf", "_vsprintf_p", "_getch", "_getche", "_putch", "_kbhit", "_ungetch")
+       "_scwprintf", "_getch", "_getche", "_putch", "_kbhit", "_ungetch")
 
 # ---- low-level I/O ----------------------------------------------------------------------------------------------------------------
 add("_open", I, [CS, I, I], "ucrt_open")
@@ -304,12 +304,12 @@ add("_unlink", I, [CS], "ucrt_unlink")
 add("_wunlink", I, [CW], "ucrt_wunlink")
 add("_sopen_s", I, [I + " *", CS, I, I, I], "ucrt_sopen_s")
 add("_wsopen_s", I, [I + " *", CW, I, I, I], "ucrt_wsopen_s")
-manual("_wmktemp", "_waccess_s", "_umask_s", "_wstat32", "_fstat32", "_sopen", "_wsopen", "_pipe", "_access", "_waccess", "_access_s", "_stat64", "_stat64i32", "_stat32", "_fstat64", "_fstat64i32",
+manual("_splitpath_s", "_makepath_s", "_wsplitpath_s", "_wmakepath_s", "_wmktemp_s", "_wmktemp", "_waccess_s", "_umask_s", "_wstat32", "_fstat32", "_sopen", "_wsopen", "_access", "_waccess", "_access_s", "_stat64", "_stat64i32", "_stat32", "_fstat64", "_fstat64i32",
        "_wstat64", "_wstat64i32", "_getcwd", "_wgetcwd", "_chdir", "_wchdir", "_mkdir", "_wmkdir", "_rmdir", "_wrmdir", "_fullpath",
        "_wfullpath", "_makepath", "_splitpath", "_wmakepath", "_wsplitpath", "_findfirst64", "_findnext64", "_findclose",
        "_findfirst64i32", "_findnext64i32", "_wfindfirst64", "_wfindnext64", "_wfindfirst64i32", "_wfindnext64i32", "_chmod", "_wchmod",
-       "_getdrive", "_chdrive", "_getdcwd", "_wgetdcwd", "_utime64", "_futime64", "_mktemp", "_mktemp_s", "_umask", "system", "_wsystem",
-       "_spawnl", "_spawnv", "_execv", "_cwait", "_getpid", "_get_pgmptr", "_get_wpgmptr", "_set_fmode_dummy")
+       "_getdrive", "_chdrive", "_getdcwd", "_wgetdcwd", "_utime64", "_futime64", "_mktemp", "_mktemp_s", "_umask",
+       "_getpid", "_get_pgmptr", "_get_wpgmptr")
 
 # ---- time ----------------------------------------------------------------------------------------------------------------------------
 add("_time64", "long long", ["long long *"], "ucrt_time64")
@@ -331,7 +331,7 @@ add("difftime", D, ["long long", "long long"], "ucrt_difftime64")
 add("_tzset", None, [], "ucrt_tzset")
 manual("_localtime64", "_gmtime64", "localtime", "gmtime", "_ctime64", "ctime", "asctime", "_ftime64_s", "_ftime64", "__p__timezone",
        "__p__daylight", "__p__dstbias", "__p__tzname", "_get_timezone", "_get_daylight", "_get_dstbias", "_get_tzname", "_strdate",
-       "_strtime", "_strdate_s", "_strtime_s", "_Strftime", "_Getdays", "_Getmonths", "_Gettnames", "_wasctime", "_wctime64",
+       "_strtime", "_strdate_s", "_strtime_s", "_wasctime", "_wctime64",
        "_localtime32_s", "_gmtime32_s", "_mktime32", "_ctime32_s")
 
 # ---- locale and multibyte -----------------------------------------------------------------------------------------------------------------
@@ -352,7 +352,7 @@ add("wcrtomb", SZ, [S, W, "ucrt_mbstate *"], "ucrt_wcrtomb")
 add("mbrlen", SZ, [CS, SZ, "ucrt_mbstate *"], "ucrt_mbrlen")
 add("mbsinit", I, ["const ucrt_mbstate *"], "ucrt_mbsinit")
 add("_mbstrlen", SZ, [CS], "ucrt_mbstrlen")
-manual("mbsrtowcs", "wcsrtombs", "_mbslen", "_setmbcp", "_getmbcp", "_ismbblead", "_ismbtrail", "_mbsinc", "_mbsdec", "_mbsnbcnt")
+manual("mbsrtowcs", "wcsrtombs", "_mbslen")
 
 # ---- process runtime -------------------------------------------------------------------------------------------------------------------------
 add("getenv", S, [CS], "ucrt_getenv")
@@ -384,19 +384,40 @@ manual("quick_exit", "_get_invalid_parameter_handler", "_set_thread_local_invali
        "__p__wcmdln", "__p__environ", "__p__wenviron", "__p__pgmptr", "__p__wpgmptr", "_configure_narrow_argv", "_configure_wide_argv",
        "_initialize_narrow_environment", "_initialize_wide_environment", "_get_initial_narrow_environment", "_get_initial_wide_environment",
        "__getmainargs", "__wgetmainargs", "_set_app_type", "_get_app_type", "_set_fmode", "_get_fmode", "__p__fmode", "__p__commode", "_set_commode",
-       "_set_new_mode", "_query_new_mode", "_set_error_mode", "_seh_filter_exe", "_seh_filter_dll", "_crt_debugger_hook", "__acrt_initialize",
-       "_exit_dummy", "terminate", "_set_se_translator", "_set_doserrno_dummy", "_cexit_dummy", "_lock", "_unlock", "_amsg_exit",
-       "__acrt_errno_map_os_error", "_set_controlfp_dummy", "_beginthread", "_beginthreadex", "_endthread", "_endthreadex", "_threadid",
-       "__threadid", "__threadhandle", "_get_thread_dummy", "__sys_errlist_dummy", "__p__sys_nerr_dummy", "_CIpow", "_get_osplatform",
-       "_get_osver", "_get_winver", "_get_winmajor", "_get_winminor", "_get_sbh_threshold", "_set_sbh_threshold", "__crtGetShowWindowMode",
-       "__crtSetUnhandledExceptionFilter", "__crtUnhandledException", "__crtTerminateProcess", "_set_output_format", "_get_output_format")
+       "_set_new_mode", "_query_new_mode", "_set_error_mode", "_seh_filter_exe", "_seh_filter_dll", "_crt_debugger_hook",
+       "terminate", "_set_se_translator",
+       "__acrt_errno_map_os_error", "_beginthread", "_beginthreadex", "_endthread", "_endthreadex",
+       "__threadid", "_get_osplatform",
+       "_get_osver", "_get_winver", "_get_winmajor", "_get_winminor",
+       )
 
 # ---- heap ---------------------------------------------------------------------------------------------------------------------------------------
 manual("malloc", "free", "calloc", "realloc", "_msize", "_expand", "_recalloc", "_aligned_malloc", "_aligned_free", "_aligned_realloc",
        "_aligned_msize", "_aligned_offset_malloc", "_aligned_recalloc", "_callnewh", "_set_new_handler", "_get_heap_handle", "_heapchk",
-       "_heapmin", "_heapwalk", "_freea_dummy", "_msize_base", "_malloc_base", "_free_base", "_calloc_base", "_realloc_base",
-       "_set_malloc_dummy")
+       "_heapmin", "_msize_base", "_malloc_base", "_free_base", "_calloc_base", "_realloc_base")
 
+
+
+# Names the real ucrtbase exports under a second spelling. The POSIX-style names (open, strdup, ...) are the underscore
+# names without the underscore; the long double functions take a double, as long double is double in the Microsoft ABI.
+ALIASES = [
+    ("__daylight", "__p__daylight"), ("__dstbias", "__p__dstbias"), ("__timezone", "__p__timezone"), ("__tzname", "__p__tzname"),
+    ("__set_app_type", "_set_app_type"), ("_wtoll", "_wtoi64"), ("_atoll_l", "_atoi64_l"),
+    ("__stdio_common_vfwprintf_p", "__stdio_common_vfwprintf"), ("__stdio_common_vswprintf_p", "__stdio_common_vswprintf_s"),
+    ("__intrinsic_setjmp", "_setjmp"), ("setjmp", "_setjmp"), ("isascii", "__isascii"), ("toascii", "__toascii"), ("is_wctype", "iswctype"),
+    ("cabs", "_cabs"), ("_copysignf", "copysignf"), ("_hypotf", "hypotf"), ("_logbf", "logbf"), ("_chgsignf", "_chgsign"),
+]
+for n in ["chdir", "chgsign", "chmod", "chsize", "close", "creat", "dup", "dup2", "ecvt", "eof", "fcvt", "fdopen", "fgetwchar",
+          "filelength", "fileno", "finite", "fpclass", "fputwchar", "gcvt", "getch", "getche", "getcwd", "getpid", "getw", "isatty",
+          "isleadbyte", "itoa", "kbhit", "lfind", "lsearch", "lseek", "ltoa", "memccpy", "memicmp", "mkdir", "mktemp", "open", "putch",
+          "putenv", "putw", "read", "rmdir", "setmode", "sopen", "strcmpi", "strdup", "stricmp", "strlwr", "strnicmp", "strnset", "strrev",
+          "strset", "strupr", "swab", "tell", "tempnam", "tzset", "umask", "ungetch", "unlink", "wcsdup", "wcsicmp", "wcslwr", "wcsnicmp",
+          "wcsnset", "wcsrev", "wcsset", "wcsupr", "write", "utime", "toascii", "isascii", "gets_dummy"]:
+    ALIASES.append((n, "_" + n))
+for n in ["acosh", "asinh", "atanh", "cbrt", "copysign", "erfc", "erf", "exp2", "expm1", "fdim", "fma", "fmax", "fmin", "ilogb", "lgamma",
+          "llrint", "llround", "log1p", "log2", "logb", "lrint", "lround", "nan", "nearbyint", "nextafter", "remainder", "rint", "round",
+          "scalbln", "scalbn", "tgamma", "trunc"]:
+    ALIASES.append((n + "l", n))
 
 
 def add_locale_variants():
@@ -426,14 +447,22 @@ def add_locale_variants():
 
 def main():
     implemented = set()
+    marked = set()  # exports an implementation file declares itself with a UCT_EXPORTS comment
     for f in sorted((ROOT / "src/ntdll").glob("ucrtbase*")):
         if f.name in ("ucrtbase_gen.inc", "ucrtbase.def") or f.suffix not in (".c", ".inc"):
             continue
         for m in re.finditer(r"^[A-Za-z_][^;(){}\n]*\bw_(\w+)\s*\(", f.read_text(), re.M):
             implemented.add(m.group(1))
+        for m in re.finditer(r"UCT_EXPORTS\s+([^*]+)\*/", f.read_text()):
+            marked.update(m.group(1).split())
+            implemented.update(m.group(1).split())
         for m in re.finditer(r"^UCT_VARIADIC\(\w+,\s*w_(\w+)", f.read_text(), re.M):
             implemented.add(m.group(1))
     add_locale_variants()
+    known = {e[0] for e in entries}
+    for name in sorted(marked):
+        if name not in known:
+            entries.append((name, None, None, "@manual"))
     seen = {}
     unimplemented = []
     inc = ["/* Generated by build/gen_ucrtbase.py; do not edit. */", ""]
@@ -443,7 +472,7 @@ def main():
             sys.exit("duplicate export: " + name)
         seen[name] = 1
         if impl == "@manual":
-            if name in implemented:
+            if name in implemented or ("w_" + name) in implemented:
                 defs.append("    %s=w_%s" % (name, name))
             else:
                 unimplemented.append(name)
@@ -463,6 +492,11 @@ def main():
         else:
             inc.append("%s w_%s(%s) { %sreturn %s(%s); }" % (rt, name, args, unused, call_impl, call))
         defs.append("    %s=w_%s" % (name, name))
+    exported = {line.split("=")[0].strip() for line in defs if "=" in line}
+    for new, old in ALIASES:
+        if old in exported and new not in exported:
+            defs.append("    %s=w_%s" % (new, old))
+            exported.add(new)
     OUT_INC.write_text("\n".join(inc) + "\n")
     OUT_DEF.write_text("\n".join(defs) + "\n")
     (ROOT / "build/ucrtbase_unimplemented.txt").write_text("\n".join(unimplemented) + "\n")
