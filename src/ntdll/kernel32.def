@@ -261,3 +261,29 @@ EXPORTS
     GetDiskFreeSpaceA
     GetVolumeInformationW
     GetVolumePathNameW
+    CreateEventExW
+    CreateEventExA
+    OpenEventW
+    OpenEventA
+    PulseEvent
+    CreateMutexExW
+    CreateMutexExA
+    OpenMutexW
+    OpenMutexA
+    CreateSemaphoreExW
+    OpenSemaphoreW
+    OpenSemaphoreA
+    CreateWaitableTimerW
+    CreateWaitableTimerA
+    CreateWaitableTimerExW
+    OpenWaitableTimerW
+    SetWaitableTimer
+    CancelWaitableTimer
+    WaitForSingleObjectEx
+    WaitForMultipleObjectsEx
+    SignalObjectAndWait
+    QueueUserAPC
+    CreateIoCompletionPort
+    GetQueuedCompletionStatus
+    GetQueuedCompletionStatusEx
+    PostQueuedCompletionStatus

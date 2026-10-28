@@ -1150,61 +1150,7 @@ BOOL WINAPI FlushFileBuffers(HANDLE h)
     return 1;
 }
 
-/* Sync */
-/* K32-7: these create real NT objects and return their handles. Named objects
- * are not supported (there is no shared object namespace here), so a name
- * fails with ERROR_CALL_NOT_IMPLEMENTED instead of returning an unshared object. */
-#define K32_ERROR_CALL_NOT_IMPLEMENTED 120
-static HANDLE k32_create_sync_result(NTSTATUS s, HANDLE h)
-{
-    HANDLE r = win32_sync_create_result(s, h);
-    /* A successful create keeps the last error (probe_handles golden: 32 from an
-     * earlier failed CreateFile survives CreateEvent and CreateMutex). */
-    if (!r) SetLastErrorFromStatus(s);
-    return r;
-}
-HANDLE WINAPI CreateEventA(void *sa, BOOL man, BOOL init, const char *name){
-    (void)sa;
-    if (name) { SetLastError(K32_ERROR_CALL_NOT_IMPLEMENTED); return NULL; }
-    HANDLE h = NULL;
-    NTSTATUS s = NtCreateEvent(&h, WIN32_EVENT_ALL_ACCESS, NULL, win32_event_type_to_nt(man), init ? 1 : 0);
-    return k32_create_sync_result(s, h);
-}
-HANDLE WINAPI CreateEventW(void *sa, BOOL man, BOOL init, const WCHAR *name){
-    (void)sa;
-    if (name) { SetLastError(K32_ERROR_CALL_NOT_IMPLEMENTED); return NULL; }
-    HANDLE h = NULL;
-    NTSTATUS s = NtCreateEvent(&h, WIN32_EVENT_ALL_ACCESS, NULL, win32_event_type_to_nt(man), init ? 1 : 0);
-    return k32_create_sync_result(s, h);
-}
-HANDLE WINAPI CreateMutexA(void *sa, BOOL own, const char *name){
-    (void)sa;
-    if (name) { SetLastError(K32_ERROR_CALL_NOT_IMPLEMENTED); return NULL; }
-    HANDLE h = NULL;
-    NTSTATUS s = NtCreateMutant(&h, WIN32_MUTANT_ALL_ACCESS, NULL, own ? 1 : 0);
-    return k32_create_sync_result(s, h);
-}
-HANDLE WINAPI CreateMutexW(void *sa, BOOL own, const WCHAR *name){
-    (void)sa;
-    if (name) { SetLastError(K32_ERROR_CALL_NOT_IMPLEMENTED); return NULL; }
-    HANDLE h = NULL;
-    NTSTATUS s = NtCreateMutant(&h, WIN32_MUTANT_ALL_ACCESS, NULL, own ? 1 : 0);
-    return k32_create_sync_result(s, h);
-}
-HANDLE WINAPI CreateSemaphoreA(void *sa, LONG init, LONG max, const char *name){
-    (void)sa;
-    if (name) { SetLastError(K32_ERROR_CALL_NOT_IMPLEMENTED); return NULL; }
-    HANDLE h = NULL;
-    NTSTATUS s = NtCreateSemaphore(&h, WIN32_SEMAPHORE_ALL_ACCESS, NULL, init, max);
-    return k32_create_sync_result(s, h);
-}
-HANDLE WINAPI CreateSemaphoreW(void *sa, LONG init, LONG max, const WCHAR *name){
-    (void)sa;
-    if (name) { SetLastError(K32_ERROR_CALL_NOT_IMPLEMENTED); return NULL; }
-    HANDLE h = NULL;
-    NTSTATUS s = NtCreateSemaphore(&h, WIN32_SEMAPHORE_ALL_ACCESS, NULL, init, max);
-    return k32_create_sync_result(s, h);
-}
+/* Sync: the Create* and Open* functions for events, mutexes, semaphores and timers (with names) are in kernel32_obj.c. */
 static BOOL k32_sync_status(NTSTATUS s)
 {
     if (NT_SUCCESS(s)) { SetLastError(0); return 1; }
@@ -1276,7 +1222,6 @@ void WINAPI Sleep(DWORD ms){
     LARGE_INTEGER d; d.QuadPart = -(LONGLONG)ms*10000LL;
     NtDelayExecution(0, &d);
 }
-void WINAPI SleepEx(DWORD ms, BOOL alert){ (void)alert; Sleep(ms); }
 /* K32-S3: milliseconds since the kernel started, from the performance counter. */
 DWORD WINAPI GetTickCount(void){
     LARGE_INTEGER count, freq;

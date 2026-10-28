@@ -111,7 +111,7 @@ check: $(OUT)/ntdll.dll $(OUT)/ntdll.def
 
 # kernel32.dll (S3 of the console milestone): kernel32.c with the runtime helpers
 # (memcpy, strlen, ...) that ntdll.dll does not export, importing ntdll.dll.
-K32_OBJS := $(OUT)/kernel32.o $(OUT)/kernel32_mm.o $(OUT)/kernel32_thread.o $(OUT)/kernel32_fs.o $(OUT)/kernel32_misc.o $(OUT)/kernel32_sys.o $(OUT)/kernel32_str.o $(OUT)/kernel32_env.o $(OUT)/kernel32_global.o $(OUT)/kernel32_time.o $(OUT)/kernel32_heap.o $(OUT)/kernel32_sync.o $(OUT)/kernel32_w.o $(OUT)/k32_runtime.o
+K32_OBJS := $(OUT)/kernel32.o $(OUT)/kernel32_mm.o $(OUT)/kernel32_thread.o $(OUT)/kernel32_fs.o $(OUT)/kernel32_misc.o $(OUT)/kernel32_sys.o $(OUT)/kernel32_str.o $(OUT)/kernel32_env.o $(OUT)/kernel32_global.o $(OUT)/kernel32_time.o $(OUT)/kernel32_heap.o $(OUT)/kernel32_sync.o $(OUT)/kernel32_w.o $(OUT)/kernel32_obj.o $(OUT)/k32_runtime.o
 
 $(OUT)/k32_runtime.o: ntdll_runtime.c | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
