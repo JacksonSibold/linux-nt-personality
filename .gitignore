@@ -22,3 +22,4 @@ build/fixed-stash/
 tests/fuzz/out/
 tests/crt-host/out/
 build/ucrtbase_unimplemented.txt
+tests/rtl-host/out/
