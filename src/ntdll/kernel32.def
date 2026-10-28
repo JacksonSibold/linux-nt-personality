@@ -507,3 +507,13 @@ EXPORTS
     EnumResourceLanguagesA
     EnumResourceLanguagesExW
     EnumResourceLanguagesExA
+    ConvertThreadToFiber
+    ConvertThreadToFiberEx
+    ConvertFiberToThread
+    IsThreadAFiber
+    CreateFiber
+    CreateFiberEx
+    SwitchToFiber
+    DeleteFiber
+    GetCurrentFiber
+    GetFiberData
