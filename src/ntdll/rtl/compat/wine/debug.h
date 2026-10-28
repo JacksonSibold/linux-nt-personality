@@ -6,6 +6,12 @@
 #define RTL_COMPAT_WINE_DEBUG_H
 
 #include <stdarg.h>
+#ifdef __MINGW32__
+/* The ported sources call _snwprintf and friends; the host build gets them renamed from printf.c instead. */
+#include <stdio.h>
+#include <wchar.h>
+#endif
+
 #include "windef.h"
 #include "winnt.h"
 #include "winternl.h"

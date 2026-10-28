@@ -16,6 +16,12 @@
 /* ------------------------------------------------------------------ */
 /* Compiler builtins / freestanding string / mem                       */
 /* ------------------------------------------------------------------ */
+/* With the Rtl library of src/ntdll/rtl (Wine's string.c and wcstring.c) the first group comes from there:
+ * the ntdll Makefile defines NTDLL_RTL_PORT for ntdll_runtime.o. The other DLLs still build these. */
+#ifdef NTDLL_RTL_PORT
+void *memcpy(void *dst, const void *src, size_t n);
+size_t strlen(const char *s);
+#else
 void *memcpy(void *dst, const void *src, size_t n) {
     uint8_t *d = (uint8_t*)dst;
     const uint8_t *s = (const uint8_t*)src;
@@ -88,6 +94,7 @@ char *strncat(char *dst, const char *src, size_t n) {
     dst[dl+i]=0;
     return dst;
 }
+#endif /* NTDLL_RTL_PORT */
 int strcasecmp(const char *a, const char *b) {
     while (*a && *b) {
         char ca=*a++, cb=*b++;
@@ -107,6 +114,7 @@ int strncasecmp(const char *a, const char *b, size_t n) {
     }
     return 0;
 }
+#ifndef NTDLL_RTL_PORT
 void *memchr(const void *s, int c, size_t n) {
     const uint8_t *p=s;
     for(size_t i=0;i<n;i++) if(p[i]==(uint8_t)c) return (void*)(p+i);
@@ -123,6 +131,7 @@ char *strrchr(const char *s, int c) {
     return (char*)last;
 }
 int sscanf(const char *str, const char *fmt, ...) { (void)str; (void)fmt; return 0; }
+#endif /* NTDLL_RTL_PORT */
 int snprintf(char *s, size_t n, const char *fmt, ...) { (void)fmt; if(n) s[0]=0; return 0; }
 int vsnprintf(char *s, size_t n, const char *fmt, va_list ap) { (void)fmt;(void)ap; if(n) s[0]=0; return 0; }
 

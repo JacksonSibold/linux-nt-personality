@@ -47,6 +47,11 @@ typedef ULONG __msvcrt_ulong;
 #define STRUNCATE 80
 #endif
 
+#ifdef __MINGW32__
+/* NTDLL_sprintf is defined in printf.c. */
+int WINAPIV NTDLL_sprintf(char *str, const char *format, ...);
+#endif
+
 /* printf.c names this one NTDLL_ to stay clear of the compiler's own declaration; ntdll.def exports it as sprintf. */
 #define sprintf NTDLL_sprintf
 

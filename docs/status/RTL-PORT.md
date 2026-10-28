@@ -48,4 +48,17 @@ make -C tests/rtl-host test        # needs gcc; uses AddressSanitizer and UBSan 
 - Double-byte code pages (932, 936, 949, 950) are not in `nls_tables.h` yet. Single-byte pages 437 to 874, 1250 to 1258 and
   the ISO 8859 family are. The default pages are 1252 (ANSI) and 437 (OEM); `RtlpSetDefaultCodePages` changes them.
 - `build/gen_nls_tables.py` needs a Wine checkout to regenerate the tables; the generated header is checked in.
-- The files are not yet linked into `ntdll.dll`; see the next section of this page when that lands.
+
+## In ntdll.dll
+
+`make -C src/ntdll` links the objects into `ntdll.dll` (MinGW, freestanding, no imports). They are built against Wine's own
+Windows and C library headers (`third_party/wine/include`, `-nostdinc` so that no MinGW header gets in), as Wine builds
+its ntdll. `ntdll_runtime.c` leaves out the string functions that Wine's `string.c` and `wcstring.c` now provide
+(`NTDLL_RTL_PORT`); the other DLLs still use the small versions.
+
+`src/ntdll/rtl/rtl_exports.txt` lists the exports: `build/gen_rtl_exports.py` reads Wine's `ntdll.spec` and the objects and
+writes every spec entry whose symbol the objects define (aliases such as `sprintf=NTDLL_sprintf` included), and
+`build/gen_ntdll_def.py` adds the file to the module definition. `ntdll.dll` exports 749 names, up from 427.
+
+None of this code has run in a Windows process here. The DLL is checked at link time only (`--no-undefined`, export list
+against the sources, `make -C src/ntdll check`); the logic is the code that the host tests run.
