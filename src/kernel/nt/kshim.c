@@ -580,15 +580,19 @@ int kshim_vfs_getattr_path(const char *path, struct kstat *st) {
     st->nlink = s.st_nlink;
     return 0;
 }
+/* A pipe or terminal has no position: pread and pwrite fail with ESPIPE there, and the plain call is what the kernel's
+ * kernel_read and kernel_write amount to for such a file (the standard handles of a program run on the host). */
 ssize_t kshim_kernel_read(struct file *f, void *buf, size_t len, loff_t *pos) {
     if (!f || f->fd<0) return -1;
     ssize_t r = pread(f->fd, buf, len, (off_t)*pos);
+    if (r < 0 && errno == ESPIPE) r = read(f->fd, buf, len);
     if (r>=0) *pos += r;
     return r;
 }
 ssize_t kshim_kernel_write(struct file *f, const void *buf, size_t len, loff_t *pos) {
     if (!f || f->fd<0) return -1;
     ssize_t r = pwrite(f->fd, buf, len, (off_t)*pos);
+    if (r < 0 && errno == ESPIPE) r = write(f->fd, buf, len);
     if (r>=0) *pos += r;
     return r;
 }
